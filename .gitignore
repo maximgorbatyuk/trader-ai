@@ -44,6 +44,11 @@ ScaffoldingReadMe.txt
 *~
 CodeCoverage/
 
+# Local SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
 # MSBuild Binary and Structured Log
 *.binlog
 
@@ -60,3 +65,4 @@ nunit-*.xml
 riderModule.iml
 /_ReSharper.Caches/
 TraderAi/.idea
+.DS_Store

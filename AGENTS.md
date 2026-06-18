@@ -52,3 +52,9 @@ When making changes to the codebase, update documentation in the same PR if the 
 
 Documentation updates are not optional extras — they are part of completing the feature.
 
+## Local launch workflow
+
+- Use `rtk` for shell commands, including launch and verification commands.
+- Run `rtk ./start-dev.sh` from the repository root to start the local backend and frontend together.
+- Keep plan files out of commits.
+- Keep human-facing launch wording in `README.md`; keep agent-only operating notes in this file.

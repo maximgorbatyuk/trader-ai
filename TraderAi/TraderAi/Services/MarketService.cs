@@ -1,0 +1,414 @@
+using Microsoft.EntityFrameworkCore;
+using TraderAi.Data;
+using TraderAi.Models;
+
+namespace TraderAi.Services;
+
+public sealed record PlaceOrderResult(bool Success, Order? Order, string? Error)
+{
+    public static PlaceOrderResult Ok(Order order) => new(true, order, null);
+
+    public static PlaceOrderResult Fail(string error) => new(false, null, error);
+}
+
+public sealed record AdvanceCycleResult(bool Success, int? CompletedCycleNumber, int FillCount, string? Error)
+{
+    public static AdvanceCycleResult Ok(int completedCycleNumber, int fillCount) =>
+        new(true, completedCycleNumber, fillCount, null);
+
+    public static AdvanceCycleResult Fail(string error) => new(false, null, 0, error);
+}
+
+public sealed record RunDecisionsResult(bool Success, int OrdersPlaced, string? Error)
+{
+    public static RunDecisionsResult Ok(int ordersPlaced) => new(true, ordersPlaced, null);
+
+    public static RunDecisionsResult Fail(string error) => new(false, 0, error);
+}
+
+public sealed record CycleTickResult(bool Ran, int OrdersPlaced, int FillCount, int? CompletedCycleNumber)
+{
+    public static CycleTickResult Skipped() => new(false, 0, 0, null);
+
+    public static CycleTickResult Executed(int ordersPlaced, int fillCount, int? completedCycleNumber) =>
+        new(true, ordersPlaced, fillCount, completedCycleNumber);
+}
+
+public sealed class MarketService(
+    AppDbContext dbContext,
+    MatchingEngine matchingEngine,
+    IDecisionEngine decisionEngine,
+    MarketCycleLock cycleLock)
+{
+    private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
+    private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
+
+    public Task<Market?> GetMarketAsync() => dbContext.Markets.FirstOrDefaultAsync();
+
+    public Task<PlaceOrderResult> PlaceOrderAsync(
+        int participantId,
+        int companyId,
+        OrderType type,
+        int quantity,
+        decimal limitPrice) =>
+        WithLockAsync(() => PlaceOrderCoreAsync(participantId, companyId, type, quantity, limitPrice));
+
+    public Task<AdvanceCycleResult> AdvanceCycleAsync() => WithLockAsync(AdvanceCycleCoreAsync);
+
+    public Task<RunDecisionsResult> GenerateDecisionsAsync() => WithLockAsync(GenerateDecisionsCoreAsync);
+
+    // Single automatic step used by the background loop: decide then match under one lock so a manual
+    // trigger cannot slip between the two halves. Skips unless the market is explicitly running.
+    public Task<CycleTickResult> RunCycleTickAsync() => WithLockAsync(RunCycleTickCoreAsync);
+
+    public Task<Market> SeedDemoMarketAsync() => WithLockAsync(SeedDemoMarketCoreAsync);
+
+    public Task<Market?> SetStatusAsync(MarketStatus status) => WithLockAsync(async () =>
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market is null)
+        {
+            return null;
+        }
+
+        market.Status = status;
+        market.UpdatedAt = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync();
+        return market;
+    });
+
+    private async Task<CycleTickResult> RunCycleTickCoreAsync()
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market is null || market.Status != MarketStatus.Running || market.CurrentCycleId is null)
+        {
+            return CycleTickResult.Skipped();
+        }
+
+        var decisions = await GenerateDecisionsCoreAsync();
+        var advance = await AdvanceCycleCoreAsync();
+
+        return CycleTickResult.Executed(decisions.OrdersPlaced, advance.FillCount, advance.CompletedCycleNumber);
+    }
+
+    private async Task<PlaceOrderResult> PlaceOrderCoreAsync(
+        int participantId,
+        int companyId,
+        OrderType type,
+        int quantity,
+        decimal limitPrice)
+    {
+        if (quantity <= 0)
+        {
+            return PlaceOrderResult.Fail("Quantity must be greater than zero.");
+        }
+
+        if (limitPrice <= 0)
+        {
+            return PlaceOrderResult.Fail("Limit price must be greater than zero.");
+        }
+
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market?.CurrentCycleId is not int cycleId)
+        {
+            return PlaceOrderResult.Fail("Market is not running.");
+        }
+
+        var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
+        if (participant is null)
+        {
+            return PlaceOrderResult.Fail("Participant not found.");
+        }
+
+        if (!participant.IsActive)
+        {
+            return PlaceOrderResult.Fail("Participant is not active.");
+        }
+
+        if (!await dbContext.Companies.AnyAsync(company => company.Id == companyId))
+        {
+            return PlaceOrderResult.Fail("Company not found.");
+        }
+
+        var now = DateTime.UtcNow;
+        var order = new Order
+        {
+            ParticipantId = participantId,
+            CompanyId = companyId,
+            Type = type,
+            Status = OrderStatus.Open,
+            Quantity = quantity,
+            FilledQuantity = 0,
+            LimitPrice = limitPrice,
+            ReservedCashAmount = 0,
+            CreatedInCycleId = cycleId,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+
+        if (type == OrderType.Buy)
+        {
+            var reserved = limitPrice * quantity;
+            if (participant.AvailableBalance < reserved)
+            {
+                return PlaceOrderResult.Fail("Insufficient available cash to reserve for the buy order.");
+            }
+
+            participant.ReservedBalance += reserved;
+            order.ReservedCashAmount = reserved;
+
+            dbContext.Orders.Add(order);
+            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            {
+                ParticipantId = participantId,
+                Type = MoneyTransactionType.Reserve,
+                Amount = reserved,
+                RelatedOrder = order,
+                CreatedInCycleId = cycleId,
+                CreatedAt = now,
+            });
+        }
+        else
+        {
+            var ownedShareIds = await dbContext.Shares
+                .Where(share => share.OwnerId == participantId && share.CompanyId == companyId)
+                .Select(share => share.Id)
+                .ToListAsync();
+
+            var offeredShareIds = await dbContext.OrderShares
+                .Where(orderShare => ownedShareIds.Contains(orderShare.ShareId))
+                .Select(orderShare => orderShare.ShareId)
+                .ToListAsync();
+
+            var availableShareIds = ownedShareIds.Except(offeredShareIds).Take(quantity).ToList();
+            if (availableShareIds.Count < quantity)
+            {
+                return PlaceOrderResult.Fail("Not enough available shares to sell.");
+            }
+
+            dbContext.Orders.Add(order);
+            foreach (var shareId in availableShareIds)
+            {
+                dbContext.OrderShares.Add(new OrderShare { Order = order, ShareId = shareId });
+            }
+        }
+
+        await dbContext.SaveChangesAsync();
+        return PlaceOrderResult.Ok(order);
+    }
+
+    private async Task<AdvanceCycleResult> AdvanceCycleCoreAsync()
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market?.CurrentCycleId is not int currentCycleId)
+        {
+            return AdvanceCycleResult.Fail("Market is not running.");
+        }
+
+        var currentCycle = await dbContext.MarketCycles.FirstOrDefaultAsync(cycle => cycle.Id == currentCycleId);
+        if (currentCycle is null)
+        {
+            return AdvanceCycleResult.Fail("Current cycle not found.");
+        }
+
+        var now = DateTime.UtcNow;
+
+        await using var transaction = await dbContext.Database.BeginTransactionAsync();
+
+        if (currentCycle.Status == CycleStatus.Planned)
+        {
+            currentCycle.Status = CycleStatus.Running;
+            currentCycle.StartedAt ??= now;
+        }
+
+        var fillCount = await matchingEngine.RunAsync(currentCycle);
+
+        currentCycle.Status = CycleStatus.Completed;
+        currentCycle.CompletedAt = now;
+
+        var nextCycle = new MarketCycle
+        {
+            CycleNumber = currentCycle.CycleNumber + 1,
+            Status = CycleStatus.Running,
+            StartedAt = now,
+        };
+        dbContext.MarketCycles.Add(nextCycle);
+        await dbContext.SaveChangesAsync();
+
+        market.CurrentCycleId = nextCycle.Id;
+        market.UpdatedAt = now;
+        await dbContext.SaveChangesAsync();
+
+        await transaction.CommitAsync();
+
+        return AdvanceCycleResult.Ok(currentCycle.CycleNumber, fillCount);
+    }
+
+    private async Task<RunDecisionsResult> GenerateDecisionsCoreAsync()
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market?.CurrentCycleId is null)
+        {
+            return RunDecisionsResult.Fail("Market is not running.");
+        }
+
+        var snapshots = await dbContext.PriceSnapshots.ToListAsync();
+        var quotes = snapshots
+            .GroupBy(snapshot => snapshot.CompanyId)
+            .Select(group => new CompanyQuote(group.Key, group.OrderByDescending(snapshot => snapshot.Id).First().Price))
+            .ToList();
+
+        if (quotes.Count == 0)
+        {
+            return RunDecisionsResult.Ok(0);
+        }
+
+        var traders = await dbContext.Participants
+            .Where(participant => participant.IsActive
+                && (participant.Type == ParticipantType.Individual || participant.Type == ParticipantType.AIAgent))
+            .OrderBy(participant => participant.Id)
+            .ToListAsync();
+
+        var holdingsByOwner = (await dbContext.Shares
+                .Select(share => new { share.OwnerId, share.CompanyId })
+                .ToListAsync())
+            .GroupBy(share => share.OwnerId)
+            .ToDictionary(
+                ownerGroup => ownerGroup.Key,
+                ownerGroup => (IReadOnlyDictionary<int, int>)ownerGroup
+                    .GroupBy(share => share.CompanyId)
+                    .ToDictionary(companyGroup => companyGroup.Key, companyGroup => companyGroup.Count()));
+
+        var openOrdersByParticipant = (await dbContext.Orders
+                .Where(order => order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                .Select(order => new { order.ParticipantId, order.CompanyId })
+                .ToListAsync())
+            .GroupBy(order => order.ParticipantId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlySet<int>)group.Select(order => order.CompanyId).ToHashSet());
+
+        var ordersPlaced = 0;
+
+        foreach (var trader in traders)
+        {
+            var context = new DecisionContext(
+                trader,
+                trader.AvailableBalance,
+                quotes,
+                holdingsByOwner.GetValueOrDefault(trader.Id, NoHoldings),
+                openOrdersByParticipant.GetValueOrDefault(trader.Id, NoOpenOrders));
+
+            foreach (var intent in decisionEngine.Decide(context))
+            {
+                var result = await PlaceOrderCoreAsync(
+                    trader.Id,
+                    intent.CompanyId,
+                    intent.Type,
+                    intent.Quantity,
+                    intent.LimitPrice);
+
+                if (result.Success)
+                {
+                    ordersPlaced++;
+                }
+            }
+        }
+
+        return RunDecisionsResult.Ok(ordersPlaced);
+    }
+
+    private async Task<Market> SeedDemoMarketCoreAsync()
+    {
+        var now = DateTime.UtcNow;
+
+        var firstCycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
+        dbContext.MarketCycles.Add(firstCycle);
+
+        var market = new Market
+        {
+            Name = "Demo Market",
+            Status = MarketStatus.Running,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        dbContext.Markets.Add(market);
+
+        const int issuedShares = 10;
+        const decimal initialPrice = 100m;
+
+        var company = new Company
+        {
+            Name = "Acme Corp",
+            IssuedSharesCount = issuedShares,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        dbContext.Companies.Add(company);
+
+        var seller = new Participant
+        {
+            Name = "Alice",
+            Type = ParticipantType.Individual,
+            Temperament = Temperament.Balanced,
+            RiskProfile = RiskProfile.Medium,
+            InitialBalance = 1000m,
+            CurrentBalance = 1000m,
+            ReservedBalance = 0m,
+            IsActive = true,
+        };
+        var buyer = new Participant
+        {
+            Name = "Bob",
+            Type = ParticipantType.Individual,
+            Temperament = Temperament.Aggressive,
+            RiskProfile = RiskProfile.High,
+            InitialBalance = 5000m,
+            CurrentBalance = 5000m,
+            ReservedBalance = 0m,
+            IsActive = true,
+        };
+        dbContext.Participants.Add(seller);
+        dbContext.Participants.Add(buyer);
+
+        await dbContext.SaveChangesAsync();
+
+        for (var index = 0; index < issuedShares; index++)
+        {
+            dbContext.Shares.Add(new Share
+            {
+                CompanyId = company.Id,
+                OwnerId = seller.Id,
+                InitialPrice = initialPrice,
+                CurrentPrice = initialPrice,
+                LastUpdatedAt = now,
+            });
+        }
+
+        dbContext.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = company.Id,
+            Price = initialPrice,
+            CreatedInCycleId = firstCycle.Id,
+            CreatedAt = now,
+        });
+
+        market.CurrentCycleId = firstCycle.Id;
+        await dbContext.SaveChangesAsync();
+
+        return market;
+    }
+
+    private async Task<T> WithLockAsync<T>(Func<Task<T>> action)
+    {
+        await cycleLock.Semaphore.WaitAsync();
+        try
+        {
+            return await action();
+        }
+        finally
+        {
+            cycleLock.Semaphore.Release();
+        }
+    }
+}

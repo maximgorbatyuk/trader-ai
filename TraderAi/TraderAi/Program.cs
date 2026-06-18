@@ -1,3 +1,112 @@
-﻿// See https://aka.ms/new-console-template for more information
+﻿using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using TraderAi.Api;
+using TraderAi.Data;
+using TraderAi.Services;
 
-Console.WriteLine("Hello, World!");
+const string ReactDevelopmentCorsPolicy = "ReactDevelopment";
+
+var builder = WebApplication.CreateBuilder(args);
+
+var connectionString = ResolveSqliteConnectionString(
+    builder.Configuration.GetConnectionString("DefaultConnection") ?? "Data Source=App_Data/trader-ai.db",
+    builder.Environment.ContentRootPath);
+
+EnsureSqliteDirectory(connectionString);
+
+builder.Services.AddDbContext<AppDbContext>(options =>
+{
+    options.UseSqlite(connectionString);
+});
+
+builder.Services.AddScoped<MatchingEngine>();
+builder.Services.AddScoped<IDecisionEngine, RuleBasedDecisionEngine>();
+builder.Services.AddScoped<MarketService>();
+builder.Services.AddSingleton<MarketCycleLock>();
+builder.Services.Configure<MarketLoopOptions>(builder.Configuration.GetSection(MarketLoopOptions.SectionName));
+builder.Services.AddHostedService<MarketLoopService>();
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(ReactDevelopmentCorsPolicy, policy =>
+    {
+        policy
+            .WithOrigins("http://localhost:5173", "http://127.0.0.1:5173")
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
+
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
+
+var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    dbContext.Database.Migrate();
+}
+
+app.UseCors(ReactDevelopmentCorsPolicy);
+
+app.MapGet("/health", () => Results.Ok(new { Result = SqliteDatabaseExists(connectionString) }));
+app.MapMarketEndpoints();
+
+app.Run();
+
+static string ResolveSqliteConnectionString(string connectionString, string contentRootPath)
+{
+    var builder = new SqliteConnectionStringBuilder(connectionString);
+
+    if (string.IsNullOrWhiteSpace(builder.DataSource) ||
+        builder.DataSource.Equals(":memory:", StringComparison.OrdinalIgnoreCase))
+    {
+        return builder.ToString();
+    }
+
+    if (!Path.IsPathRooted(builder.DataSource))
+    {
+        builder.DataSource = Path.Combine(contentRootPath, builder.DataSource);
+    }
+
+    return builder.ToString();
+}
+
+static void EnsureSqliteDirectory(string connectionString)
+{
+    var builder = new SqliteConnectionStringBuilder(connectionString);
+
+    if (string.IsNullOrWhiteSpace(builder.DataSource) ||
+        builder.DataSource.Equals(":memory:", StringComparison.OrdinalIgnoreCase))
+    {
+        return;
+    }
+
+    var directory = Path.GetDirectoryName(Path.GetFullPath(builder.DataSource));
+
+    if (!string.IsNullOrWhiteSpace(directory))
+    {
+        Directory.CreateDirectory(directory);
+    }
+}
+
+static bool SqliteDatabaseExists(string connectionString)
+{
+    var builder = new SqliteConnectionStringBuilder(connectionString);
+
+    if (string.IsNullOrWhiteSpace(builder.DataSource) ||
+        builder.DataSource.Equals(":memory:", StringComparison.OrdinalIgnoreCase))
+    {
+        return true;
+    }
+
+    return File.Exists(Path.GetFullPath(builder.DataSource));
+}
+
+public partial class Program;
