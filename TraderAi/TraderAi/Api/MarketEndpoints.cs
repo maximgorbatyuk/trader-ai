@@ -63,7 +63,8 @@ public static class MarketEndpoints
             var participants = await dbContext.Participants.OrderBy(participant => participant.Id).ToListAsync();
 
             var sharesByOwner = await dbContext.Shares
-                .GroupBy(share => share.OwnerId)
+                .Where(share => share.OwnerId != null)
+                .GroupBy(share => share.OwnerId!.Value)
                 .Select(group => new { OwnerId = group.Key, Count = group.Count() })
                 .ToListAsync();
 
@@ -244,7 +245,7 @@ public sealed record PlaceOrderRequest(int ParticipantId, int CompanyId, OrderTy
 
 public sealed record OrderResponse(
     int Id,
-    int ParticipantId,
+    int? ParticipantId,
     int CompanyId,
     string Type,
     string Status,
@@ -262,7 +263,7 @@ public sealed record CycleResponse(int Id, int CycleNumber, string Status, DateT
 
 public sealed record ShareTransactionResponse(
     int Id,
-    int SellerId,
+    int? SellerId,
     int BuyerId,
     int CompanyId,
     int Quantity,

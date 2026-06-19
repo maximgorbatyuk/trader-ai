@@ -82,7 +82,7 @@ Fields:
 
 Notes:
 
-- Each share has exactly one owner.
+- A share is owned by at most one participant, or is held unowned by its issuing company until it is first sold.
 - A share can be reserved by one open sell order.
 - Ownership changes only through a completed share transaction.
 
@@ -130,6 +130,7 @@ Notes:
 - Buy orders reserve cash at creation.
 - Buy order reservation is reduced when cash is spent or released.
 - Sell orders offer specific shares for one company.
+- A sell order can be company-originated to list the issuer's own shares; such an order has no participant.
 - Open orders stay available across cycles.
 - The remaining quantity is `Quantity - FilledQuantity`.
 
@@ -215,6 +216,7 @@ Fields:
 Notes:
 
 - A share transaction moves share ownership from seller to buyer.
+- The seller may be the issuing company rather than a participant; in that case no seller cash is credited.
 - A share transaction is created from an order fill.
 - Money movement is recorded by money transactions.
 

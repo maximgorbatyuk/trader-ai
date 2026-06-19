@@ -28,30 +28,23 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             using var seedResponse = await client.PostAsync("/market/seed", null);
             Assert.Equal(HttpStatusCode.OK, seedResponse.StatusCode);
 
+            // Every company starts with one company-originated sell order (no participant seller).
+            var companySell = (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!
+                .First(order => order.Type == "Sell");
+            Assert.Null(companySell.ParticipantId);
+
             var participants = await client.GetFromJsonAsync<ParticipantDto[]>("/participants");
-            var companies = await client.GetFromJsonAsync<CompanyDto[]>("/companies");
-
-            var seller = participants!.Single(participant => participant.SharesOwned > 0);
-            var buyer = participants!.Single(participant => participant.SharesOwned == 0);
-            var company = companies!.Single();
-
-            using var sellResponse = await client.PostAsJsonAsync("/orders", new
-            {
-                participantId = seller.Id,
-                companyId = company.Id,
-                type = "Sell",
-                quantity = 5,
-                limitPrice = 100m,
-            });
-            Assert.Equal(HttpStatusCode.OK, sellResponse.StatusCode);
+            var buyer = participants!.OrderByDescending(participant => participant.CurrentBalance).First();
+            var price = companySell.LimitPrice;
+            const int quantity = 5;
 
             using var buyResponse = await client.PostAsJsonAsync("/orders", new
             {
                 participantId = buyer.Id,
-                companyId = company.Id,
+                companyId = companySell.CompanyId,
                 type = "Buy",
-                quantity = 5,
-                limitPrice = 100m,
+                quantity,
+                limitPrice = price,
             });
             Assert.Equal(HttpStatusCode.OK, buyResponse.StatusCode);
 
@@ -60,16 +53,19 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
             var transactions = await client.GetFromJsonAsync<ShareTransactionDto[]>("/transactions/shares");
             var transaction = Assert.Single(transactions!);
-            Assert.Equal(5, transaction.Quantity);
-            Assert.Equal(100m, transaction.Price);
+            Assert.Equal(quantity, transaction.Quantity);
+            Assert.Equal(price, transaction.Price);
+            Assert.Null(transaction.SellerId);
 
             var companiesAfter = await client.GetFromJsonAsync<CompanyDto[]>("/companies");
-            Assert.Equal(100m, companiesAfter!.Single().CurrentPrice);
+            var companyAfter = companiesAfter!.Single(company => company.Id == companySell.CompanyId);
+            Assert.Equal(price, companyAfter.CurrentPrice);
 
             var participantsAfter = await client.GetFromJsonAsync<ParticipantDto[]>("/participants");
             var buyerAfter = participantsAfter!.Single(participant => participant.Id == buyer.Id);
-            Assert.Equal(5, buyerAfter.SharesOwned);
+            Assert.Equal(quantity, buyerAfter.SharesOwned);
             Assert.Equal(0m, buyerAfter.ReservedBalance);
+            Assert.Equal(buyer.CurrentBalance - (price * quantity), buyerAfter.CurrentBalance);
         }
         finally
         {
@@ -115,20 +111,36 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
             await client.PostAsync("/market/seed", null);
 
-            var participants = await client.GetFromJsonAsync<ParticipantDto[]>("/participants");
-            var company = (await client.GetFromJsonAsync<CompanyDto[]>("/companies"))!.Single();
-            var seller = participants!.Single(participant => participant.SharesOwned > 0);
-            var buyer = participants!.Single(participant => participant.SharesOwned == 0);
+            // The seed lists one open sell order per company and nothing is filled yet.
+            var openAfterSeed = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
+            var allAfterSeed = await client.GetFromJsonAsync<OrderDto[]>("/orders");
+            Assert.Equal(allAfterSeed!.Length, openAfterSeed!.Length);
+            Assert.All(openAfterSeed, order => Assert.Equal("Sell", order.Type));
 
-            await client.PostAsJsonAsync("/orders", new { participantId = seller.Id, companyId = company.Id, type = "Sell", quantity = 5, limitPrice = 100m });
-            await client.PostAsJsonAsync("/orders", new { participantId = buyer.Id, companyId = company.Id, type = "Buy", quantity = 5, limitPrice = 100m });
+            var companySell = openAfterSeed.First(order => order.Type == "Sell");
+            var buyer = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!
+                .OrderByDescending(participant => participant.CurrentBalance).First();
 
-            Assert.Equal(2, (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!.Length);
+            await client.PostAsJsonAsync("/orders", new
+            {
+                participantId = buyer.Id,
+                companyId = companySell.CompanyId,
+                type = "Buy",
+                quantity = 5,
+                limitPrice = companySell.LimitPrice,
+            });
+
+            Assert.Equal(allAfterSeed.Length + 1, (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!.Length);
 
             await client.PostAsync("/cycles/advance", null);
 
-            Assert.Empty(await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"));
-            Assert.Equal(2, (await client.GetFromJsonAsync<OrderDto[]>("/orders"))!.Length);
+            // The buy fully fills and leaves the open list; the partially filled company sell stays open.
+            var openAfterAdvance = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
+            var allAfterAdvance = await client.GetFromJsonAsync<OrderDto[]>("/orders");
+            Assert.Equal(allAfterSeed.Length, openAfterAdvance!.Length);
+            Assert.Equal(allAfterSeed.Length + 1, allAfterAdvance!.Length);
+            Assert.All(openAfterAdvance, order => Assert.True(order.Status is "Open" or "PartiallyFilled"));
+            Assert.Contains(allAfterAdvance, order => order.Type == "Buy" && order.Status == "Filled");
         }
         finally
         {
@@ -175,11 +187,19 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
     private sealed record CompanyDto(int Id, string Name, decimal? CurrentPrice);
 
-    private sealed record ShareTransactionDto(int Id, int Quantity, decimal Price);
+    private sealed record ShareTransactionDto(int Id, int? SellerId, int BuyerId, int Quantity, decimal Price);
 
     private sealed record AdvanceDto(int? CompletedCycleNumber, int FillCount);
 
     private sealed record MarketDto(int Id, string Name, string Status, int? CurrentCycleId);
 
-    private sealed record OrderDto(int Id, string Type, string Status, int Quantity, int FilledQuantity);
+    private sealed record OrderDto(
+        int Id,
+        int? ParticipantId,
+        int CompanyId,
+        string Type,
+        string Status,
+        int Quantity,
+        int FilledQuantity,
+        decimal LimitPrice);
 }

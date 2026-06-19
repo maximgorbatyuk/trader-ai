@@ -6,7 +6,8 @@ public sealed class Share
 
     public int CompanyId { get; set; }
 
-    public int OwnerId { get; set; }
+    // Null while the share is still held by its issuing company and not owned by any participant.
+    public int? OwnerId { get; set; }
 
     public decimal InitialPrice { get; set; }
 

@@ -29,7 +29,7 @@ public sealed class MarketLoopTests : IDisposable
     [Fact]
     public async Task CycleTickDecidesAndAdvancesWhenMarketIsRunning()
     {
-        await marketService.SeedDemoMarketAsync();
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
 
         var tick = await marketService.RunCycleTickAsync();
 
@@ -43,7 +43,7 @@ public sealed class MarketLoopTests : IDisposable
     [Fact]
     public async Task CycleTickIsSkippedWhenMarketIsPaused()
     {
-        await marketService.SeedDemoMarketAsync();
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
         await marketService.SetStatusAsync(MarketStatus.Paused);
 
         var tick = await marketService.RunCycleTickAsync();
@@ -56,7 +56,7 @@ public sealed class MarketLoopTests : IDisposable
     [Fact]
     public async Task ResumingAfterPauseLetsCycleTicksRunAgain()
     {
-        await marketService.SeedDemoMarketAsync();
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
         await marketService.SetStatusAsync(MarketStatus.Paused);
         Assert.False((await marketService.RunCycleTickAsync()).Ran);
 

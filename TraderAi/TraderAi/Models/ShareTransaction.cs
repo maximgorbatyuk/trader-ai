@@ -4,7 +4,8 @@ public sealed class ShareTransaction
 {
     public int Id { get; set; }
 
-    public int SellerId { get; set; }
+    // Null when the seller is the issuing company rather than a participant.
+    public int? SellerId { get; set; }
 
     public int BuyerId { get; set; }
 

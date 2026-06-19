@@ -6,7 +6,8 @@ public sealed class Order
 {
     public int Id { get; set; }
 
-    public int ParticipantId { get; set; }
+    // Null for a company-originated sell order that lists the issuer's own shares.
+    public int? ParticipantId { get; set; }
 
     public int CompanyId { get; set; }
 

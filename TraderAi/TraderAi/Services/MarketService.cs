@@ -270,7 +270,8 @@ public sealed class MarketService(
             .ToListAsync();
 
         var holdingsByOwner = (await dbContext.Shares
-                .Select(share => new { share.OwnerId, share.CompanyId })
+                .Where(share => share.OwnerId != null)
+                .Select(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId })
                 .ToListAsync())
             .GroupBy(share => share.OwnerId)
             .ToDictionary(
@@ -280,8 +281,9 @@ public sealed class MarketService(
                     .ToDictionary(companyGroup => companyGroup.Key, companyGroup => companyGroup.Count()));
 
         var openOrdersByParticipant = (await dbContext.Orders
-                .Where(order => order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
-                .Select(order => new { order.ParticipantId, order.CompanyId })
+                .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                    && order.ParticipantId != null)
+                .Select(order => new { ParticipantId = order.ParticipantId!.Value, order.CompanyId })
                 .ToListAsync())
             .GroupBy(order => order.ParticipantId)
             .ToDictionary(
@@ -320,6 +322,18 @@ public sealed class MarketService(
 
     private async Task<Market> SeedDemoMarketCoreAsync()
     {
+        // Tunable size of the generated demo market; bump these to grow the simulation.
+        const int companyCount = 40;
+        const int participantCount = 20;
+        const int minShares = 100;
+        const int maxShares = 1000;
+        const int minPrice = 20;
+        const int maxPrice = 300;
+        const int minBalance = 10_000;
+        const int maxBalance = 50_000;
+        const int randomSeed = 20260619; // fixed seed keeps the generated demo data reproducible
+
+        var random = new Random(randomSeed);
         var now = DateTime.UtcNow;
 
         var firstCycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
@@ -334,64 +348,109 @@ public sealed class MarketService(
         };
         dbContext.Markets.Add(market);
 
-        const int issuedShares = 10;
-        const decimal initialPrice = 100m;
+        var temperaments = new[] { Temperament.Aggressive, Temperament.Balanced, Temperament.Conservative };
+        var riskProfiles = new[] { RiskProfile.High, RiskProfile.Medium, RiskProfile.Low };
 
-        var company = new Company
+        for (var index = 0; index < participantCount; index++)
         {
-            Name = "Acme Corp",
-            IssuedSharesCount = issuedShares,
-            CreatedAt = now,
-            UpdatedAt = now,
-        };
-        dbContext.Companies.Add(company);
-
-        var seller = new Participant
-        {
-            Name = "Alice",
-            Type = ParticipantType.Individual,
-            Temperament = Temperament.Balanced,
-            RiskProfile = RiskProfile.Medium,
-            InitialBalance = 1000m,
-            CurrentBalance = 1000m,
-            ReservedBalance = 0m,
-            IsActive = true,
-        };
-        var buyer = new Participant
-        {
-            Name = "Bob",
-            Type = ParticipantType.Individual,
-            Temperament = Temperament.Aggressive,
-            RiskProfile = RiskProfile.High,
-            InitialBalance = 5000m,
-            CurrentBalance = 5000m,
-            ReservedBalance = 0m,
-            IsActive = true,
-        };
-        dbContext.Participants.Add(seller);
-        dbContext.Participants.Add(buyer);
-
-        await dbContext.SaveChangesAsync();
-
-        for (var index = 0; index < issuedShares; index++)
-        {
-            dbContext.Shares.Add(new Share
+            var balance = random.Next(minBalance, maxBalance + 1);
+            dbContext.Participants.Add(new Participant
             {
-                CompanyId = company.Id,
-                OwnerId = seller.Id,
-                InitialPrice = initialPrice,
-                CurrentPrice = initialPrice,
-                LastUpdatedAt = now,
+                Name = $"Trader {index + 1:D2}",
+                Type = index % 2 == 0 ? ParticipantType.Individual : ParticipantType.AIAgent,
+                Temperament = temperaments[index % temperaments.Length],
+                RiskProfile = riskProfiles[index % riskProfiles.Length],
+                InitialBalance = balance,
+                CurrentBalance = balance,
+                ReservedBalance = 0m,
+                IsActive = true,
             });
         }
 
-        dbContext.PriceSnapshots.Add(new PriceSnapshot
+        var companies = new List<Company>(companyCount);
+        var companyPrices = new decimal[companyCount];
+        var companyShareCounts = new int[companyCount];
+
+        for (var index = 0; index < companyCount; index++)
         {
-            CompanyId = company.Id,
-            Price = initialPrice,
-            CreatedInCycleId = firstCycle.Id,
-            CreatedAt = now,
-        });
+            var price = random.Next(minPrice, maxPrice + 1);
+            var shareCount = random.Next(minShares, maxShares + 1);
+            companyPrices[index] = price;
+            companyShareCounts[index] = shareCount;
+
+            var company = new Company
+            {
+                Name = $"Company {index + 1:D2}",
+                IssuedSharesCount = shareCount,
+                CreatedAt = now,
+                UpdatedAt = now,
+            };
+            companies.Add(company);
+            dbContext.Companies.Add(company);
+        }
+
+        await dbContext.SaveChangesAsync();
+
+        // The seed only adds new graphs, so change detection is turned off to keep the bulk
+        // insert of per-share rows and their offers fast.
+        dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
+        try
+        {
+            for (var index = 0; index < companyCount; index++)
+            {
+                var company = companies[index];
+                var price = companyPrices[index];
+                var shareCount = companyShareCounts[index];
+
+                // Every issued share starts unowned and is listed in a single company-originated sell
+                // order, so all shares are immediately available for participants to buy.
+                var sellOrder = new Order
+                {
+                    ParticipantId = null,
+                    CompanyId = company.Id,
+                    Type = OrderType.Sell,
+                    Status = OrderStatus.Open,
+                    Quantity = shareCount,
+                    FilledQuantity = 0,
+                    LimitPrice = price,
+                    ReservedCashAmount = 0m,
+                    CreatedInCycleId = firstCycle.Id,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                };
+
+                for (var shareIndex = 0; shareIndex < shareCount; shareIndex++)
+                {
+                    sellOrder.OrderShares.Add(new OrderShare
+                    {
+                        Share = new Share
+                        {
+                            CompanyId = company.Id,
+                            OwnerId = null,
+                            InitialPrice = price,
+                            CurrentPrice = price,
+                            LastUpdatedAt = now,
+                        },
+                    });
+                }
+
+                dbContext.Orders.Add(sellOrder);
+
+                dbContext.PriceSnapshots.Add(new PriceSnapshot
+                {
+                    CompanyId = company.Id,
+                    Price = price,
+                    CreatedInCycleId = firstCycle.Id,
+                    CreatedAt = now,
+                });
+            }
+
+            await dbContext.SaveChangesAsync();
+        }
+        finally
+        {
+            dbContext.ChangeTracker.AutoDetectChangesEnabled = true;
+        }
 
         market.CurrentCycleId = firstCycle.Id;
         await dbContext.SaveChangesAsync();

@@ -29,7 +29,7 @@ public sealed class DecisionFlowTests : IDisposable
     [Fact]
     public async Task GeneratedDecisionsPlaceOrdersThatSettleOnAdvance()
     {
-        await marketService.SeedDemoMarketAsync();
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
 
         var decisions = await marketService.GenerateDecisionsAsync();
 
@@ -49,7 +49,7 @@ public sealed class DecisionFlowTests : IDisposable
     [Fact]
     public async Task DecisionsAreSkippedForCompaniesThatAlreadyHaveOpenOrders()
     {
-        await marketService.SeedDemoMarketAsync();
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
 
         var first = await marketService.GenerateDecisionsAsync();
         Assert.Equal(2, first.OrdersPlaced);

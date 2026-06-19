@@ -92,13 +92,13 @@ public sealed class MatchingEngine(AppDbContext dbContext)
         IReadOnlyDictionary<int, Participant> participants,
         DateTime now)
     {
-        var buyer = participants[buy.ParticipantId];
-        var seller = participants[sell.ParticipantId];
+        var buyer = participants[buy.ParticipantId!.Value];
+        var seller = sell.ParticipantId is int sellerId ? participants[sellerId] : null;
         var shareLinks = sell.OrderShares.Take(quantity).ToList();
 
         var shareTransaction = new ShareTransaction
         {
-            SellerId = seller.Id,
+            SellerId = seller?.Id,
             BuyerId = buyer.Id,
             CompanyId = buy.CompanyId,
             Quantity = quantity,
@@ -133,7 +133,6 @@ public sealed class MatchingEngine(AppDbContext dbContext)
         buyer.CurrentBalance -= spent;
         buyer.ReservedBalance -= reservationForFilled;
         buy.ReservedCashAmount -= reservationForFilled;
-        seller.CurrentBalance += spent;
 
         dbContext.MoneyTransactions.Add(new MoneyTransaction
         {
@@ -160,16 +159,23 @@ public sealed class MatchingEngine(AppDbContext dbContext)
             });
         }
 
-        dbContext.MoneyTransactions.Add(new MoneyTransaction
+        // A company-originated offer has no participant seller, so the proceeds leave the participant
+        // economy (the issuing company is not modelled as holding cash) and no credit is recorded.
+        if (seller is not null)
         {
-            ParticipantId = seller.Id,
-            Type = MoneyTransactionType.Credit,
-            Amount = spent,
-            RelatedOrderId = sell.Id,
-            RelatedShareTransaction = shareTransaction,
-            CreatedInCycleId = cycle.Id,
-            CreatedAt = now,
-        });
+            seller.CurrentBalance += spent;
+
+            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            {
+                ParticipantId = seller.Id,
+                Type = MoneyTransactionType.Credit,
+                Amount = spent,
+                RelatedOrderId = sell.Id,
+                RelatedShareTransaction = shareTransaction,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = now,
+            });
+        }
 
         dbContext.OrderFills.Add(new OrderFill
         {
