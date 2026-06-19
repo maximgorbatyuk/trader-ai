@@ -1,18 +1,64 @@
 :root {
-  --page-bg: #f7f8f5;
-  --heading: #1f2a37;
-  --text: #2f3a45;
-  --muted: #697382;
-  --border: #dfe4dc;
-  --border-strong: #c9d3c7;
-  --soft: #f1f4ee;
-  --positive: #1f8a5b;
-  --danger: #bd3d35;
-  --attention: #c0842d;
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --t-2xs: 0.6875rem;
+  --t-xs: 0.75rem;
+  --t-sm: 0.8125rem;
+  --t-base: 0.875rem;
+  --t-md: 1rem;
+  --t-lg: 1.25rem;
+  --t-xl: 1.75rem;
+
+  /* Cool, crisp neutrals — a daylight trading terminal, not warm SaaS cream. */
+  --bg: oklch(0.965 0.004 250);
+  --surface: oklch(0.995 0.0015 250);
+  --surface-2: oklch(0.978 0.003 250);
+  --surface-3: oklch(0.955 0.005 250);
+  --border: oklch(0.9 0.006 250);
+  --border-2: oklch(0.84 0.008 250);
+  /* Form-control edges meet the 3:1 non-text-contrast bar against --surface. */
+  --field-border: oklch(0.66 0.009 255);
+
+  --ink: oklch(0.26 0.012 255);
+  --ink-hover: oklch(0.2 0.012 255);
+  --text: oklch(0.36 0.012 255);
+  --muted: oklch(0.5 0.012 255);
+
+  /* Market semantics — green up/buy, red down/sell. Reserved for data, never chrome. */
+  --up: oklch(0.5 0.13 150);
+  --up-soft: oklch(0.95 0.045 150);
+  --up-text: oklch(0.42 0.1 150);
+  --down: oklch(0.52 0.2 25);
+  --down-soft: oklch(0.95 0.05 25);
+  --down-text: oklch(0.45 0.15 25);
+  --attention: oklch(0.55 0.12 75);
+  --attention-soft: oklch(0.94 0.05 75);
+
+  --ring: oklch(0.26 0.012 255);
+
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-pill: 999px;
+
+  --z-sticky: 10;
+  --z-popover: 20;
+
+  color-scheme: light;
+  font-family: var(--font-sans);
   color: var(--text);
-  background: var(--page-bg);
+  background: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -24,22 +70,49 @@
 }
 
 html {
-  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
+  line-height: 1.5;
 }
 
 button,
 input,
-textarea,
-select {
+select,
+textarea {
   font: inherit;
+  color: inherit;
 }
 
 a {
   color: inherit;
+}
+
+/* Numerics are the content here; give them tabular, monospaced figures everywhere. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: -0.01em;
+}
+
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

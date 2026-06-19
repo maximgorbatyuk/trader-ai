@@ -336,6 +336,9 @@ public sealed class MarketService(
         var random = new Random(randomSeed);
         var now = DateTime.UtcNow;
 
+        var participantNames = DemoMarketNames.PickPeople(participantCount, random);
+        var companyNames = DemoMarketNames.PickCompanies(companyCount, random);
+
         var firstCycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
         dbContext.MarketCycles.Add(firstCycle);
 
@@ -356,7 +359,7 @@ public sealed class MarketService(
             var balance = random.Next(minBalance, maxBalance + 1);
             dbContext.Participants.Add(new Participant
             {
-                Name = $"Trader {index + 1:D2}",
+                Name = participantNames[index],
                 Type = index % 2 == 0 ? ParticipantType.Individual : ParticipantType.AIAgent,
                 Temperament = temperaments[index % temperaments.Length],
                 RiskProfile = riskProfiles[index % riskProfiles.Length],
@@ -380,7 +383,7 @@ public sealed class MarketService(
 
             var company = new Company
             {
-                Name = $"Company {index + 1:D2}",
+                Name = companyNames[index],
                 IssuedSharesCount = shareCount,
                 CreatedAt = now,
                 UpdatedAt = now,
