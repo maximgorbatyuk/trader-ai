@@ -603,7 +603,7 @@
 }
 
 .chart-gridline {
-  stroke: var(--border);
+  stroke: var(--border-2);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }

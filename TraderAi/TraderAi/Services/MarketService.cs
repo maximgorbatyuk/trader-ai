@@ -43,6 +43,9 @@ public sealed class MarketService(
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
 
+    // How far back the long-range price move is measured for the engine's extreme-move reactions.
+    private const int LongRangeWindowCycles = 10;
+
     public Task<Market?> GetMarketAsync() => dbContext.Markets.FirstOrDefaultAsync();
 
     public Task<PlaceOrderResult> PlaceOrderAsync(
@@ -272,10 +275,49 @@ public sealed class MarketService(
             return RunDecisionsResult.Fail("Market is not running.");
         }
 
+        // Net buy demand counts only participant orders; the issuer's seed sell of every share would
+        // otherwise swamp the signal and read as permanent selling pressure.
+        var netDemandByCompany = (await dbContext.Orders
+                .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                    && order.ParticipantId != null)
+                .Select(order => new { order.CompanyId, order.Type, Remaining = order.Quantity - order.FilledQuantity })
+                .ToListAsync())
+            .GroupBy(order => order.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Sum(order => order.Type == OrderType.Buy ? order.Remaining : -order.Remaining));
+
+        var cycleNumbersById = await dbContext.MarketCycles
+            .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+        var baselineCycleNumber = cycleNumbersById.GetValueOrDefault(market.CurrentCycleId.Value) - LongRangeWindowCycles;
+
         var snapshots = await dbContext.PriceSnapshots.ToListAsync();
         var quotes = snapshots
             .GroupBy(snapshot => snapshot.CompanyId)
-            .Select(group => new CompanyQuote(group.Key, group.OrderByDescending(snapshot => snapshot.Id).First().Price))
+            .Select(group =>
+            {
+                var ordered = group.OrderByDescending(snapshot => snapshot.Id).ToList();
+                var latest = ordered[0];
+                var priorCycleClose = ordered.FirstOrDefault(snapshot => snapshot.CreatedInCycleId != latest.CreatedInCycleId);
+                var changePct = priorCycleClose is { Price: > 0m }
+                    ? (latest.Price - priorCycleClose.Price) / priorCycleClose.Price
+                    : 0m;
+
+                // Newest snapshot at or before the baseline cycle is the price "ten cycles ago"; absent
+                // enough history the long-range move stays zero.
+                var longRangeClose = ordered.FirstOrDefault(snapshot =>
+                    cycleNumbersById.GetValueOrDefault(snapshot.CreatedInCycleId) <= baselineCycleNumber);
+                var longRangeChangePct = longRangeClose is { Price: > 0m }
+                    ? (latest.Price - longRangeClose.Price) / longRangeClose.Price
+                    : 0m;
+
+                return new CompanyQuote(
+                    group.Key,
+                    latest.Price,
+                    changePct,
+                    netDemandByCompany.GetValueOrDefault(group.Key),
+                    longRangeChangePct);
+            })
             .ToList();
 
         if (quotes.Count == 0)

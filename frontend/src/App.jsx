@@ -773,6 +773,16 @@ function ActivityChart({ points }) {
               </text>
             </g>
           ))}
+          {xLabels.map(({ index }) => (
+            <line
+              key={`v-${index}`}
+              className="chart-gridline"
+              x1={x(index)}
+              x2={x(index)}
+              y1={margin.top}
+              y2={baseline}
+            />
+          ))}
           {xLabels.map(({ point, index }) => (
             <text key={point.cycleNumber} className="chart-tick chart-tick-x" x={x(index)} y={height - 8}>
               {point.cycleNumber}
