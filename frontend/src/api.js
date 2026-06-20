@@ -45,6 +45,7 @@ export const api = {
   getPrices: (companyId) => get(`/prices/${companyId}`),
   getHoldings: (participantId) => get(`/participants/${participantId}/holdings`),
   seedMarket: () => post('/market/seed'),
+  resetMarket: () => post('/market/reset'),
   pauseMarket: () => post('/market/pause'),
   startMarket: () => post('/market/start'),
   stepCycle: () => post('/cycles/tick'),

@@ -101,6 +101,109 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task ResetSeedsMarketWhenDatabaseIsEmpty()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            using var resetResponse = await client.PostAsync("/market/reset", null);
+            Assert.Equal(HttpStatusCode.OK, resetResponse.StatusCode);
+
+            var market = await resetResponse.Content.ReadFromJsonAsync<MarketDto>();
+            Assert.Equal(1, market!.Id);
+            Assert.Equal("NotStarted", market.Status);
+            Assert.Equal(1, market.CurrentCycleId);
+
+            var companies = await client.GetFromJsonAsync<CompanyDto[]>("/companies");
+            var participants = await client.GetFromJsonAsync<ParticipantDto[]>("/participants");
+            var openOrders = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
+
+            Assert.Equal(40, companies!.Length);
+            Assert.Equal(20, participants!.Length);
+            Assert.Equal(40, openOrders!.Length);
+            Assert.All(openOrders, order =>
+            {
+                Assert.Null(order.ParticipantId);
+                Assert.Equal("Sell", order.Type);
+            });
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ResetRecreatesSeededMarketAndClearsTradingState()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+
+            var companySell = (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!
+                .First(order => order.Type == "Sell");
+            var buyer = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!
+                .OrderByDescending(participant => participant.CurrentBalance)
+                .First();
+
+            using var buyResponse = await client.PostAsJsonAsync("/orders", new
+            {
+                participantId = buyer.Id,
+                companyId = companySell.CompanyId,
+                type = "Buy",
+                quantity = 3,
+                limitPrice = companySell.LimitPrice,
+            });
+            Assert.Equal(HttpStatusCode.OK, buyResponse.StatusCode);
+
+            await client.PostAsync("/cycles/tick", null);
+            Assert.NotEmpty((await client.GetFromJsonAsync<ShareTransactionDto[]>("/transactions/shares"))!);
+
+            using var resetResponse = await client.PostAsync("/market/reset", null);
+            Assert.Equal(HttpStatusCode.OK, resetResponse.StatusCode);
+
+            var market = await resetResponse.Content.ReadFromJsonAsync<MarketDto>();
+            Assert.Equal(1, market!.Id);
+            Assert.Equal("NotStarted", market.Status);
+            Assert.Equal(1, market.CurrentCycleId);
+
+            var cycles = await client.GetFromJsonAsync<CycleDto[]>("/cycles");
+            var transactions = await client.GetFromJsonAsync<ShareTransactionDto[]>("/transactions/shares");
+            var activity = await client.GetFromJsonAsync<ActivityDto[]>("/cycles/activity");
+            var openOrders = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
+
+            var cycle = Assert.Single(cycles!);
+            Assert.Equal(1, cycle.Id);
+            Assert.Equal(1, cycle.CycleNumber);
+            Assert.Empty(transactions!);
+            Assert.Single(activity!);
+            Assert.Equal(40, openOrders!.Length);
+            Assert.All(openOrders, order =>
+            {
+                Assert.Null(order.ParticipantId);
+                Assert.Equal("Sell", order.Type);
+            });
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task OrdersStatusFilterReturnsOnlyOpenOrders()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -284,6 +387,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     private sealed record ShareTransactionDto(int Id, int? SellerId, int BuyerId, int Quantity, decimal Price);
 
     private sealed record CycleTickDto(bool Ran, int? CompletedCycleNumber, int OrdersPlaced, int FillCount);
+
+    private sealed record CycleDto(int Id, int CycleNumber);
 
     private sealed record HoldingDto(int CompanyId, string CompanyName, int Shares);
 

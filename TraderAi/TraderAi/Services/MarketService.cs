@@ -70,6 +70,8 @@ public sealed class MarketService(
 
     public Task<Market> SeedDemoMarketAsync() => WithLockAsync(SeedDemoMarketCoreAsync);
 
+    public Task<Market> ResetDemoMarketAsync() => WithLockAsync(ResetDemoMarketCoreAsync);
+
     public Task<Market?> SetStatusAsync(MarketStatus status) => WithLockAsync(async () =>
     {
         var market = await dbContext.Markets.FirstOrDefaultAsync();
@@ -380,6 +382,34 @@ public sealed class MarketService(
         }
 
         return RunDecisionsResult.Ok(ordersPlaced);
+    }
+
+    private async Task<Market> ResetDemoMarketCoreAsync()
+    {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync();
+
+        await dbContext.OrderShares.ExecuteDeleteAsync();
+        await dbContext.OrderFills.ExecuteDeleteAsync();
+        await dbContext.MoneyTransactions.ExecuteDeleteAsync();
+        await dbContext.PriceSnapshots.ExecuteDeleteAsync();
+        await dbContext.Shares.ExecuteDeleteAsync();
+        await dbContext.ShareTransactions.ExecuteDeleteAsync();
+        await dbContext.Orders.ExecuteDeleteAsync();
+        await dbContext.MarketCycles.ExecuteDeleteAsync();
+        await dbContext.Participants.ExecuteDeleteAsync();
+        await dbContext.Companies.ExecuteDeleteAsync();
+        await dbContext.Markets.ExecuteDeleteAsync();
+
+        dbContext.ChangeTracker.Clear();
+        await dbContext.Database.ExecuteSqlRawAsync(
+            "DELETE FROM sqlite_sequence WHERE name IN (" +
+            "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
+            "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Shares', 'OrderShares')");
+
+        var market = await SeedDemoMarketCoreAsync();
+        await transaction.CommitAsync();
+
+        return market;
     }
 
     private async Task<Market> SeedDemoMarketCoreAsync()

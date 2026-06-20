@@ -348,6 +348,21 @@
   border-color: var(--ink-hover);
 }
 
+.btn-reset {
+  border-color: var(--border-2);
+}
+
+.btn-reset-armed {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: #fff;
+}
+
+.btn-reset-armed:hover:not(:disabled) {
+  background: var(--ink-hover);
+  border-color: var(--ink-hover);
+}
+
 .btn-block {
   width: 100%;
 }

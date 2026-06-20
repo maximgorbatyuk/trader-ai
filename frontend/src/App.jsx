@@ -153,6 +153,17 @@ function App() {
     }
   }
 
+  async function resetMarket() {
+    await api.resetMarket()
+
+    selectedRef.current = null
+    selectedParticipantRef.current = null
+    setSelectedCompanyId(null)
+    setSelectedParticipantId(null)
+    setPrices([])
+    setHoldings([])
+  }
+
   const participantNameById = new Map(participants.map((participant) => [participant.id, participant.name]))
   const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
@@ -188,6 +199,7 @@ function App() {
                   pending={pending}
                   actionError={actionError}
                   runAction={runAction}
+                  resetMarket={resetMarket}
                 />
 
                 <ActivityPanel activity={cycleActivity} />
@@ -326,8 +338,27 @@ function CommandStrip({
   pending,
   actionError,
   runAction,
+  resetMarket,
 }) {
   const running = market.status === 'Running'
+  const [confirmingReset, setConfirmingReset] = useState(false)
+
+  useEffect(() => {
+    if (!confirmingReset) return undefined
+
+    const timer = setTimeout(() => setConfirmingReset(false), 5000)
+    return () => clearTimeout(timer)
+  }, [confirmingReset])
+
+  function handleResetMarket() {
+    if (!confirmingReset) {
+      setConfirmingReset(true)
+      return
+    }
+
+    setConfirmingReset(false)
+    runAction(resetMarket)
+  }
 
   const stats = [
     { label: 'Cycle', value: currentCycleNumber > 0 ? `#${currentCycleNumber}` : '—' },
@@ -371,6 +402,14 @@ function CommandStrip({
             Start loop
           </button>
         )}
+        <button
+          className={`btn btn-reset${confirmingReset ? ' btn-reset-armed' : ''}`}
+          disabled={pending}
+          title={confirmingReset ? 'Click again to erase and reseed the demo database' : 'Erase and reseed the demo database'}
+          onClick={handleResetMarket}
+        >
+          {confirmingReset ? 'Confirm reset' : 'Reset DB'}
+        </button>
       </div>
 
       {actionError ? (

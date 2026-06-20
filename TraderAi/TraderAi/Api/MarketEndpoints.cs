@@ -42,6 +42,12 @@ public static class MarketEndpoints
             return Results.Ok(ToMarketResponse(market));
         });
 
+        app.MapPost("/market/reset", async (MarketService marketService) =>
+        {
+            var market = await marketService.ResetDemoMarketAsync();
+            return Results.Ok(ToMarketResponse(market));
+        });
+
         app.MapPost("/market/pause", async (MarketService marketService) =>
         {
             var market = await marketService.SetStatusAsync(MarketStatus.Paused);
