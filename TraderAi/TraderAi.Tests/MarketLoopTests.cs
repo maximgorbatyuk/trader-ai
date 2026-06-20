@@ -23,7 +23,7 @@ public sealed class MarketLoopTests : IDisposable
 
         context = new AppDbContext(options);
         context.Database.EnsureCreated();
-        marketService = new MarketService(context, new MatchingEngine(context), new DeterministicDecisionEngine(), new MarketCycleLock());
+        marketService = new MarketService(context, new MatchingEngine(context), new DeterministicDecisionEngine(), new MarketCycleLock(), new Random(1));
     }
 
     [Fact]

@@ -31,4 +31,6 @@ Start the app:
 
 The frontend runs at `http://127.0.0.1:5173`. The backend runs at `http://127.0.0.1:5100`.
 
+Each participant has its own detail page at `/participants/<id>` — temperament and risk profile (editable), bank balances, holdings valued against current prices, and recent orders, trades, and cash movements. Open it in a separate tab from the Traders table on the dashboard.
+
 No authentication is required between the frontend and backend for local development.

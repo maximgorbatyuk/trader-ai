@@ -40,6 +40,7 @@ public enum OrderStatus
     Open,
     PartiallyFilled,
     Filled,
+    Cancelled,
 }
 
 public enum MoneyTransactionType

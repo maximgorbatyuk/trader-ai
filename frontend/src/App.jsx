@@ -1,35 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { api } from './api'
+import { formatInt, formatMoney, formatSigned, toneOf } from './format'
+import { Panel } from './Panel'
 
 const POLL_INTERVAL_MS = 2500
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
-
-const moneyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  minimumFractionDigits: 2,
-})
-const intFormatter = new Intl.NumberFormat('en-US')
-
-function formatMoney(value) {
-  return typeof value === 'number' ? moneyFormatter.format(value) : '—'
-}
-
-function formatInt(value) {
-  return typeof value === 'number' ? intFormatter.format(value) : '—'
-}
-
-function formatSigned(value) {
-  if (typeof value !== 'number') return '—'
-  const sign = value > 0 ? '+' : value < 0 ? '−' : ''
-  return `${sign}${moneyFormatter.format(Math.abs(value))}`
-}
-
-function toneOf(value) {
-  if (typeof value !== 'number' || value === 0) return 'flat'
-  return value > 0 ? 'up' : 'down'
-}
 
 // A null participant is the share issuer's own offering (seeded company sell orders).
 function traderName(id, byId) {
@@ -421,21 +397,6 @@ function CommandStrip({
   )
 }
 
-function Panel({ title, count, className = '', headerExtra, children }) {
-  return (
-    <article className={`panel ${className}`}>
-      <div className="panel-head">
-        <h2>{title}</h2>
-        <div className="panel-head-meta">
-          {typeof count === 'string' ? <span className="panel-count">{count}</span> : null}
-          {headerExtra}
-        </div>
-      </div>
-      {children}
-    </article>
-  )
-}
-
 function PriceChartPanel({ company, prices }) {
   const values = prices.map((snapshot) => snapshot.price)
   const last = values.at(-1)
@@ -674,6 +635,17 @@ function ParticipantsPanel({ participants, selectedParticipantId, onSelect }) {
                     <th scope="row" className="cell-trader">
                       <span className="cell-ellipsis">{participant.name}</span>
                       <span className="tag">{TYPE_ABBR[participant.type] ?? participant.type}</span>
+                      <a
+                        className="open-page"
+                        href={`/participants/${participant.id}`}
+                        target="_blank"
+                        rel="noopener"
+                        title="Open detail page in a new tab"
+                        aria-label={`Open ${participant.name} detail page in a new tab`}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <span aria-hidden="true">↗</span>
+                      </a>
                     </th>
                     <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
                     <td className="num ta-r">{formatMoney(participant.availableBalance)}</td>

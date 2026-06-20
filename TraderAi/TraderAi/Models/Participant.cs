@@ -22,6 +22,10 @@ public sealed class Participant
 
     public bool IsActive { get; set; }
 
+    // Consecutive cycles the trader wanted to buy but could not afford a single share anywhere; once it
+    // reaches the liquidation threshold the trader sells down its priciest holding to free up cash.
+    public int CashStarvedCycles { get; set; }
+
     [NotMapped]
     public decimal AvailableBalance => CurrentBalance - ReservedBalance;
 }

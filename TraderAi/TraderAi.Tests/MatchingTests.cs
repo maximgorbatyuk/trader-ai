@@ -23,15 +23,15 @@ public sealed class MatchingTests : IDisposable
 
         context = new AppDbContext(options);
         context.Database.EnsureCreated();
-        marketService = new MarketService(context, new MatchingEngine(context), new DeterministicDecisionEngine(), new MarketCycleLock());
+        marketService = new MarketService(context, new MatchingEngine(context), new DeterministicDecisionEngine(), new MarketCycleLock(), new Random(1));
     }
 
     [Fact]
-    public async Task FullMatchUsesOlderBuyPriceAndTransfersSharesAndCash()
+    public async Task FullMatchUsesMidpointPriceAndTransfersSharesAndCash()
     {
         var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
 
-        // Buy is placed first, so it is the older order and sets the execution price.
+        // Buy 110 crosses sell 100; execution is the 105 midpoint regardless of which order rested first.
         await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 110m);
         await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 5, 100m);
 
@@ -43,27 +43,27 @@ public sealed class MatchingTests : IDisposable
         await context.Entry(seed.Buyer).ReloadAsync();
         await context.Entry(seed.Seller).ReloadAsync();
 
-        Assert.Equal(4450m, seed.Buyer.CurrentBalance);
+        Assert.Equal(4475m, seed.Buyer.CurrentBalance);
         Assert.Equal(0m, seed.Buyer.ReservedBalance);
-        Assert.Equal(1550m, seed.Seller.CurrentBalance);
+        Assert.Equal(1525m, seed.Seller.CurrentBalance);
 
         Assert.Equal(5, await context.Shares.CountAsync(share => share.OwnerId == seed.Buyer.Id));
         Assert.Equal(5, await context.Shares.CountAsync(share => share.OwnerId == seed.Seller.Id));
 
         var transaction = await context.ShareTransactions.SingleAsync();
         Assert.Equal(5, transaction.Quantity);
-        Assert.Equal(110m, transaction.Price);
+        Assert.Equal(105m, transaction.Price);
 
         var latestSnapshot = await context.PriceSnapshots.OrderByDescending(snapshot => snapshot.Id).FirstAsync();
-        Assert.Equal(110m, latestSnapshot.Price);
+        Assert.Equal(105m, latestSnapshot.Price);
     }
 
     [Fact]
-    public async Task OlderSellPriceWinsAndReleasesUnusedBuyReservation()
+    public async Task MidpointMatchReleasesUnusedBuyReservation()
     {
         var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
 
-        // Sell is placed first, so the cheaper sell price executes and the buyer gets cash released.
+        // Buyer reserves at its 110 limit but pays the 105 midpoint, so the 5/share overbid is released.
         await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 5, 100m);
         await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 110m);
 
@@ -73,13 +73,30 @@ public sealed class MatchingTests : IDisposable
 
         await context.Entry(seed.Buyer).ReloadAsync();
 
-        Assert.Equal(4500m, seed.Buyer.CurrentBalance);
+        Assert.Equal(4475m, seed.Buyer.CurrentBalance);
         Assert.Equal(0m, seed.Buyer.ReservedBalance);
 
         var releaseTotal = await context.MoneyTransactions
             .Where(money => money.ParticipantId == seed.Buyer.Id && money.Type == MoneyTransactionType.Release)
             .SumAsync(money => money.Amount);
-        Assert.Equal(50m, releaseTotal);
+        Assert.Equal(25m, releaseTotal);
+    }
+
+    [Fact]
+    public async Task ExecutionPriceIsTheMidpointOfCrossingLimits()
+    {
+        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
+
+        await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 3, 100m);
+        await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 3, 90m);
+
+        await marketService.AdvanceCycleAsync();
+
+        var transaction = await context.ShareTransactions.SingleAsync();
+        Assert.Equal(95m, transaction.Price);
+
+        var latestSnapshot = await context.PriceSnapshots.OrderByDescending(snapshot => snapshot.Id).FirstAsync();
+        Assert.Equal(95m, latestSnapshot.Price);
     }
 
     [Fact]

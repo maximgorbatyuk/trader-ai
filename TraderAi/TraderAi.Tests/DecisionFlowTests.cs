@@ -23,7 +23,7 @@ public sealed class DecisionFlowTests : IDisposable
 
         context = new AppDbContext(options);
         context.Database.EnsureCreated();
-        marketService = new MarketService(context, new MatchingEngine(context), new DeterministicDecisionEngine(), new MarketCycleLock());
+        marketService = new MarketService(context, new MatchingEngine(context), new DeterministicDecisionEngine(), new MarketCycleLock(), new Random(1));
     }
 
     [Fact]
@@ -43,7 +43,9 @@ public sealed class DecisionFlowTests : IDisposable
 
         var transaction = await context.ShareTransactions.SingleAsync();
         Assert.Equal(2, transaction.Quantity);
-        Assert.Equal(98m, transaction.Price);
+
+        // Buyer bids 110, seller asks 98; the match executes at the 104 midpoint.
+        Assert.Equal(104m, transaction.Price);
     }
 
     [Fact]

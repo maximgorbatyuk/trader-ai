@@ -364,6 +364,207 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
+    [Fact]
+    public async Task ParticipantDetailReturnsBalancesAndOwnership()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+
+            var companySell = (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!
+                .First(order => order.Type == "Sell");
+            var buyer = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!
+                .OrderByDescending(participant => participant.CurrentBalance).First();
+
+            await client.PostAsJsonAsync("/orders", new
+            {
+                participantId = buyer.Id,
+                companyId = companySell.CompanyId,
+                type = "Buy",
+                quantity = 4,
+                limitPrice = companySell.LimitPrice,
+            });
+            await client.PostAsync("/cycles/tick", null);
+
+            var detail = await client.GetFromJsonAsync<ParticipantDetailDto>($"/participants/{buyer.Id}");
+
+            Assert.Equal(buyer.Id, detail!.Id);
+            Assert.True(detail.InitialBalance > 0m);
+            Assert.Equal(4, detail.SharesOwned);
+            Assert.Equal(detail.CurrentBalance - detail.ReservedBalance, detail.AvailableBalance);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task UpdateParticipantProfilePersistsTemperamentAndRisk()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+            var target = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!.First();
+
+            using var putResponse = await client.PutAsJsonAsync(
+                $"/participants/{target.Id}/profile",
+                new { temperament = "Conservative", riskProfile = "Low" });
+            Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+            var updated = await putResponse.Content.ReadFromJsonAsync<ParticipantDetailDto>();
+            Assert.Equal("Conservative", updated!.Temperament);
+            Assert.Equal("Low", updated.RiskProfile);
+
+            var reloaded = await client.GetFromJsonAsync<ParticipantDetailDto>($"/participants/{target.Id}");
+            Assert.Equal("Conservative", reloaded!.Temperament);
+            Assert.Equal("Low", reloaded.RiskProfile);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task UpdateMissingParticipantReturnsNotFound()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+
+            using var putResponse = await client.PutAsJsonAsync(
+                "/participants/999999/profile",
+                new { temperament = "Balanced", riskProfile = "Medium" });
+            Assert.Equal(HttpStatusCode.NotFound, putResponse.StatusCode);
+
+            using var getResponse = await client.GetAsync("/participants/999999");
+            Assert.Equal(HttpStatusCode.NotFound, getResponse.StatusCode);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task HoldingsIncludeMarketValueAndCostBasis()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+
+            var companySell = (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!
+                .First(order => order.Type == "Sell");
+            var buyer = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!
+                .OrderByDescending(participant => participant.CurrentBalance).First();
+            const int quantity = 5;
+            var price = companySell.LimitPrice;
+
+            await client.PostAsJsonAsync("/orders", new
+            {
+                participantId = buyer.Id,
+                companyId = companySell.CompanyId,
+                type = "Buy",
+                quantity,
+                limitPrice = price,
+            });
+            await client.PostAsync("/cycles/tick", null);
+
+            var holding = Assert.Single(
+                (await client.GetFromJsonAsync<HoldingDto[]>($"/participants/{buyer.Id}/holdings"))!);
+
+            // The fill executes at the issuer's resting ask, so cost basis and current value both track it.
+            Assert.Equal(price, holding.CurrentPrice);
+            Assert.Equal(price * quantity, holding.CostBasis);
+            Assert.Equal(price * quantity, holding.MarketValue);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ParticipantScopedHistoryFiltersToThatParticipant()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+
+            var companySell = (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!
+                .First(order => order.Type == "Sell");
+            var participants = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!
+                .OrderByDescending(participant => participant.CurrentBalance)
+                .ToArray();
+            var buyer = participants[0];
+            var bystander = participants[1];
+
+            await client.PostAsJsonAsync("/orders", new
+            {
+                participantId = buyer.Id,
+                companyId = companySell.CompanyId,
+                type = "Buy",
+                quantity = 3,
+                limitPrice = companySell.LimitPrice,
+            });
+            await client.PostAsync("/cycles/tick", null);
+
+            var buyerOrder = Assert.Single(
+                (await client.GetFromJsonAsync<OrderDto[]>($"/participants/{buyer.Id}/orders"))!);
+            Assert.Equal(buyer.Id, buyerOrder.ParticipantId);
+            Assert.Empty((await client.GetFromJsonAsync<OrderDto[]>($"/participants/{bystander.Id}/orders"))!);
+
+            var buyerTrade = Assert.Single(
+                (await client.GetFromJsonAsync<ShareTransactionDto[]>($"/participants/{buyer.Id}/share-transactions"))!);
+            Assert.Equal(buyer.Id, buyerTrade.BuyerId);
+
+            var cashMoves = await client.GetFromJsonAsync<MoneyTransactionDto[]>(
+                $"/participants/{buyer.Id}/money-transactions");
+            Assert.NotEmpty(cashMoves!);
+            Assert.Contains(cashMoves!, move => move.Type == "Debit");
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
@@ -390,7 +591,28 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
     private sealed record CycleDto(int Id, int CycleNumber);
 
-    private sealed record HoldingDto(int CompanyId, string CompanyName, int Shares);
+    private sealed record HoldingDto(
+        int CompanyId,
+        string CompanyName,
+        int Shares,
+        decimal CurrentPrice,
+        decimal MarketValue,
+        decimal CostBasis);
+
+    private sealed record ParticipantDetailDto(
+        int Id,
+        string Name,
+        string Type,
+        string Temperament,
+        string RiskProfile,
+        decimal InitialBalance,
+        decimal CurrentBalance,
+        decimal ReservedBalance,
+        decimal AvailableBalance,
+        int SharesOwned,
+        bool IsActive);
+
+    private sealed record MoneyTransactionDto(int Id, string Type, decimal Amount, int CreatedInCycleId);
 
     private sealed record ActivityDto(int CycleNumber, int OrdersPlaced);
 

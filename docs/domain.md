@@ -11,14 +11,16 @@ Each share is stored as a separate row and has one current owner.
 
 - The market runs in cycles.
 - Each cycle lets active participants place orders.
-- Orders stay open until they are fully filled.
+- Orders stay open until they are fully filled or cancelled.
 - Orders can be partially filled.
-- Order cancellation is not part of the first implementation.
+- An unfilled order is cancelled automatically after five cycles; cancelling a buy releases its reserved cash and cancelling a sell frees its shares to be listed again.
+- While unfilled, a stale order may be re-priced toward the market so it has a chance to fill before the cancellation cap.
+- A holder that cannot afford any share for several consecutive cycles sells down its most valuable holding to raise cash.
 - A buy order reserves cash when it is created.
 - The reserved cash amount is `Quantity * LimitPrice`.
 - Reserved cash cannot be used by another buy order.
 - A buy order can match a sell order when the buy price is greater than or equal to the sell price.
-- The execution price is the price from the older order.
+- The execution price is the midpoint of the matched buy and sell limit prices.
 - A participant cannot sell shares they do not own.
 - A participant cannot create a buy order if they cannot reserve the required cash.
 - When a fill uses less than the reserved price, the unused reserved cash for filled shares is released.
@@ -169,7 +171,7 @@ Notes:
 
 - A fill can complete one order and leave the other order open.
 - A large order can have many fills.
-- The execution price comes from the older matched order.
+- The execution price is the midpoint of the two matched orders' limit prices.
 - A fill creates one share transaction.
 - A fill creates money transactions for cash settlement.
 

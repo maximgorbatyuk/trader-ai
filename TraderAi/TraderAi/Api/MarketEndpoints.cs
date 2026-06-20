@@ -93,23 +93,104 @@ public static class MarketEndpoints
             return Results.Ok(response);
         });
 
+        app.MapGet("/participants/{participantId:int}", async (int participantId, AppDbContext dbContext) =>
+        {
+            var detail = await BuildParticipantDetailAsync(dbContext, participantId);
+            return detail is null
+                ? Results.NotFound(new { error = "Participant not found." })
+                : Results.Ok(detail);
+        });
+
+        app.MapPut("/participants/{participantId:int}/profile", async (
+            int participantId,
+            UpdateParticipantProfileRequest request,
+            MarketService marketService,
+            AppDbContext dbContext) =>
+        {
+            var updated = await marketService.UpdateParticipantProfileAsync(
+                participantId,
+                request.Temperament,
+                request.RiskProfile);
+
+            return updated is null
+                ? Results.NotFound(new { error = "Participant not found." })
+                : Results.Ok(await BuildParticipantDetailAsync(dbContext, participantId));
+        });
+
         app.MapGet("/participants/{participantId:int}/holdings", async (int participantId, AppDbContext dbContext) =>
         {
+            // Share.CurrentPrice is the execution price the share last transferred at, so for a currently
+            // held share it equals what this owner paid — summing it per company gives the cost basis.
             var sharesByCompany = await dbContext.Shares
                 .Where(share => share.OwnerId == participantId)
                 .GroupBy(share => share.CompanyId)
-                .Select(group => new { CompanyId = group.Key, Shares = group.Count() })
+                .Select(group => new { CompanyId = group.Key, Shares = group.Count(), CostBasis = group.Sum(share => share.CurrentPrice) })
                 .ToListAsync();
 
             var companyNameById = await dbContext.Companies
                 .ToDictionaryAsync(company => company.Id, company => company.Name);
+            var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
 
             var response = sharesByCompany
                 .OrderByDescending(holding => holding.Shares)
-                .Select(holding => new HoldingResponse(
-                    holding.CompanyId,
-                    companyNameById.GetValueOrDefault(holding.CompanyId, $"#{holding.CompanyId}"),
-                    holding.Shares))
+                .Select(holding =>
+                {
+                    var currentPrice = latestPriceByCompany.GetValueOrDefault(holding.CompanyId);
+                    return new HoldingResponse(
+                        holding.CompanyId,
+                        companyNameById.GetValueOrDefault(holding.CompanyId, $"#{holding.CompanyId}"),
+                        holding.Shares,
+                        currentPrice,
+                        currentPrice * holding.Shares,
+                        holding.CostBasis);
+                })
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/participants/{participantId:int}/orders", async (int participantId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 10, 1, 100);
+            var orders = await dbContext.Orders
+                .Where(order => order.ParticipantId == participantId)
+                .OrderByDescending(order => order.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            return Results.Ok(orders.Select(ToOrderResponse).ToArray());
+        });
+
+        app.MapGet("/participants/{participantId:int}/share-transactions", async (int participantId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 10, 1, 100);
+            var transactions = await dbContext.ShareTransactions
+                .Where(transaction => transaction.SellerId == participantId || transaction.BuyerId == participantId)
+                .OrderByDescending(transaction => transaction.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            return Results.Ok(transactions.Select(ToShareTransactionResponse).ToArray());
+        });
+
+        app.MapGet("/participants/{participantId:int}/money-transactions", async (int participantId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 10, 1, 100);
+            var transactions = await dbContext.MoneyTransactions
+                .Where(transaction => transaction.ParticipantId == participantId)
+                .OrderByDescending(transaction => transaction.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            var response = transactions
+                .Select(transaction => new MoneyTransactionResponse(
+                    transaction.Id,
+                    transaction.Type.ToString(),
+                    transaction.Amount,
+                    transaction.RelatedOrderId,
+                    transaction.RelatedShareTransactionId,
+                    transaction.CreatedInCycleId,
+                    transaction.CreatedAt))
                 .ToArray();
 
             return Results.Ok(response);
@@ -199,20 +280,7 @@ public static class MarketEndpoints
                 .Take(limit)
                 .ToListAsync();
 
-            var response = transactions
-                .Select(transaction => new ShareTransactionResponse(
-                    transaction.Id,
-                    transaction.SellerId,
-                    transaction.BuyerId,
-                    transaction.CompanyId,
-                    transaction.Quantity,
-                    transaction.Price,
-                    transaction.TotalCost,
-                    transaction.CreatedInCycleId,
-                    transaction.CreatedAt))
-                .ToArray();
-
-            return Results.Ok(response);
+            return Results.Ok(transactions.Select(ToShareTransactionResponse).ToArray());
         });
 
         app.MapGet("/prices/{companyId:int}", async (int companyId, AppDbContext dbContext) =>
@@ -251,6 +319,41 @@ public static class MarketEndpoints
             .ToDictionary(row => row.CompanyId, row => row.Price);
     }
 
+    private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(AppDbContext dbContext, int participantId)
+    {
+        var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
+        if (participant is null)
+        {
+            return null;
+        }
+
+        var sharesOwned = await dbContext.Shares.CountAsync(share => share.OwnerId == participantId);
+
+        return new ParticipantDetailResponse(
+            participant.Id,
+            participant.Name,
+            participant.Type.ToString(),
+            participant.Temperament.ToString(),
+            participant.RiskProfile.ToString(),
+            participant.InitialBalance,
+            participant.CurrentBalance,
+            participant.ReservedBalance,
+            participant.AvailableBalance,
+            sharesOwned,
+            participant.IsActive);
+    }
+
+    private static ShareTransactionResponse ToShareTransactionResponse(ShareTransaction transaction) => new(
+        transaction.Id,
+        transaction.SellerId,
+        transaction.BuyerId,
+        transaction.CompanyId,
+        transaction.Quantity,
+        transaction.Price,
+        transaction.TotalCost,
+        transaction.CreatedInCycleId,
+        transaction.CreatedAt);
+
     private static MarketResponse ToMarketResponse(Market market) =>
         new(market.Id, market.Name, market.Status.ToString(), market.CurrentCycleId);
 
@@ -283,6 +386,21 @@ public sealed record ParticipantResponse(
     int SharesOwned,
     bool IsActive);
 
+public sealed record ParticipantDetailResponse(
+    int Id,
+    string Name,
+    string Type,
+    string Temperament,
+    string RiskProfile,
+    decimal InitialBalance,
+    decimal CurrentBalance,
+    decimal ReservedBalance,
+    decimal AvailableBalance,
+    int SharesOwned,
+    bool IsActive);
+
+public sealed record UpdateParticipantProfileRequest(Temperament Temperament, RiskProfile RiskProfile);
+
 public sealed record PlaceOrderRequest(int ParticipantId, int CompanyId, OrderType Type, int Quantity, decimal LimitPrice);
 
 public sealed record OrderResponse(
@@ -301,7 +419,22 @@ public sealed record CycleTickResponse(bool Ran, int? CompletedCycleNumber, int 
 
 public sealed record ActivityPointResponse(int CycleNumber, int OrdersPlaced);
 
-public sealed record HoldingResponse(int CompanyId, string CompanyName, int Shares);
+public sealed record HoldingResponse(
+    int CompanyId,
+    string CompanyName,
+    int Shares,
+    decimal CurrentPrice,
+    decimal MarketValue,
+    decimal CostBasis);
+
+public sealed record MoneyTransactionResponse(
+    int Id,
+    string Type,
+    decimal Amount,
+    int? RelatedOrderId,
+    int? RelatedShareTransactionId,
+    int CreatedInCycleId,
+    DateTime CreatedAt);
 
 public sealed record CycleResponse(int Id, int CycleNumber, string Status, DateTime? StartedAt, DateTime? CompletedAt);
 

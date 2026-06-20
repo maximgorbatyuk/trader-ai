@@ -33,6 +33,14 @@ function post(path, body) {
   })
 }
 
+function put(path, body) {
+  return request(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
 export const api = {
   getHealth: () => get('/health'),
   getMarket: () => get('/market'),
@@ -44,6 +52,13 @@ export const api = {
   getShareTransactions: (take) => get(take ? `/transactions/shares?take=${take}` : '/transactions/shares'),
   getPrices: (companyId) => get(`/prices/${companyId}`),
   getHoldings: (participantId) => get(`/participants/${participantId}/holdings`),
+  getParticipant: (participantId) => get(`/participants/${participantId}`),
+  getParticipantOrders: (participantId, take = 10) => get(`/participants/${participantId}/orders?take=${take}`),
+  getParticipantShareTransactions: (participantId, take = 10) =>
+    get(`/participants/${participantId}/share-transactions?take=${take}`),
+  getParticipantMoneyTransactions: (participantId, take = 10) =>
+    get(`/participants/${participantId}/money-transactions?take=${take}`),
+  updateParticipantProfile: (participantId, profile) => put(`/participants/${participantId}/profile`, profile),
   seedMarket: () => post('/market/seed'),
   resetMarket: () => post('/market/reset'),
   pauseMarket: () => post('/market/pause'),

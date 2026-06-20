@@ -38,13 +38,28 @@ public sealed class MarketService(
     AppDbContext dbContext,
     MatchingEngine matchingEngine,
     IDecisionEngine decisionEngine,
-    MarketCycleLock cycleLock)
+    MarketCycleLock cycleLock,
+    Random random)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
 
     // How far back the long-range price move is measured for the engine's extreme-move reactions.
     private const int LongRangeWindowCycles = 10;
+
+    // Order ageing: a resting order is force-cancelled once this old, and from RepriceFromAge it may be
+    // randomly chased toward the market by RepriceStep so it has a chance to fill before the cap.
+    private const int OrderMaxAgeCycles = 5;
+    private const int OrderRepriceFromAge = 3;
+    private const double RepriceChance = 0.5;
+    private const decimal RepriceStep = 0.05m;
+
+    // After this many consecutive cycles unable to afford any share, a holder liquidates to raise cash.
+    private const int CashStarvedLimitCycles = 5;
+
+    // Forced-liquidation sells undercut the market by 1–5% so the order actually crosses.
+    private const decimal MinSellOffset = 0.01m;
+    private const decimal MaxSellOffset = 0.05m;
 
     public Task<Market?> GetMarketAsync() => dbContext.Markets.FirstOrDefaultAsync();
 
@@ -86,6 +101,22 @@ public sealed class MarketService(
         return market;
     });
 
+    // Goes through the cycle lock so a profile edit cannot race a running tick's SQLite writes.
+    public Task<Participant?> UpdateParticipantProfileAsync(int participantId, Temperament temperament, RiskProfile riskProfile) =>
+        WithLockAsync(async () =>
+        {
+            var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
+            if (participant is null)
+            {
+                return null;
+            }
+
+            participant.Temperament = temperament;
+            participant.RiskProfile = riskProfile;
+            await dbContext.SaveChangesAsync();
+            return participant;
+        });
+
     private async Task<CycleTickResult> RunCycleTickCoreAsync()
     {
         var market = await dbContext.Markets.FirstOrDefaultAsync();
@@ -110,11 +141,208 @@ public sealed class MarketService(
 
     private async Task<CycleTickResult> DecideAndAdvanceCoreAsync()
     {
+        await MaintainOrdersCoreAsync();
         var decisions = await GenerateDecisionsCoreAsync();
         var advance = await AdvanceCycleCoreAsync();
 
         return CycleTickResult.Executed(decisions.OrdersPlaced, advance.FillCount, advance.CompletedCycleNumber);
     }
+
+    // Ages the resting participant order book before new decisions: expired orders are cancelled, stale
+    // ones may be re-priced toward the market, and holders starved of cash for too long liquidate. The
+    // company float (null participant) is never touched so the initial supply does not expire.
+    private async Task MaintainOrdersCoreAsync()
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market?.CurrentCycleId is not int currentCycleId)
+        {
+            return;
+        }
+
+        var cycleNumbersById = await dbContext.MarketCycles
+            .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+        var currentCycleNumber = cycleNumbersById.GetValueOrDefault(currentCycleId);
+
+        var openOrders = await dbContext.Orders
+            .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                && order.ParticipantId != null)
+            .Include(order => order.OrderShares)
+            .ToListAsync();
+
+        var participantsById = await dbContext.Participants.ToDictionaryAsync(participant => participant.Id);
+
+        foreach (var order in openOrders)
+        {
+            var participant = participantsById[order.ParticipantId!.Value];
+            var age = currentCycleNumber - cycleNumbersById.GetValueOrDefault(order.CreatedInCycleId);
+
+            if (age >= OrderMaxAgeCycles)
+            {
+                CancelOrder(order, participant, currentCycleId);
+            }
+            else if (age >= OrderRepriceFromAge && random.NextDouble() < RepriceChance)
+            {
+                Reprice(order, participant, currentCycleId);
+            }
+        }
+
+        // Persist cancellations first so freed shares and cash are visible to the liquidation pass.
+        await dbContext.SaveChangesAsync();
+
+        await LiquidateStarvedHoldersAsync(participantsById);
+
+        await dbContext.SaveChangesAsync();
+    }
+
+    private void CancelOrder(Order order, Participant participant, int currentCycleId)
+    {
+        if (order.Type == OrderType.Buy)
+        {
+            var release = order.ReservedCashAmount;
+            if (release > 0m)
+            {
+                participant.ReservedBalance -= release;
+                order.ReservedCashAmount = 0m;
+                dbContext.MoneyTransactions.Add(new MoneyTransaction
+                {
+                    ParticipantId = participant.Id,
+                    Type = MoneyTransactionType.Release,
+                    Amount = release,
+                    RelatedOrderId = order.Id,
+                    CreatedInCycleId = currentCycleId,
+                    CreatedAt = DateTime.UtcNow,
+                });
+            }
+        }
+        else
+        {
+            // The unsold share links return to the owner so the shares can be listed again.
+            dbContext.OrderShares.RemoveRange(order.OrderShares);
+            order.OrderShares.Clear();
+        }
+
+        order.Status = OrderStatus.Cancelled;
+        order.UpdatedAt = DateTime.UtcNow;
+    }
+
+    private void Reprice(Order order, Participant participant, int currentCycleId)
+    {
+        var now = DateTime.UtcNow;
+
+        if (order.Type == OrderType.Sell)
+        {
+            order.LimitPrice = Round(order.LimitPrice * (1m - RepriceStep));
+            order.UpdatedAt = now;
+            return;
+        }
+
+        // A higher bid needs more cash reserved on the unfilled quantity; if the trader cannot cover the
+        // top-up the order is left as-is and simply expires at the age cap.
+        var newLimit = Round(order.LimitPrice * (1m + RepriceStep));
+        var extraReservation = (newLimit - order.LimitPrice) * order.RemainingQuantity;
+        if (extraReservation > participant.AvailableBalance)
+        {
+            return;
+        }
+
+        participant.ReservedBalance += extraReservation;
+        order.ReservedCashAmount += extraReservation;
+        order.LimitPrice = newLimit;
+        order.UpdatedAt = now;
+
+        dbContext.MoneyTransactions.Add(new MoneyTransaction
+        {
+            ParticipantId = participant.Id,
+            Type = MoneyTransactionType.Reserve,
+            Amount = extraReservation,
+            RelatedOrderId = order.Id,
+            CreatedInCycleId = currentCycleId,
+            CreatedAt = now,
+        });
+    }
+
+    private async Task LiquidateStarvedHoldersAsync(IReadOnlyDictionary<int, Participant> participantsById)
+    {
+        var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        if (latestPriceByCompany.Count == 0)
+        {
+            return;
+        }
+
+        var cheapestShare = latestPriceByCompany.Values.Min();
+
+        // Owned shares not already listed in an open order, grouped by owner then company.
+        var offeredShareIds = (await dbContext.OrderShares.Select(orderShare => orderShare.ShareId).ToListAsync())
+            .ToHashSet();
+        var availableHoldings = (await dbContext.Shares
+                .Where(share => share.OwnerId != null)
+                .Select(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId, share.Id })
+                .ToListAsync())
+            .Where(share => !offeredShareIds.Contains(share.Id))
+            .GroupBy(share => share.OwnerId)
+            .ToDictionary(
+                ownerGroup => ownerGroup.Key,
+                ownerGroup => ownerGroup
+                    .GroupBy(share => share.CompanyId)
+                    .ToDictionary(companyGroup => companyGroup.Key, companyGroup => companyGroup.Count()));
+
+        var traders = participantsById.Values
+            .Where(participant => participant.IsActive
+                && (participant.Type == ParticipantType.Individual || participant.Type == ParticipantType.AIAgent));
+
+        foreach (var trader in traders)
+        {
+            if (trader.AvailableBalance >= cheapestShare)
+            {
+                trader.CashStarvedCycles = 0;
+                continue;
+            }
+
+            trader.CashStarvedCycles++;
+            if (trader.CashStarvedCycles < CashStarvedLimitCycles)
+            {
+                continue;
+            }
+
+            trader.CashStarvedCycles = 0;
+
+            if (!availableHoldings.TryGetValue(trader.Id, out var holdings) || holdings.Count == 0)
+            {
+                continue;
+            }
+
+            // Raise cash from the priciest holding by listing half of it.
+            var target = holdings
+                .OrderByDescending(holding => latestPriceByCompany.GetValueOrDefault(holding.Key))
+                .First();
+            var quantity = target.Value / 2;
+            if (quantity < 1)
+            {
+                continue;
+            }
+
+            var sellLimit = Round(latestPriceByCompany[target.Key] * (1m - RandomSellOffset()));
+            if (sellLimit <= 0m)
+            {
+                continue;
+            }
+
+            await PlaceOrderCoreAsync(trader.Id, target.Key, OrderType.Sell, quantity, sellLimit);
+        }
+    }
+
+    private async Task<IReadOnlyDictionary<int, decimal>> LatestPriceByCompanyAsync()
+    {
+        var snapshots = await dbContext.PriceSnapshots.ToListAsync();
+        return snapshots
+            .GroupBy(snapshot => snapshot.CompanyId)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(snapshot => snapshot.Id).First().Price);
+    }
+
+    private decimal RandomSellOffset() =>
+        MinSellOffset + ((decimal)random.NextDouble() * (MaxSellOffset - MinSellOffset));
+
+    private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 
     private async Task<PlaceOrderResult> PlaceOrderCoreAsync(
         int participantId,

@@ -4,9 +4,10 @@ using TraderAi.Models;
 
 namespace TraderAi.Services;
 
-// Matches open buy and sell orders for a cycle using price-time priority and records the resulting
-// share transfers, money movements, and price snapshots. Mutations are tracked on the shared
-// DbContext; the caller owns saving and the surrounding transaction.
+// Matches open buy and sell orders for a cycle and records the resulting share transfers, money
+// movements, and price snapshots. Orders pair by price-time priority, but each cross executes at the
+// midpoint of the two limits. Mutations are tracked on the shared DbContext; the caller owns saving and
+// the surrounding transaction.
 public sealed class MatchingEngine(AppDbContext dbContext)
 {
     public async Task<int> RunAsync(MarketCycle cycle)
@@ -53,7 +54,10 @@ public sealed class MatchingEngine(AppDbContext dbContext)
                 }
 
                 var matchQuantity = Math.Min(buy.RemainingQuantity, sell.RemainingQuantity);
-                var executionPrice = IsOlder(buy, sell) ? buy.LimitPrice : sell.LimitPrice;
+
+                // Crossing guarantees the midpoint sits at or below the buyer's limit and at or above the
+                // seller's, so the buyer's unused reservation is still refunded below.
+                var executionPrice = Round((buy.LimitPrice + sell.LimitPrice) / 2m);
 
                 ExecuteFill(buy, sell, matchQuantity, executionPrice, cycle, participants, now);
                 fillCount++;
@@ -73,15 +77,7 @@ public sealed class MatchingEngine(AppDbContext dbContext)
         return fillCount;
     }
 
-    private static bool IsOlder(Order left, Order right)
-    {
-        if (left.CreatedAt != right.CreatedAt)
-        {
-            return left.CreatedAt < right.CreatedAt;
-        }
-
-        return left.Id < right.Id;
-    }
+    private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 
     private void ExecuteFill(
         Order buy,
