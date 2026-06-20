@@ -23,7 +23,7 @@ public sealed class DecisionFlowTests : IDisposable
 
         context = new AppDbContext(options);
         context.Database.EnsureCreated();
-        marketService = new MarketService(context, new MatchingEngine(context), new RuleBasedDecisionEngine(), new MarketCycleLock());
+        marketService = new MarketService(context, new MatchingEngine(context), new DeterministicDecisionEngine(), new MarketCycleLock());
     }
 
     [Fact]

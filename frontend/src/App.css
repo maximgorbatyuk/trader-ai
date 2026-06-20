@@ -375,11 +375,26 @@
 }
 
 /* ---- Panel grid ---- */
-.grid {
+/* Stacked dashboard: a full-width activity chart, an orders block, then two master-detail rows. */
+.grid-orders,
+.grid-detail {
   display: grid;
-  grid-template-columns: repeat(12, 1fr);
   align-items: start;
   gap: var(--s-3);
+  margin-bottom: var(--s-3);
+}
+
+.grid-orders {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.1fr) minmax(0, 0.9fr);
+}
+
+/* Master list on the left, click-to-reveal detail on the right. */
+.grid-detail {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+}
+
+.panel-activity {
+  margin-bottom: var(--s-3);
 }
 
 .panel {
@@ -390,25 +405,6 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-}
-
-.panel-chart {
-  grid-column: span 8;
-}
-.panel-watchlist {
-  grid-column: span 4;
-}
-.panel-book {
-  grid-column: span 7;
-}
-.panel-traders {
-  grid-column: span 5;
-}
-.panel-order {
-  grid-column: span 4;
-}
-.panel-tape {
-  grid-column: span 8;
 }
 
 .panel-head {
@@ -595,6 +591,55 @@
   vector-effect: non-scaling-stroke;
 }
 
+/* ---- Activity chart (orders per loop, with labelled axes) ---- */
+.activity-chart {
+  color: var(--ink);
+}
+
+.activity-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-gridline {
+  stroke: var(--border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-tick {
+  fill: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chart-tick-y {
+  text-anchor: end;
+  dominant-baseline: middle;
+}
+
+.chart-tick-x {
+  text-anchor: middle;
+}
+
+.activity-area {
+  stroke: none;
+}
+
+.activity-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.activity-dot {
+  fill: currentColor;
+}
+
 /* ---- Watchlist ---- */
 .watchlist {
   display: flex;
@@ -695,6 +740,21 @@
 
 .tbl tbody tr:hover {
   background: var(--surface-2);
+}
+
+.tbl-select tbody tr {
+  cursor: pointer;
+}
+
+.tbl-select tbody tr.is-active th,
+.tbl-select tbody tr.is-active td {
+  background: var(--surface-3);
+  box-shadow: inset 0 1px 0 var(--border-2), inset 0 -1px 0 var(--border-2);
+}
+
+.tbl-select tbody tr:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
 }
 
 .tbl tbody th {
@@ -867,12 +927,9 @@
 
 /* ---- Responsive ---- */
 @media (max-width: 1080px) {
-  .grid {
+  .grid-orders,
+  .grid-detail {
     grid-template-columns: 1fr;
-  }
-
-  .grid > .panel {
-    grid-column: 1 / -1;
   }
 
   .controls {

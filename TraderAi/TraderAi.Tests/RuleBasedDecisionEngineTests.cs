@@ -5,61 +5,42 @@ namespace TraderAi.Tests;
 
 public sealed class RuleBasedDecisionEngineTests
 {
-    private readonly RuleBasedDecisionEngine engine = new();
+    // MaxTradeSizer returns the full cap, so quantity assertions probe the upper bound the engine sets.
+    private readonly RuleBasedDecisionEngine engine = new(new MaxTradeSizer(), new Random(20260619));
 
     [Fact]
-    public void HolderSellsRiskFractionOfHoldingsBelowMarketWhenAggressive()
+    public void OnlySellsSharesItOwnsAndNeverMoreThanOwned()
     {
-        var context = ContextFor(
-            Temperament.Aggressive,
-            RiskProfile.High,
-            availableCash: 0m,
-            sharesOwned: 10,
-            companyPrice: 100m);
+        var context = ContextFor(Temperament.Aggressive, RiskProfile.High, availableCash: 0m, sharesOwned: 10, companyPrice: 100m);
 
-        var intent = Assert.Single(engine.Decide(context));
+        var intents = CollectIntents(context);
 
-        Assert.Equal(OrderType.Sell, intent.Type);
-        Assert.Equal(5, intent.Quantity);
-        Assert.Equal(90m, intent.LimitPrice);
+        Assert.NotEmpty(intents);
+        Assert.All(intents, intent =>
+        {
+            Assert.Equal(OrderType.Sell, intent.Type);
+            Assert.Equal(1, intent.CompanyId);
+            Assert.InRange(intent.Quantity, 1, 10);
+        });
     }
 
     [Fact]
-    public void CashHolderBuysRiskFractionOfBudgetAboveMarketWhenAggressive()
+    public void BuyNeverReservesMoreThanAvailableCash()
     {
-        var context = ContextFor(
-            Temperament.Aggressive,
-            RiskProfile.High,
-            availableCash: 5000m,
-            sharesOwned: 0,
-            companyPrice: 100m);
+        var context = ContextFor(Temperament.Aggressive, RiskProfile.High, availableCash: 5000m, sharesOwned: 0, companyPrice: 100m);
 
-        var intent = Assert.Single(engine.Decide(context));
+        var intents = CollectIntents(context);
 
-        Assert.Equal(OrderType.Buy, intent.Type);
-        Assert.Equal(110m, intent.LimitPrice);
-        Assert.Equal(22, intent.Quantity);
+        Assert.NotEmpty(intents);
+        Assert.All(intents, intent =>
+        {
+            Assert.Equal(OrderType.Buy, intent.Type);
+            Assert.True(intent.Quantity * intent.LimitPrice <= 5000m);
+        });
     }
 
     [Fact]
-    public void ConservativeHolderAsksAboveMarketAndCommitsLittle()
-    {
-        var context = ContextFor(
-            Temperament.Conservative,
-            RiskProfile.Low,
-            availableCash: 0m,
-            sharesOwned: 10,
-            companyPrice: 100m);
-
-        var intent = Assert.Single(engine.Decide(context));
-
-        Assert.Equal(OrderType.Sell, intent.Type);
-        Assert.Equal(1, intent.Quantity);
-        Assert.Equal(110m, intent.LimitPrice);
-    }
-
-    [Fact]
-    public void NoIntentWhenCompanyAlreadyHasAnOpenOrder()
+    public void NeverActsOnACompanyThatAlreadyHasAnOpenOrder()
     {
         var context = ContextFor(
             Temperament.Aggressive,
@@ -69,33 +50,44 @@ public sealed class RuleBasedDecisionEngineTests
             companyPrice: 100m,
             companiesWithOpenOrders: [1]);
 
-        Assert.Empty(engine.Decide(context));
+        Assert.Empty(CollectIntents(context));
     }
 
     [Fact]
-    public void NoIntentWhenBudgetCannotAffordASingleShare()
+    public void DoesNothingWhenItHasNoCashAndNoShares()
     {
-        var context = ContextFor(
-            Temperament.Aggressive,
-            RiskProfile.High,
-            availableCash: 50m,
-            sharesOwned: 0,
-            companyPrice: 100m);
+        var context = ContextFor(Temperament.Balanced, RiskProfile.Low, availableCash: 0m, sharesOwned: 0, companyPrice: 100m);
 
-        Assert.Empty(engine.Decide(context));
+        Assert.Empty(CollectIntents(context));
     }
 
     [Fact]
-    public void NoIntentWhenHoldingsAreTooSmallForRiskFraction()
+    public void BuyLimitCrossesAboveMarketForAnAggressiveTrader()
     {
-        var context = ContextFor(
-            Temperament.Balanced,
-            RiskProfile.Low,
-            availableCash: 0m,
-            sharesOwned: 5,
-            companyPrice: 100m);
+        var context = ContextFor(Temperament.Aggressive, RiskProfile.High, availableCash: 5000m, sharesOwned: 0, companyPrice: 100m);
 
-        Assert.Empty(engine.Decide(context));
+        Assert.All(CollectIntents(context), intent => Assert.Equal(110m, intent.LimitPrice));
+    }
+
+    [Fact]
+    public void SellLimitCrossesBelowMarketForAnAggressiveTrader()
+    {
+        var context = ContextFor(Temperament.Aggressive, RiskProfile.High, availableCash: 0m, sharesOwned: 10, companyPrice: 100m);
+
+        Assert.All(CollectIntents(context), intent => Assert.Equal(90m, intent.LimitPrice));
+    }
+
+    // Skip is always one of the choices, so the engine is exercised many times to surface the action
+    // branch; the invariants must then hold across every outcome.
+    private IReadOnlyList<OrderIntent> CollectIntents(DecisionContext context)
+    {
+        var intents = new List<OrderIntent>();
+        for (var iteration = 0; iteration < 200; iteration++)
+        {
+            intents.AddRange(engine.Decide(context));
+        }
+
+        return intents;
     }
 
     private static DecisionContext ContextFor(

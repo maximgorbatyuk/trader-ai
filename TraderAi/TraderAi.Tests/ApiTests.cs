@@ -11,26 +11,38 @@ namespace TraderAi.Tests;
 public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private readonly WebApplicationFactory<Program> factory;
-    private readonly HttpClient client;
 
     public ApiTests(WebApplicationFactory<Program> factory)
     {
         this.factory = factory;
-        client = factory.CreateClient();
     }
 
     [Fact]
     public async Task CompaniesReturnsEmptyArray()
     {
-        using var response = await client.GetAsync("/companies");
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var configuredClient = configuredFactory.CreateClient();
 
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var document = await JsonDocument.ParseAsync(stream);
+            using var response = await configuredClient.GetAsync("/companies");
 
-        Assert.Equal(JsonValueKind.Array, document.RootElement.ValueKind);
-        Assert.Equal(0, document.RootElement.GetArrayLength());
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            using var document = await JsonDocument.ParseAsync(stream);
+
+            Assert.Equal(JsonValueKind.Array, document.RootElement.ValueKind);
+            Assert.Equal(0, document.RootElement.GetArrayLength());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
     }
 
     [Fact]

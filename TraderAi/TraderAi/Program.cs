@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using TraderAi.Api;
 using TraderAi.Data;
+using TraderAi.Models;
 using TraderAi.Services;
 
 const string ReactDevelopmentCorsPolicy = "ReactDevelopment";
@@ -21,7 +22,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(connectionString);
 });
 
+builder.Services.AddSingleton(Random.Shared);
 builder.Services.AddScoped<MatchingEngine>();
+builder.Services.AddScoped<ITradeSizer, RandomTradeSizer>();
 builder.Services.AddScoped<IDecisionEngine, RuleBasedDecisionEngine>();
 builder.Services.AddScoped<MarketService>();
 builder.Services.AddSingleton<MarketCycleLock>();
@@ -51,6 +54,16 @@ using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     dbContext.Database.Migrate();
+
+    // The loop must never resume on its own across restarts: a running market is paused on boot so
+    // it only advances after an explicit start.
+    var market = await dbContext.Markets.FirstOrDefaultAsync();
+    if (market is { Status: MarketStatus.Running })
+    {
+        market.Status = MarketStatus.Paused;
+        market.UpdatedAt = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync();
+    }
 }
 
 app.UseCors(ReactDevelopmentCorsPolicy);

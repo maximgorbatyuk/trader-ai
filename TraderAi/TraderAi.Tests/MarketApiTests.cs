@@ -1,6 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using TraderAi.Services;
 
 namespace TraderAi.Tests;
 
@@ -48,8 +51,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             });
             Assert.Equal(HttpStatusCode.OK, buyResponse.StatusCode);
 
-            var advance = await (await client.PostAsync("/cycles/advance", null)).Content.ReadFromJsonAsync<AdvanceDto>();
-            Assert.Equal(1, advance!.FillCount);
+            var tick = await (await client.PostAsync("/cycles/tick", null)).Content.ReadFromJsonAsync<CycleTickDto>();
+            Assert.Equal(1, tick!.FillCount);
 
             var transactions = await client.GetFromJsonAsync<ShareTransactionDto[]>("/transactions/shares");
             var transaction = Assert.Single(transactions!);
@@ -132,7 +135,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
             Assert.Equal(allAfterSeed.Length + 1, (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!.Length);
 
-            await client.PostAsync("/cycles/advance", null);
+            await client.PostAsync("/cycles/tick", null);
 
             // The buy fully fills and leaves the open list; the partially filled company sell stays open.
             var openAfterAdvance = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
@@ -175,11 +178,102 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
+    [Fact]
+    public async Task HoldingsReturnPurchasedSharesGroupedByCompany()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+
+            var companySell = (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!
+                .First(order => order.Type == "Sell");
+            var buyer = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!
+                .OrderByDescending(participant => participant.CurrentBalance).First();
+
+            await client.PostAsJsonAsync("/orders", new
+            {
+                participantId = buyer.Id,
+                companyId = companySell.CompanyId,
+                type = "Buy",
+                quantity = 5,
+                limitPrice = companySell.LimitPrice,
+            });
+            await client.PostAsync("/cycles/tick", null);
+
+            var holdings = await client.GetFromJsonAsync<HoldingDto[]>($"/participants/{buyer.Id}/holdings");
+
+            var holding = Assert.Single(holdings!);
+            Assert.Equal(companySell.CompanyId, holding.CompanyId);
+            Assert.Equal(5, holding.Shares);
+            Assert.False(string.IsNullOrWhiteSpace(holding.CompanyName));
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CycleActivityCountsParticipantOrdersAndExcludesIssuerOrders()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+
+            // The seed's sell orders all belong to the issuer, so the first cycle reports no activity.
+            var afterSeed = await client.GetFromJsonAsync<ActivityDto[]>("/cycles/activity");
+            Assert.All(afterSeed!, point => Assert.Equal(0, point.OrdersPlaced));
+
+            var companySell = (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!
+                .First(order => order.Type == "Sell");
+            var buyer = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!
+                .OrderByDescending(participant => participant.CurrentBalance).First();
+
+            await client.PostAsJsonAsync("/orders", new
+            {
+                participantId = buyer.Id,
+                companyId = companySell.CompanyId,
+                type = "Buy",
+                quantity = 5,
+                limitPrice = companySell.LimitPrice,
+            });
+
+            var afterBuy = await client.GetFromJsonAsync<ActivityDto[]>("/cycles/activity");
+            Assert.Contains(afterBuy!, point => point.OrdersPlaced == 1);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:DefaultConnection", $"Data Source={databasePath}");
+
+            // A manual tick decides then matches; the no-op engine removes generated trades so these
+            // tests settle only the order they place by hand and can assert exact counts.
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IDecisionEngine>();
+                services.AddScoped<IDecisionEngine, NoOpDecisionEngine>();
+            });
         });
     }
 
@@ -189,7 +283,11 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
     private sealed record ShareTransactionDto(int Id, int? SellerId, int BuyerId, int Quantity, decimal Price);
 
-    private sealed record AdvanceDto(int? CompletedCycleNumber, int FillCount);
+    private sealed record CycleTickDto(bool Ran, int? CompletedCycleNumber, int OrdersPlaced, int FillCount);
+
+    private sealed record HoldingDto(int CompanyId, string CompanyName, int Shares);
+
+    private sealed record ActivityDto(int CycleNumber, int OrdersPlaced);
 
     private sealed record MarketDto(int Id, string Name, string Status, int? CurrentCycleId);
 

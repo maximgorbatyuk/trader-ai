@@ -2,8 +2,10 @@ using Microsoft.Extensions.Options;
 
 namespace TraderAi.Services;
 
-// Opt-in background loop that advances market cycles on a fixed interval. Each tick runs in its own DI
-// scope and goes through MarketService's lock, so it never overlaps a manual trigger.
+// Background loop that advances market cycles on a fixed interval. The Enabled flag is a master
+// kill-switch; whether a tick actually does anything is gated at runtime by the market status, so the
+// loop idles until the market is started. Each tick runs in its own DI scope and goes through
+// MarketService's lock, so it never overlaps a manual trigger.
 public sealed class MarketLoopService(
     IServiceScopeFactory scopeFactory,
     IOptions<MarketLoopOptions> options,

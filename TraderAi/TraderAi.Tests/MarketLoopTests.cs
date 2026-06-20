@@ -23,7 +23,7 @@ public sealed class MarketLoopTests : IDisposable
 
         context = new AppDbContext(options);
         context.Database.EnsureCreated();
-        marketService = new MarketService(context, new MatchingEngine(context), new RuleBasedDecisionEngine(), new MarketCycleLock());
+        marketService = new MarketService(context, new MatchingEngine(context), new DeterministicDecisionEngine(), new MarketCycleLock());
     }
 
     [Fact]
@@ -64,6 +64,19 @@ public sealed class MarketLoopTests : IDisposable
         var tick = await marketService.RunCycleTickAsync();
 
         Assert.True(tick.Ran);
+    }
+
+    [Fact]
+    public async Task ManualStepRunsEvenWhenMarketIsPaused()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        await marketService.SetStatusAsync(MarketStatus.Paused);
+
+        var tick = await marketService.StepCycleAsync();
+
+        Assert.True(tick.Ran);
+        Assert.Equal(2, tick.OrdersPlaced);
+        Assert.Equal(1, tick.FillCount);
     }
 
     [Fact]

@@ -64,7 +64,10 @@ function App() {
   const [cycles, setCycles] = useState([])
   const [transactions, setTransactions] = useState([])
   const [prices, setPrices] = useState([])
+  const [cycleActivity, setCycleActivity] = useState([])
+  const [holdings, setHoldings] = useState([])
   const [selectedCompanyId, setSelectedCompanyId] = useState(null)
+  const [selectedParticipantId, setSelectedParticipantId] = useState(null)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
 
@@ -73,32 +76,38 @@ function App() {
     selectedRef.current = selectedCompanyId
   }, [selectedCompanyId])
 
+  const selectedParticipantRef = useRef(null)
+  useEffect(() => {
+    selectedParticipantRef.current = selectedParticipantId
+  }, [selectedParticipantId])
+
   const loadAll = useCallback(async () => {
     try {
-      const [marketData, companyData, participantData, orderData, cycleData, transactionData] = await Promise.all([
-        api.getMarket(),
-        api.getCompanies(),
-        api.getParticipants(),
-        api.getOrders('open'),
-        api.getCycles(),
-        api.getShareTransactions(50),
-      ])
+      const [marketData, companyData, participantData, orderData, cycleData, activityData, transactionData] =
+        await Promise.all([
+          api.getMarket(),
+          api.getCompanies(),
+          api.getParticipants(),
+          api.getOrders('open'),
+          api.getCycles(),
+          api.getCycleActivity(),
+          api.getShareTransactions(50),
+        ])
 
       setMarket(marketData)
       setCompanies(companyData)
       setParticipants(participantData)
       setOrders(orderData)
       setCycles(cycleData)
+      setCycleActivity(activityData)
       setTransactions(transactionData)
       setConnected(true)
 
-      let companyId = selectedRef.current
-      if (!companyId && companyData.length > 0) {
-        companyId = companyData[0].id
-        setSelectedCompanyId(companyId)
-      }
-
+      const companyId = selectedRef.current
       setPrices(companyId ? await api.getPrices(companyId) : [])
+
+      const participantId = selectedParticipantRef.current
+      setHoldings(participantId ? await api.getHoldings(participantId) : [])
     } catch {
       setConnected(false)
     } finally {
@@ -123,6 +132,14 @@ function App() {
     api.getPrices(selectedCompanyId).then(setPrices).catch(() => {})
   }, [selectedCompanyId])
 
+  useEffect(() => {
+    if (!selectedParticipantId) {
+      return
+    }
+
+    api.getHoldings(selectedParticipantId).then(setHoldings).catch(() => {})
+  }, [selectedParticipantId])
+
   async function runAction(action) {
     setPending(true)
     setActionError(null)
@@ -139,6 +156,8 @@ function App() {
   const participantNameById = new Map(participants.map((participant) => [participant.id, participant.name]))
   const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
+  const selectedParticipant = participants.find((participant) => participant.id === selectedParticipantId) ?? null
+  const selectedCompany = companies.find((company) => company.id === selectedCompanyId) ?? null
   const currentCycleNumber =
     cycles.find((cycle) => cycle.id === market?.currentCycleId)?.cycleNumber ?? cycles.length
 
@@ -171,35 +190,46 @@ function App() {
                   runAction={runAction}
                 />
 
-                <div className="grid">
-                  <PriceChartPanel
-                    companies={companies}
-                    selectedCompanyId={selectedCompanyId}
-                    onSelect={setSelectedCompanyId}
-                    prices={prices}
-                  />
-                  <WatchlistPanel
-                    companies={companies}
-                    selectedCompanyId={selectedCompanyId}
-                    onSelect={setSelectedCompanyId}
-                  />
+                <ActivityPanel activity={cycleActivity} />
+
+                <div className="grid-orders">
                   <OrderBookPanel
                     orders={openOrders}
                     participantNameById={participantNameById}
                     companyNameById={companyNameById}
-                  />
-                  <ParticipantsPanel participants={participants} />
-                  <PlaceOrderPanel
-                    participants={participants}
-                    companies={companies}
-                    pending={pending}
-                    runAction={runAction}
                   />
                   <TradeTapePanel
                     transactions={transactions}
                     participantNameById={participantNameById}
                     companyNameById={companyNameById}
                   />
+                  <PlaceOrderPanel
+                    participants={participants}
+                    companies={companies}
+                    pending={pending}
+                    runAction={runAction}
+                  />
+                </div>
+
+                <div className="grid-detail">
+                  <ParticipantsPanel
+                    participants={participants}
+                    selectedParticipantId={selectedParticipantId}
+                    onSelect={setSelectedParticipantId}
+                  />
+                  <HoldingsPanel
+                    participant={selectedParticipant}
+                    holdings={holdings}
+                  />
+                </div>
+
+                <div className="grid-detail">
+                  <WatchlistPanel
+                    companies={companies}
+                    selectedCompanyId={selectedCompanyId}
+                    onSelect={setSelectedCompanyId}
+                  />
+                  <PriceChartPanel company={selectedCompany} prices={prices} />
                 </div>
               </>
             ) : null}
@@ -324,11 +354,13 @@ function CommandStrip({
       </dl>
 
       <div className="controls">
-        <button className="btn" disabled={pending} onClick={() => runAction(api.runDecisions)}>
-          Run decisions
-        </button>
-        <button className="btn" disabled={pending} onClick={() => runAction(api.advanceCycle)}>
-          Advance cycle
+        <button
+          className="btn"
+          disabled={pending || running}
+          title={running ? 'Stop the loop to step a cycle by hand' : 'Run one decision-and-match cycle'}
+          onClick={() => runAction(api.stepCycle)}
+        >
+          Step once
         </button>
         {running ? (
           <button className="btn btn-primary" disabled={pending} onClick={() => runAction(api.pauseMarket)}>
@@ -365,7 +397,7 @@ function Panel({ title, count, className = '', headerExtra, children }) {
   )
 }
 
-function PriceChartPanel({ companies, selectedCompanyId, onSelect, prices }) {
+function PriceChartPanel({ company, prices }) {
   const values = prices.map((snapshot) => snapshot.price)
   const last = values.at(-1)
   const first = values.at(0)
@@ -376,30 +408,16 @@ function PriceChartPanel({ companies, selectedCompanyId, onSelect, prices }) {
   const tone = toneOf(change)
   const flash = useChangeFlash(last)
 
-  const select = (
-    <select
-      className="select select-sm"
-      aria-label="Select company"
-      value={selectedCompanyId ?? ''}
-      onChange={(event) => onSelect(Number(event.target.value))}
-    >
-      {companies.map((company) => (
-        <option key={company.id} value={company.id}>
-          {company.name}
-        </option>
-      ))}
-    </select>
-  )
-
   return (
     <Panel
-      title="Price"
-      count={`${prices.length} snapshot${prices.length === 1 ? '' : 's'}`}
+      title={company ? `Price · ${company.name}` : 'Price'}
+      count={company ? `${prices.length} snapshot${prices.length === 1 ? '' : 's'}` : undefined}
       className="panel-chart"
-      headerExtra={select}
     >
-      {values.length < 2 ? (
-        <p className="note">Not enough price history yet. Advance a cycle to record trades.</p>
+      {!company ? (
+        <p className="note">Select a company to see its price history.</p>
+      ) : values.length < 2 ? (
+        <p className="note">Not enough price history yet. Start the loop or step a cycle to record trades.</p>
       ) : (
         <>
           <div className="quote">
@@ -578,14 +596,14 @@ function OrderSide({ side, tone, orders, participantNameById, companyNameById })
 
 const TYPE_ABBR = { Individual: 'IND', Company: 'CO', AIAgent: 'AI' }
 
-function ParticipantsPanel({ participants }) {
+function ParticipantsPanel({ participants, selectedParticipantId, onSelect }) {
   return (
     <Panel title="Traders" count={`${participants.length}`} className="panel-traders">
       {participants.length === 0 ? (
         <p className="note">No participants yet.</p>
       ) : (
         <div className="tbl-scroll">
-          <table className="tbl">
+          <table className="tbl tbl-select">
             <thead>
               <tr>
                 <th scope="col">Trader</th>
@@ -598,14 +616,70 @@ function ParticipantsPanel({ participants }) {
               </tr>
             </thead>
             <tbody>
-              {participants.map((participant) => (
-                <tr key={participant.id}>
-                  <th scope="row" className="cell-trader">
-                    <span className="cell-ellipsis">{participant.name}</span>
-                    <span className="tag">{TYPE_ABBR[participant.type] ?? participant.type}</span>
+              {participants.map((participant) => {
+                const active = participant.id === selectedParticipantId
+                return (
+                  <tr
+                    key={participant.id}
+                    className={`row-select ${active ? 'is-active' : ''}`}
+                    aria-selected={active}
+                    tabIndex={0}
+                    onClick={() => onSelect(participant.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onSelect(participant.id)
+                      }
+                    }}
+                  >
+                    <th scope="row" className="cell-trader">
+                      <span className="cell-ellipsis">{participant.name}</span>
+                      <span className="tag">{TYPE_ABBR[participant.type] ?? participant.type}</span>
+                    </th>
+                    <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
+                    <td className="num ta-r">{formatMoney(participant.availableBalance)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+function HoldingsPanel({ participant, holdings }) {
+  const totalShares = holdings.reduce((sum, holding) => sum + holding.shares, 0)
+
+  return (
+    <Panel
+      title={participant ? `Holdings · ${participant.name}` : 'Holdings'}
+      count={participant ? `${formatInt(totalShares)} shares` : undefined}
+      className="panel-holdings"
+    >
+      {!participant ? (
+        <p className="note">Select a trader to see their shares by company.</p>
+      ) : holdings.length === 0 ? (
+        <p className="note">This trader holds no shares.</p>
+      ) : (
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">Company</th>
+                <th scope="col" className="ta-r">
+                  Shares
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {holdings.map((holding) => (
+                <tr key={holding.companyId}>
+                  <th scope="row" className="cell-ellipsis">
+                    {holding.companyName}
                   </th>
-                  <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
-                  <td className="num ta-r">{formatMoney(participant.availableBalance)}</td>
+                  <td className="num ta-r">{formatInt(holding.shares)}</td>
                 </tr>
               ))}
             </tbody>
@@ -613,6 +687,103 @@ function ParticipantsPanel({ participants }) {
         </div>
       )}
     </Panel>
+  )
+}
+
+const ACTIVITY_WINDOW = 48
+
+function ActivityPanel({ activity }) {
+  // The first cycle can hold a large backlog of orders, so the chart shows a recent window to keep
+  // the scale readable; the total stays all-time.
+  const points = activity.slice(-ACTIVITY_WINDOW)
+  const total = activity.reduce((sum, point) => sum + point.ordersPlaced, 0)
+  const windowCounts = points.map((point) => point.ordersPlaced)
+  const latest = windowCounts.at(-1) ?? 0
+  const peak = windowCounts.length ? Math.max(...windowCounts) : 0
+
+  return (
+    <Panel
+      title="Market activity"
+      count={`${formatInt(total)} orders`}
+      className="panel-activity"
+    >
+      {points.length < 2 ? (
+        <p className="note">Start the loop or step a cycle to see orders placed per loop.</p>
+      ) : (
+        <>
+          <div className="quote">
+            <strong className="quote-last num">{formatInt(latest)}</strong>
+            <span className="muted-sub">orders last loop · peak {formatInt(peak)} in last {points.length}</span>
+          </div>
+          <ActivityChart points={points} />
+        </>
+      )}
+    </Panel>
+  )
+}
+
+// Line-and-area chart of orders placed per loop, with a labelled count axis (Y) and cycle axis (X).
+function ActivityChart({ points }) {
+  const width = 720
+  const height = 240
+  const margin = { top: 12, right: 12, bottom: 28, left: 44 }
+  const plotWidth = width - margin.left - margin.right
+  const plotHeight = height - margin.top - margin.bottom
+
+  const counts = points.map((point) => point.ordersPlaced)
+  const tickCount = 4
+  const step = Math.max(1, Math.ceil(Math.max(...counts) / tickCount))
+  const yMax = step * tickCount
+  const yTicks = Array.from({ length: tickCount + 1 }, (_, index) => index * step)
+
+  const count = points.length
+  const x = (index) => margin.left + (count === 1 ? plotWidth / 2 : (index * plotWidth) / (count - 1))
+  const y = (value) => margin.top + plotHeight - (value / yMax) * plotHeight
+  const baseline = margin.top + plotHeight
+
+  const line = points.map((point, index) => `${x(index)},${y(point.ordersPlaced)}`).join(' ')
+  const area = `${x(0)},${baseline} ${line} ${x(count - 1)},${baseline}`
+  const last = points.at(-1)
+
+  // Thin out X labels so cycle numbers never overlap, always keeping the most recent one.
+  const labelEvery = Math.max(1, Math.ceil(count / 6))
+  const xLabels = points
+    .map((point, index) => ({ point, index }))
+    .filter(({ index }) => index % labelEvery === 0 || index === count - 1)
+
+  return (
+    <div className="activity-chart">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={`Orders placed per loop across the last ${count} cycles, peaking at ${Math.max(...counts)}.`}
+      >
+        <defs>
+          <linearGradient id="activity-fill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="currentColor" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <g className="chart-axis" aria-hidden="true">
+          {yTicks.map((tick) => (
+            <g key={tick}>
+              <line className="chart-gridline" x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} />
+              <text className="chart-tick chart-tick-y" x={margin.left - 8} y={y(tick)}>
+                {tick}
+              </text>
+            </g>
+          ))}
+          {xLabels.map(({ point, index }) => (
+            <text key={point.cycleNumber} className="chart-tick chart-tick-x" x={x(index)} y={height - 8}>
+              {point.cycleNumber}
+            </text>
+          ))}
+        </g>
+        <polygon className="activity-area" points={area} fill="url(#activity-fill)" />
+        <polyline className="activity-line" points={line} />
+        {last ? <circle className="activity-dot" cx={x(count - 1)} cy={y(last.ordersPlaced)} r="3.5" /> : null}
+      </svg>
+    </div>
   )
 }
 

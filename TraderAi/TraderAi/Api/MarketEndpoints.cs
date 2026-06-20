@@ -87,6 +87,28 @@ public static class MarketEndpoints
             return Results.Ok(response);
         });
 
+        app.MapGet("/participants/{participantId:int}/holdings", async (int participantId, AppDbContext dbContext) =>
+        {
+            var sharesByCompany = await dbContext.Shares
+                .Where(share => share.OwnerId == participantId)
+                .GroupBy(share => share.CompanyId)
+                .Select(group => new { CompanyId = group.Key, Shares = group.Count() })
+                .ToListAsync();
+
+            var companyNameById = await dbContext.Companies
+                .ToDictionaryAsync(company => company.Id, company => company.Name);
+
+            var response = sharesByCompany
+                .OrderByDescending(holding => holding.Shares)
+                .Select(holding => new HoldingResponse(
+                    holding.CompanyId,
+                    companyNameById.GetValueOrDefault(holding.CompanyId, $"#{holding.CompanyId}"),
+                    holding.Shares))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
         app.MapGet("/orders", async (string? status, AppDbContext dbContext) =>
         {
             var query = dbContext.Orders.AsQueryable();
@@ -115,22 +137,14 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
-        app.MapPost("/decisions/run", async (MarketService marketService) =>
+        app.MapPost("/cycles/tick", async (MarketService marketService) =>
         {
-            var result = await marketService.GenerateDecisionsAsync();
-
-            return result.Success
-                ? Results.Ok(new RunDecisionsResponse(result.OrdersPlaced))
-                : Results.BadRequest(new { error = result.Error });
-        });
-
-        app.MapPost("/cycles/advance", async (MarketService marketService) =>
-        {
-            var result = await marketService.AdvanceCycleAsync();
-
-            return result.Success
-                ? Results.Ok(new AdvanceCycleResponse(result.CompletedCycleNumber, result.FillCount))
-                : Results.BadRequest(new { error = result.Error });
+            var result = await marketService.StepCycleAsync();
+            return Results.Ok(new CycleTickResponse(
+                result.Ran,
+                result.CompletedCycleNumber,
+                result.OrdersPlaced,
+                result.FillCount));
         });
 
         app.MapGet("/cycles", async (AppDbContext dbContext) =>
@@ -144,6 +158,28 @@ public static class MarketEndpoints
                     cycle.Status.ToString(),
                     cycle.StartedAt,
                     cycle.CompletedAt))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/cycles/activity", async (AppDbContext dbContext) =>
+        {
+            // Issuer seed sell orders all land in the first cycle, so only participant orders are
+            // counted to keep the activity chart about ongoing trading rather than the initial listing.
+            var ordersByCycle = await dbContext.Orders
+                .Where(order => order.ParticipantId != null)
+                .GroupBy(order => order.CreatedInCycleId)
+                .Select(group => new { CycleId = group.Key, Count = group.Count() })
+                .ToListAsync();
+
+            var ordersPlacedByCycleId = ordersByCycle.ToDictionary(entry => entry.CycleId, entry => entry.Count);
+
+            var cycles = await dbContext.MarketCycles.OrderBy(cycle => cycle.CycleNumber).ToListAsync();
+            var response = cycles
+                .Select(cycle => new ActivityPointResponse(
+                    cycle.CycleNumber,
+                    ordersPlacedByCycleId.GetValueOrDefault(cycle.Id)))
                 .ToArray();
 
             return Results.Ok(response);
@@ -255,9 +291,11 @@ public sealed record OrderResponse(
     decimal ReservedCashAmount,
     int CreatedInCycleId);
 
-public sealed record AdvanceCycleResponse(int? CompletedCycleNumber, int FillCount);
+public sealed record CycleTickResponse(bool Ran, int? CompletedCycleNumber, int OrdersPlaced, int FillCount);
 
-public sealed record RunDecisionsResponse(int OrdersPlaced);
+public sealed record ActivityPointResponse(int CycleNumber, int OrdersPlaced);
+
+public sealed record HoldingResponse(int CompanyId, string CompanyName, int Shares);
 
 public sealed record CycleResponse(int Id, int CycleNumber, string Status, DateTime? StartedAt, DateTime? CompletedAt);
 

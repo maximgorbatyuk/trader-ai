@@ -61,6 +61,10 @@ public sealed class MarketService(
     // trigger cannot slip between the two halves. Skips unless the market is explicitly running.
     public Task<CycleTickResult> RunCycleTickAsync() => WithLockAsync(RunCycleTickCoreAsync);
 
+    // Manual equivalent of one loop tick, used while the loop is stopped: same decide-then-match step
+    // but without the running gate, so a single cycle can be stepped by hand.
+    public Task<CycleTickResult> StepCycleAsync() => WithLockAsync(StepCycleCoreAsync);
+
     public Task<Market> SeedDemoMarketAsync() => WithLockAsync(SeedDemoMarketCoreAsync);
 
     public Task<Market?> SetStatusAsync(MarketStatus status) => WithLockAsync(async () =>
@@ -85,6 +89,22 @@ public sealed class MarketService(
             return CycleTickResult.Skipped();
         }
 
+        return await DecideAndAdvanceCoreAsync();
+    }
+
+    private async Task<CycleTickResult> StepCycleCoreAsync()
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market?.CurrentCycleId is null)
+        {
+            return CycleTickResult.Skipped();
+        }
+
+        return await DecideAndAdvanceCoreAsync();
+    }
+
+    private async Task<CycleTickResult> DecideAndAdvanceCoreAsync()
+    {
         var decisions = await GenerateDecisionsCoreAsync();
         var advance = await AdvanceCycleCoreAsync();
 
@@ -345,7 +365,7 @@ public sealed class MarketService(
         var market = new Market
         {
             Name = "Demo Market",
-            Status = MarketStatus.Running,
+            Status = MarketStatus.NotStarted,
             CreatedAt = now,
             UpdatedAt = now,
         };
