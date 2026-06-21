@@ -1,14 +1,10 @@
-# trader-ai
-
-## Tech stack
-
-- .NET 10
-- SQLite database
-- Web API for backend
-- React for frontend
-- Some mechanism for trading simulation - code should be able to run in a loop in parallel thread and make decisions based on the market data (to discuss with AI)
+# Trader Simulator
 
 ## How to launch
+
+```bash
+./start-dev.sh
+```
 
 Prerequisites:
 
@@ -23,21 +19,25 @@ dotnet tool restore
 npm --prefix frontend install
 ```
 
-Start the app:
+## Website
 
-```bash
-./start-dev.sh
-```
-
-The frontend runs at `http://127.0.0.1:5173`. The backend runs at `http://127.0.0.1:5100`.
+The frontend runs at `http://localhost:5173`. The backend runs at `http://localhost:5100`.
 
 Each participant has its own detail page at `/participants/<id>` — temperament and risk profile (editable), bank balances, holdings valued against current prices, and recent orders, trades, and cash movements. Open it in a separate tab from the Traders table on the dashboard.
 
+![A participant's detail page: cash balances, editable temperament and risk, holdings valued at current prices, and recent orders, trades, and cash movements.](docs/images/participant-page.png)
+
 The dashboard lists every company with its industry, and a Newswire panel shows the news events the running market publishes on a cycle schedule — some of which nudge a company's or an industry's share price. You can also add a news event by hand from that panel, choosing the target company or industries, a theme, and the impact direction and size.
+
+![The dashboard: the market map sized by company capitalisation, the market-activity chart, and the Traders table.](docs/images/dashboard.png)
 
 The market can also be hit by a crisis — a random shock, growing more likely the longer the market runs without one, that drives a few sectors (local) or a large share of all sectors (global) sharply down. A banner highlights a recent crisis and it appears in the Newswire as an alert. A sharp drop, from a crisis or a news event, also cancels the standing buy orders for the affected companies, just as a sharp rise cancels their standing sell orders. The upbeat counterpart is a science investigation — a small, local breakthrough that lifts a few sectors, shown with its own green banner and Newswire items, and which only nudges prices up without touching the order book. A trader whose share holdings grow very valuable can also go bankrupt: its cash is wiped and most of its holdings are dumped onto the market at a steepening discount until they sell, an event that shows up in the Newswire without moving any other prices.
 
+![The Newswire feed: a crisis shows as a red alert and a science breakthrough as a green one, between ordinary headlines.](docs/images/market-events.png)
+
 Cash-strapped traders may instead pool into a collective fund, which trades as its own participant and is tagged with a green label in the Traders table. A member contributes most of its cash, stops bidding on its own, and earns a share of the fund's dividends; the fund returns that deposit when the member leaves, and once only two members remain and one departs it sells out and splits the proceeds between them. A member drops out of the Traders table while it belongs to a fund and returns once it leaves or the fund closes. A fund's page lists who has joined and when.
+
+![A collective fund's page: its green status tag and the Fund members who have joined, with the cycle each joined, deposits, and payouts.](docs/images/collective-fund.png)
 
 No authentication is required between the frontend and backend for local development.
 
@@ -47,3 +47,11 @@ No authentication is required between the frontend and backend for local develop
 | --- | --- |
 | [Domain](docs/domain.md) | The simulation's data model and the core market rules. |
 | [Participant rules](docs/participant-rules.md) | A trader's-eye view: what a participant starts with, what it may and may not do, its states, how it joins a collective fund, and how its orders work. |
+
+## Tech stack
+
+- .NET 10
+- SQLite database
+- Web API for backend
+- React for frontend
+- Some mechanism for trading simulation - code should be able to run in a loop in parallel thread and make decisions based on the market data (to discuss with AI)
