@@ -30,11 +30,11 @@ public sealed class Participant
     // decision engine and generic order ageing because the bankruptcy service owns its order lifecycle.
     public bool IsBankrupt { get; set; }
 
-    // Consecutive cycles the trader's net worth has stayed above the wealth line; the bankruptcy chance
-    // ramps with it and the counter resets to zero once net worth falls back below the line.
+    // Consecutive cycles the trader's share holdings have stayed valued above the wealth line; the bankruptcy
+    // chance ramps with it and the counter resets to zero once that value falls back below the line.
     public int WealthyCycles { get; set; }
 
-    // Shares the trader owned when bankruptcy struck, the baseline the 80% sell-down target is measured from.
+    // Shares the trader owned when bankruptcy struck, the baseline the sell-down target is measured from.
     public int BankruptcyOwnedAtStart { get; set; }
 
     // How many times a forced-sale order has gone unsold and been re-listed; each step deepens the discount.

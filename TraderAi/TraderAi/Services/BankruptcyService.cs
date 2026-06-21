@@ -5,9 +5,9 @@ using TraderAi.Models;
 
 namespace TraderAi.Services;
 
-// Drives trader bankruptcies once per cycle, before the cycle's matching runs. A solvent trader whose net
-// worth stays above the wealth line sees its bankruptcy chance ramp each cycle; when it fires the trader's
-// cash is wiped and 80% of its holdings are dumped onto the order book at a discount. A trader still working
+// Drives trader bankruptcies once per cycle, before the cycle's matching runs. A trader whose share holdings
+// stay valued above the wealth line sees its bankruptcy chance ramp each cycle; when it fires the trader's
+// cash is wiped and most of its holdings are dumped onto the order book at a discount. A trader still working
 // through that sell-down has its unsold orders re-listed a step cheaper each cycle until the target is met.
 // Called from inside order maintenance, which already holds the lock and owns the save, so this only stages
 // changes on the shared context.
@@ -16,8 +16,9 @@ public sealed class BankruptcyService(
     IOptions<BankruptcyOptions> options,
     Random random)
 {
-    // Only net worth above this line puts a trader at risk; cash plus shares valued at the latest price.
-    private const decimal NetWorthThreshold = 1_000_000_000m;
+    // Only the trader's share holdings, valued at the latest price, are weighed against this line; cash is
+    // ignored. At or above it the trader is at risk.
+    private const decimal ShareWorthThreshold = 2_000_000_000m;
 
     // No trader can go bankrupt during the market's opening stretch, and the wealth ramp does not start
     // accumulating until it passes, so an early simulation runs clean and the ramp stays gentle afterwards.
@@ -29,7 +30,7 @@ public sealed class BankruptcyService(
     private const double MaxProbability = 0.10;
 
     // A bankrupt trader must sell down this fraction of the shares it held when bankruptcy struck.
-    private const decimal SellDownFraction = 0.80m;
+    private const decimal SellDownFraction = 0.65m;
 
     // The first forced-sale lists at the base discount off the current price; every unsold re-listing
     // deepens it by a step, floored so the asking price never reaches zero.
@@ -107,8 +108,8 @@ public sealed class BankruptcyService(
             return;
         }
 
-        var netWorth = participant.CurrentBalance + ShareWorth(owned, latestPriceByCompany);
-        if (netWorth <= NetWorthThreshold)
+        var shareWorth = ShareWorth(owned, latestPriceByCompany);
+        if (shareWorth < ShareWorthThreshold)
         {
             participant.WealthyCycles = 0;
             return;
@@ -122,7 +123,6 @@ public sealed class BankruptcyService(
         }
 
         var cashLost = participant.CurrentBalance;
-        var shareWorth = ShareWorth(owned, latestPriceByCompany);
 
         // Wipe the trader: cancel every open order (releasing reserved cash and freeing offered shares), then
         // zero the balance and record the loss in the ledger.
