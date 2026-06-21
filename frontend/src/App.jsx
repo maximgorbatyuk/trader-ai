@@ -3,9 +3,21 @@ import './App.css'
 import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { Panel } from './Panel'
+import { LineChart } from './LineChart'
 
 const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
+const REPOSITORY_URL = 'https://github.com/maximgorbatyuk/trader-ai'
+const FOOTER_LINK_GROUPS = [
+  [
+    { label: 'Concept', href: `${REPOSITORY_URL}/blob/main/docs/domain.md` },
+    { label: 'About', href: `${REPOSITORY_URL}#trader-ai` },
+  ],
+  [
+    { label: 'Github', href: REPOSITORY_URL },
+    { label: 'Issues', href: `${REPOSITORY_URL}/issues` },
+  ],
+]
 
 // A null participant is the share issuer's own offering (seeded company sell orders).
 function traderName(id, byId) {
@@ -230,6 +242,8 @@ function App() {
           </>
         )}
       </main>
+
+      <Footer />
     </div>
   )
 }
@@ -251,6 +265,40 @@ function TopBar({ connected, ready, market }) {
         <ConnPill connected={connected} ready={ready} />
       </div>
     </header>
+  )
+}
+
+function Footer() {
+  return (
+    <footer className="footer">
+      <div className="footer-brand">
+        <p className="footer-title">Trader AI</p>
+        <p className="footer-subtitle">
+          Made with ❤️, coffee and claude by (c){' '}
+          <a href="https://github.com/maximgorbatyuk" target="_blank" rel="noreferrer">
+            maximgorbatyuk
+          </a>
+        </p>
+      </div>
+
+      {FOOTER_LINK_GROUPS.map((links, index) => (
+        <nav
+          className="footer-links"
+          aria-label={index === 0 ? 'Project links' : 'Repository links'}
+          key={index === 0 ? 'project' : 'repository'}
+        >
+          <ul>
+            {links.map((link) => (
+              <li key={link.label}>
+                <a href={link.href} target="_blank" rel="noreferrer">
+                  {link.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      ))}
+    </footer>
   )
 }
 
@@ -458,48 +506,6 @@ function PriceChartPanel({ company, prices }) {
   )
 }
 
-function LineChart({ values, tone }) {
-  const width = 720
-  const height = 220
-  const padX = 6
-  const padY = 16
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const range = max - min
-  const plot = height - padY * 2
-
-  const points = values.map((value, index) => ({
-    x: padX + (index * (width - padX * 2)) / (values.length - 1),
-    // A flat (zero-range) series centers vertically instead of pinning to the floor.
-    y: range === 0 ? height / 2 : padY + plot - ((value - min) / range) * plot,
-  }))
-
-  const line = points.map((point) => `${point.x},${point.y}`).join(' ')
-  const area = `${padX},${height} ${line} ${width - padX},${height}`
-  const last = points.at(-1)
-
-  return (
-    <div className={`chart tone-${tone}`}>
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Price history line chart">
-        <defs>
-          <linearGradient id="chart-fill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="currentColor" stopOpacity="0.16" />
-            <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <g className="chart-grid" aria-hidden="true">
-          {[0.25, 0.5, 0.75].map((fraction) => (
-            <line key={fraction} x1={padX} x2={width - padX} y1={padY + fraction * (height - padY * 2)} y2={padY + fraction * (height - padY * 2)} />
-          ))}
-        </g>
-        <polygon points={area} fill="url(#chart-fill)" />
-        <polyline className="chart-line" points={line} />
-        {last ? <circle className="chart-dot" cx={last.x} cy={last.y} r="3.5" /> : null}
-      </svg>
-    </div>
-  )
-}
-
 function WatchlistPanel({ companies, selectedCompanyId, onSelect }) {
   return (
     <Panel title="Companies" count={`${companies.length}`} className="panel-watchlist">
@@ -510,7 +516,7 @@ function WatchlistPanel({ companies, selectedCompanyId, onSelect }) {
           {companies.map((company) => {
             const active = company.id === selectedCompanyId
             return (
-              <li key={company.id}>
+              <li key={company.id} className="watch-item">
                 <button
                   type="button"
                   className={`watch-row ${active ? 'is-active' : ''}`}
@@ -520,6 +526,16 @@ function WatchlistPanel({ companies, selectedCompanyId, onSelect }) {
                   <span className="watch-name">{company.name}</span>
                   <span className="watch-price num">{formatMoney(company.currentPrice)}</span>
                 </button>
+                <a
+                  className="open-page open-page-watch"
+                  href={`/companies/${company.id}`}
+                  target="_blank"
+                  rel="noopener"
+                  title="Open detail page in a new tab"
+                  aria-label={`Open ${company.name} detail page in a new tab`}
+                >
+                  <span aria-hidden="true">↗</span>
+                </a>
               </li>
             )
           })}

@@ -27,6 +27,69 @@ public static class MarketEndpoints
             return Results.Ok(response);
         });
 
+        app.MapGet("/companies/{companyId:int}", async (int companyId, AppDbContext dbContext) =>
+        {
+            var detail = await BuildCompanyDetailAsync(dbContext, companyId);
+            return detail is null
+                ? Results.NotFound(new { error = "Company not found." })
+                : Results.Ok(detail);
+        });
+
+        app.MapGet("/companies/{companyId:int}/shareholders", async (int companyId, AppDbContext dbContext) =>
+        {
+            // CurrentPrice on a held share is what its owner last paid, so summing per owner is the cost basis.
+            var sharesByOwner = await dbContext.Shares
+                .Where(share => share.CompanyId == companyId && share.OwnerId != null)
+                .GroupBy(share => share.OwnerId!.Value)
+                .Select(group => new { OwnerId = group.Key, Shares = group.Count(), CostBasis = group.Sum(share => share.CurrentPrice) })
+                .ToListAsync();
+
+            var ownerNameById = await dbContext.Participants
+                .ToDictionaryAsync(participant => participant.Id, participant => participant.Name);
+            var issuedShares = await dbContext.Companies
+                .Where(company => company.Id == companyId)
+                .Select(company => company.IssuedSharesCount)
+                .FirstOrDefaultAsync();
+            var currentPrice = (await LatestPriceByCompanyAsync(dbContext)).GetValueOrDefault(companyId);
+
+            var response = sharesByOwner
+                .OrderByDescending(holder => holder.Shares)
+                .Select(holder => new ShareholderResponse(
+                    holder.OwnerId,
+                    ownerNameById.GetValueOrDefault(holder.OwnerId, $"#{holder.OwnerId}"),
+                    holder.Shares,
+                    currentPrice * holder.Shares,
+                    holder.CostBasis,
+                    issuedShares > 0 ? (decimal)holder.Shares / issuedShares : 0m))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/companies/{companyId:int}/orders", async (int companyId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 10, 1, 100);
+            var orders = await dbContext.Orders
+                .Where(order => order.CompanyId == companyId)
+                .OrderByDescending(order => order.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            return Results.Ok(orders.Select(ToOrderResponse).ToArray());
+        });
+
+        app.MapGet("/companies/{companyId:int}/share-transactions", async (int companyId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 10, 1, 100);
+            var transactions = await dbContext.ShareTransactions
+                .Where(transaction => transaction.CompanyId == companyId)
+                .OrderByDescending(transaction => transaction.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            return Results.Ok(transactions.Select(ToShareTransactionResponse).ToArray());
+        });
+
         app.MapGet("/market", async (MarketService marketService, AppDbContext dbContext) =>
         {
             var market = await marketService.GetMarketAsync();
@@ -376,6 +439,41 @@ public static class MarketEndpoints
             .SumAsync(transaction => transaction.Amount);
     }
 
+    private static async Task<CompanyDetailResponse?> BuildCompanyDetailAsync(AppDbContext dbContext, int companyId)
+    {
+        var company = await dbContext.Companies.FirstOrDefaultAsync(candidate => candidate.Id == companyId);
+        if (company is null)
+        {
+            return null;
+        }
+
+        // Shares the issuer has not yet sold carry no owner; the rest are outstanding in participants' hands.
+        var sharesHeldByIssuer = await dbContext.Shares
+            .CountAsync(share => share.CompanyId == companyId && share.OwnerId == null);
+        var sharesOutstanding = await dbContext.Shares
+            .CountAsync(share => share.CompanyId == companyId && share.OwnerId != null);
+        var shareholderCount = await dbContext.Shares
+            .Where(share => share.CompanyId == companyId && share.OwnerId != null)
+            .Select(share => share.OwnerId)
+            .Distinct()
+            .CountAsync();
+
+        var currentPrice = (await LatestPriceByCompanyAsync(dbContext)).GetValueOrDefault(companyId);
+        var priceChangePct = (await PriceChangePctByCompanyAsync(dbContext)).GetValueOrDefault(companyId);
+
+        return new CompanyDetailResponse(
+            company.Id,
+            company.Name,
+            company.IssuedSharesCount,
+            currentPrice == 0m ? null : currentPrice,
+            priceChangePct,
+            currentPrice * company.IssuedSharesCount,
+            sharesHeldByIssuer,
+            sharesOutstanding,
+            shareholderCount,
+            company.CreatedAt);
+    }
+
     private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(AppDbContext dbContext, int participantId)
     {
         var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
@@ -428,6 +526,26 @@ public static class MarketEndpoints
 }
 
 public sealed record CompanyResponse(int Id, string Name, int IssuedSharesCount, decimal? CurrentPrice, decimal PriceChangePct);
+
+public sealed record CompanyDetailResponse(
+    int Id,
+    string Name,
+    int IssuedSharesCount,
+    decimal? CurrentPrice,
+    decimal PriceChangePct,
+    decimal MarketCap,
+    int SharesHeldByIssuer,
+    int SharesOutstanding,
+    int ShareholderCount,
+    DateTime CreatedAt);
+
+public sealed record ShareholderResponse(
+    int OwnerId,
+    string OwnerName,
+    int Shares,
+    decimal MarketValue,
+    decimal CostBasis,
+    decimal PctOfIssued);
 
 public sealed record MarketResponse(int Id, string Name, string Status, int? CurrentCycleId, decimal LastDividendTotal);
 

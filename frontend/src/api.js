@@ -45,6 +45,11 @@ export const api = {
   getHealth: () => get('/health'),
   getMarket: () => get('/market'),
   getCompanies: () => get('/companies'),
+  getCompany: (companyId) => get(`/companies/${companyId}`),
+  getCompanyShareholders: (companyId) => get(`/companies/${companyId}/shareholders`),
+  getCompanyOrders: (companyId, take = 10) => get(`/companies/${companyId}/orders?take=${take}`),
+  getCompanyShareTransactions: (companyId, take = 10) =>
+    get(`/companies/${companyId}/share-transactions?take=${take}`),
   getParticipants: () => get('/participants'),
   getOrders: (status) => get(status ? `/orders?status=${status}` : '/orders'),
   getCycles: () => get('/cycles'),
