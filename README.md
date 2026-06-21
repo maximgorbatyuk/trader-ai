@@ -33,4 +33,6 @@ The frontend runs at `http://127.0.0.1:5173`. The backend runs at `http://127.0.
 
 Each participant has its own detail page at `/participants/<id>` — temperament and risk profile (editable), bank balances, holdings valued against current prices, and recent orders, trades, and cash movements. Open it in a separate tab from the Traders table on the dashboard.
 
+The dashboard lists every company with its industry, and a Newswire panel shows the random news events the running market publishes — some of which nudge a company's or a whole industry's share price.
+
 No authentication is required between the frontend and backend for local development.

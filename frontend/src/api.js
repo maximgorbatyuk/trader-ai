@@ -56,6 +56,7 @@ export const api = {
   getCycleActivity: () => get('/cycles/activity'),
   getShareTransactions: (take) => get(take ? `/transactions/shares?take=${take}` : '/transactions/shares'),
   getPrices: (companyId) => get(`/prices/${companyId}`),
+  getNews: (take = 30) => get(`/news?take=${take}`),
   getHoldings: (participantId) => get(`/participants/${participantId}/holdings`),
   getParticipant: (participantId) => get(`/participants/${participantId}`),
   getParticipantOrders: (participantId, take = 10) => get(`/participants/${participantId}/orders?take=${take}`),

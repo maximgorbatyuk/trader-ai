@@ -17,6 +17,8 @@ Each share is stored as a separate row and has one current owner.
 - While unfilled, a stale order is re-priced toward the market on each later cycle so it has a chance to fill before that cancellation cap.
 - A holder that cannot afford any share for several consecutive cycles sells down its most valuable holding to raise cash.
 - Every share owner is paid a dividend at a recurring interval, sized as a small percentage of each held share's current price and credited straight to the owner's balance.
+- While the market runs, random news events are published at irregular intervals; some carry market impact.
+- A news event with impact moves the share price of either a single company or every company in one or more industries, up or down, by 0.1% to 10% of the current price.
 - A buy order reserves cash when it is created.
 - The reserved cash amount is `Quantity * LimitPrice`.
 - Reserved cash cannot be used by another buy order.
@@ -60,6 +62,7 @@ Fields:
 
 - ID
 - Name
+- IndustryId
 - IssuedSharesCount
 - CreatedAt
 - UpdatedAt
@@ -68,6 +71,21 @@ Notes:
 
 - Issued shares are represented by separate `Share` records.
 - The company price can be read from the latest price snapshot.
+- Every company belongs to exactly one industry.
+
+### Industry
+
+An industry is a sector that groups companies, used as the unit a news event can move all at once.
+
+Fields:
+
+- ID
+- Name
+
+Notes:
+
+- A company belongs to one industry; an industry can hold many companies.
+- Industries exist mainly so a single news event can move a whole sector at once.
 
 ### Share
 
@@ -261,3 +279,27 @@ Notes:
 - The market contains companies, participants, shares, orders, share transactions, money transactions, and cycles.
 - The market controls when cycles start and finish.
 - The market owns the order-matching rules.
+
+### NewsPost
+
+A news post is a randomly generated social-media style event published while the market runs.
+
+Fields:
+
+- ID
+- Title
+- Content
+- PublishedInCycleId
+- PublishedAt
+- Scope (None, Company, Industries)
+- Direction (Increase, Decrease)
+- ImpactPercent
+- TargetCompanyId
+- Industries (the impacted industries when the scope is Industries)
+
+Notes:
+
+- Title and content are generated to read like real, if whimsical, news.
+- A post with no impact has scope None and no direction, percent, or target.
+- A company-scoped post moves one company; an industry-scoped post moves every company in its listed industries.
+- Impact is applied by recording a new price point for each affected company, the same way a trade moves the price.

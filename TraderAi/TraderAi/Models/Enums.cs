@@ -59,3 +59,16 @@ public enum MarketStatus
     Paused,
     Completed,
 }
+
+public enum NewsImpactScope
+{
+    None,
+    Company,
+    Industries,
+}
+
+public enum NewsImpactDirection
+{
+    Increase,
+    Decrease,
+}

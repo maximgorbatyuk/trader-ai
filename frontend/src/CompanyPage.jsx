@@ -104,6 +104,10 @@ function CompanyPage() {
               </div>
               <dl className="statbar">
                 <div className="stat">
+                  <dt>Industry</dt>
+                  <dd>{detail.industryName ?? '—'}</dd>
+                </div>
+                <div className="stat">
                   <dt>Price</dt>
                   <dd className="num">{formatMoney(detail.currentPrice)}</dd>
                 </div>

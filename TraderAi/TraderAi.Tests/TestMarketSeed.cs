@@ -17,7 +17,18 @@ internal static class TestMarketSeed
         var market = new Market { Name = "Demo Market", Status = MarketStatus.Running, CreatedAt = now, UpdatedAt = now };
         context.Markets.Add(market);
 
-        var company = new Company { Name = "Acme Corp", IssuedSharesCount = 10, CreatedAt = now, UpdatedAt = now };
+        var industry = new Industry { Name = "Software Development" };
+        context.Industries.Add(industry);
+        await context.SaveChangesAsync();
+
+        var company = new Company
+        {
+            Name = "Acme Corp",
+            IndustryId = industry.Id,
+            IssuedSharesCount = 10,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
         context.Companies.Add(company);
 
         var seller = new Participant

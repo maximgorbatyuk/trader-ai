@@ -14,11 +14,14 @@ public static class MarketEndpoints
             var companies = await dbContext.Companies.OrderBy(company => company.Id).ToListAsync();
             var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
             var changeByCompany = await PriceChangePctByCompanyAsync(dbContext);
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
 
             var response = companies
                 .Select(company => new CompanyResponse(
                     company.Id,
                     company.Name,
+                    company.IndustryId,
+                    industryNameById.GetValueOrDefault(company.IndustryId),
                     company.IssuedSharesCount,
                     latestPriceByCompany.GetValueOrDefault(company.Id),
                     changeByCompany.GetValueOrDefault(company.Id)))
@@ -392,7 +395,43 @@ public static class MarketEndpoints
 
             return Results.Ok(response);
         });
+
+        app.MapGet("/news", async (int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 30, 1, 200);
+            var posts = await dbContext.NewsPosts
+                .OrderByDescending(post => post.Id)
+                .Take(limit)
+                .Include(post => post.Industries)
+                .ToListAsync();
+
+            var companyNameById = await dbContext.Companies
+                .ToDictionaryAsync(company => company.Id, company => company.Name);
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+
+            var response = posts
+                .Select(post => new NewsPostResponse(
+                    post.Id,
+                    post.Title,
+                    post.Content,
+                    post.PublishedInCycleId,
+                    post.PublishedAt,
+                    post.Scope.ToString(),
+                    post.Direction?.ToString(),
+                    post.ImpactPercent,
+                    post.TargetCompanyId,
+                    post.TargetCompanyId is int companyId ? companyNameById.GetValueOrDefault(companyId) : null,
+                    post.Industries
+                        .Select(link => industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}")
+                        .ToArray()))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
     }
+
+    private static async Task<Dictionary<int, string>> IndustryNameByIdAsync(AppDbContext dbContext) =>
+        await dbContext.Industries.ToDictionaryAsync(industry => industry.Id, industry => industry.Name);
 
     // The current company price is the most recent snapshot, found per company by its max Id so the
     // whole snapshot history never has to be loaded.
@@ -472,10 +511,16 @@ public static class MarketEndpoints
 
         var currentPrice = (await LatestPriceByCompanyAsync(dbContext)).GetValueOrDefault(companyId);
         var priceChangePct = (await PriceChangePctByCompanyAsync(dbContext)).GetValueOrDefault(companyId);
+        var industryName = await dbContext.Industries
+            .Where(industry => industry.Id == company.IndustryId)
+            .Select(industry => industry.Name)
+            .FirstOrDefaultAsync();
 
         return new CompanyDetailResponse(
             company.Id,
             company.Name,
+            company.IndustryId,
+            industryName,
             company.IssuedSharesCount,
             currentPrice == 0m ? null : currentPrice,
             priceChangePct,
@@ -537,11 +582,20 @@ public static class MarketEndpoints
         order.CreatedInCycleId);
 }
 
-public sealed record CompanyResponse(int Id, string Name, int IssuedSharesCount, decimal? CurrentPrice, decimal PriceChangePct);
+public sealed record CompanyResponse(
+    int Id,
+    string Name,
+    int IndustryId,
+    string? IndustryName,
+    int IssuedSharesCount,
+    decimal? CurrentPrice,
+    decimal PriceChangePct);
 
 public sealed record CompanyDetailResponse(
     int Id,
     string Name,
+    int IndustryId,
+    string? IndustryName,
     int IssuedSharesCount,
     decimal? CurrentPrice,
     decimal PriceChangePct,
@@ -638,3 +692,16 @@ public sealed record ShareTransactionResponse(
     DateTime CreatedAt);
 
 public sealed record PriceSnapshotResponse(int Id, int CompanyId, decimal Price, int CreatedInCycleId, DateTime CreatedAt);
+
+public sealed record NewsPostResponse(
+    int Id,
+    string Title,
+    string Content,
+    int PublishedInCycleId,
+    DateTime PublishedAt,
+    string Scope,
+    string? Direction,
+    decimal? ImpactPercent,
+    int? TargetCompanyId,
+    string? TargetCompanyName,
+    string[] IndustryNames);

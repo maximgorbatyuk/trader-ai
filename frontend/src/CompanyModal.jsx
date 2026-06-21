@@ -158,6 +158,10 @@ export function CompanyModal({ company, participantNameById, onClose }) {
 
           <dl className="modal-stats">
             <div>
+              <dt>Industry</dt>
+              <dd>{company.industryName ?? '—'}</dd>
+            </div>
+            <div>
               <dt>Capitalization</dt>
               <dd className="num">{formatMoney(capitalization)}</dd>
             </div>

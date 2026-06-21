@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import { api } from './api'
-import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from './format'
+import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { Panel } from './Panel'
-import { LineChart } from './LineChart'
 import { CompanyModal } from './CompanyModal'
 
 const POLL_INTERVAL_MS = 1000
@@ -26,23 +25,6 @@ function traderName(id, byId) {
   return byId.get(id) ?? `#${id}`
 }
 
-// Briefly tints a readout when its value changes, so a moving market is felt, not just read.
-function useChangeFlash(value) {
-  const previous = useRef(value)
-  const [flash, setFlash] = useState('')
-
-  useEffect(() => {
-    const prev = previous.current
-    previous.current = value
-    if (prev == null || value == null || value === prev) return undefined
-    setFlash(value > prev ? 'flash-up' : 'flash-down')
-    const timer = setTimeout(() => setFlash(''), 720)
-    return () => clearTimeout(timer)
-  }, [value])
-
-  return flash
-}
-
 function App() {
   const [ready, setReady] = useState(false)
   const [connected, setConnected] = useState(false)
@@ -52,21 +34,15 @@ function App() {
   const [orders, setOrders] = useState([])
   const [cycles, setCycles] = useState([])
   const [transactions, setTransactions] = useState([])
-  const [prices, setPrices] = useState([])
   const [cycleActivity, setCycleActivity] = useState([])
-  const [selectedCompanyId, setSelectedCompanyId] = useState(null)
+  const [news, setNews] = useState([])
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
 
-  const selectedRef = useRef(null)
-  useEffect(() => {
-    selectedRef.current = selectedCompanyId
-  }, [selectedCompanyId])
-
   const loadAll = useCallback(async () => {
     try {
-      const [marketData, companyData, participantData, orderData, cycleData, activityData, transactionData] =
+      const [marketData, companyData, participantData, orderData, cycleData, activityData, transactionData, newsData] =
         await Promise.all([
           api.getMarket(),
           api.getCompanies(),
@@ -75,6 +51,7 @@ function App() {
           api.getCycles(),
           api.getCycleActivity(),
           api.getShareTransactions(50),
+          api.getNews(),
         ])
 
       setMarket(marketData)
@@ -84,10 +61,8 @@ function App() {
       setCycles(cycleData)
       setCycleActivity(activityData)
       setTransactions(transactionData)
+      setNews(newsData)
       setConnected(true)
-
-      const companyId = selectedRef.current
-      setPrices(companyId ? await api.getPrices(companyId) : [])
     } catch {
       setConnected(false)
     } finally {
@@ -103,14 +78,6 @@ function App() {
       clearInterval(intervalId)
     }
   }, [loadAll])
-
-  useEffect(() => {
-    if (!selectedCompanyId) {
-      return
-    }
-
-    api.getPrices(selectedCompanyId).then(setPrices).catch(() => {})
-  }, [selectedCompanyId])
 
   async function runAction(action) {
     setPending(true)
@@ -128,23 +95,26 @@ function App() {
   async function resetMarket() {
     await api.resetMarket()
 
-    selectedRef.current = null
-    setSelectedCompanyId(null)
     setMapModalCompanyId(null)
-    setPrices([])
   }
 
   const participantNameById = new Map(participants.map((participant) => [participant.id, participant.name]))
   const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
-  const selectedCompany = companies.find((company) => company.id === selectedCompanyId) ?? null
   const mapModalCompany = companies.find((company) => company.id === mapModalCompanyId) ?? null
   const currentCycleNumber =
     cycles.find((cycle) => cycle.id === market?.currentCycleId)?.cycleNumber ?? cycles.length
 
   return (
     <div className="app">
-      <TopBar connected={connected} ready={ready} market={market} />
+      <TopBar
+        connected={connected}
+        ready={ready}
+        market={market}
+        pending={pending}
+        runAction={runAction}
+        resetMarket={resetMarket}
+      />
 
       <main className="main">
         {!ready ? (
@@ -166,49 +136,36 @@ function App() {
                   trades={transactions.length}
                   participants={participants.length}
                   companies={companies.length}
-                  pending={pending}
                   actionError={actionError}
-                  runAction={runAction}
-                  resetMarket={resetMarket}
                 />
 
-                <MarketMapPanel
-                  companies={companies}
-                  participants={participants}
-                  lastDividendTotal={market.lastDividendTotal}
-                  onSelectCompany={setMapModalCompanyId}
-                />
+                <div className="dashboard">
+                  <MarketMapPanel
+                    companies={companies}
+                    participants={participants}
+                    lastDividendTotal={market.lastDividendTotal}
+                    onSelectCompany={setMapModalCompanyId}
+                  />
 
-                <ActivityPanel activity={cycleActivity} />
+                  <ActivityPanel activity={cycleActivity} />
 
-                <div className="grid-orders">
+                  <ParticipantsPanel participants={participants} />
+
+                  <CompaniesPanel companies={companies} />
+
                   <OrderBookPanel
                     orders={openOrders}
                     participantNameById={participantNameById}
                     companyNameById={companyNameById}
                   />
+
                   <TradeTapePanel
                     transactions={transactions}
                     participantNameById={participantNameById}
                     companyNameById={companyNameById}
                   />
-                  <PlaceOrderPanel
-                    participants={participants}
-                    companies={companies}
-                    pending={pending}
-                    runAction={runAction}
-                  />
-                </div>
 
-                <ParticipantsPanel participants={participants} />
-
-                <div className="grid-detail">
-                  <WatchlistPanel
-                    companies={companies}
-                    selectedCompanyId={selectedCompanyId}
-                    onSelect={setSelectedCompanyId}
-                  />
-                  <PriceChartPanel company={selectedCompany} prices={prices} />
+                  <NewswirePanel news={news} />
                 </div>
               </>
             ) : null}
@@ -229,7 +186,7 @@ function App() {
   )
 }
 
-function TopBar({ connected, ready, market }) {
+function TopBar({ connected, ready, market, pending, runAction, resetMarket }) {
   return (
     <header className="topbar">
       <a className="brand" href="/" aria-label="Trader AI dashboard">
@@ -242,10 +199,65 @@ function TopBar({ connected, ready, market }) {
         </span>
       </a>
       <div className="topbar-status">
+        {market ? (
+          <Controls market={market} pending={pending} runAction={runAction} resetMarket={resetMarket} />
+        ) : null}
         {market ? <StatusBadge status={market.status} /> : null}
         <ConnPill connected={connected} ready={ready} />
       </div>
     </header>
+  )
+}
+
+function Controls({ market, pending, runAction, resetMarket }) {
+  const running = market.status === 'Running'
+  const [confirmingReset, setConfirmingReset] = useState(false)
+
+  useEffect(() => {
+    if (!confirmingReset) return undefined
+
+    const timer = setTimeout(() => setConfirmingReset(false), 5000)
+    return () => clearTimeout(timer)
+  }, [confirmingReset])
+
+  function handleResetMarket() {
+    if (!confirmingReset) {
+      setConfirmingReset(true)
+      return
+    }
+
+    setConfirmingReset(false)
+    runAction(resetMarket)
+  }
+
+  return (
+    <div className="controls" role="group" aria-label="Market controls">
+      <button
+        className="btn"
+        disabled={pending || running}
+        title={running ? 'Stop the loop to step a cycle by hand' : 'Run one decision-and-match cycle'}
+        onClick={() => runAction(api.stepCycle)}
+      >
+        Step once
+      </button>
+      {running ? (
+        <button className="btn btn-primary" disabled={pending} onClick={() => runAction(api.pauseMarket)}>
+          Pause loop
+        </button>
+      ) : (
+        <button className="btn btn-primary" disabled={pending} onClick={() => runAction(api.startMarket)}>
+          Start loop
+        </button>
+      )}
+      <button
+        className={`btn btn-reset${confirmingReset ? ' btn-reset-armed' : ''}`}
+        disabled={pending}
+        title={confirmingReset ? 'Click again to erase and reseed the demo database' : 'Erase and reseed the demo database'}
+        onClick={handleResetMarket}
+      >
+        {confirmingReset ? 'Confirm reset' : 'Reset DB'}
+      </button>
+    </div>
   )
 }
 
@@ -346,31 +358,8 @@ function CommandStrip({
   trades,
   participants,
   companies,
-  pending,
   actionError,
-  runAction,
-  resetMarket,
 }) {
-  const running = market.status === 'Running'
-  const [confirmingReset, setConfirmingReset] = useState(false)
-
-  useEffect(() => {
-    if (!confirmingReset) return undefined
-
-    const timer = setTimeout(() => setConfirmingReset(false), 5000)
-    return () => clearTimeout(timer)
-  }, [confirmingReset])
-
-  function handleResetMarket() {
-    if (!confirmingReset) {
-      setConfirmingReset(true)
-      return
-    }
-
-    setConfirmingReset(false)
-    runAction(resetMarket)
-  }
-
   const stats = [
     { label: 'Cycle', value: currentCycleNumber > 0 ? `#${currentCycleNumber}` : '—' },
     { label: 'Open orders', value: formatInt(openOrders) },
@@ -380,7 +369,7 @@ function CommandStrip({
   ]
 
   return (
-    <section className="command" aria-label="Market status and controls">
+    <section className="command" aria-label="Market status">
       <div className="command-id">
         <span className="command-label">Market</span>
         <h1 className="command-name">{market.name}</h1>
@@ -395,34 +384,6 @@ function CommandStrip({
         ))}
       </dl>
 
-      <div className="controls">
-        <button
-          className="btn"
-          disabled={pending || running}
-          title={running ? 'Stop the loop to step a cycle by hand' : 'Run one decision-and-match cycle'}
-          onClick={() => runAction(api.stepCycle)}
-        >
-          Step once
-        </button>
-        {running ? (
-          <button className="btn btn-primary" disabled={pending} onClick={() => runAction(api.pauseMarket)}>
-            Pause loop
-          </button>
-        ) : (
-          <button className="btn btn-primary" disabled={pending} onClick={() => runAction(api.startMarket)}>
-            Start loop
-          </button>
-        )}
-        <button
-          className={`btn btn-reset${confirmingReset ? ' btn-reset-armed' : ''}`}
-          disabled={pending}
-          title={confirmingReset ? 'Click again to erase and reseed the demo database' : 'Erase and reseed the demo database'}
-          onClick={handleResetMarket}
-        >
-          {confirmingReset ? 'Confirm reset' : 'Reset DB'}
-        </button>
-      </div>
-
       {actionError ? (
         <p className="command-error" role="alert">
           {actionError}
@@ -432,94 +393,146 @@ function CommandStrip({
   )
 }
 
-function PriceChartPanel({ company, prices }) {
-  const values = prices.map((snapshot) => snapshot.price)
-  const last = values.at(-1)
-  const first = values.at(0)
-  const low = values.length ? Math.min(...values) : undefined
-  const high = values.length ? Math.max(...values) : undefined
-  const change = values.length >= 2 ? last - first : 0
-  const changePct = first ? (change / first) * 100 : 0
-  const tone = toneOf(change)
-  const flash = useChangeFlash(last)
-
-  return (
-    <Panel
-      title={company ? `Price · ${company.name}` : 'Price'}
-      count={company ? `${prices.length} snapshot${prices.length === 1 ? '' : 's'}` : undefined}
-      className="panel-chart"
-    >
-      {!company ? (
-        <p className="note">Select a company to see its price history.</p>
-      ) : values.length < 2 ? (
-        <p className="note">Not enough price history yet. Start the loop or step a cycle to record trades.</p>
-      ) : (
-        <>
-          <div className="quote">
-            <strong className={`quote-last num ${flash}`}>{formatMoney(last)}</strong>
-            <span className={`quote-change num tone-${tone}`}>
-              <span aria-hidden="true">{tone === 'up' ? '▲' : tone === 'down' ? '▼' : '◆'}</span>
-              {formatSigned(change)}
-              <span className="quote-pct">
-                ({change > 0 ? '+' : change < 0 ? '−' : ''}
-                {Math.abs(changePct).toFixed(2)}%)
-              </span>
-            </span>
-          </div>
-          <LineChart values={values.slice(-32)} tone={tone} />
-          <dl className="quote-meta">
-            <div>
-              <dt>Open</dt>
-              <dd className="num">{formatMoney(first)}</dd>
-            </div>
-            <div>
-              <dt>Low</dt>
-              <dd className="num">{formatMoney(low)}</dd>
-            </div>
-            <div>
-              <dt>High</dt>
-              <dd className="num">{formatMoney(high)}</dd>
-            </div>
-          </dl>
-        </>
-      )}
-    </Panel>
-  )
+// Cost estimation is a company's capitalisation: issued shares valued at the current share price.
+const COMPANY_SORTS = {
+  shares: (company) => company.issuedSharesCount ?? 0,
+  price: (company) => company.currentPrice ?? 0,
+  cost: (company) => (company.issuedSharesCount ?? 0) * (company.currentPrice ?? 0),
 }
 
-function WatchlistPanel({ companies, selectedCompanyId, onSelect }) {
+function CompaniesPanel({ companies }) {
+  const [sortKey, setSortKey] = useState('cost')
+  const [sortDir, setSortDir] = useState('desc')
+
+  function toggleSort(key) {
+    if (key === sortKey) {
+      setSortDir((dir) => (dir === 'desc' ? 'asc' : 'desc'))
+    } else {
+      setSortKey(key)
+      setSortDir('desc')
+    }
+  }
+
+  const selector = COMPANY_SORTS[sortKey]
+  const sorted = [...companies].sort((a, b) => {
+    const diff = selector(a) - selector(b)
+    return sortDir === 'desc' ? -diff : diff
+  })
+
+  function sortableHeader(key, label, title) {
+    const active = sortKey === key
+    return (
+      <th scope="col" className="ta-r" aria-sort={active ? (sortDir === 'desc' ? 'descending' : 'ascending') : 'none'}>
+        <button
+          type="button"
+          className={`th-sort ${active ? 'is-active' : ''}`}
+          onClick={() => toggleSort(key)}
+          title={title}
+        >
+          {label}
+          <span className="th-sort-glyph" aria-hidden="true">
+            {active ? (sortDir === 'desc' ? '▼' : '▲') : '↕'}
+          </span>
+        </button>
+      </th>
+    )
+  }
+
   return (
     <Panel title="Companies" count={`${companies.length}`} className="panel-watchlist">
       {companies.length === 0 ? (
         <p className="note">No companies yet.</p>
       ) : (
-        <ul className="watchlist">
-          {companies.map((company) => {
-            const active = company.id === selectedCompanyId
-            return (
-              <li key={company.id} className="watch-item">
-                <button
-                  type="button"
-                  className={`watch-row ${active ? 'is-active' : ''}`}
-                  aria-pressed={active}
-                  onClick={() => onSelect(company.id)}
-                >
-                  <span className="watch-name">{company.name}</span>
-                  <span className="watch-price num">{formatMoney(company.currentPrice)}</span>
-                </button>
-                <a
-                  className="open-page open-page-watch"
-                  href={`/companies/${company.id}`}
-                  target="_blank"
-                  rel="noopener"
-                  title="Open detail page in a new tab"
-                  aria-label={`Open ${company.name} detail page in a new tab`}
-                >
-                  <span aria-hidden="true">↗</span>
-                </a>
-              </li>
-            )
-          })}
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Industry</th>
+                {sortableHeader('shares', 'Shares')}
+                {sortableHeader('price', 'Share price')}
+                {sortableHeader('cost', 'Cost estimation', 'Issued shares valued at the current share price')}
+                <th scope="col" className="ta-r">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((company) => {
+                const cost = (company.issuedSharesCount ?? 0) * (company.currentPrice ?? 0)
+                return (
+                  <tr key={company.id}>
+                    <th scope="row" className="cell-ellipsis">
+                      {company.name}
+                    </th>
+                    <td className="cell-ellipsis">
+                      <span className="tag">{company.industryName ?? '—'}</span>
+                    </td>
+                    <td className="num ta-r">{formatInt(company.issuedSharesCount)}</td>
+                    <td className="num ta-r">{formatMoney(company.currentPrice)}</td>
+                    <td className="num ta-r">{formatMoney(cost)}</td>
+                    <td className="ta-r">
+                      <a
+                        className="cell-link"
+                        href={`/companies/${company.id}`}
+                        target="_blank"
+                        rel="noopener"
+                        aria-label={`Open ${company.name} page in a new tab`}
+                      >
+                        Open page<span aria-hidden="true"> ↗</span>
+                      </a>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+const NEWS_DIRECTION = {
+  Increase: { tone: 'up', glyph: '▲', sign: '+' },
+  Decrease: { tone: 'down', glyph: '▼', sign: '−' },
+}
+
+// A published event's market effect: none, or a signed percent move tied to a company or list of industries.
+function NewsImpact({ post }) {
+  if (post.scope === 'None' || !post.direction) {
+    return <span className="news-impact news-impact-none">No market impact</span>
+  }
+
+  const direction = NEWS_DIRECTION[post.direction] ?? NEWS_DIRECTION.Increase
+  const target = post.scope === 'Company' ? post.targetCompanyName ?? 'a company' : post.industryNames.join(', ')
+
+  return (
+    <span className={`news-impact num tone-${direction.tone}`}>
+      <span aria-hidden="true">{direction.glyph} </span>
+      {direction.sign}
+      {Number(post.impactPercent ?? 0).toFixed(2)}%
+      {target ? <span className="news-impact-target"> · {target}</span> : null}
+    </span>
+  )
+}
+
+function NewswirePanel({ news }) {
+  return (
+    <Panel title="Newswire" count={`${news.length}`} className="panel-news">
+      {news.length === 0 ? (
+        <p className="note">No news yet. Start the loop to let events roll in.</p>
+      ) : (
+        <ul className="newswire">
+          {news.map((post) => (
+            <li key={post.id} className="news-item">
+              <div className="news-head">
+                <h3 className="news-title">{post.title}</h3>
+                <NewsImpact post={post} />
+              </div>
+              <p className="news-body">{post.content}</p>
+            </li>
+          ))}
         </ul>
       )}
     </Panel>
@@ -905,7 +918,6 @@ function ActivityPanel({ activity }) {
   const points = activity.slice(-ACTIVITY_WINDOW)
   const total = activity.reduce((sum, point) => sum + point.ordersPlaced, 0)
   const windowCounts = points.map((point) => point.ordersPlaced)
-  const latest = windowCounts.at(-1) ?? 0
   const peak = windowCounts.length ? Math.max(...windowCounts) : 0
   const hasDividend = points.some((point) => point.paidDividend)
 
@@ -920,8 +932,7 @@ function ActivityPanel({ activity }) {
       ) : (
         <>
           <div className="quote">
-            <strong className="quote-last num">{formatInt(latest)}</strong>
-            <span className="muted-sub">orders last loop · peak {formatInt(peak)} in last {points.length}</span>
+            <span className="muted-sub">Peak {formatInt(peak)} in last {points.length}</span>
             {hasDividend ? <span className="activity-legend">dividend cycle</span> : null}
           </div>
           <ActivityChart points={points} />
@@ -1067,118 +1078,6 @@ function TradeTapePanel({ transactions, participantNameById, companyNameById }) 
           </table>
         </div>
       )}
-    </Panel>
-  )
-}
-
-function PlaceOrderPanel({ participants, companies, pending, runAction }) {
-  const [participantId, setParticipantId] = useState('')
-  const [companyId, setCompanyId] = useState('')
-  const [type, setType] = useState('Buy')
-  const [quantity, setQuantity] = useState('1')
-  const [limitPrice, setLimitPrice] = useState('100')
-
-  const resolvedParticipantId = participantId || participants[0]?.id || ''
-  const resolvedCompanyId = companyId || companies[0]?.id || ''
-  const reservation = type === 'Buy' ? Number(quantity) * Number(limitPrice) : null
-
-  function handleSubmit(event) {
-    event.preventDefault()
-    runAction(() =>
-      api.placeOrder({
-        participantId: Number(resolvedParticipantId),
-        companyId: Number(resolvedCompanyId),
-        type,
-        quantity: Number(quantity),
-        limitPrice: Number(limitPrice),
-      }),
-    )
-  }
-
-  return (
-    <Panel title="Place order" count="Manual" className="panel-order">
-      <form className="order-form" onSubmit={handleSubmit}>
-        <div className="side-toggle" role="group" aria-label="Order side">
-          <button
-            type="button"
-            className={`side-btn side-buy ${type === 'Buy' ? 'is-on' : ''}`}
-            aria-pressed={type === 'Buy'}
-            onClick={() => setType('Buy')}
-          >
-            Buy
-          </button>
-          <button
-            type="button"
-            className={`side-btn side-sell ${type === 'Sell' ? 'is-on' : ''}`}
-            aria-pressed={type === 'Sell'}
-            onClick={() => setType('Sell')}
-          >
-            Sell
-          </button>
-        </div>
-
-        <label className="field">
-          <span>Trader</span>
-          <select
-            className="select"
-            value={resolvedParticipantId}
-            onChange={(event) => setParticipantId(event.target.value)}
-          >
-            {participants.map((participant) => (
-              <option key={participant.id} value={participant.id}>
-                {participant.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>Company</span>
-          <select
-            className="select"
-            value={resolvedCompanyId}
-            onChange={(event) => setCompanyId(event.target.value)}
-          >
-            {companies.map((company) => (
-              <option key={company.id} value={company.id}>
-                {company.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="field-row">
-          <label className="field">
-            <span>Quantity</span>
-            <input
-              className="select num"
-              type="number"
-              min="1"
-              value={quantity}
-              onChange={(event) => setQuantity(event.target.value)}
-            />
-          </label>
-          <label className="field">
-            <span>Limit price</span>
-            <input
-              className="select num"
-              type="number"
-              min="0"
-              step="0.01"
-              value={limitPrice}
-              onChange={(event) => setLimitPrice(event.target.value)}
-            />
-          </label>
-        </div>
-
-        {reservation != null ? (
-          <p className="order-hint">
-            Reserves <span className="num">{formatMoney(Number.isFinite(reservation) ? reservation : 0)}</span> of cash
-          </p>
-        ) : null}
-
-        <button className="btn btn-primary btn-block" type="submit" disabled={pending || participants.length === 0}>
-          Submit {type.toLowerCase()} order
-        </button>
-      </form>
     </Panel>
   )
 }

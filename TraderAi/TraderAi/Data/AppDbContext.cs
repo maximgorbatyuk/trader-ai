@@ -27,8 +27,19 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<Market> Markets => Set<Market>();
 
+    public DbSet<Industry> Industries => Set<Industry>();
+
+    public DbSet<NewsPost> NewsPosts => Set<NewsPost>();
+
+    public DbSet<NewsPostIndustry> NewsPostIndustries => Set<NewsPostIndustry>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<NewsPost>()
+            .HasMany(newsPost => newsPost.Industries)
+            .WithOne()
+            .HasForeignKey(link => link.NewsPostId);
+
         // A share can be offered by at most one open sell order; consumed links are deleted on fill.
         modelBuilder.Entity<OrderShare>()
             .HasIndex(orderShare => orderShare.ShareId)

@@ -11,9 +11,10 @@
   top: 0;
   z-index: var(--z-sticky);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--s-4);
+  gap: var(--s-3) var(--s-4);
   padding: var(--s-3) clamp(var(--s-3), 3vw, var(--s-6));
   background: color-mix(in oklch, var(--surface) 88%, transparent);
   backdrop-filter: blur(10px);
@@ -60,8 +61,16 @@
 
 .topbar-status {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--s-2);
+}
+
+/* The control buttons sit inside the topbar's right cluster, so the auto-margin used in standalone
+   button rows would only fight the flex layout here. */
+.topbar-status .controls {
+  margin-left: 0;
 }
 
 .conn {
@@ -146,7 +155,7 @@
 /* ---- Main shell ---- */
 .main {
   flex: 1;
-  width: min(1360px, 100% - var(--s-6));
+  width: min(1760px, 90%);
   margin: 0 auto;
   padding: var(--s-5) 0 var(--s-10);
 }
@@ -156,7 +165,7 @@
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(9rem, 1fr) minmax(9rem, 1fr);
   gap: var(--s-6);
-  width: min(1360px, 100% - var(--s-6));
+  width: min(1760px, 90%);
   margin: 0 auto;
   padding: var(--s-6) 0 var(--s-8);
   border-top: 1px solid var(--border);
@@ -452,27 +461,22 @@
   font-size: var(--t-xs);
 }
 
-/* ---- Panel grid ---- */
-/* Stacked dashboard: a full-width activity chart, an orders block, then two master-detail rows. */
-.grid-orders,
+/* ---- Panel layout ---- */
+/* Full-width panels stacked in reading order, each one spanning the container with even spacing. */
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin-bottom: var(--s-3);
+}
+
+/* Master list on the left, click-to-reveal detail on the right (detail pages). */
 .grid-detail {
   display: grid;
   align-items: start;
   gap: var(--s-3);
   margin-bottom: var(--s-3);
-}
-
-.grid-orders {
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.1fr) minmax(0, 0.9fr);
-}
-
-/* Master list on the left, click-to-reveal detail on the right. */
-.grid-detail {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
-}
-
-.panel-activity {
-  margin-bottom: var(--s-3);
 }
 
 .panel {
@@ -600,32 +604,6 @@
   color: var(--text);
   font-size: var(--t-sm);
   font-weight: 600;
-}
-
-@keyframes flash-up {
-  from {
-    background: var(--up-soft);
-  }
-  to {
-    background: transparent;
-  }
-}
-
-@keyframes flash-down {
-  from {
-    background: var(--down-soft);
-  }
-  to {
-    background: transparent;
-  }
-}
-
-.flash-up {
-  animation: flash-up 720ms ease-out;
-}
-
-.flash-down {
-  animation: flash-down 720ms ease-out;
 }
 
 .chart {
@@ -902,74 +880,6 @@
   z-index: 1;
 }
 
-/* ---- Watchlist ---- */
-.watchlist {
-  display: flex;
-  flex-direction: column;
-  max-height: 28rem;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  list-style: none;
-}
-
-.watchlist li + li {
-  border-top: 1px solid var(--border);
-}
-
-.watch-item {
-  display: flex;
-  align-items: center;
-}
-
-.watch-item .watch-row {
-  flex: 1;
-  min-width: 0;
-}
-
-.open-page-watch {
-  padding: 0 var(--s-2);
-}
-
-.watch-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--s-3);
-  width: 100%;
-  padding: var(--s-2);
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-  transition: background 150ms ease;
-}
-
-.watch-row:hover {
-  background: var(--surface-2);
-}
-
-.watch-row.is-active {
-  background: var(--surface-3);
-  box-shadow: inset 0 0 0 1px var(--border-2);
-}
-
-.watch-name {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: var(--t-base);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.watch-price {
-  color: var(--text);
-  font-size: var(--t-base);
-  font-weight: 600;
-}
-
 /* ---- Tables ---- */
 .tbl-scroll {
   max-height: 28rem;
@@ -1140,50 +1050,7 @@
   color: var(--muted);
 }
 
-/* ---- Place order ---- */
-.order-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
-
-.side-toggle {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--s-1);
-  padding: var(--s-1);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-}
-
-.side-btn {
-  padding: var(--s-2);
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  font-size: var(--t-sm);
-  font-weight: 700;
-  cursor: pointer;
-  transition: background 150ms ease, color 150ms ease;
-}
-
-.side-btn:not(.is-on):hover {
-  background: var(--surface);
-  color: var(--ink);
-}
-
-.side-btn.is-on.side-buy {
-  background: var(--up);
-  color: #fff;
-}
-
-.side-btn.is-on.side-sell {
-  background: var(--down);
-  color: #fff;
-}
-
+/* ---- Form fields ---- */
 .field {
   display: flex;
   flex-direction: column;
@@ -1198,26 +1065,8 @@
   letter-spacing: 0.05em;
 }
 
-.field-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--s-3);
-}
-
-.order-hint {
-  margin: 0;
-  color: var(--text);
-  font-size: var(--t-sm);
-}
-
-.order-hint .num {
-  color: var(--ink);
-  font-weight: 600;
-}
-
 /* ---- Responsive ---- */
 @media (max-width: 1080px) {
-  .grid-orders,
   .grid-detail {
     grid-template-columns: 1fr;
   }
@@ -1478,4 +1327,59 @@
     opacity: 0;
     transform: translateY(8px);
   }
+}
+
+/* ---- Newswire ---- */
+.newswire {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.news-item {
+  padding: var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.news-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.news-title {
+  margin: 0;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.news-body {
+  margin: var(--s-1) 0 0;
+  color: var(--text);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+}
+
+.news-impact {
+  flex-shrink: 0;
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.news-impact-none {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.news-impact-target {
+  color: var(--muted);
+  font-weight: 500;
 }

@@ -706,6 +706,8 @@ public sealed class MarketService(
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync();
 
+        await dbContext.NewsPostIndustries.ExecuteDeleteAsync();
+        await dbContext.NewsPosts.ExecuteDeleteAsync();
         await dbContext.OrderShares.ExecuteDeleteAsync();
         await dbContext.OrderFills.ExecuteDeleteAsync();
         await dbContext.MoneyTransactions.ExecuteDeleteAsync();
@@ -716,13 +718,15 @@ public sealed class MarketService(
         await dbContext.MarketCycles.ExecuteDeleteAsync();
         await dbContext.Participants.ExecuteDeleteAsync();
         await dbContext.Companies.ExecuteDeleteAsync();
+        await dbContext.Industries.ExecuteDeleteAsync();
         await dbContext.Markets.ExecuteDeleteAsync();
 
         dbContext.ChangeTracker.Clear();
         await dbContext.Database.ExecuteSqlRawAsync(
             "DELETE FROM sqlite_sequence WHERE name IN (" +
             "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
-            "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Shares', 'OrderShares')");
+            "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Shares', 'OrderShares', " +
+            "'Industries', 'NewsPosts', 'NewsPostIndustries')");
 
         var market = await SeedDemoMarketCoreAsync();
         await transaction.CommitAsync();
@@ -788,6 +792,13 @@ public sealed class MarketService(
             });
         }
 
+        var industries = DemoIndustries.Names
+            .Select(name => new Industry { Name = name })
+            .ToList();
+        dbContext.Industries.AddRange(industries);
+        await dbContext.SaveChangesAsync();
+        var industryIds = industries.Select(industry => industry.Id).ToArray();
+
         var companies = new List<Company>(companyCount);
         var companyPrices = new decimal[companyCount];
         var companyShareCounts = new int[companyCount];
@@ -802,6 +813,9 @@ public sealed class MarketService(
             var company = new Company
             {
                 Name = companyNames[index],
+                // Round-robin keeps the reproducible RNG sequence untouched while spreading companies
+                // across industries so most sectors have at least one listing for news to move.
+                IndustryId = industryIds[index % industryIds.Length],
                 IssuedSharesCount = shareCount,
                 CreatedAt = now,
                 UpdatedAt = now,

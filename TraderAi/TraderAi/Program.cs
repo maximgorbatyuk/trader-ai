@@ -27,9 +27,12 @@ builder.Services.AddScoped<MatchingEngine>();
 builder.Services.AddScoped<ITradeSizer, RandomTradeSizer>();
 builder.Services.AddScoped<IDecisionEngine, RuleBasedDecisionEngine>();
 builder.Services.AddScoped<MarketService>();
+builder.Services.AddScoped<NewsService>();
 builder.Services.AddSingleton<MarketCycleLock>();
 builder.Services.Configure<MarketLoopOptions>(builder.Configuration.GetSection(MarketLoopOptions.SectionName));
+builder.Services.Configure<NewsLoopOptions>(builder.Configuration.GetSection(NewsLoopOptions.SectionName));
 builder.Services.AddHostedService<MarketLoopService>();
+builder.Services.AddHostedService<NewsLoopService>();
 
 builder.Services.AddCors(options =>
 {
