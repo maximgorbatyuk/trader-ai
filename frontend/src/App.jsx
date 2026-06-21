@@ -32,7 +32,6 @@ function App() {
   const [companies, setCompanies] = useState([])
   const [participants, setParticipants] = useState([])
   const [orders, setOrders] = useState([])
-  const [cycles, setCycles] = useState([])
   const [transactions, setTransactions] = useState([])
   const [cycleActivity, setCycleActivity] = useState([])
   const [news, setNews] = useState([])
@@ -42,13 +41,12 @@ function App() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [marketData, companyData, participantData, orderData, cycleData, activityData, transactionData, newsData] =
+      const [marketData, companyData, participantData, orderData, activityData, transactionData, newsData] =
         await Promise.all([
           api.getMarket(),
           api.getCompanies(),
           api.getParticipants(),
           api.getOrders('open'),
-          api.getCycles(),
           api.getCycleActivity(),
           api.getShareTransactions(50),
           api.getNews(),
@@ -58,7 +56,6 @@ function App() {
       setCompanies(companyData)
       setParticipants(participantData)
       setOrders(orderData)
-      setCycles(cycleData)
       setCycleActivity(activityData)
       setTransactions(transactionData)
       setNews(newsData)
@@ -102,8 +99,6 @@ function App() {
   const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
   const mapModalCompany = companies.find((company) => company.id === mapModalCompanyId) ?? null
-  const currentCycleNumber =
-    cycles.find((cycle) => cycle.id === market?.currentCycleId)?.cycleNumber ?? cycles.length
 
   return (
     <div className="app">
@@ -123,22 +118,19 @@ function App() {
           <>
             {!connected ? <OfflineBanner /> : null}
 
+            {actionError ? (
+              <div className="banner" role="alert">
+                <strong>Action failed.</strong>
+                <span>{actionError}</span>
+              </div>
+            ) : null}
+
             {market === null && connected ? (
               <SeedPanel pending={pending} runAction={runAction} />
             ) : null}
 
             {market !== null ? (
               <>
-                <CommandStrip
-                  market={market}
-                  currentCycleNumber={currentCycleNumber}
-                  openOrders={openOrders.length}
-                  trades={transactions.length}
-                  participants={participants.length}
-                  companies={companies.length}
-                  actionError={actionError}
-                />
-
                 <div className="dashboard">
                   <MarketMapPanel
                     companies={companies}
@@ -347,48 +339,6 @@ function SeedPanel({ pending, runAction }) {
           Seed demo market
         </button>
       </div>
-    </section>
-  )
-}
-
-function CommandStrip({
-  market,
-  currentCycleNumber,
-  openOrders,
-  trades,
-  participants,
-  companies,
-  actionError,
-}) {
-  const stats = [
-    { label: 'Cycle', value: currentCycleNumber > 0 ? `#${currentCycleNumber}` : '—' },
-    { label: 'Open orders', value: formatInt(openOrders) },
-    { label: 'Trades', value: formatInt(trades) },
-    { label: 'Companies', value: formatInt(companies) },
-    { label: 'Traders', value: formatInt(participants) },
-  ]
-
-  return (
-    <section className="command" aria-label="Market status">
-      <div className="command-id">
-        <span className="command-label">Market</span>
-        <h1 className="command-name">{market.name}</h1>
-      </div>
-
-      <dl className="statbar">
-        {stats.map((stat) => (
-          <div className="stat" key={stat.label}>
-            <dt>{stat.label}</dt>
-            <dd className="num">{stat.value}</dd>
-          </div>
-        ))}
-      </dl>
-
-      {actionError ? (
-        <p className="command-error" role="alert">
-          {actionError}
-        </p>
-      ) : null}
     </section>
   )
 }
