@@ -13,9 +13,10 @@ Each share is stored as a separate row and has one current owner.
 - Each cycle lets active participants place orders.
 - Orders stay open until they are fully filled or cancelled.
 - Orders can be partially filled.
-- An unfilled order is cancelled automatically after five cycles; cancelling a buy releases its reserved cash and cancelling a sell frees its shares to be listed again.
-- While unfilled, a stale order may be re-priced toward the market so it has a chance to fill before the cancellation cap.
+- An unfilled order is cancelled automatically once it has rested for too many cycles; cancelling a buy releases its reserved cash and cancelling a sell frees its shares to be listed again.
+- While unfilled, a stale order is re-priced toward the market on each later cycle so it has a chance to fill before that cancellation cap.
 - A holder that cannot afford any share for several consecutive cycles sells down its most valuable holding to raise cash.
+- Every share owner is paid a dividend at a recurring interval, sized as a small percentage of each held share's current price and credited straight to the owner's balance.
 - A buy order reserves cash when it is created.
 - The reserved cash amount is `Quantity * LimitPrice`.
 - Reserved cash cannot be used by another buy order.
@@ -183,7 +184,7 @@ Fields:
 
 - ID
 - ParticipantId
-- Type (Reserve, Release, Debit, Credit)
+- Type (Reserve, Release, Debit, Credit, Dividend)
 - Amount
 - RelatedOrderId
 - RelatedShareTransactionId
@@ -196,6 +197,7 @@ Notes:
 - Release records unused reserved cash returned to available cash.
 - Debit records cash spent by a buyer.
 - Credit records cash received by a seller.
+- Dividend records a periodic payout credited to a share owner.
 - Money transactions are the history of balance changes.
 
 ### ShareTransaction

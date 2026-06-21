@@ -636,6 +636,30 @@
 
 .chart-tick-x {
   text-anchor: middle;
+  font-size: 9px;
+}
+
+/* Dashed so the dividend marker is distinguishable from solid gridlines without relying on colour. */
+.chart-dividend-line {
+  stroke: var(--up);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.activity-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  color: var(--up-text);
+}
+
+.activity-legend::before {
+  content: '';
+  width: 0.85rem;
+  height: 0;
+  border-top: 1.5px dashed var(--up);
 }
 
 .activity-area {
@@ -653,6 +677,149 @@
 
 .activity-dot {
   fill: currentColor;
+}
+
+/* ---- Market map (treemap of top companies by issued shares) ---- */
+.map-layout {
+  display: flex;
+  gap: var(--s-3);
+  align-items: stretch;
+}
+
+.market-map {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid oklch(0.22 0.012 255);
+  border-radius: var(--radius-sm);
+  background: oklch(0.23 0.014 255);
+}
+
+.map-stats {
+  display: flex;
+  flex: 0 0 15%;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: var(--s-4);
+}
+
+.map-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.map-stat-label {
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.map-stat-value {
+  color: var(--ink);
+  font-size: var(--t-lg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.map-tile {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid oklch(0.18 0.012 255);
+  overflow: hidden;
+  color: #fff;
+  text-align: center;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.65);
+}
+
+.map-name {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: #fff;
+  font-size: clamp(0.6rem, calc(0.48rem + var(--map-area) * 0.16rem), 2.4rem);
+  font-weight: 800;
+  line-height: 0.96;
+}
+
+.map-cap {
+  color: #fff;
+  font-size: clamp(0.55rem, calc(0.46rem + var(--map-area) * 0.075rem), 1.25rem);
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0.92;
+}
+
+.map-change {
+  color: #fff;
+  font-size: clamp(0.55rem, calc(0.46rem + var(--map-area) * 0.075rem), 1.25rem);
+  font-weight: 800;
+  line-height: 1;
+}
+
+.tone-bg-up {
+  background: color-mix(in oklch, var(--up) var(--map-heat, 64%), oklch(0.28 0.035 155));
+}
+.tone-bg-up .map-change {
+  color: #fff;
+}
+
+.tone-bg-down {
+  background: color-mix(in oklch, var(--down) var(--map-heat, 64%), oklch(0.3 0.032 25));
+}
+.tone-bg-down .map-change {
+  color: #fff;
+}
+
+.tone-bg-flat {
+  background: oklch(0.31 0.016 255);
+}
+.tone-bg-flat .map-change {
+  color: #fff;
+}
+
+.map-tile.is-small {
+  gap: 2px;
+  padding: 3px;
+}
+
+.map-tile.is-small .map-name {
+  font-size: var(--t-xs);
+  line-height: 1;
+}
+
+.map-tile.is-small .map-cap,
+.map-tile.is-small .map-change {
+  font-size: var(--t-2xs);
+}
+
+.map-tile.is-tiny {
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 2px 3px;
+}
+
+.map-tile.is-tiny .map-name {
+  display: block;
+  width: 100%;
+  font-size: 0.55rem;
+  line-height: 1;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-tile.is-tiny .map-cap,
+.map-tile.is-tiny .map-change {
+  display: none;
 }
 
 /* ---- Watchlist ---- */
@@ -953,6 +1120,46 @@
 }
 
 @media (max-width: 560px) {
+  .map-layout {
+    flex-direction: column;
+  }
+
+  .map-stats {
+    flex-basis: auto;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+
+  .market-map {
+    min-height: 220px;
+  }
+
+  .map-tile {
+    gap: 1px;
+    padding: 2px;
+  }
+
+  .map-name {
+    overflow-wrap: anywhere;
+    font-size: clamp(0.48rem, calc(0.42rem + var(--map-area) * 0.05rem), 0.78rem);
+    line-height: 1;
+  }
+
+  .map-cap,
+  .map-change {
+    font-size: 0.5rem;
+  }
+
+  .map-tile.is-small .map-name,
+  .map-tile.is-tiny .map-name {
+    font-size: 0.48rem;
+  }
+
+  .map-tile.is-small .map-cap,
+  .map-tile.is-small .map-change {
+    display: none;
+  }
+
   .book {
     grid-template-columns: 1fr;
     gap: var(--s-3);

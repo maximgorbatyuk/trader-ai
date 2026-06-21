@@ -13,22 +13,30 @@ public static class MarketEndpoints
         {
             var companies = await dbContext.Companies.OrderBy(company => company.Id).ToListAsync();
             var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+            var changeByCompany = await PriceChangePctByCompanyAsync(dbContext);
 
             var response = companies
                 .Select(company => new CompanyResponse(
                     company.Id,
                     company.Name,
                     company.IssuedSharesCount,
-                    latestPriceByCompany.GetValueOrDefault(company.Id)))
+                    latestPriceByCompany.GetValueOrDefault(company.Id),
+                    changeByCompany.GetValueOrDefault(company.Id)))
                 .ToArray();
 
             return Results.Ok(response);
         });
 
-        app.MapGet("/market", async (MarketService marketService) =>
+        app.MapGet("/market", async (MarketService marketService, AppDbContext dbContext) =>
         {
             var market = await marketService.GetMarketAsync();
-            return Results.Ok(market is null ? null : ToMarketResponse(market));
+            if (market is null)
+            {
+                return Results.Ok<MarketResponse?>(null);
+            }
+
+            var lastDividendTotal = await LastDividendTotalAsync(dbContext);
+            return Results.Ok<MarketResponse?>(ToMarketResponse(market, lastDividendTotal));
         });
 
         app.MapPost("/market/seed", async (MarketService marketService) =>
@@ -262,11 +270,19 @@ public static class MarketEndpoints
 
             var ordersPlacedByCycleId = ordersByCycle.ToDictionary(entry => entry.CycleId, entry => entry.Count);
 
+            var dividendCycleIds = (await dbContext.MoneyTransactions
+                    .Where(transaction => transaction.Type == MoneyTransactionType.Dividend)
+                    .Select(transaction => transaction.CreatedInCycleId)
+                    .Distinct()
+                    .ToListAsync())
+                .ToHashSet();
+
             var cycles = await dbContext.MarketCycles.OrderBy(cycle => cycle.CycleNumber).ToListAsync();
             var response = cycles
                 .Select(cycle => new ActivityPointResponse(
                     cycle.CycleNumber,
-                    ordersPlacedByCycleId.GetValueOrDefault(cycle.Id)))
+                    ordersPlacedByCycleId.GetValueOrDefault(cycle.Id),
+                    dividendCycleIds.Contains(cycle.Id)))
                 .ToArray();
 
             return Results.Ok(response);
@@ -319,6 +335,47 @@ public static class MarketEndpoints
             .ToDictionary(row => row.CompanyId, row => row.Price);
     }
 
+    // Change since the prior cycle's close, matching the signal the decision engine reads: the newest
+    // price versus the newest from an earlier cycle, or zero when there is no earlier point.
+    private static async Task<Dictionary<int, decimal>> PriceChangePctByCompanyAsync(AppDbContext dbContext)
+    {
+        var snapshots = await dbContext.PriceSnapshots
+            .Select(snapshot => new { snapshot.CompanyId, snapshot.Id, snapshot.Price, snapshot.CreatedInCycleId })
+            .ToListAsync();
+
+        return snapshots
+            .GroupBy(snapshot => snapshot.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var ordered = group.OrderByDescending(snapshot => snapshot.Id).ToList();
+                    var latest = ordered[0];
+                    var prior = ordered.FirstOrDefault(snapshot => snapshot.CreatedInCycleId != latest.CreatedInCycleId);
+                    return prior is { Price: > 0m } ? (latest.Price - prior.Price) / prior.Price : 0m;
+                });
+    }
+
+    // Total paid to all shareholders in the most recent dividend cycle; zero before any dividend.
+    private static async Task<decimal> LastDividendTotalAsync(AppDbContext dbContext)
+    {
+        var lastDividendCycleId = await dbContext.MoneyTransactions
+            .Where(transaction => transaction.Type == MoneyTransactionType.Dividend)
+            .OrderByDescending(transaction => transaction.CreatedInCycleId)
+            .Select(transaction => (int?)transaction.CreatedInCycleId)
+            .FirstOrDefaultAsync();
+
+        if (lastDividendCycleId is null)
+        {
+            return 0m;
+        }
+
+        return await dbContext.MoneyTransactions
+            .Where(transaction => transaction.Type == MoneyTransactionType.Dividend
+                && transaction.CreatedInCycleId == lastDividendCycleId)
+            .SumAsync(transaction => transaction.Amount);
+    }
+
     private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(AppDbContext dbContext, int participantId)
     {
         var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
@@ -354,8 +411,8 @@ public static class MarketEndpoints
         transaction.CreatedInCycleId,
         transaction.CreatedAt);
 
-    private static MarketResponse ToMarketResponse(Market market) =>
-        new(market.Id, market.Name, market.Status.ToString(), market.CurrentCycleId);
+    private static MarketResponse ToMarketResponse(Market market, decimal lastDividendTotal = 0m) =>
+        new(market.Id, market.Name, market.Status.ToString(), market.CurrentCycleId, lastDividendTotal);
 
     private static OrderResponse ToOrderResponse(Order order) => new(
         order.Id,
@@ -370,9 +427,9 @@ public static class MarketEndpoints
         order.CreatedInCycleId);
 }
 
-public sealed record CompanyResponse(int Id, string Name, int IssuedSharesCount, decimal? CurrentPrice);
+public sealed record CompanyResponse(int Id, string Name, int IssuedSharesCount, decimal? CurrentPrice, decimal PriceChangePct);
 
-public sealed record MarketResponse(int Id, string Name, string Status, int? CurrentCycleId);
+public sealed record MarketResponse(int Id, string Name, string Status, int? CurrentCycleId, decimal LastDividendTotal);
 
 public sealed record ParticipantResponse(
     int Id,
@@ -417,7 +474,7 @@ public sealed record OrderResponse(
 
 public sealed record CycleTickResponse(bool Ran, int? CompletedCycleNumber, int OrdersPlaced, int FillCount);
 
-public sealed record ActivityPointResponse(int CycleNumber, int OrdersPlaced);
+public sealed record ActivityPointResponse(int CycleNumber, int OrdersPlaced, bool PaidDividend);
 
 public sealed record HoldingResponse(
     int CompanyId,

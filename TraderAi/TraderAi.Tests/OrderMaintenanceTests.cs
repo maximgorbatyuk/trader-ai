@@ -30,15 +30,15 @@ public sealed class OrderMaintenanceTests : IDisposable
         new(context, new MatchingEngine(context), new NoOpDecisionEngine(), new MarketCycleLock(), random);
 
     [Fact]
-    public async Task UnfilledBuyOrderIsCancelledAndItsCashReleasedAtTheFiveCycleCap()
+    public async Task UnfilledBuyOrderIsCancelledAndItsCashReleasedAtTheAgeCap()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var bob = await context.Participants.FirstAsync(participant => participant.Name == "Bob");
         var company = await context.Companies.FirstAsync();
-        var market = Service(new NeverReprice());
+        var market = Service(new FixedRoll(0d));
 
         var placed = await market.PlaceOrderAsync(bob.Id, company.Id, OrderType.Buy, 2, 110m);
-        await StepAsync(market, 6);
+        await StepAsync(market, 16);
 
         var order = await context.Orders.FindAsync(placed.Order!.Id);
         Assert.Equal(OrderStatus.Cancelled, order!.Status);
@@ -51,12 +51,12 @@ public sealed class OrderMaintenanceTests : IDisposable
     }
 
     [Fact]
-    public async Task StaleSellOrderIsRepricedFivePercentTowardTheMarket()
+    public async Task StaleSellOrderIsRepricedTenPercentTowardTheMarket()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
         var company = await context.Companies.FirstAsync();
-        var market = Service(new AlwaysReprice());
+        var market = Service(new FixedRoll(0d));
 
         var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
 
@@ -65,19 +65,19 @@ public sealed class OrderMaintenanceTests : IDisposable
 
         var order = await context.Orders.FindAsync(placed.Order!.Id);
         Assert.Equal(OrderStatus.Open, order!.Status);
-        Assert.Equal(95m, order.LimitPrice);
+        Assert.Equal(90m, order.LimitPrice);
     }
 
     [Fact]
-    public async Task RepricedOrderStillCancelsAtTheFiveCycleCap()
+    public async Task RepricedOrderStillCancelsAtTheAgeCap()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
         var company = await context.Companies.FirstAsync();
-        var market = Service(new AlwaysReprice());
+        var market = Service(new FixedRoll(0d));
 
         var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
-        await StepAsync(market, 6);
+        await StepAsync(market, 16);
 
         var order = await context.Orders.FindAsync(placed.Order!.Id);
         Assert.Equal(OrderStatus.Cancelled, order!.Status);
@@ -92,7 +92,7 @@ public sealed class OrderMaintenanceTests : IDisposable
         await SeedStarvedHolderAsync(cash: 10m, cheapPrice: 50m, dearPrice: 200m, sharesEach: 4);
         var poor = await context.Participants.FirstAsync(participant => participant.Name == "Poor");
         var dear = await context.Companies.FirstAsync(company => company.Name == "Dear Co");
-        var market = Service(new AlwaysReprice());
+        var market = Service(new FixedRoll(0d));
 
         await StepAsync(market, 5);
 
@@ -103,6 +103,48 @@ public sealed class OrderMaintenanceTests : IDisposable
 
         await context.Entry(poor).ReloadAsync();
         Assert.Equal(0, poor.CashStarvedCycles);
+    }
+
+    [Fact]
+    public async Task RepriceChanceRisesFromTheEarlyBandIntoTheMidBand()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new FixedRoll(0.6));
+
+        var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
+
+        // Ages 3-6 carry a 0.5 chance, so a 0.6 roll never clears it through age 6.
+        await StepAsync(market, 7);
+        var order = await context.Orders.FindAsync(placed.Order!.Id);
+        Assert.Equal(100m, order!.LimitPrice);
+
+        // Age 7 enters the 0.7 band, where the same 0.6 roll now reprices.
+        await StepAsync(market, 1);
+        await context.Entry(order).ReloadAsync();
+        Assert.Equal(90m, order.LimitPrice);
+    }
+
+    [Fact]
+    public async Task RepriceChanceReachesCertaintyInTheLateBand()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new FixedRoll(0.8));
+
+        var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
+
+        // A 0.8 roll clears neither the 0.5 (ages 3-6) nor the 0.7 (ages 7-12) band, so nothing reprices.
+        await StepAsync(market, 13);
+        var order = await context.Orders.FindAsync(placed.Order!.Id);
+        Assert.Equal(100m, order!.LimitPrice);
+
+        // Age 13 enters the certain band, where every roll reprices.
+        await StepAsync(market, 1);
+        await context.Entry(order).ReloadAsync();
+        Assert.Equal(90m, order.LimitPrice);
     }
 
     private static async Task StepAsync(MarketService market, int times)
@@ -174,13 +216,8 @@ public sealed class OrderMaintenanceTests : IDisposable
         connection.Dispose();
     }
 
-    private sealed class AlwaysReprice : Random
+    private sealed class FixedRoll(double value) : Random
     {
-        public override double NextDouble() => 0d;
-    }
-
-    private sealed class NeverReprice : Random
-    {
-        public override double NextDouble() => 0.99d;
+        public override double NextDouble() => value;
     }
 }

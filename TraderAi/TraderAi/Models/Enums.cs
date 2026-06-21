@@ -49,6 +49,7 @@ public enum MoneyTransactionType
     Release,
     Debit,
     Credit,
+    Dividend,
 }
 
 public enum MarketStatus

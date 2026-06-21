@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { api } from './api'
-import { formatInt, formatMoney, formatSigned, toneOf } from './format'
+import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { Panel } from './Panel'
 
-const POLL_INTERVAL_MS = 2500
+const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
 
 // A null participant is the share issuer's own offering (seeded company sell orders).
@@ -176,6 +176,12 @@ function App() {
                   actionError={actionError}
                   runAction={runAction}
                   resetMarket={resetMarket}
+                />
+
+                <MarketMapPanel
+                  companies={companies}
+                  participants={participants}
+                  lastDividendTotal={market.lastDividendTotal}
                 />
 
                 <ActivityPanel activity={cycleActivity} />
@@ -524,10 +530,10 @@ function WatchlistPanel({ companies, selectedCompanyId, onSelect }) {
 }
 
 function OrderBookPanel({ orders, participantNameById, companyNameById }) {
-  const bids = orders
+  const buys = orders
     .filter((order) => order.type === 'Buy')
     .sort((a, b) => b.limitPrice - a.limitPrice)
-  const asks = orders
+  const sells = orders
     .filter((order) => order.type === 'Sell')
     .sort((a, b) => a.limitPrice - b.limitPrice)
 
@@ -535,16 +541,16 @@ function OrderBookPanel({ orders, participantNameById, companyNameById }) {
     <Panel title="Order book" count={`${orders.length} open`} className="panel-book">
       <div className="book">
         <OrderSide
-          side="Bids"
+          side="Buy"
           tone="up"
-          orders={bids}
+          orders={buys}
           participantNameById={participantNameById}
           companyNameById={companyNameById}
         />
         <OrderSide
-          side="Asks"
+          side="Sell"
           tone="down"
-          orders={asks}
+          orders={sells}
           participantNameById={participantNameById}
           companyNameById={companyNameById}
         />
@@ -561,7 +567,7 @@ function OrderSide({ side, tone, orders, participantNameById, companyNameById })
         <span className="num">{orders.length}</span>
       </div>
       {orders.length === 0 ? (
-        <p className="note note-sm">No {side.toLowerCase()}.</p>
+        <p className="note note-sm">No {side.toLowerCase()} orders.</p>
       ) : (
         <table className="tbl tbl-book">
           <thead>
@@ -701,6 +707,189 @@ function HoldingsPanel({ participant, holdings }) {
   )
 }
 
+// Layout box for the treemap; tile positions are emitted as percentages of it, and the panel keeps this
+// aspect ratio so the proportions hold at any width.
+const MAP_BOX_W = 100
+const MAP_BOX_H = 42
+const TONE_GLYPH = { up: '▲', down: '▼', flat: '–' }
+const TONE_WORD = { up: 'up', down: 'down', flat: 'unchanged' }
+
+function formatPct(value) {
+  if (typeof value !== 'number') return '—'
+  const sign = value > 0 ? '+' : value < 0 ? '−' : ''
+  return `${sign}${(Math.abs(value) * 100).toFixed(1)}%`
+}
+
+function heatMix(value) {
+  if (typeof value !== 'number' || value === 0) return '0%'
+  return `${Math.min(88, 44 + Math.abs(value) * 900).toFixed(0)}%`
+}
+
+function mapTileSize(areaPct, widthPct, heightPct) {
+  const shortestSide = Math.min(widthPct, heightPct)
+  if (areaPct < 1.1 || shortestSide < 8) return 'is-tiny'
+  if (areaPct < 2.2 || shortestSide < 13) return 'is-small'
+  return ''
+}
+
+// Worst (largest) aspect ratio a row of tile areas would reach if laid along a side of the given length.
+function worstRatio(areas, side, sum) {
+  if (areas.length === 0 || sum <= 0) return Infinity
+  const max = Math.max(...areas)
+  const min = Math.min(...areas)
+  const side2 = side * side
+  const sum2 = sum * sum
+  return Math.max((side2 * max) / sum2, sum2 / (side2 * min))
+}
+
+// Squarified treemap (Bruls, Huizing, van Wijk): packs items into the box with area proportional to
+// value, growing each row only while it keeps tiles close to square. Items must be sorted largest first.
+function squarify(items, width, height) {
+  const total = items.reduce((sum, item) => sum + item.value, 0)
+  if (total <= 0) return []
+
+  const scale = (width * height) / total
+  const nodes = items.map((item) => ({ item, area: item.value * scale }))
+
+  const placed = []
+  let free = { x: 0, y: 0, w: width, h: height }
+  let index = 0
+
+  while (index < nodes.length) {
+    const side = Math.min(free.w, free.h)
+    const row = []
+    let rowSum = 0
+
+    while (index + row.length < nodes.length) {
+      const next = nodes[index + row.length]
+      const current = row.map((node) => node.area)
+      const widened = [...current, next.area]
+      if (row.length === 0 || worstRatio(widened, side, rowSum + next.area) <= worstRatio(current, side, rowSum)) {
+        row.push(next)
+        rowSum += next.area
+      } else {
+        break
+      }
+    }
+
+    const thickness = rowSum / side
+    if (free.w >= free.h) {
+      let y = free.y
+      for (const node of row) {
+        const cellHeight = node.area / thickness
+        placed.push({ ...node.item, x: free.x, y, w: thickness, h: cellHeight })
+        y += cellHeight
+      }
+      free = { x: free.x + thickness, y: free.y, w: free.w - thickness, h: free.h }
+    } else {
+      let x = free.x
+      for (const node of row) {
+        const cellWidth = node.area / thickness
+        placed.push({ ...node.item, x, y: free.y, w: cellWidth, h: thickness })
+        x += cellWidth
+      }
+      free = { x: free.x, y: free.y + thickness, w: free.w, h: free.h - thickness }
+    }
+
+    index += row.length
+  }
+
+  return placed
+}
+
+// Treemap of the largest companies by capitalisation: tile area tracks market cap, colour tracks the last
+// price move (green up, red down, grey flat) with a glyph and signed percent so it is never colour-only.
+function MarketMapPanel({ companies, participants, lastDividendTotal }) {
+  const mappedCompanies = companies
+    .map((company) => ({
+      ...company,
+      capitalization: company.issuedSharesCount * (company.currentPrice ?? 0),
+    }))
+    .filter((company) => company.capitalization > 0)
+    .sort((a, b) => b.capitalization - a.capitalization)
+  const totalShares = mappedCompanies.reduce((sum, company) => sum + company.issuedSharesCount, 0)
+
+  // Capitalisation values every issued share at its company's current price, matching the tile areas;
+  // participant cash is the cash side of the same market.
+  const totalCapitalization = mappedCompanies.reduce((sum, company) => sum + company.capitalization, 0)
+  const totalParticipantMoney = participants.reduce(
+    (sum, participant) => sum + (participant.currentBalance ?? 0),
+    0,
+  )
+
+  const tiles = squarify(
+    mappedCompanies.map((company) => ({ company, value: company.capitalization })),
+    MAP_BOX_W,
+    MAP_BOX_H,
+  )
+
+  return (
+    <Panel
+      title="Market map"
+      count={mappedCompanies.length ? `${mappedCompanies.length} companies · ${formatInt(totalShares)} shares` : undefined}
+      className="panel-map"
+    >
+      {mappedCompanies.length === 0 ? (
+        <p className="note">Seed the market to see company prices.</p>
+      ) : (
+        <div className="map-layout">
+        <div className="market-map" style={{ aspectRatio: `${MAP_BOX_W} / ${MAP_BOX_H}` }}>
+          {tiles.map(({ company, x, y, w, h }) => {
+            const tone = toneOf(company.priceChangePct)
+            const widthPct = (w / MAP_BOX_W) * 100
+            const heightPct = (h / MAP_BOX_H) * 100
+            const areaPct = (company.capitalization / totalCapitalization) * 100
+            const sizeClass = mapTileSize(areaPct, widthPct, heightPct)
+            return (
+              <div
+                key={company.id}
+                className={`map-tile tone-bg-${tone} ${sizeClass}`}
+                style={{
+                  left: `${(x / MAP_BOX_W) * 100}%`,
+                  top: `${(y / MAP_BOX_H) * 100}%`,
+                  width: `${widthPct}%`,
+                  height: `${heightPct}%`,
+                  '--map-area': areaPct.toFixed(2),
+                  '--map-heat': heatMix(company.priceChangePct),
+                }}
+                title={`${company.name} · ${formatCompactMoney(company.capitalization)} cap · ${formatInt(company.issuedSharesCount)} shares · ${formatMoney(company.currentPrice)} · ${formatPct(company.priceChangePct)}`}
+                aria-label={`${company.name}, ${formatCompactMoney(company.capitalization)} capitalisation, ${formatInt(company.issuedSharesCount)} issued shares, ${formatMoney(company.currentPrice)}, ${TONE_WORD[tone]} ${formatPct(company.priceChangePct)}`}
+              >
+                <span className="map-name">{company.name}</span>
+                <span className="map-cap num">{formatCompactMoney(company.capitalization)}</span>
+                <span className="map-change num">
+                  <span aria-hidden="true">{TONE_GLYPH[tone]}</span> {formatPct(company.priceChangePct)}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+        <aside className="map-stats">
+          <div className="map-stat">
+            <span className="map-stat-label">Total cap</span>
+            <span className="map-stat-value num" title={formatMoney(totalCapitalization)}>
+              {formatCompactMoney(totalCapitalization)}
+            </span>
+          </div>
+          <div className="map-stat">
+            <span className="map-stat-label">Trader cash</span>
+            <span className="map-stat-value num" title={formatMoney(totalParticipantMoney)}>
+              {formatCompactMoney(totalParticipantMoney)}
+            </span>
+          </div>
+          <div className="map-stat">
+            <span className="map-stat-label">Last dividends</span>
+            <span className="map-stat-value num" title={formatMoney(lastDividendTotal)}>
+              {formatCompactMoney(lastDividendTotal)}
+            </span>
+          </div>
+        </aside>
+        </div>
+      )}
+    </Panel>
+  )
+}
+
 const ACTIVITY_WINDOW = 48
 
 function ActivityPanel({ activity }) {
@@ -711,6 +900,7 @@ function ActivityPanel({ activity }) {
   const windowCounts = points.map((point) => point.ordersPlaced)
   const latest = windowCounts.at(-1) ?? 0
   const peak = windowCounts.length ? Math.max(...windowCounts) : 0
+  const hasDividend = points.some((point) => point.paidDividend)
 
   return (
     <Panel
@@ -725,6 +915,7 @@ function ActivityPanel({ activity }) {
           <div className="quote">
             <strong className="quote-last num">{formatInt(latest)}</strong>
             <span className="muted-sub">orders last loop · peak {formatInt(peak)} in last {points.length}</span>
+            {hasDividend ? <span className="activity-legend">dividend cycle</span> : null}
           </div>
           <ActivityChart points={points} />
         </>
@@ -736,13 +927,13 @@ function ActivityPanel({ activity }) {
 // Line-and-area chart of orders placed per loop, with a labelled count axis (Y) and cycle axis (X).
 function ActivityChart({ points }) {
   const width = 720
-  const height = 240
-  const margin = { top: 12, right: 12, bottom: 28, left: 44 }
+  const height = 96
+  const margin = { top: 10, right: 12, bottom: 24, left: 44 }
   const plotWidth = width - margin.left - margin.right
   const plotHeight = height - margin.top - margin.bottom
 
   const counts = points.map((point) => point.ordersPlaced)
-  const tickCount = 4
+  const tickCount = 3
   const step = Math.max(1, Math.ceil(Math.max(...counts) / tickCount))
   const yMax = step * tickCount
   const yTicks = Array.from({ length: tickCount + 1 }, (_, index) => index * step)
@@ -756,18 +947,22 @@ function ActivityChart({ points }) {
   const area = `${x(0)},${baseline} ${line} ${x(count - 1)},${baseline}`
   const last = points.at(-1)
 
-  // Thin out X labels so cycle numbers never overlap, always keeping the most recent one.
-  const labelEvery = Math.max(1, Math.ceil(count / 6))
-  const xLabels = points
-    .map((point, index) => ({ point, index }))
-    .filter(({ index }) => index % labelEvery === 0 || index === count - 1)
+  const indexed = points.map((point, index) => ({ point, index }))
+  // Label even cycle numbers only so they never overlap, always keeping the most recent one.
+  const xLabels = indexed.filter(({ point, index }) => point.cycleNumber % 2 === 0 || index === count - 1)
+  const dividendLines = indexed.filter(({ point }) => point.paidDividend)
 
   return (
     <div className="activity-chart">
       <svg
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={`Orders placed per loop across the last ${count} cycles, peaking at ${Math.max(...counts)}.`}
+        aria-label={
+          `Orders placed per loop across the last ${count} cycles, peaking at ${Math.max(...counts)}.` +
+          (dividendLines.length
+            ? ` Dividends were paid in cycle${dividendLines.length > 1 ? 's' : ''} ${dividendLines.map(({ point }) => point.cycleNumber).join(', ')}.`
+            : '')
+        }
       >
         <defs>
           <linearGradient id="activity-fill" x1="0" x2="0" y1="0" y2="1">
@@ -784,7 +979,7 @@ function ActivityChart({ points }) {
               </text>
             </g>
           ))}
-          {xLabels.map(({ index }) => (
+          {indexed.map(({ index }) => (
             <line
               key={`v-${index}`}
               className="chart-gridline"
@@ -802,6 +997,17 @@ function ActivityChart({ points }) {
         </g>
         <polygon className="activity-area" points={area} fill="url(#activity-fill)" />
         <polyline className="activity-line" points={line} />
+        {/* Dashed so the dividend marker reads without relying on colour alone. */}
+        {dividendLines.map(({ index }) => (
+          <line
+            key={`div-${index}`}
+            className="chart-dividend-line"
+            x1={x(index)}
+            x2={x(index)}
+            y1={margin.top}
+            y2={baseline}
+          />
+        ))}
         {last ? <circle className="activity-dot" cx={x(count - 1)} cy={y(last.ordersPlaced)} r="3.5" /> : null}
       </svg>
     </div>

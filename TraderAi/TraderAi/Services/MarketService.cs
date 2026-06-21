@@ -47,15 +47,22 @@ public sealed class MarketService(
     // How far back the long-range price move is measured for the engine's extreme-move reactions.
     private const int LongRangeWindowCycles = 10;
 
-    // Order ageing: a resting order is force-cancelled once this old, and from RepriceFromAge it may be
-    // randomly chased toward the market by RepriceStep so it has a chance to fill before the cap.
-    private const int OrderMaxAgeCycles = 5;
+    // Order ageing: a resting order is force-cancelled once this old, and from RepriceFromAge it is
+    // chased toward the market by RepriceStep with a probability that climbs the longer it stays
+    // unfilled (see RepriceChance), so a stubborn order is cut more aggressively before the cap.
+    private const int OrderMaxAgeCycles = 15;
     private const int OrderRepriceFromAge = 3;
-    private const double RepriceChance = 0.5;
-    private const decimal RepriceStep = 0.05m;
+    private const decimal RepriceStep = 0.10m;
 
     // After this many consecutive cycles unable to afford any share, a holder liquidates to raise cash.
     private const int CashStarvedLimitCycles = 5;
+
+    // Dividends are paid at a random interval drawn in this range and credited at a per-company rate
+    // drawn in [MinDividendRate, MaxDividendRate] of the share's current price.
+    private const int MinDividendIntervalCycles = 10;
+    private const int MaxDividendIntervalCycles = 25;
+    private const decimal MinDividendRate = 0.001m;
+    private const decimal MaxDividendRate = 0.02m;
 
     // Forced-liquidation sells undercut the market by 1–5% so the order actually crosses.
     private const decimal MinSellOffset = 0.01m;
@@ -180,7 +187,7 @@ public sealed class MarketService(
             {
                 CancelOrder(order, participant, currentCycleId);
             }
-            else if (age >= OrderRepriceFromAge && random.NextDouble() < RepriceChance)
+            else if (random.NextDouble() < RepriceChance(age))
             {
                 Reprice(order, participant, currentCycleId);
             }
@@ -331,6 +338,72 @@ public sealed class MarketService(
         }
     }
 
+    // Pays a dividend to every share owner once the schedule comes due, then sets the next due cycle. A
+    // non-positive schedule means "not yet scheduled" (a fresh or migrated market), so the first advance
+    // only arms it rather than paying immediately.
+    private async Task PayDividendsIfDueAsync(Market market, MarketCycle currentCycle, DateTime now)
+    {
+        if (market.NextDividendCycleNumber <= 0)
+        {
+            market.NextDividendCycleNumber = currentCycle.CycleNumber + RandomDividendInterval(random);
+            return;
+        }
+
+        if (currentCycle.CycleNumber < market.NextDividendCycleNumber)
+        {
+            return;
+        }
+
+        market.NextDividendCycleNumber = currentCycle.CycleNumber + RandomDividendInterval(random);
+        await PayDividendsAsync(currentCycle.Id, now);
+    }
+
+    private async Task PayDividendsAsync(int currentCycleId, DateTime now)
+    {
+        var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        if (latestPriceByCompany.Count == 0)
+        {
+            return;
+        }
+
+        // Each company declares its own rate this round, so all its shares pay the same per-share amount.
+        var rateByCompany = latestPriceByCompany.Keys.ToDictionary(companyId => companyId, _ => RandomDividendRate());
+
+        var holdings = await dbContext.Shares
+            .Where(share => share.OwnerId != null)
+            .GroupBy(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId })
+            .Select(group => new { group.Key.OwnerId, group.Key.CompanyId, Count = group.Count() })
+            .ToListAsync();
+
+        var participantsById = await dbContext.Participants.ToDictionaryAsync(participant => participant.Id);
+
+        foreach (var ownerGroup in holdings.GroupBy(holding => holding.OwnerId))
+        {
+            if (!participantsById.TryGetValue(ownerGroup.Key, out var owner))
+            {
+                continue;
+            }
+
+            var payout = ownerGroup.Sum(holding =>
+                latestPriceByCompany[holding.CompanyId] * rateByCompany[holding.CompanyId] * holding.Count);
+            payout = Round(payout);
+            if (payout <= 0m)
+            {
+                continue;
+            }
+
+            owner.CurrentBalance += payout;
+            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            {
+                ParticipantId = owner.Id,
+                Type = MoneyTransactionType.Dividend,
+                Amount = payout,
+                CreatedInCycleId = currentCycleId,
+                CreatedAt = now,
+            });
+        }
+    }
+
     private async Task<IReadOnlyDictionary<int, decimal>> LatestPriceByCompanyAsync()
     {
         var snapshots = await dbContext.PriceSnapshots.ToListAsync();
@@ -338,6 +411,21 @@ public sealed class MarketService(
             .GroupBy(snapshot => snapshot.CompanyId)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(snapshot => snapshot.Id).First().Price);
     }
+
+    private static int RandomDividendInterval(Random rng) =>
+        rng.Next(MinDividendIntervalCycles, MaxDividendIntervalCycles + 1);
+
+    private decimal RandomDividendRate() =>
+        MinDividendRate + ((decimal)random.NextDouble() * (MaxDividendRate - MinDividendRate));
+
+    // Reprice probability climbs as the order ages: modest while fresh, then near-certain near the cap.
+    private static double RepriceChance(int age) => age switch
+    {
+        >= 13 => 1.0,
+        >= 7 => 0.7,
+        >= OrderRepriceFromAge => 0.5,
+        _ => 0.0,
+    };
 
     private decimal RandomSellOffset() =>
         MinSellOffset + ((decimal)random.NextDouble() * (MaxSellOffset - MinSellOffset));
@@ -478,6 +566,8 @@ public sealed class MarketService(
 
         currentCycle.Status = CycleStatus.Completed;
         currentCycle.CompletedAt = now;
+
+        await PayDividendsIfDueAsync(market, currentCycle, now);
 
         var nextCycle = new MarketCycle
         {
@@ -644,13 +734,19 @@ public sealed class MarketService(
     {
         // Tunable size of the generated demo market; bump these to grow the simulation.
         const int companyCount = 40;
-        const int participantCount = 20;
+        const int participantCount = 200;
         const int minShares = 100;
         const int maxShares = 1000;
         const int minPrice = 20;
         const int maxPrice = 300;
-        const int minBalance = 10_000;
-        const int maxBalance = 50_000;
+
+        // A small share of traders seed as "whales" with far deeper pockets so the market has a few large
+        // players among many smaller ones, rather than a single uniform wealth band.
+        const double whaleShare = 0.15;
+        const long whaleMinBalance = 100_000;
+        const long whaleMaxBalance = 2_000_000_000;
+        const long regularMinBalance = 10_000;
+        const long regularMaxBalance = 200_000;
         const int randomSeed = 20260619; // fixed seed keeps the generated demo data reproducible
 
         var random = new Random(randomSeed);
@@ -676,7 +772,9 @@ public sealed class MarketService(
 
         for (var index = 0; index < participantCount; index++)
         {
-            var balance = random.Next(minBalance, maxBalance + 1);
+            var balance = random.NextDouble() < whaleShare
+                ? random.NextInt64(whaleMinBalance, whaleMaxBalance + 1)
+                : random.NextInt64(regularMinBalance, regularMaxBalance + 1);
             dbContext.Participants.Add(new Participant
             {
                 Name = participantNames[index],
@@ -775,6 +873,8 @@ public sealed class MarketService(
             dbContext.ChangeTracker.AutoDetectChangesEnabled = true;
         }
 
+        // Drawn last so adding the dividend schedule does not shift the generated demo data above.
+        market.NextDividendCycleNumber = firstCycle.CycleNumber + RandomDividendInterval(random);
         market.CurrentCycleId = firstCycle.Id;
         await dbContext.SaveChangesAsync();
 

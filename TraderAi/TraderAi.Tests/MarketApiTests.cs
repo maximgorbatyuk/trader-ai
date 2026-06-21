@@ -64,6 +64,10 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             var companyAfter = companiesAfter!.Single(company => company.Id == companySell.CompanyId);
             Assert.Equal(price, companyAfter.CurrentPrice);
 
+            // Seed close and the fill are both in the first cycle at the same price, so there is no
+            // prior-cycle move to report.
+            Assert.Equal(0m, companyAfter.PriceChangePct);
+
             var participantsAfter = await client.GetFromJsonAsync<ParticipantDto[]>("/participants");
             var buyerAfter = participantsAfter!.Single(participant => participant.Id == buyer.Id);
             Assert.Equal(quantity, buyerAfter.SharesOwned);
@@ -125,7 +129,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             var openOrders = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
 
             Assert.Equal(40, companies!.Length);
-            Assert.Equal(20, participants!.Length);
+            Assert.Equal(200, participants!.Length);
             Assert.Equal(40, openOrders!.Length);
             Assert.All(openOrders, order =>
             {
@@ -583,7 +587,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
     private sealed record ParticipantDto(int Id, string Name, decimal CurrentBalance, decimal ReservedBalance, int SharesOwned);
 
-    private sealed record CompanyDto(int Id, string Name, decimal? CurrentPrice);
+    private sealed record CompanyDto(int Id, string Name, decimal? CurrentPrice, decimal PriceChangePct);
 
     private sealed record ShareTransactionDto(int Id, int? SellerId, int BuyerId, int Quantity, decimal Price);
 
