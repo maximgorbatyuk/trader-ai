@@ -20,7 +20,7 @@ public sealed class NewsPost
     // Direction and magnitude are set only when Scope is not None.
     public NewsImpactDirection? Direction { get; set; }
 
-    // Percent of the share price moved, in the range [0.1, 10].
+    // Percent of the share price moved: automated posts use up to 10, manual posts up to 95.
     public decimal? ImpactPercent { get; set; }
 
     // Set only for a single-company impact; industry impacts use the Industries join instead.

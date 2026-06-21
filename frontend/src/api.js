@@ -57,6 +57,7 @@ export const api = {
   getShareTransactions: (take) => get(take ? `/transactions/shares?take=${take}` : '/transactions/shares'),
   getPrices: (companyId) => get(`/prices/${companyId}`),
   getNews: (take = 30) => get(`/news?take=${take}`),
+  getCrises: (take = 30) => get(`/crises?take=${take}`),
   getNewsThemes: () => get('/news/themes'),
   getIndustries: () => get('/industries'),
   createNews: (payload) => post('/news', payload),

@@ -19,7 +19,9 @@ Each share is stored as a separate row and has one current owner.
 - Every share owner is paid a dividend at a recurring interval, sized as a small percentage of each held share's current price and credited straight to the owner's balance.
 - While the market runs, a news event is published automatically every fixed number of cycles; some carry market impact.
 - News events can also be created manually, with a chosen target and impact.
-- A news event with impact moves the share price of either a single company or every company in one or more industries, up or down, by 0.1% to 10% of the current price.
+- A news event with impact moves the share price of either a single company or every company in one or more industries, up or down, by a percentage of the current price (automated events up to 10%, manually created events up to 95%).
+- A market crisis can strike at random, becoming more likely the longer the market runs without one. A local crisis drives a small handful of sectors down; a rarer global crisis drives a large share of all sectors down. Each affected sector falls by its own percentage.
+- Any sharp move also clears the resting orders that were priced against the old level: a price drop (from a crisis or a news event) cancels the standing buy orders for the affected companies and releases their reserved cash, while a price rise cancels the standing sell orders and frees their shares to be listed again.
 - A buy order reserves cash when it is created.
 - The reserved cash amount is `Quantity * LimitPrice`.
 - Reserved cash cannot be used by another buy order.
@@ -304,3 +306,24 @@ Notes:
 - A post with no impact has scope None and no direction, percent, or target.
 - A company-scoped post moves one company; an industry-scoped post moves every company in its listed industries.
 - Impact is applied by recording a new price point for each affected company, the same way a trade moves the price.
+
+### Crisis
+
+A crisis is a market shock that drives several industries down at once.
+
+Fields:
+
+- ID
+- Title
+- Content
+- Scope (Local, Global)
+- TriggeredInCycleId
+- TriggeredAt
+- Industries (each affected industry with its own decrease)
+
+Notes:
+
+- A crisis becomes more likely the longer the market goes without one of its scope, and its clock resets when it fires.
+- A local crisis hits a few sectors; a global crisis hits a large share of all sectors.
+- Each affected industry falls by its own percentage, applied by recording a new price point for every company in that industry.
+- The drop also cancels the standing buy orders for the affected companies.

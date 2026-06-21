@@ -33,10 +33,14 @@ public sealed class NewsService(
     AppDbContext dbContext,
     MarketCycleLock cycleLock,
     IOptions<NewsOptions> options,
+    MarketImpactService marketImpact,
     Random random)
 {
     private const decimal MinImpactPercent = 0.1m;
-    private const decimal MaxImpactPercent = 10m;
+
+    // Automated posts stay gentle; a manually created post can specify a much larger swing.
+    private const decimal MaxAutomatedImpactPercent = 10m;
+    private const decimal MaxManualImpactPercent = 95m;
 
     // Called from the cycle advance, which already holds the lock and owns the surrounding save; this only
     // adds entities to the shared context when an automated post is due.
@@ -94,9 +98,9 @@ public sealed class NewsService(
         }
 
         var percent = Round(request.ImpactPercent);
-        if (percent < MinImpactPercent || percent > MaxImpactPercent)
+        if (percent < MinImpactPercent || percent > MaxManualImpactPercent)
         {
-            return ManualNewsResult.Fail($"Impact percent must be between {MinImpactPercent} and {MaxImpactPercent}.");
+            return ManualNewsResult.Fail($"Impact percent must be between {MinImpactPercent} and {MaxManualImpactPercent}.");
         }
 
         var content = DemoNewsContent.GenerateForTheme(request.ThemeKey, random);
@@ -163,7 +167,7 @@ public sealed class NewsService(
                 .ToListAsync();
         }
 
-        await ApplySnapshotsAsync(request.Direction, percent, affectedCompanyIds, cycleId, now);
+        await marketImpact.ApplyImpactAsync(request.Direction, affectedCompanyIds, percent, cycleId, now);
 
         dbContext.NewsPosts.Add(post);
         await dbContext.SaveChangesAsync();
@@ -215,51 +219,7 @@ public sealed class NewsService(
                 .ToListAsync();
         }
 
-        return await ApplySnapshotsAsync(direction, percent, affectedCompanyIds, cycleId, now);
-    }
-
-    private async Task<int> ApplySnapshotsAsync(
-        NewsImpactDirection direction,
-        decimal percent,
-        IReadOnlyCollection<int> companyIds,
-        int cycleId,
-        DateTime now)
-    {
-        if (companyIds.Count == 0)
-        {
-            return 0;
-        }
-
-        var latestPriceByCompany = await LatestPriceByCompanyAsync();
-        var factor = direction == NewsImpactDirection.Increase
-            ? 1m + (percent / 100m)
-            : 1m - (percent / 100m);
-
-        var moved = 0;
-        foreach (var companyId in companyIds)
-        {
-            if (!latestPriceByCompany.TryGetValue(companyId, out var price) || price <= 0m)
-            {
-                continue;
-            }
-
-            var newPrice = Round(price * factor);
-            if (newPrice <= 0m)
-            {
-                continue;
-            }
-
-            dbContext.PriceSnapshots.Add(new PriceSnapshot
-            {
-                CompanyId = companyId,
-                Price = newPrice,
-                CreatedInCycleId = cycleId,
-                CreatedAt = now,
-            });
-            moved++;
-        }
-
-        return moved;
+        return await marketImpact.ApplyImpactAsync(direction, affectedCompanyIds, percent, cycleId, now);
     }
 
     private static void ClearImpact(NewsPost post)
@@ -284,16 +244,8 @@ public sealed class NewsService(
         return picked;
     }
 
-    private async Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync()
-    {
-        var snapshots = await dbContext.PriceSnapshots.ToListAsync();
-        return snapshots
-            .GroupBy(snapshot => snapshot.CompanyId)
-            .ToDictionary(group => group.Key, group => group.OrderByDescending(snapshot => snapshot.Id).First().Price);
-    }
-
     private decimal RandomImpactPercent() =>
-        Round(MinImpactPercent + ((decimal)random.NextDouble() * (MaxImpactPercent - MinImpactPercent)));
+        Round(MinImpactPercent + ((decimal)random.NextDouble() * (MaxAutomatedImpactPercent - MinImpactPercent)));
 
     private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 }

@@ -35,22 +35,32 @@ function App() {
   const [transactions, setTransactions] = useState([])
   const [cycleActivity, setCycleActivity] = useState([])
   const [news, setNews] = useState([])
+  const [crises, setCrises] = useState([])
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
 
   const loadAll = useCallback(async () => {
     try {
-      const [marketData, companyData, participantData, orderData, activityData, transactionData, newsData] =
-        await Promise.all([
-          api.getMarket(),
-          api.getCompanies(),
-          api.getParticipants(),
-          api.getOrders('open'),
-          api.getCycleActivity(),
-          api.getShareTransactions(50),
-          api.getNews(10),
-        ])
+      const [
+        marketData,
+        companyData,
+        participantData,
+        orderData,
+        activityData,
+        transactionData,
+        newsData,
+        crisisData,
+      ] = await Promise.all([
+        api.getMarket(),
+        api.getCompanies(),
+        api.getParticipants(),
+        api.getOrders('open'),
+        api.getCycleActivity(),
+        api.getShareTransactions(50),
+        api.getNews(10),
+        api.getCrises(10),
+      ])
 
       setMarket(marketData)
       setCompanies(companyData)
@@ -59,6 +69,7 @@ function App() {
       setCycleActivity(activityData)
       setTransactions(transactionData)
       setNews(newsData)
+      setCrises(crisisData)
       setConnected(true)
     } catch {
       setConnected(false)
@@ -131,6 +142,8 @@ function App() {
 
             {market !== null ? (
               <>
+                <CrisisBanner crises={crises} currentCycleNumber={market.currentCycleNumber} />
+
                 <div className="dashboard">
                   <MarketMapPanel
                     companies={companies}
@@ -157,7 +170,7 @@ function App() {
                     companyNameById={companyNameById}
                   />
 
-                  <NewswirePanel news={news} companies={companies} onPublished={loadAll} />
+                  <NewswirePanel news={news} crises={crises} companies={companies} onPublished={loadAll} />
                 </div>
               </>
             ) : null}
@@ -467,13 +480,106 @@ function NewsImpact({ post }) {
   )
 }
 
-function NewswirePanel({ news, companies, onPublished }) {
+// A crisis is only shown in the banner while it is still fresh, so an old shock does not linger at the top.
+const CRISIS_RECENT_CYCLES = 15
+const MAX_SECTOR_CHIPS = 6
+
+function crisisDropRange(crisis) {
+  const percents = crisis.industries.map((link) => Number(link.impactPercent))
+  if (percents.length === 0) return null
+  return { min: Math.min(...percents), max: Math.max(...percents) }
+}
+
+function formatDropRange(crisis) {
+  const range = crisisDropRange(crisis)
+  if (!range) return ''
+  return range.min === range.max
+    ? `−${range.max.toFixed(1)}%`
+    : `−${range.min.toFixed(1)}% to −${range.max.toFixed(1)}%`
+}
+
+function sectorLabel(count) {
+  return count === 1 ? 'sector' : 'sectors'
+}
+
+// A prominent alert for the most recent crisis, shown only while it is recent relative to the current cycle.
+function CrisisBanner({ crises, currentCycleNumber }) {
+  const latest = crises[0]
+  if (!latest) return null
+  if (
+    currentCycleNumber != null &&
+    currentCycleNumber - latest.triggeredInCycleNumber > CRISIS_RECENT_CYCLES
+  ) {
+    return null
+  }
+
+  const sectorCount = latest.industries.length
+  return (
+    <div className="crisis-banner" role="alert">
+      <span className="crisis-banner-mark" aria-hidden="true">
+        ⚠
+      </span>
+      <div className="crisis-banner-body">
+        <p className="crisis-banner-head">
+          <span className="crisis-scope">{latest.scope} crisis</span>
+          <span className="crisis-banner-title">{latest.title}</span>
+        </p>
+        <p className="crisis-banner-meta num">
+          {sectorCount} {sectorLabel(sectorCount)} · {formatDropRange(latest)} · cycle{' '}
+          {latest.triggeredInCycleNumber}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// The market effect of a crisis: always a drop, summarised as a range across the sectors it hit.
+function CrisisImpact({ crisis }) {
+  const sectorCount = crisis.industries.length
+  return (
+    <span className="news-impact num tone-down">
+      <span aria-hidden="true">▼ </span>
+      {formatDropRange(crisis)}
+      <span className="news-impact-target">
+        {' '}
+        · {sectorCount} {sectorLabel(sectorCount)}
+      </span>
+    </span>
+  )
+}
+
+function CrisisSectors({ crisis }) {
+  const shown = crisis.industries.slice(0, MAX_SECTOR_CHIPS)
+  const extra = crisis.industries.length - shown.length
+
+  return (
+    <ul className="crisis-sectors">
+      {shown.map((link) => (
+        <li key={link.industryId} className="crisis-sector num">
+          {link.industryName} <span className="tone-down">−{Number(link.impactPercent).toFixed(1)}%</span>
+        </li>
+      ))}
+      {extra > 0 ? <li className="crisis-sector crisis-sector-more">+{extra} more</li> : null}
+    </ul>
+  )
+}
+
+// The Newswire blends manual/automated news with crises into one time-ordered feed, trimmed to the latest
+// items; crises render as red alerts so a market-wide shock stands out from ordinary headlines.
+function NewswirePanel({ news, crises, companies, onPublished }) {
   const [adding, setAdding] = useState(false)
+
+  const feed = [
+    ...news.map((post) => ({ kind: 'news', id: `news-${post.id}`, at: post.publishedAt, post })),
+    ...crises.map((crisis) => ({ kind: 'crisis', id: `crisis-${crisis.id}`, at: crisis.triggeredAt, crisis })),
+  ]
+    .sort((a, b) => new Date(b.at) - new Date(a.at))
+    .slice(0, 10)
 
   return (
     <Panel
       title="Newswire"
-      count={`${news.length}`}
+      count={`${feed.length}`}
       className="panel-news"
       headerExtra={
         <button type="button" className="btn select-sm" onClick={() => setAdding(true)}>
@@ -481,19 +587,35 @@ function NewswirePanel({ news, companies, onPublished }) {
         </button>
       }
     >
-      {news.length === 0 ? (
+      {feed.length === 0 ? (
         <p className="note">No news yet. Start the loop or add a post to see events here.</p>
       ) : (
         <ul className="newswire">
-          {news.map((post) => (
-            <li key={post.id} className="news-item">
-              <div className="news-head">
-                <h3 className="news-title">{post.title}</h3>
-                <NewsImpact post={post} />
-              </div>
-              <p className="news-body">{post.content}</p>
-            </li>
-          ))}
+          {feed.map((item) =>
+            item.kind === 'crisis' ? (
+              <li key={item.id} className="news-item crisis-item">
+                <div className="news-head">
+                  <h3 className="news-title">
+                    <span className="crisis-flag" aria-hidden="true">
+                      ⚠{' '}
+                    </span>
+                    {item.crisis.title}
+                  </h3>
+                  <CrisisImpact crisis={item.crisis} />
+                </div>
+                <p className="news-body">{item.crisis.content}</p>
+                <CrisisSectors crisis={item.crisis} />
+              </li>
+            ) : (
+              <li key={item.id} className="news-item">
+                <div className="news-head">
+                  <h3 className="news-title">{item.post.title}</h3>
+                  <NewsImpact post={item.post} />
+                </div>
+                <p className="news-body">{item.post.content}</p>
+              </li>
+            ),
+          )}
         </ul>
       )}
 
@@ -501,6 +623,116 @@ function NewswirePanel({ news, companies, onPublished }) {
         <AddNewsModal companies={companies} onClose={() => setAdding(false)} onPublished={onPublished} />
       ) : null}
     </Panel>
+  )
+}
+
+// Type-ahead picker for a single company: filters as you type, navigable by keyboard. Controlled by the
+// parent through value (company id) and onChange.
+function CompanyCombobox({ companies, value, onChange }) {
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const [activeIndex, setActiveIndex] = useState(0)
+  const rootRef = useRef(null)
+  const listRef = useRef(null)
+
+  const selected = companies.find((company) => String(company.id) === String(value)) ?? null
+  const trimmed = query.trim().toLowerCase()
+  const matches = trimmed
+    ? companies.filter((company) => company.name.toLowerCase().includes(trimmed))
+    : companies
+
+  useEffect(() => {
+    function onPointerDown(event) {
+      if (rootRef.current && !rootRef.current.contains(event.target)) {
+        setOpen(false)
+        setQuery('')
+      }
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [])
+
+  useEffect(() => {
+    if (open) listRef.current?.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex, open])
+
+  function openList() {
+    setQuery('')
+    setActiveIndex(0)
+    setOpen(true)
+  }
+
+  function choose(company) {
+    onChange(company.id)
+    setOpen(false)
+    setQuery('')
+  }
+
+  function onKeyDown(event) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      if (!open) openList()
+      else setActiveIndex((index) => Math.min(index + 1, matches.length - 1))
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setActiveIndex((index) => Math.max(index - 1, 0))
+    } else if (event.key === 'Enter' && open) {
+      event.preventDefault()
+      if (matches[activeIndex]) choose(matches[activeIndex])
+    } else if (event.key === 'Escape' && open) {
+      // Close only the dropdown first; keep the keypress from reaching the modal's Escape-to-close.
+      event.preventDefault()
+      event.stopPropagation()
+      setOpen(false)
+      setQuery('')
+    }
+  }
+
+  return (
+    <div className="combobox" ref={rootRef}>
+      <input
+        className="select"
+        type="text"
+        role="combobox"
+        aria-label="Company"
+        aria-expanded={open}
+        aria-controls="company-combobox-list"
+        aria-autocomplete="list"
+        autoComplete="off"
+        placeholder="Search companies…"
+        value={open ? query : selected?.name ?? ''}
+        onChange={(event) => {
+          setQuery(event.target.value)
+          setActiveIndex(0)
+          setOpen(true)
+        }}
+        onFocus={openList}
+        onKeyDown={onKeyDown}
+      />
+      {open ? (
+        <ul className="combobox-list" id="company-combobox-list" role="listbox" ref={listRef}>
+          {matches.length === 0 ? (
+            <li className="combobox-empty">No companies match.</li>
+          ) : (
+            matches.map((company, index) => (
+              <li
+                key={company.id}
+                role="option"
+                aria-selected={String(company.id) === String(value)}
+                className={`combobox-option ${index === activeIndex ? 'is-active' : ''}`}
+                onMouseEnter={() => setActiveIndex(index)}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  choose(company)
+                }}
+              >
+                {company.name}
+              </li>
+            ))
+          )}
+        </ul>
+      ) : null}
+    </div>
   )
 }
 
@@ -605,16 +837,14 @@ function AddNewsModal({ companies, onClose, onPublished }) {
           </label>
 
           {scope === 'Company' ? (
-            <label className="field">
+            <div className="field">
               <span>Company</span>
-              <select className="select" value={resolvedCompanyId} onChange={(event) => setCompanyId(event.target.value)}>
-                {companies.map((company) => (
-                  <option key={company.id} value={company.id}>
-                    {company.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <CompanyCombobox
+                companies={companies}
+                value={resolvedCompanyId}
+                onChange={(id) => setCompanyId(String(id))}
+              />
+            </div>
           ) : (
             <div className="field">
               <span>Industries</span>
@@ -667,7 +897,7 @@ function AddNewsModal({ companies, onClose, onPublished }) {
                 className="select num"
                 type="number"
                 min="0.1"
-                max="10"
+                max="95"
                 step="0.1"
                 value={impactPercent}
                 onChange={(event) => setImpactPercent(event.target.value)}

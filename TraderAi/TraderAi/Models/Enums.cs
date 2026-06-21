@@ -72,3 +72,9 @@ public enum NewsImpactDirection
     Increase,
     Decrease,
 }
+
+public enum CrisisScope
+{
+    Local,
+    Global,
+}

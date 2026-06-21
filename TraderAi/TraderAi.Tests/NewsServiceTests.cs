@@ -29,7 +29,7 @@ public sealed class NewsServiceTests : IDisposable
     }
 
     private NewsService Service(NewsOptions settings, Random random) =>
-        new(context, new MarketCycleLock(), Options.Create(settings), random);
+        new(context, new MarketCycleLock(), Options.Create(settings), new MarketImpactService(context), random);
 
     [Fact]
     public async Task ManualCompanyImpactSnapshotsTheTargetAtTheMovedPrice()
@@ -81,12 +81,95 @@ public sealed class NewsServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ManualDecreaseCancelsOpenBuyOrdersAndReleasesReservedCash()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var company = await context.Companies.FirstAsync();
+        var cycle = await context.MarketCycles.FirstAsync();
+        var buyer = await context.Participants.FirstAsync(participant => participant.Name == "Bob");
+
+        buyer.ReservedBalance = 200m;
+        var order = new Order
+        {
+            ParticipantId = buyer.Id,
+            CompanyId = company.Id,
+            Type = OrderType.Buy,
+            Status = OrderStatus.Open,
+            Quantity = 2,
+            FilledQuantity = 0,
+            LimitPrice = 100m,
+            ReservedCashAmount = 200m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        context.Orders.Add(order);
+        await context.SaveChangesAsync();
+
+        var request = new ManualNewsRequest(NewsImpactScope.Company, "ufo", NewsImpactDirection.Decrease, 10m, company.Id, null);
+        var result = await Service(new NewsOptions(), new Random(1)).PublishManualNewsAsync(request);
+
+        Assert.True(result.Success);
+        var saved = await context.Orders.AsNoTracking().FirstAsync(saved => saved.Id == order.Id);
+        Assert.Equal(OrderStatus.Cancelled, saved.Status);
+        Assert.Equal(0m, saved.ReservedCashAmount);
+        var refreshedBuyer = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == buyer.Id);
+        Assert.Equal(0m, refreshedBuyer.ReservedBalance);
+        Assert.True(await context.MoneyTransactions
+            .AnyAsync(transaction => transaction.RelatedOrderId == order.Id && transaction.Type == MoneyTransactionType.Release));
+    }
+
+    [Fact]
+    public async Task ManualIncreaseCancelsOpenSellOrdersAndFreesTheirShares()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var company = await context.Companies.FirstAsync();
+        var cycle = await context.MarketCycles.FirstAsync();
+        var seller = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
+        var shareIds = await context.Shares
+            .Where(share => share.OwnerId == seller.Id)
+            .Select(share => share.Id)
+            .Take(2)
+            .ToListAsync();
+
+        var order = new Order
+        {
+            ParticipantId = seller.Id,
+            CompanyId = company.Id,
+            Type = OrderType.Sell,
+            Status = OrderStatus.Open,
+            Quantity = 2,
+            FilledQuantity = 0,
+            LimitPrice = 100m,
+            ReservedCashAmount = 0m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        foreach (var shareId in shareIds)
+        {
+            order.OrderShares.Add(new OrderShare { ShareId = shareId });
+        }
+
+        context.Orders.Add(order);
+        await context.SaveChangesAsync();
+
+        var request = new ManualNewsRequest(NewsImpactScope.Company, "ufo", NewsImpactDirection.Increase, 10m, company.Id, null);
+        var result = await Service(new NewsOptions(), new Random(1)).PublishManualNewsAsync(request);
+
+        Assert.True(result.Success);
+        var saved = await context.Orders.AsNoTracking().FirstAsync(saved => saved.Id == order.Id);
+        Assert.Equal(OrderStatus.Cancelled, saved.Status);
+        Assert.Equal(0, await context.OrderShares.CountAsync(link => link.OrderId == order.Id));
+    }
+
+    [Fact]
     public async Task ManualImpactRejectsAnOutOfRangePercent()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var company = await context.Companies.FirstAsync();
 
-        var request = new ManualNewsRequest(NewsImpactScope.Company, "ufo", NewsImpactDirection.Increase, 50m, company.Id, null);
+        var request = new ManualNewsRequest(NewsImpactScope.Company, "ufo", NewsImpactDirection.Increase, 150m, company.Id, null);
         var result = await Service(new NewsOptions(), new Random(1)).PublishManualNewsAsync(request);
 
         Assert.False(result.Success);

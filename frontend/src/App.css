@@ -1384,6 +1384,95 @@
   font-weight: 500;
 }
 
+/* ---- Crisis banner & feed items ---- */
+.crisis-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  margin-bottom: var(--s-4);
+  border: 1px solid var(--down);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--down-soft);
+}
+
+.crisis-banner-mark {
+  font-size: var(--t-lg);
+  line-height: 1;
+  color: var(--down-text);
+}
+
+.crisis-banner-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.crisis-banner-head {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.crisis-scope {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  color: var(--down-text);
+}
+
+.crisis-banner-title {
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.crisis-banner-meta {
+  margin: 0;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--down-text);
+}
+
+.crisis-item {
+  border-color: var(--down);
+  border-left-width: 3px;
+  background: var(--down-soft);
+}
+
+.crisis-flag {
+  color: var(--down-text);
+}
+
+.crisis-sectors {
+  list-style: none;
+  margin: var(--s-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-2);
+}
+
+.crisis-sector {
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  color: var(--text);
+  padding: 2px var(--s-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.crisis-sector-more {
+  color: var(--muted);
+  font-weight: 500;
+}
+
 /* ---- Add-news form ---- */
 .news-form {
   gap: var(--s-3);
@@ -1423,4 +1512,48 @@
   margin-bottom: var(--s-1);
   font-weight: 600;
   color: var(--ink);
+}
+
+/* ---- Searchable combobox ---- */
+.combobox {
+  position: relative;
+}
+
+.combobox-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--s-1);
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 24px oklch(0.2 0.012 255 / 0.18);
+}
+
+.combobox-option {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--t-sm);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.combobox-option.is-active {
+  background: var(--surface-3);
+}
+
+.combobox-option[aria-selected='true'] {
+  font-weight: 700;
+}
+
+.combobox-empty {
+  padding: 6px 8px;
+  font-size: var(--t-sm);
+  color: var(--muted);
 }

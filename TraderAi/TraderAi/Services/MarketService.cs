@@ -40,7 +40,8 @@ public sealed class MarketService(
     IDecisionEngine decisionEngine,
     MarketCycleLock cycleLock,
     Random random,
-    NewsService? newsService = null)
+    NewsService? newsService = null,
+    CrisisService? crisisService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -576,6 +577,12 @@ public sealed class MarketService(
             await newsService.MaybeAddAutomatedNewsForCycleAsync(currentCycle, now);
         }
 
+        // A crisis may also strike this cycle, driving its hit sectors down and cancelling their stale bids.
+        if (crisisService is not null)
+        {
+            await crisisService.MaybeTriggerForCycleAsync(market, currentCycle, now);
+        }
+
         var nextCycle = new MarketCycle
         {
             CycleNumber = currentCycle.CycleNumber + 1,
@@ -713,6 +720,8 @@ public sealed class MarketService(
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync();
 
+        await dbContext.CrisisIndustries.ExecuteDeleteAsync();
+        await dbContext.Crises.ExecuteDeleteAsync();
         await dbContext.NewsPostIndustries.ExecuteDeleteAsync();
         await dbContext.NewsPosts.ExecuteDeleteAsync();
         await dbContext.OrderShares.ExecuteDeleteAsync();
@@ -733,7 +742,7 @@ public sealed class MarketService(
             "DELETE FROM sqlite_sequence WHERE name IN (" +
             "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
             "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Shares', 'OrderShares', " +
-            "'Industries', 'NewsPosts', 'NewsPostIndustries')");
+            "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries')");
 
         var market = await SeedDemoMarketCoreAsync();
         await transaction.CommitAsync();

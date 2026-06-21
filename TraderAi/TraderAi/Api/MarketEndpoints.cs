@@ -102,7 +102,13 @@ public static class MarketEndpoints
             }
 
             var lastDividendTotal = await LastDividendTotalAsync(dbContext);
-            return Results.Ok<MarketResponse?>(ToMarketResponse(market, lastDividendTotal));
+            var currentCycleNumber = market.CurrentCycleId is int cycleId
+                ? await dbContext.MarketCycles
+                    .Where(cycle => cycle.Id == cycleId)
+                    .Select(cycle => (int?)cycle.CycleNumber)
+                    .FirstOrDefaultAsync()
+                : null;
+            return Results.Ok<MarketResponse?>(ToMarketResponse(market, lastDividendTotal, currentCycleNumber));
         });
 
         app.MapPost("/market/seed", async (MarketService marketService) =>
@@ -445,6 +451,26 @@ public static class MarketEndpoints
 
             return Results.Ok(industries);
         });
+
+        app.MapGet("/crises", async (int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 30, 1, 200);
+            var crises = await dbContext.Crises
+                .OrderByDescending(crisis => crisis.Id)
+                .Take(limit)
+                .Include(crisis => crisis.Industries)
+                .ToListAsync();
+
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumberById = await dbContext.MarketCycles
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+            var response = crises
+                .Select(crisis => ToCrisisResponse(crisis, industryNameById, cycleNumberById))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
     }
 
     private static async Task<Dictionary<int, string>> IndustryNameByIdAsync(AppDbContext dbContext) =>
@@ -467,6 +493,25 @@ public static class MarketEndpoints
             post.TargetCompanyId is int companyId ? companyNameById.GetValueOrDefault(companyId) : null,
             post.Industries
                 .Select(link => industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}")
+                .ToArray());
+
+    private static CrisisResponse ToCrisisResponse(
+        Crisis crisis,
+        IReadOnlyDictionary<int, string> industryNameById,
+        IReadOnlyDictionary<int, int> cycleNumberById) =>
+        new(
+            crisis.Id,
+            crisis.Title,
+            crisis.Content,
+            crisis.Scope.ToString(),
+            crisis.TriggeredInCycleId,
+            cycleNumberById.GetValueOrDefault(crisis.TriggeredInCycleId),
+            crisis.TriggeredAt,
+            crisis.Industries
+                .Select(link => new CrisisIndustryResponse(
+                    link.IndustryId,
+                    industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}",
+                    link.ImpactPercent))
                 .ToArray());
 
     // The current company price is the most recent snapshot, found per company by its max Id so the
@@ -602,8 +647,17 @@ public static class MarketEndpoints
         transaction.CreatedInCycleId,
         transaction.CreatedAt);
 
-    private static MarketResponse ToMarketResponse(Market market, decimal lastDividendTotal = 0m) =>
-        new(market.Id, market.Name, market.Status.ToString(), market.CurrentCycleId, lastDividendTotal);
+    private static MarketResponse ToMarketResponse(
+        Market market,
+        decimal lastDividendTotal = 0m,
+        int? currentCycleNumber = null) =>
+        new(
+            market.Id,
+            market.Name,
+            market.Status.ToString(),
+            market.CurrentCycleId,
+            currentCycleNumber,
+            lastDividendTotal);
 
     private static OrderResponse ToOrderResponse(Order order) => new(
         order.Id,
@@ -649,7 +703,13 @@ public sealed record ShareholderResponse(
     decimal CostBasis,
     decimal PctOfIssued);
 
-public sealed record MarketResponse(int Id, string Name, string Status, int? CurrentCycleId, decimal LastDividendTotal);
+public sealed record MarketResponse(
+    int Id,
+    string Name,
+    string Status,
+    int? CurrentCycleId,
+    int? CurrentCycleNumber,
+    decimal LastDividendTotal);
 
 public sealed record ParticipantResponse(
     int Id,
@@ -745,3 +805,15 @@ public sealed record NewsPostResponse(
 public sealed record IndustryResponse(int Id, string Name);
 
 public sealed record NewsThemeResponse(string Key, string Label);
+
+public sealed record CrisisResponse(
+    int Id,
+    string Title,
+    string Content,
+    string Scope,
+    int TriggeredInCycleId,
+    int TriggeredInCycleNumber,
+    DateTime TriggeredAt,
+    CrisisIndustryResponse[] Industries);
+
+public sealed record CrisisIndustryResponse(int IndustryId, string IndustryName, decimal ImpactPercent);
