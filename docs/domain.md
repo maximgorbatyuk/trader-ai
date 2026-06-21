@@ -17,7 +17,8 @@ Each share is stored as a separate row and has one current owner.
 - While unfilled, a stale order is re-priced toward the market on each later cycle so it has a chance to fill before that cancellation cap.
 - A holder that cannot afford any share for several consecutive cycles sells down its most valuable holding to raise cash.
 - Every share owner is paid a dividend at a recurring interval, sized as a small percentage of each held share's current price and credited straight to the owner's balance.
-- While the market runs, random news events are published at irregular intervals; some carry market impact.
+- While the market runs, a news event is published automatically every fixed number of cycles; some carry market impact.
+- News events can also be created manually, with a chosen target and impact.
 - A news event with impact moves the share price of either a single company or every company in one or more industries, up or down, by 0.1% to 10% of the current price.
 - A buy order reserves cash when it is created.
 - The reserved cash amount is `Quantity * LimitPrice`.
@@ -282,7 +283,7 @@ Notes:
 
 ### NewsPost
 
-A news post is a randomly generated social-media style event published while the market runs.
+A news post is a social-media style event, generated automatically every fixed number of cycles while the market runs, or created manually.
 
 Fields:
 
