@@ -6,18 +6,7 @@
 ./start-dev.sh
 ```
 
-Prerequisites:
-
-- .NET SDK
-- Node.js and npm
-
-First-time setup:
-
-```bash
-dotnet restore TraderAi/TraderAi.sln
-dotnet tool restore
-npm --prefix frontend install
-```
+The script will ensure the .NET SDK is installed, Node.js and npm, and then restore the project dependencies. The only thing you have to do - install the [.NET Sdk for you OS](https://dotnet.microsoft.com/download).
 
 ## Website
 
