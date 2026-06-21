@@ -699,6 +699,31 @@ public static class MarketEndpoints
 
         var sharesOwned = await dbContext.Shares.CountAsync(share => share.OwnerId == participantId);
 
+        string? fundStatus = null;
+        CollectiveFundMemberResponse[] fundMembers = [];
+        if (participant.Type == ParticipantType.CollectiveFund)
+        {
+            (fundStatus, fundMembers) = await BuildCollectiveFundMembersAsync(dbContext, participantId);
+        }
+
+        // For an ordinary trader, surface the fund it has joined (if any) so its page can link there.
+        int? memberOfFundId = null;
+        string? memberOfFundName = null;
+        var membership = await dbContext.CollectiveFundParticipants
+            .FirstOrDefaultAsync(member => member.ParticipantId == participantId);
+        if (membership is not null)
+        {
+            var fund = await dbContext.CollectiveFunds.FirstOrDefaultAsync(candidate => candidate.Id == membership.CollectiveFundId);
+            if (fund is not null)
+            {
+                memberOfFundId = fund.ParticipantId;
+                memberOfFundName = await dbContext.Participants
+                    .Where(candidate => candidate.Id == fund.ParticipantId)
+                    .Select(candidate => candidate.Name)
+                    .FirstOrDefaultAsync();
+            }
+        }
+
         return new ParticipantDetailResponse(
             participant.Id,
             participant.Name,
@@ -710,7 +735,60 @@ public static class MarketEndpoints
             participant.ReservedBalance,
             participant.AvailableBalance,
             sharesOwned,
-            participant.IsActive);
+            participant.IsActive,
+            fundStatus,
+            fundMembers,
+            memberOfFundId,
+            memberOfFundName);
+    }
+
+    private static async Task<(string? Status, CollectiveFundMemberResponse[] Members)> BuildCollectiveFundMembersAsync(
+        AppDbContext dbContext,
+        int fundParticipantId)
+    {
+        var fund = await dbContext.CollectiveFunds.FirstOrDefaultAsync(candidate => candidate.ParticipantId == fundParticipantId);
+        if (fund is null)
+        {
+            return (null, []);
+        }
+
+        var memberships = await dbContext.CollectiveFundParticipants
+            .Where(member => member.CollectiveFundId == fund.Id)
+            .ToListAsync();
+        var memberIds = memberships.Select(member => member.ParticipantId).ToList();
+        var memberById = await dbContext.Participants
+            .Where(candidate => memberIds.Contains(candidate.Id))
+            .ToDictionaryAsync(candidate => candidate.Id);
+        var cycleNumberById = await dbContext.MarketCycles
+            .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+        // What the fund has paid each member as pass-through dividends, kept separate from their own holdings' dividends.
+        var payoutByMember = (await dbContext.MoneyTransactions
+                .Where(transaction => memberIds.Contains(transaction.ParticipantId)
+                    && transaction.Type == MoneyTransactionType.CollectiveFundDividend)
+                .GroupBy(transaction => transaction.ParticipantId)
+                .Select(group => new { ParticipantId = group.Key, Total = group.Sum(transaction => transaction.Amount) })
+                .ToListAsync())
+            .ToDictionary(entry => entry.ParticipantId, entry => entry.Total);
+
+        var members = memberships
+            .OrderBy(member => member.JoinedAt)
+            .Select(member =>
+            {
+                var memberParticipant = memberById.GetValueOrDefault(member.ParticipantId);
+                return new CollectiveFundMemberResponse(
+                    member.ParticipantId,
+                    memberParticipant?.Name ?? $"#{member.ParticipantId}",
+                    (memberParticipant?.Type ?? ParticipantType.Individual).ToString(),
+                    cycleNumberById.GetValueOrDefault(member.JoinedInCycleId),
+                    member.JoinedAt,
+                    member.DepositAmount,
+                    payoutByMember.GetValueOrDefault(member.ParticipantId),
+                    member.IsLeaving);
+            })
+            .ToArray();
+
+        return (fund.Status.ToString(), members);
     }
 
     private static ShareTransactionResponse ToShareTransactionResponse(ShareTransaction transaction) => new(
@@ -813,7 +891,21 @@ public sealed record ParticipantDetailResponse(
     decimal ReservedBalance,
     decimal AvailableBalance,
     int SharesOwned,
-    bool IsActive);
+    bool IsActive,
+    string? CollectiveFundStatus,
+    CollectiveFundMemberResponse[] CollectiveFundMembers,
+    int? MemberOfCollectiveFundId,
+    string? MemberOfCollectiveFundName);
+
+public sealed record CollectiveFundMemberResponse(
+    int ParticipantId,
+    string Name,
+    string Type,
+    int JoinedInCycleNumber,
+    DateTime JoinedAt,
+    decimal Deposit,
+    decimal Payouts,
+    bool IsLeaving);
 
 public sealed record UpdateParticipantProfileRequest(Temperament Temperament, RiskProfile RiskProfile);
 

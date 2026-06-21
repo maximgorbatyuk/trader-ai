@@ -22,7 +22,8 @@ Each share is stored as a separate row and has one current owner.
 - A news event with impact moves the share price of either a single company or every company in one or more industries, up or down, by a percentage of the current price (automated events up to 10%, manually created events up to 95%).
 - A market crisis can strike at random, becoming more likely the longer the market runs without one. A local crisis drives a small handful of sectors down; a rarer global crisis drives a large share of all sectors down. Each affected sector falls by its own percentage.
 - A science investigation is the upbeat counterpart: a small, local, positive shock that lifts 1–5 sectors by 0.5–5% each, growing likelier after a 50-cycle quiet window. Unlike a crisis or news move it only nudges price up and does not cancel any orders.
-- A wealthy trader can go bankrupt, though never during the market's first 500 cycles: after that window, once its net worth (cash plus the value of its shares) stays above one billion, its chance of collapse rises 0.2% each cycle up to a 10% cap. A bankruptcy wipes the trader's cash and forces it to sell 80% of its holdings, listed 20% below the current price and dropping another 5% each cycle they go unsold until the target is met. It is reported in the newswire but moves no prices and cancels no other trader's orders.
+- A wealthy trader can go bankrupt, though never during the market's first 500 cycles: after that window, once the market value of its share holdings (cash aside) stays at or above two billion, its chance of collapse rises 0.2% each cycle up to a 10% cap. A bankruptcy wipes the trader's cash and forces it to sell 65% of its holdings, listed 20% below the current price and dropping another 5% each cycle they go unsold until the target is met. It is reported in the newswire but moves no prices and cancels no other trader's orders.
+- Cash-strapped traders can pool into a collective fund, though never during the market's first 50 cycles. After that window, a trader holding under $500k has a small chance each cycle to join an existing fund or open a new one, and a long stretch unable to afford any share sharply raises those odds. A member hands the fund 90% of its cash and stops bidding for itself (it may still sell shares it already owns), drawing instead a share of the fund's dividends sized by its deposit. The fund trades the pooled capital while keeping roughly a tenth of its worth liquid, returns a member's full deposit when they leave — selling shares to raise the cash if it must — and a member must leave once its own balance reaches one hundred million. When only a pair is left and one leaves, the fund sells everything and splits the proceeds evenly between the two, who then trade on their own again. A collective fund never goes bankrupt.
 - Any sharp move also clears the resting orders that were priced against the old level: a price drop (from a crisis or a news event) cancels the standing buy orders for the affected companies and releases their reserved cash, while a price rise cancels the standing sell orders and frees their shares to be listed again.
 - A buy order reserves cash when it is created.
 - The reserved cash amount is `Quantity * LimitPrice`.
@@ -44,7 +45,7 @@ Fields:
 
 - ID
 - Name
-- Type (Individual, Company, AIAgent)
+- Type (Individual, Company, AIAgent, CollectiveFund)
 - InitialBalance
 - CurrentBalance
 - ReservedBalance
@@ -367,7 +368,48 @@ Fields:
 
 Notes:
 
-- A trader is at risk only while its net worth (cash plus the market value of its shares) stays above a high wealth line; the longer it stays above, the more likely bankruptcy becomes, up to a ceiling. No trader is ever at risk during the market's opening cycles.
+- A trader is at risk only while the market value of its share holdings stays at or above a high wealth line, regardless of its cash; the longer it stays above, the more likely bankruptcy becomes, up to a ceiling. No trader is ever at risk during the market's opening cycles.
 - When it fires the trader loses all of its cash and most of its holdings are listed for sale below the current price.
 - Unsold forced-sale orders are re-listed a step cheaper each cycle until the sell-down target is reached.
 - A bankruptcy carries no price impact and cancels no other trader's orders; only the bankrupt trader's own orders are affected.
+
+### CollectiveFund
+
+A collective fund is a pooled investment vehicle that trades as its own participant, holding the cash its members contribute.
+
+Fields:
+
+- ID
+- ParticipantId (the participant the fund trades through)
+- FoundedByParticipantId
+- Status (Active, GoingToBeClosed, Closed)
+- CreatedInCycleId
+- CreatedAt
+- ClosedAt
+
+Notes:
+
+- The fund trades the pooled cash like any participant while keeping part of its worth liquid so it can return deposits on demand.
+- The fund's own dividends are partly passed through to its members in proportion to their deposits.
+- A fund that is winding down only sells; once it holds nothing its cash is split evenly among the remaining members and it closes.
+
+### CollectiveFundParticipant
+
+A collective fund participant records one trader's membership in a fund.
+
+Fields:
+
+- ID
+- CollectiveFundId
+- ParticipantId
+- JoinedAt
+- JoinedInCycleId
+- DepositAmount
+- LeaveRampCycles
+- IsLeaving
+
+Notes:
+
+- A participant belongs to at most one fund at a time.
+- While the membership exists the member places no buy orders of its own, though it may keep selling shares it already holds.
+- The deposit is returned in full when the member leaves, and the membership ends when the trader leaves or the fund closes.

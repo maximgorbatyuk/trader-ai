@@ -43,7 +43,8 @@ public sealed class MarketService(
     NewsService? newsService = null,
     CrisisService? crisisService = null,
     ScienceInvestigationService? scienceService = null,
-    BankruptcyService? bankruptcyService = null)
+    BankruptcyService? bankruptcyService = null,
+    CollectiveFundService? collectiveFundService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -60,6 +61,10 @@ public sealed class MarketService(
 
     // After this many consecutive cycles unable to afford any share, a holder liquidates to raise cash.
     private const int CashStarvedLimitCycles = 5;
+
+    // A collective fund keeps roughly this share of its total worth liquid so it can return members' deposits,
+    // spending only the rest when it trades.
+    private const decimal CollectiveFundCashBufferFraction = 0.10m;
 
     // Dividends are paid at a random interval drawn in this range and credited at a per-company rate
     // drawn in [MinDividendRate, MaxDividendRate] of the share's current price.
@@ -217,6 +222,13 @@ public sealed class MarketService(
             await bankruptcyService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
         }
 
+        // Runs in the same pre-match window so a fund's forced sales, and a new member's freed-up cash, reach
+        // the order book in time to cross this cycle.
+        if (collectiveFundService is not null)
+        {
+            await collectiveFundService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+        }
+
         await dbContext.SaveChangesAsync();
     }
 
@@ -321,10 +333,12 @@ public sealed class MarketService(
             if (trader.AvailableBalance >= cheapestShare)
             {
                 trader.CashStarvedCycles = 0;
+                trader.CannotBuyCycles = 0;
                 continue;
             }
 
             trader.CashStarvedCycles++;
+            trader.CannotBuyCycles++;
             if (trader.CashStarvedCycles < CashStarvedLimitCycles)
             {
                 continue;
@@ -420,6 +434,12 @@ public sealed class MarketService(
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
+
+            // A fund passes part of its own dividend straight through to its members, split by their deposit.
+            if (owner.Type == ParticipantType.CollectiveFund && collectiveFundService is not null)
+            {
+                await collectiveFundService.DistributeDividendToMembersAsync(owner, payout, currentCycleId, now);
+            }
         }
     }
 
@@ -684,7 +704,9 @@ public sealed class MarketService(
 
         var traders = await dbContext.Participants
             .Where(participant => participant.IsActive
-                && (participant.Type == ParticipantType.Individual || participant.Type == ParticipantType.AIAgent))
+                && (participant.Type == ParticipantType.Individual
+                    || participant.Type == ParticipantType.AIAgent
+                    || participant.Type == ParticipantType.CollectiveFund))
             .OrderBy(participant => participant.Id)
             .ToListAsync();
 
@@ -709,13 +731,28 @@ public sealed class MarketService(
                 group => group.Key,
                 group => (IReadOnlySet<int>)group.Select(order => order.CompanyId).ToHashSet());
 
+        var priceByCompany = quotes.ToDictionary(quote => quote.CompanyId, quote => quote.Price);
+        var fundStatusByParticipantId = await dbContext.CollectiveFunds
+            .ToDictionaryAsync(fund => fund.ParticipantId, fund => fund.Status);
+        var memberParticipantIds = (await dbContext.CollectiveFundParticipants
+                .Select(member => member.ParticipantId)
+                .ToListAsync())
+            .ToHashSet();
+
         var ordersPlaced = 0;
 
         foreach (var trader in traders)
         {
+            // A fund that is winding down places no new orders; its forced sales are service-driven.
+            if (trader.Type == ParticipantType.CollectiveFund
+                && fundStatusByParticipantId.GetValueOrDefault(trader.Id) != CollectiveFundStatus.Active)
+            {
+                continue;
+            }
+
             var context = new DecisionContext(
                 trader,
-                trader.AvailableBalance,
+                AvailableCashForDecisions(trader, memberParticipantIds, holdingsByOwner, priceByCompany),
                 quotes,
                 holdingsByOwner.GetValueOrDefault(trader.Id, NoHoldings),
                 openOrdersByParticipant.GetValueOrDefault(trader.Id, NoOpenOrders));
@@ -739,6 +776,31 @@ public sealed class MarketService(
         return RunDecisionsResult.Ok(ordersPlaced);
     }
 
+    // A fund member hands its buying to the fund — cash is zeroed so the engine can only sell its own shares —
+    // while a fund itself keeps a tenth of its total worth liquid for deposit returns and spends the rest.
+    private static decimal AvailableCashForDecisions(
+        Participant trader,
+        IReadOnlySet<int> memberParticipantIds,
+        IReadOnlyDictionary<int, IReadOnlyDictionary<int, int>> holdingsByOwner,
+        IReadOnlyDictionary<int, decimal> priceByCompany)
+    {
+        if (memberParticipantIds.Contains(trader.Id))
+        {
+            return 0m;
+        }
+
+        if (trader.Type != ParticipantType.CollectiveFund)
+        {
+            return trader.AvailableBalance;
+        }
+
+        var holdingsValue = holdingsByOwner.TryGetValue(trader.Id, out var holdings)
+            ? holdings.Sum(holding => holding.Value * priceByCompany.GetValueOrDefault(holding.Key))
+            : 0m;
+        var totalWorth = trader.AvailableBalance + holdingsValue;
+        return Math.Max(0m, trader.AvailableBalance - (CollectiveFundCashBufferFraction * totalWorth));
+    }
+
     private async Task<Market> ResetDemoMarketCoreAsync()
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync();
@@ -748,6 +810,8 @@ public sealed class MarketService(
         await dbContext.ScienceInvestigationIndustries.ExecuteDeleteAsync();
         await dbContext.ScienceInvestigations.ExecuteDeleteAsync();
         await dbContext.Bankruptcies.ExecuteDeleteAsync();
+        await dbContext.CollectiveFundParticipants.ExecuteDeleteAsync();
+        await dbContext.CollectiveFunds.ExecuteDeleteAsync();
         await dbContext.NewsPostIndustries.ExecuteDeleteAsync();
         await dbContext.NewsPosts.ExecuteDeleteAsync();
         await dbContext.OrderShares.ExecuteDeleteAsync();
@@ -769,7 +833,8 @@ public sealed class MarketService(
             "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
             "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Shares', 'OrderShares', " +
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', " +
-            "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies')");
+            "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', " +
+            "'CollectiveFunds', 'CollectiveFundParticipants')");
 
         var market = await SeedDemoMarketCoreAsync();
         await transaction.CommitAsync();

@@ -8,7 +8,7 @@ using TraderAi.Services;
 namespace TraderAi.Tests;
 
 // Drives the bankruptcy roll with a scripted Random so the wealth ramp and the forced sell-down are forced
-// deterministically. The gate consumes one draw per wealthy, solvent trader (in id order); a trader that
+// deterministically. The gate consumes one draw per share-wealthy trader (in id order); a trader that
 // fires then draws once more to pick its headline template. A trader below the wealth line draws nothing.
 public sealed class BankruptcyServiceTests : IDisposable
 {
@@ -51,11 +51,12 @@ public sealed class BankruptcyServiceTests : IDisposable
     [Fact]
     public async Task TraderBelowTheWealthLineDoesNotTrigger()
     {
-        var (_, cycle, company) = await SeedAsync(price: 100m);
-        var trader = await AddTraderAsync(currentBalance: 500_000_000m);
-        await AddSharesAsync(trader.Id, company.Id, count: 5, price: 100m);
+        var (_, cycle, company) = await SeedAsync(price: 100_000_000m);
+        var trader = await AddTraderAsync(currentBalance: 5_000_000_000m);
+        await AddSharesAsync(trader.Id, company.Id, count: 5, price: 100_000_000m);
 
-        // Net worth (≈500M) is below the one-billion line, so the ramp stays at zero and no draw is taken.
+        // Cash no longer counts: despite 5B in cash, the ~500M of share holdings sits well below the
+        // two-billion line, so the ramp stays at zero and no draw is taken.
         await Service(enabled: true, new ScriptedRandom([], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -69,11 +70,12 @@ public sealed class BankruptcyServiceTests : IDisposable
     [Fact]
     public async Task WealthyTraderStaysSafeDuringTheOpeningWindow()
     {
-        var (_, cycle, company) = await SeedAsync(price: 100m, cycleNumber: 10);
-        var trader = await AddTraderAsync(currentBalance: 2_000_000_000m);
-        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+        var (_, cycle, company) = await SeedAsync(price: 200_000_000m, cycleNumber: 10);
+        var trader = await AddTraderAsync(currentBalance: 0m);
+        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 200_000_000m);
 
-        // Inside the 500-cycle protection window no roll is taken, so the wealth ramp never even starts.
+        // Share holdings worth 2B would otherwise put the trader at risk, but inside the 500-cycle protection
+        // window no roll is taken, so the wealth ramp never even starts.
         await Service(enabled: true, new ScriptedRandom([], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -87,9 +89,9 @@ public sealed class BankruptcyServiceTests : IDisposable
     [Fact]
     public async Task WealthyTraderGoesBankruptWipesCashAndListsForcedSells()
     {
-        var (_, cycle, company) = await SeedAsync(price: 100m);
+        var (_, cycle, company) = await SeedAsync(price: 200_000_000m);
         var trader = await AddTraderAsync(currentBalance: 1_500_000_000m, reserved: 200m);
-        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 200_000_000m);
         var buy = await AddOpenBuyOrderAsync(trader.Id, company.Id, quantity: 2, price: 100m, reserved: 200m, cycle.Id);
 
         // doubles: gate at 0.2% chance after one wealthy cycle (0.0 → fire). ints: one headline template pick.
@@ -100,7 +102,7 @@ public sealed class BankruptcyServiceTests : IDisposable
         var bankruptcy = await context.Bankruptcies.AsNoTracking().SingleAsync();
         Assert.Equal(trader.Id, bankruptcy.ParticipantId);
         Assert.Equal(1_500_000_000m, bankruptcy.CashLost);
-        Assert.Equal(1000m, bankruptcy.ShareWorth);
+        Assert.Equal(2_000_000_000m, bankruptcy.ShareWorth);
 
         var refreshed = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == trader.Id);
         Assert.True(refreshed.IsBankrupt);
@@ -114,13 +116,13 @@ public sealed class BankruptcyServiceTests : IDisposable
         Assert.Equal(OrderStatus.Cancelled, refreshedBuy.Status);
         Assert.Equal(0m, refreshedBuy.ReservedCashAmount);
 
-        // 80% of the ten held shares listed at 20% below the current price of 100.
+        // 65% of the ten held shares (seven, rounded up) listed at 20% below the current price.
         var sell = await context.Orders.AsNoTracking()
             .SingleAsync(order => order.ParticipantId == trader.Id && order.Type == OrderType.Sell);
         Assert.Equal(OrderStatus.Open, sell.Status);
-        Assert.Equal(8, sell.Quantity);
-        Assert.Equal(80m, sell.LimitPrice);
-        Assert.Equal(8, await context.OrderShares.CountAsync(link => link.OrderId == sell.Id));
+        Assert.Equal(7, sell.Quantity);
+        Assert.Equal(160_000_000m, sell.LimitPrice);
+        Assert.Equal(7, await context.OrderShares.CountAsync(link => link.OrderId == sell.Id));
 
         Assert.True(await context.MoneyTransactions.AnyAsync(transaction =>
             transaction.ParticipantId == trader.Id
@@ -134,7 +136,7 @@ public sealed class BankruptcyServiceTests : IDisposable
         var (_, cycle, company) = await SeedAsync(price: 100m);
         var trader = await AddTraderAsync(currentBalance: 0m, bankrupt: true, ownedAtStart: 10, discountStep: 0);
         await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
-        var oldSell = await AddOpenSellOrderAsync(trader.Id, company.Id, shareCount: 8, price: 80m, cycle.Id);
+        var oldSell = await AddOpenSellOrderAsync(trader.Id, company.Id, shareCount: 7, price: 80m, cycle.Id);
 
         await Service(enabled: true, new ScriptedRandom([], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
@@ -147,10 +149,10 @@ public sealed class BankruptcyServiceTests : IDisposable
         Assert.True(refreshed.IsBankrupt);
         Assert.Equal(1, refreshed.BankruptcyDiscountStep);
 
-        // Deeper discount: 25% below 100 on the re-listing of the eight still-unsold shares.
+        // Deeper discount: 25% below 100 on the re-listing of the seven still-unsold shares.
         var newSell = await context.Orders.AsNoTracking()
             .SingleAsync(order => order.ParticipantId == trader.Id && order.Type == OrderType.Sell && order.Status == OrderStatus.Open);
-        Assert.Equal(8, newSell.Quantity);
+        Assert.Equal(7, newSell.Quantity);
         Assert.Equal(75m, newSell.LimitPrice);
     }
 
@@ -159,7 +161,7 @@ public sealed class BankruptcyServiceTests : IDisposable
     {
         var (_, cycle, company) = await SeedAsync(price: 100m);
         var trader = await AddTraderAsync(currentBalance: 0m, bankrupt: true, ownedAtStart: 10, discountStep: 2);
-        // Only two of the ten held at bankruptcy remain, so the 80% target (eight shares) is already met.
+        // Only two of the ten held at bankruptcy remain, so the 65% target (seven shares) is already met.
         await AddSharesAsync(trader.Id, company.Id, count: 2, price: 100m);
 
         await Service(enabled: true, new ScriptedRandom([], []))
