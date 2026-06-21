@@ -1018,21 +1018,6 @@
   background: var(--surface-2);
 }
 
-.tbl-select tbody tr {
-  cursor: pointer;
-}
-
-.tbl-select tbody tr.is-active th,
-.tbl-select tbody tr.is-active td {
-  background: var(--surface-3);
-  box-shadow: inset 0 1px 0 var(--border-2), inset 0 -1px 0 var(--border-2);
-}
-
-.tbl-select tbody tr:focus-visible {
-  outline: 2px solid var(--ink);
-  outline-offset: -2px;
-}
-
 .tbl tbody th {
   color: var(--ink);
   font-weight: 600;
@@ -1044,6 +1029,35 @@
 
 .ta-r {
   text-align: right !important;
+}
+
+/* Sortable column header: a plain button that inherits the header type but reacts to hover/active. */
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.th-sort:hover,
+.th-sort.is-active {
+  color: var(--ink);
+}
+
+.th-sort-glyph {
+  font-size: 0.9em;
+  opacity: 0.55;
+}
+
+.th-sort.is-active .th-sort-glyph {
+  opacity: 1;
 }
 
 .cell-ellipsis {

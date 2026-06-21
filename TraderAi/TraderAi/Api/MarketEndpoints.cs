@@ -139,13 +139,24 @@ public static class MarketEndpoints
         {
             var participants = await dbContext.Participants.OrderBy(participant => participant.Id).ToListAsync();
 
-            var sharesByOwner = await dbContext.Shares
-                .Where(share => share.OwnerId != null)
-                .GroupBy(share => share.OwnerId!.Value)
-                .Select(group => new { OwnerId = group.Key, Count = group.Count() })
-                .ToListAsync();
+            var holdingsByOwner = (await dbContext.Shares
+                    .Where(share => share.OwnerId != null)
+                    .GroupBy(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId })
+                    .Select(group => new { group.Key.OwnerId, group.Key.CompanyId, Count = group.Count() })
+                    .ToListAsync())
+                .GroupBy(entry => entry.OwnerId)
+                .ToList();
 
-            var sharesOwnedByParticipant = sharesByOwner.ToDictionary(entry => entry.OwnerId, entry => entry.Count);
+            var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+
+            var sharesOwnedByParticipant = holdingsByOwner.ToDictionary(
+                group => group.Key,
+                group => group.Sum(holding => holding.Count));
+
+            // Estimated market value of a trader's shares: each holding valued at its company's latest price.
+            var holdingsValueByParticipant = holdingsByOwner.ToDictionary(
+                group => group.Key,
+                group => group.Sum(holding => holding.Count * latestPriceByCompany.GetValueOrDefault(holding.CompanyId)));
 
             var response = participants
                 .Select(participant => new ParticipantResponse(
@@ -158,6 +169,7 @@ public static class MarketEndpoints
                     participant.ReservedBalance,
                     participant.AvailableBalance,
                     sharesOwnedByParticipant.GetValueOrDefault(participant.Id),
+                    holdingsValueByParticipant.GetValueOrDefault(participant.Id),
                     participant.IsActive))
                 .ToArray();
 
@@ -559,6 +571,7 @@ public sealed record ParticipantResponse(
     decimal ReservedBalance,
     decimal AvailableBalance,
     int SharesOwned,
+    decimal HoldingsValue,
     bool IsActive);
 
 public sealed record ParticipantDetailResponse(

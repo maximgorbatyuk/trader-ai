@@ -54,9 +54,7 @@ function App() {
   const [transactions, setTransactions] = useState([])
   const [prices, setPrices] = useState([])
   const [cycleActivity, setCycleActivity] = useState([])
-  const [holdings, setHoldings] = useState([])
   const [selectedCompanyId, setSelectedCompanyId] = useState(null)
-  const [selectedParticipantId, setSelectedParticipantId] = useState(null)
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
@@ -65,11 +63,6 @@ function App() {
   useEffect(() => {
     selectedRef.current = selectedCompanyId
   }, [selectedCompanyId])
-
-  const selectedParticipantRef = useRef(null)
-  useEffect(() => {
-    selectedParticipantRef.current = selectedParticipantId
-  }, [selectedParticipantId])
 
   const loadAll = useCallback(async () => {
     try {
@@ -95,9 +88,6 @@ function App() {
 
       const companyId = selectedRef.current
       setPrices(companyId ? await api.getPrices(companyId) : [])
-
-      const participantId = selectedParticipantRef.current
-      setHoldings(participantId ? await api.getHoldings(participantId) : [])
     } catch {
       setConnected(false)
     } finally {
@@ -122,14 +112,6 @@ function App() {
     api.getPrices(selectedCompanyId).then(setPrices).catch(() => {})
   }, [selectedCompanyId])
 
-  useEffect(() => {
-    if (!selectedParticipantId) {
-      return
-    }
-
-    api.getHoldings(selectedParticipantId).then(setHoldings).catch(() => {})
-  }, [selectedParticipantId])
-
   async function runAction(action) {
     setPending(true)
     setActionError(null)
@@ -147,18 +129,14 @@ function App() {
     await api.resetMarket()
 
     selectedRef.current = null
-    selectedParticipantRef.current = null
     setSelectedCompanyId(null)
-    setSelectedParticipantId(null)
     setMapModalCompanyId(null)
     setPrices([])
-    setHoldings([])
   }
 
   const participantNameById = new Map(participants.map((participant) => [participant.id, participant.name]))
   const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
-  const selectedParticipant = participants.find((participant) => participant.id === selectedParticipantId) ?? null
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId) ?? null
   const mapModalCompany = companies.find((company) => company.id === mapModalCompanyId) ?? null
   const currentCycleNumber =
@@ -222,17 +200,7 @@ function App() {
                   />
                 </div>
 
-                <div className="grid-detail">
-                  <ParticipantsPanel
-                    participants={participants}
-                    selectedParticipantId={selectedParticipantId}
-                    onSelect={setSelectedParticipantId}
-                  />
-                  <HoldingsPanel
-                    participant={selectedParticipant}
-                    holdings={holdings}
-                  />
-                </div>
+                <ParticipantsPanel participants={participants} />
 
                 <div className="grid-detail">
                   <WatchlistPanel
@@ -629,105 +597,106 @@ function OrderSide({ side, tone, orders, participantNameById, companyNameById })
   )
 }
 
-const TYPE_ABBR = { Individual: 'IND', Company: 'CO', AIAgent: 'AI' }
+const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI' }
 
-function ParticipantsPanel({ participants, selectedParticipantId, onSelect }) {
+// Net worth proxy used for the Total column and its default sort: cash on hand plus the estimated
+// market value of shares held.
+const TRADER_SORTS = {
+  balance: (participant) => participant.currentBalance ?? 0,
+  estimation: (participant) => participant.holdingsValue ?? 0,
+  total: (participant) => (participant.currentBalance ?? 0) + (participant.holdingsValue ?? 0),
+}
+
+function ParticipantsPanel({ participants }) {
+  const [sortKey, setSortKey] = useState('total')
+  const [sortDir, setSortDir] = useState('desc')
+
+  function toggleSort(key) {
+    if (key === sortKey) {
+      setSortDir((dir) => (dir === 'desc' ? 'asc' : 'desc'))
+    } else {
+      setSortKey(key)
+      setSortDir('desc')
+    }
+  }
+
+  const selector = TRADER_SORTS[sortKey]
+  const sorted = [...participants].sort((a, b) => {
+    const diff = selector(a) - selector(b)
+    return sortDir === 'desc' ? -diff : diff
+  })
+
+  function sortableHeader(key, label, title) {
+    const active = sortKey === key
+    return (
+      <th scope="col" className="ta-r" aria-sort={active ? (sortDir === 'desc' ? 'descending' : 'ascending') : 'none'}>
+        <button
+          type="button"
+          className={`th-sort ${active ? 'is-active' : ''}`}
+          onClick={() => toggleSort(key)}
+          title={title}
+        >
+          {label}
+          <span className="th-sort-glyph" aria-hidden="true">
+            {active ? (sortDir === 'desc' ? '▼' : '▲') : '↕'}
+          </span>
+        </button>
+      </th>
+    )
+  }
+
   return (
     <Panel title="Traders" count={`${participants.length}`} className="panel-traders">
       {participants.length === 0 ? (
         <p className="note">No participants yet.</p>
       ) : (
         <div className="tbl-scroll">
-          <table className="tbl tbl-select">
-            <thead>
-              <tr>
-                <th scope="col">Trader</th>
-                <th scope="col" className="ta-r">
-                  Shares
-                </th>
-                <th scope="col" className="ta-r">
-                  Available
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {participants.map((participant) => {
-                const active = participant.id === selectedParticipantId
-                return (
-                  <tr
-                    key={participant.id}
-                    className={`row-select ${active ? 'is-active' : ''}`}
-                    aria-selected={active}
-                    tabIndex={0}
-                    onClick={() => onSelect(participant.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        onSelect(participant.id)
-                      }
-                    }}
-                  >
-                    <th scope="row" className="cell-trader">
-                      <span className="cell-ellipsis">{participant.name}</span>
-                      <span className="tag">{TYPE_ABBR[participant.type] ?? participant.type}</span>
-                      <a
-                        className="open-page"
-                        href={`/participants/${participant.id}`}
-                        target="_blank"
-                        rel="noopener"
-                        title="Open detail page in a new tab"
-                        aria-label={`Open ${participant.name} detail page in a new tab`}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <span aria-hidden="true">↗</span>
-                      </a>
-                    </th>
-                    <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
-                    <td className="num ta-r">{formatMoney(participant.availableBalance)}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Panel>
-  )
-}
-
-function HoldingsPanel({ participant, holdings }) {
-  const totalShares = holdings.reduce((sum, holding) => sum + holding.shares, 0)
-
-  return (
-    <Panel
-      title={participant ? `Holdings · ${participant.name}` : 'Holdings'}
-      count={participant ? `${formatInt(totalShares)} shares` : undefined}
-      className="panel-holdings"
-    >
-      {!participant ? (
-        <p className="note">Select a trader to see their shares by company.</p>
-      ) : holdings.length === 0 ? (
-        <p className="note">This trader holds no shares.</p>
-      ) : (
-        <div className="tbl-scroll">
           <table className="tbl">
             <thead>
               <tr>
-                <th scope="col">Company</th>
+                <th scope="col">Name</th>
+                <th scope="col">Type</th>
                 <th scope="col" className="ta-r">
                   Shares
+                </th>
+                {sortableHeader('balance', 'Current balance')}
+                {sortableHeader('estimation', 'Holdings (est.)', 'Estimated market value of shares held')}
+                {sortableHeader('total', 'Total', 'Current balance plus holdings estimation')}
+                <th scope="col" className="ta-r">
+                  Actions
                 </th>
               </tr>
             </thead>
             <tbody>
-              {holdings.map((holding) => (
-                <tr key={holding.companyId}>
-                  <th scope="row" className="cell-ellipsis">
-                    {holding.companyName}
-                  </th>
-                  <td className="num ta-r">{formatInt(holding.shares)}</td>
-                </tr>
-              ))}
+              {sorted.map((participant) => {
+                const estimation = participant.holdingsValue ?? 0
+                const total = (participant.currentBalance ?? 0) + estimation
+                return (
+                  <tr key={participant.id}>
+                    <th scope="row" className="cell-ellipsis">
+                      {participant.name}
+                    </th>
+                    <td>
+                      <span className="tag">{TYPE_LABEL[participant.type] ?? participant.type}</span>
+                    </td>
+                    <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
+                    <td className="num ta-r">{formatMoney(participant.currentBalance)}</td>
+                    <td className="num ta-r">{formatMoney(estimation)}</td>
+                    <td className="num ta-r">{formatMoney(total)}</td>
+                    <td className="ta-r">
+                      <a
+                        className="cell-link"
+                        href={`/participants/${participant.id}`}
+                        target="_blank"
+                        rel="noopener"
+                        aria-label={`Open ${participant.name} page in a new tab`}
+                      >
+                        Open page<span aria-hidden="true"> ↗</span>
+                      </a>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
