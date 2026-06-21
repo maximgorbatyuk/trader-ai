@@ -43,6 +43,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<Bankruptcy> Bankruptcies => Set<Bankruptcy>();
 
+    public DbSet<CollectiveFund> CollectiveFunds => Set<CollectiveFund>();
+
+    public DbSet<CollectiveFundParticipant> CollectiveFundParticipants => Set<CollectiveFundParticipant>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<NewsPost>()
@@ -59,6 +63,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasMany(investigation => investigation.Industries)
             .WithOne()
             .HasForeignKey(link => link.ScienceInvestigationId);
+
+        modelBuilder.Entity<CollectiveFund>()
+            .HasMany(fund => fund.Members)
+            .WithOne()
+            .HasForeignKey(member => member.CollectiveFundId);
 
         // A share can be offered by at most one open sell order; consumed links are deleted on fill.
         modelBuilder.Entity<OrderShare>()

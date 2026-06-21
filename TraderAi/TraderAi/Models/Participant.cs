@@ -40,6 +40,10 @@ public sealed class Participant
     // How many times a forced-sale order has gone unsold and been re-listed; each step deepens the discount.
     public int BankruptcyDiscountStep { get; set; }
 
+    // Consecutive cycles the participant could not afford any share; a long drought raises its odds of pooling
+    // into a collective fund. Unlike CashStarvedCycles it is not reset by the liquidation pass, so it can grow.
+    public int CannotBuyCycles { get; set; }
+
     [NotMapped]
     public decimal AvailableBalance => CurrentBalance - ReservedBalance;
 }

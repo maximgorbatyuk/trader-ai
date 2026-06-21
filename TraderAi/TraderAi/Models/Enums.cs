@@ -5,6 +5,7 @@ public enum ParticipantType
     Individual,
     Company,
     AIAgent,
+    CollectiveFund,
 }
 
 public enum Temperament
@@ -51,6 +52,8 @@ public enum MoneyTransactionType
     Credit,
     Dividend,
     Bankruptcy,
+    CollectiveFund,
+    CollectiveFundDividend,
 }
 
 public enum MarketStatus
@@ -78,4 +81,11 @@ public enum CrisisScope
 {
     Local,
     Global,
+}
+
+public enum CollectiveFundStatus
+{
+    Active,
+    GoingToBeClosed,
+    Closed,
 }

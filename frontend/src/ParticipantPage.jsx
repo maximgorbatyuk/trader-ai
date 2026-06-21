@@ -8,7 +8,14 @@ import { Panel } from './Panel'
 const POLL_INTERVAL_MS = 2500
 const TEMPERAMENTS = ['Aggressive', 'Balanced', 'Conservative']
 const RISK_PROFILES = ['High', 'Medium', 'Low']
-const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent' }
+const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund' }
+const FUND_STATUS_LABEL = { Active: 'Active', GoingToBeClosed: 'Closing', Closed: 'Closed' }
+
+function fundStatusClass(status) {
+  if (status === 'Active') return 'tag tag-collective'
+  if (status === 'Closed') return 'tag tag-bankrupt'
+  return 'tag'
+}
 
 function ParticipantPage() {
   const { id } = useParams()
@@ -137,6 +144,19 @@ function ParticipantPage() {
               <div className="command-id">
                 <span className="command-label">{TYPE_LABEL[detail.type] ?? detail.type}</span>
                 <h1 className="command-name">{detail.name}</h1>
+                {detail.collectiveFundStatus ? (
+                  <span className={fundStatusClass(detail.collectiveFundStatus)}>
+                    {FUND_STATUS_LABEL[detail.collectiveFundStatus] ?? detail.collectiveFundStatus}
+                  </span>
+                ) : null}
+                {detail.memberOfCollectiveFundId ? (
+                  <p className="command-member">
+                    Member of{' '}
+                    <Link className="cell-link" to={`/participants/${detail.memberOfCollectiveFundId}`}>
+                      {detail.memberOfCollectiveFundName ?? 'a collective fund'}
+                    </Link>
+                  </p>
+                ) : null}
               </div>
               <dl className="statbar">
                 <div className="stat">
@@ -157,6 +177,10 @@ function ParticipantPage() {
                 </div>
               </dl>
             </section>
+
+            {detail.collectiveFundStatus ? (
+              <MembersPanel members={detail.collectiveFundMembers ?? []} />
+            ) : null}
 
             <div className="grid-detail">
               <ProfilePanel
@@ -257,6 +281,56 @@ function BankPanel({ detail, marketValue, costBasis, holdingsPnl }) {
           <dd className={`num tone-${toneOf(holdingsPnl)}`}>{formatSigned(holdingsPnl)}</dd>
         </div>
       </dl>
+    </Panel>
+  )
+}
+
+function MembersPanel({ members }) {
+  return (
+    <Panel title="Fund members" count={`${members.length}`} className="panel-holdings">
+      {members.length === 0 ? (
+        <p className="note">No members have joined yet.</p>
+      ) : (
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">Member</th>
+                <th scope="col">Type</th>
+                <th scope="col" className="ta-r">
+                  Joined
+                </th>
+                <th scope="col" className="ta-r">
+                  Deposit
+                </th>
+                <th scope="col" className="ta-r">
+                  Payouts
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {members.map((member) => (
+                <tr key={member.participantId}>
+                  <th scope="row" className="cell-ellipsis">
+                    <Link className="cell-link" to={`/participants/${member.participantId}`}>
+                      {member.name}
+                    </Link>
+                  </th>
+                  <td>
+                    <span className="cell-trader">
+                      <span className="tag">{TYPE_LABEL[member.type] ?? member.type}</span>
+                      {member.isLeaving ? <span className="tag tag-bankrupt">Leaving</span> : null}
+                    </span>
+                  </td>
+                  <td className="num ta-r">cycle {formatInt(member.joinedInCycleNumber)}</td>
+                  <td className="num ta-r">{formatMoney(member.deposit)}</td>
+                  <td className="num ta-r">{formatMoney(member.payouts)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Panel>
   )
 }

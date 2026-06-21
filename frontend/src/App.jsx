@@ -1159,7 +1159,7 @@ function OrderSide({ side, tone, orders, participantNameById, companyNameById })
   )
 }
 
-const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI' }
+const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI', CollectiveFund: 'Fund' }
 
 // Net worth proxy used for the Total column and its default sort: cash on hand plus the estimated
 // market value of shares held.
@@ -1172,6 +1172,7 @@ const TRADER_SORTS = {
 function ParticipantsPanel({ participants }) {
   const [sortKey, setSortKey] = useState('total')
   const [sortDir, setSortDir] = useState('desc')
+  const [typeFilter, setTypeFilter] = useState('all')
 
   function toggleSort(key) {
     if (key === sortKey) {
@@ -1187,6 +1188,15 @@ function ParticipantsPanel({ participants }) {
     const diff = selector(a) - selector(b)
     return sortDir === 'desc' ? -diff : diff
   })
+  const visible = typeFilter === 'all' ? sorted : sorted.filter((participant) => participant.type === typeFilter)
+
+  const counts = participants.reduce(
+    (acc, participant) => {
+      if (participant.type in acc) acc[participant.type] += 1
+      return acc
+    },
+    { Individual: 0, AIAgent: 0, CollectiveFund: 0 },
+  )
 
   function sortableHeader(key, label, title) {
     const active = sortKey === key
@@ -1207,66 +1217,93 @@ function ParticipantsPanel({ participants }) {
     )
   }
 
+  const filterSelect = (
+    <select
+      className="select select-sm"
+      aria-label="Filter traders by type"
+      value={typeFilter}
+      onChange={(event) => setTypeFilter(event.target.value)}
+    >
+      <option value="all">All</option>
+      <option value="AIAgent">AI</option>
+      <option value="Individual">Individual</option>
+      <option value="CollectiveFund">Fund</option>
+    </select>
+  )
+
   return (
-    <Panel title="Traders" count={`${participants.length}`} className="panel-traders">
+    <Panel title="Traders" count={`${visible.length}`} className="panel-traders" headerExtra={filterSelect}>
       {participants.length === 0 ? (
         <p className="note">No participants yet.</p>
       ) : (
-        <div className="tbl-scroll">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Type</th>
-                <th scope="col" className="ta-r">
-                  Shares
-                </th>
-                {sortableHeader('balance', 'Current balance')}
-                {sortableHeader('estimation', 'Holdings (est.)', 'Estimated market value of shares held')}
-                {sortableHeader('total', 'Total', 'Current balance plus holdings estimation')}
-                <th scope="col" className="ta-r">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((participant) => {
-                const estimation = participant.holdingsValue ?? 0
-                const total = (participant.currentBalance ?? 0) + estimation
-                return (
-                  <tr key={participant.id}>
-                    <th scope="row">
-                      <span className="cell-trader">
-                        <span className="cell-ellipsis">{participant.name}</span>
-                        {participant.isBankrupt ? (
-                          <span className="tag tag-bankrupt">Bankrupt</span>
-                        ) : null}
-                      </span>
+        <>
+          <p className="trader-stats">
+            {counts.Individual} individuals · {counts.AIAgent} AI · {counts.CollectiveFund} funds · Total:{' '}
+            {participants.length}
+          </p>
+          {visible.length === 0 ? (
+            <p className="note">No traders of this type.</p>
+          ) : (
+            <div className="tbl-scroll">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Type</th>
+                    <th scope="col" className="ta-r">
+                      Shares
                     </th>
-                    <td>
-                      <span className="tag">{TYPE_LABEL[participant.type] ?? participant.type}</span>
-                    </td>
-                    <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
-                    <td className="num ta-r">{formatMoney(participant.currentBalance)}</td>
-                    <td className="num ta-r">{formatMoney(estimation)}</td>
-                    <td className="num ta-r">{formatMoney(total)}</td>
-                    <td className="ta-r">
-                      <a
-                        className="cell-link"
-                        href={`/participants/${participant.id}`}
-                        target="_blank"
-                        rel="noopener"
-                        aria-label={`Open ${participant.name} page in a new tab`}
-                      >
-                        Open page<span aria-hidden="true"> ↗</span>
-                      </a>
-                    </td>
+                    {sortableHeader('balance', 'Current balance')}
+                    {sortableHeader('estimation', 'Holdings (est.)', 'Estimated market value of shares held')}
+                    {sortableHeader('total', 'Total', 'Current balance plus holdings estimation')}
+                    <th scope="col" className="ta-r">
+                      Actions
+                    </th>
                   </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {visible.map((participant) => {
+                    const estimation = participant.holdingsValue ?? 0
+                    const total = (participant.currentBalance ?? 0) + estimation
+                    return (
+                      <tr key={participant.id}>
+                        <th scope="row">
+                          <span className="cell-trader">
+                            <span className="cell-ellipsis">{participant.name}</span>
+                            {participant.type === 'CollectiveFund' ? (
+                              <span className="tag tag-collective">Fund</span>
+                            ) : null}
+                            {participant.isBankrupt ? (
+                              <span className="tag tag-bankrupt">Bankrupt</span>
+                            ) : null}
+                          </span>
+                        </th>
+                        <td>
+                          <span className="tag">{TYPE_LABEL[participant.type] ?? participant.type}</span>
+                        </td>
+                        <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
+                        <td className="num ta-r">{formatMoney(participant.currentBalance)}</td>
+                        <td className="num ta-r">{formatMoney(estimation)}</td>
+                        <td className="num ta-r">{formatMoney(total)}</td>
+                        <td className="ta-r">
+                          <a
+                            className="cell-link"
+                            href={`/participants/${participant.id}`}
+                            target="_blank"
+                            rel="noopener"
+                            aria-label={`Open ${participant.name} page in a new tab`}
+                          >
+                            Open page<span aria-hidden="true"> ↗</span>
+                          </a>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
     </Panel>
   )
