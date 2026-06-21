@@ -1,0 +1,205 @@
+using TraderAi.Models;
+
+namespace TraderAi.Services;
+
+// Baseline trader: each tick it makes one global choice — buy, sell, or do nothing. Recent price moves
+// and order-book demand bias that choice toward buying risers or selling fallers, with stronger
+// reactions at extreme long-range moves, and otherwise the choice is a uniform pick among the open
+// actions. Order size comes from the injected sizer, buyers bid 1–5% above and sellers ask 1–5% below
+// the last price so orders cross, and an LLM-backed engine can later implement the same interface.
+public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random random) : IDecisionEngine
+{
+    // Recent (one-cycle) move maps to a buy/sell pull, ramping with the size of the move up to a cap; a
+    // ~5% move alone reaches the cap.
+    private const double RecentMoveScale = 4.0;
+    private const double RecentMoveCap = 0.20;
+
+    // Net buy demand on the resting book adds a buy pull; ten net shares add one percentage point.
+    private const double ImbalanceBiasPerShare = 0.001;
+    private const double MaxImbalanceBias = 0.20;
+
+    // Beyond a ~60% move versus roughly ten cycles ago, holders take profit on a run-up and bystanders
+    // hunt the bargain on a deep drop.
+    private const decimal ExtremeMoveThreshold = 0.60m;
+    private const double ProfitTakingSellBias = 0.40;
+    private const double BargainBuyBias = 0.40;
+
+    // Caps keep any single side from saturating the random draw once several pulls stack.
+    private const double MaxBuyPull = 0.80;
+    private const double MaxSellPull = 0.80;
+
+    private const decimal MinPriceOffset = 0.01m;
+    private const decimal MaxPriceOffset = 0.05m;
+
+    private enum TradeAction
+    {
+        Skip,
+        Sell,
+        Buy,
+    }
+
+    public IReadOnlyList<OrderIntent> Decide(DecisionContext context)
+    {
+        // A company with an open order is excluded so the participant never stacks duplicate intents.
+        var sellCandidates = context.Companies
+            .Where(quote => !context.CompaniesWithOpenOrders.Contains(quote.CompanyId)
+                && context.SharesOwnedByCompany.GetValueOrDefault(quote.CompanyId) > 0)
+            .ToList();
+
+        var buyCandidates = context.AvailableCash > 0m
+            ? context.Companies
+                .Where(quote => !context.CompaniesWithOpenOrders.Contains(quote.CompanyId))
+                .ToList()
+            : [];
+
+        var (buyTarget, buyPull) = StrongestBuy(context, buyCandidates);
+        var (sellTarget, sellPull) = StrongestSell(sellCandidates);
+
+        // One draw splits into a buy band [0, buyPull) and a sell band [buyPull, buyPull + sellPull);
+        // anything above is left to the uniform fallback. A pulled action that cannot be built (no cash,
+        // nothing to sell) also falls through rather than spilling into the other band.
+        var roll = random.NextDouble();
+        if (buyTarget is not null && roll < buyPull)
+        {
+            if (BuildBuy(context, buyTarget) is { } pulledBuy)
+            {
+                return [pulledBuy];
+            }
+        }
+        else if (sellTarget is not null && roll < buyPull + sellPull)
+        {
+            if (BuildSell(context, sellTarget) is { } pulledSell)
+            {
+                return [pulledSell];
+            }
+        }
+
+        var actions = new List<TradeAction> { TradeAction.Skip };
+        if (sellCandidates.Count > 0)
+        {
+            actions.Add(TradeAction.Sell);
+        }
+
+        if (buyCandidates.Count > 0)
+        {
+            actions.Add(TradeAction.Buy);
+        }
+
+        var intent = actions[random.Next(actions.Count)] switch
+        {
+            TradeAction.Sell => BuildSell(context, sellCandidates[random.Next(sellCandidates.Count)]),
+            TradeAction.Buy => BuildBuy(context, buyCandidates[random.Next(buyCandidates.Count)]),
+            _ => null,
+        };
+
+        return intent is null ? [] : [intent];
+    }
+
+    private static (CompanyQuote? Target, double Pull) StrongestBuy(
+        DecisionContext context,
+        IReadOnlyList<CompanyQuote> candidates)
+    {
+        CompanyQuote? target = null;
+        var best = 0.0;
+
+        foreach (var quote in candidates)
+        {
+            var owns = context.SharesOwnedByCompany.GetValueOrDefault(quote.CompanyId) > 0;
+            var pull = BuyPull(quote, owns);
+            if (pull > best)
+            {
+                best = pull;
+                target = quote;
+            }
+        }
+
+        return (target, best);
+    }
+
+    private static (CompanyQuote? Target, double Pull) StrongestSell(IReadOnlyList<CompanyQuote> candidates)
+    {
+        CompanyQuote? target = null;
+        var best = 0.0;
+
+        foreach (var quote in candidates)
+        {
+            var pull = SellPull(quote);
+            if (pull > best)
+            {
+                best = pull;
+                target = quote;
+            }
+        }
+
+        return (target, best);
+    }
+
+    private static double BuyPull(CompanyQuote quote, bool owns)
+    {
+        // A rising price draws buyers in, the harder the faster it rose this cycle.
+        var growth = RecentMovePull(quote.PriceChangePct);
+
+        // More resting buy demand than sell supply signals upward pressure worth front-running.
+        var imbalance = quote.NetShareDemand > 0
+            ? Math.Min(MaxImbalanceBias, quote.NetShareDemand * ImbalanceBiasPerShare)
+            : 0.0;
+
+        // A deep, sustained drop tempts bargain hunters who do not already hold the share.
+        var bargain = !owns && quote.LongRangeChangePct <= -ExtremeMoveThreshold ? BargainBuyBias : 0.0;
+
+        return Math.Min(MaxBuyPull, growth + imbalance + bargain);
+    }
+
+    private static double SellPull(CompanyQuote quote)
+    {
+        // A falling price makes holders want out, the harder the faster it fell this cycle.
+        var decline = RecentMovePull(-quote.PriceChangePct);
+
+        // A large run-up makes holders lock in profit before it reverses.
+        var profitTaking = quote.LongRangeChangePct >= ExtremeMoveThreshold ? ProfitTakingSellBias : 0.0;
+
+        return Math.Min(MaxSellPull, decline + profitTaking);
+    }
+
+    // Maps a one-cycle move in the favourable direction (positive only) to a capped pull.
+    private static double RecentMovePull(decimal favourableChangePct) =>
+        favourableChangePct > 0m
+            ? Math.Min(RecentMoveCap, (double)favourableChangePct * RecentMoveScale)
+            : 0.0;
+
+    private OrderIntent? BuildSell(DecisionContext context, CompanyQuote quote)
+    {
+        var sharesOwned = context.SharesOwnedByCompany.GetValueOrDefault(quote.CompanyId);
+
+        var quantity = tradeSizer.Size(context.Participant.Temperament, sharesOwned);
+        if (quantity < 1)
+        {
+            return null;
+        }
+
+        var sellLimit = Round(quote.Price * (1m - RandomOffset()));
+        return sellLimit > 0m
+            ? new OrderIntent(OrderType.Sell, quote.CompanyId, quantity, sellLimit)
+            : null;
+    }
+
+    private OrderIntent? BuildBuy(DecisionContext context, CompanyQuote quote)
+    {
+        var buyLimit = Round(quote.Price * (1m + RandomOffset()));
+        if (buyLimit <= 0m)
+        {
+            return null;
+        }
+
+        var maxAffordable = (int)Math.Floor(context.AvailableCash / buyLimit);
+        var quantity = tradeSizer.Size(context.Participant.Temperament, maxAffordable);
+        return quantity >= 1
+            ? new OrderIntent(OrderType.Buy, quote.CompanyId, quantity, buyLimit)
+            : null;
+    }
+
+    private decimal RandomOffset() =>
+        MinPriceOffset + ((decimal)random.NextDouble() * (MaxPriceOffset - MinPriceOffset));
+
+    private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+}

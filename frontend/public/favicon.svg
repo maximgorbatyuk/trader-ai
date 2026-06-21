@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Trader AI">
+  <rect width="64" height="64" rx="14" fill="#1f2a37"/>
+  <path d="M18 42h28M22 42V24m10 18V18m10 24V28" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+  <path d="M17 24h10m9-6h10m-9 10h10" fill="none" stroke="#1f8a5b" stroke-width="5" stroke-linecap="round"/>
+</svg>

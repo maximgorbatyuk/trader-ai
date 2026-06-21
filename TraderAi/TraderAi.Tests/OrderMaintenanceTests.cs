@@ -1,0 +1,223 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using TraderAi.Data;
+using TraderAi.Models;
+using TraderAi.Services;
+
+namespace TraderAi.Tests;
+
+// Drives the real maintain-decide-advance tick with a no-op engine so only hand-placed orders age, and a
+// scripted Random so the random reprice roll is deterministic.
+public sealed class OrderMaintenanceTests : IDisposable
+{
+    private readonly SqliteConnection connection;
+    private readonly AppDbContext context;
+
+    public OrderMaintenanceTests()
+    {
+        connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        context = new AppDbContext(options);
+        context.Database.EnsureCreated();
+    }
+
+    private MarketService Service(Random random) =>
+        new(context, new MatchingEngine(context), new NoOpDecisionEngine(), new MarketCycleLock(), random);
+
+    [Fact]
+    public async Task UnfilledBuyOrderIsCancelledAndItsCashReleasedAtTheAgeCap()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var bob = await context.Participants.FirstAsync(participant => participant.Name == "Bob");
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new FixedRoll(0d));
+
+        var placed = await market.PlaceOrderAsync(bob.Id, company.Id, OrderType.Buy, 2, 110m);
+        await StepAsync(market, 16);
+
+        var order = await context.Orders.FindAsync(placed.Order!.Id);
+        Assert.Equal(OrderStatus.Cancelled, order!.Status);
+        Assert.Equal(0m, order.ReservedCashAmount);
+
+        await context.Entry(bob).ReloadAsync();
+        Assert.Equal(0m, bob.ReservedBalance);
+        Assert.True(await context.MoneyTransactions.AnyAsync(money =>
+            money.RelatedOrderId == order.Id && money.Type == MoneyTransactionType.Release));
+    }
+
+    [Fact]
+    public async Task StaleSellOrderIsRepricedTenPercentTowardTheMarket()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new FixedRoll(0d));
+
+        var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
+
+        // Four ticks brings the order to age 3, where the first reprice fires; still under the cancel cap.
+        await StepAsync(market, 4);
+
+        var order = await context.Orders.FindAsync(placed.Order!.Id);
+        Assert.Equal(OrderStatus.Open, order!.Status);
+        Assert.Equal(90m, order.LimitPrice);
+    }
+
+    [Fact]
+    public async Task RepricedOrderStillCancelsAtTheAgeCap()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new FixedRoll(0d));
+
+        var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
+        await StepAsync(market, 16);
+
+        var order = await context.Orders.FindAsync(placed.Order!.Id);
+        Assert.Equal(OrderStatus.Cancelled, order!.Status);
+
+        // The shares it held are released, so none remain attached to any order.
+        Assert.Equal(0, await context.OrderShares.CountAsync());
+    }
+
+    [Fact]
+    public async Task CashStarvedHolderLiquidatesHalfOfItsPriciestHolding()
+    {
+        await SeedStarvedHolderAsync(cash: 10m, cheapPrice: 50m, dearPrice: 200m, sharesEach: 4);
+        var poor = await context.Participants.FirstAsync(participant => participant.Name == "Poor");
+        var dear = await context.Companies.FirstAsync(company => company.Name == "Dear Co");
+        var market = Service(new FixedRoll(0d));
+
+        await StepAsync(market, 5);
+
+        var liquidation = await context.Orders.SingleAsync(order =>
+            order.ParticipantId == poor.Id && order.Type == OrderType.Sell);
+        Assert.Equal(dear.Id, liquidation.CompanyId);
+        Assert.Equal(2, liquidation.Quantity);
+
+        await context.Entry(poor).ReloadAsync();
+        Assert.Equal(0, poor.CashStarvedCycles);
+    }
+
+    [Fact]
+    public async Task RepriceChanceRisesFromTheEarlyBandIntoTheMidBand()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new FixedRoll(0.6));
+
+        var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
+
+        // Ages 3-6 carry a 0.5 chance, so a 0.6 roll never clears it through age 6.
+        await StepAsync(market, 7);
+        var order = await context.Orders.FindAsync(placed.Order!.Id);
+        Assert.Equal(100m, order!.LimitPrice);
+
+        // Age 7 enters the 0.7 band, where the same 0.6 roll now reprices.
+        await StepAsync(market, 1);
+        await context.Entry(order).ReloadAsync();
+        Assert.Equal(90m, order.LimitPrice);
+    }
+
+    [Fact]
+    public async Task RepriceChanceReachesCertaintyInTheLateBand()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new FixedRoll(0.8));
+
+        var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
+
+        // A 0.8 roll clears neither the 0.5 (ages 3-6) nor the 0.7 (ages 7-12) band, so nothing reprices.
+        await StepAsync(market, 13);
+        var order = await context.Orders.FindAsync(placed.Order!.Id);
+        Assert.Equal(100m, order!.LimitPrice);
+
+        // Age 13 enters the certain band, where every roll reprices.
+        await StepAsync(market, 1);
+        await context.Entry(order).ReloadAsync();
+        Assert.Equal(90m, order.LimitPrice);
+    }
+
+    private static async Task StepAsync(MarketService market, int times)
+    {
+        for (var step = 0; step < times; step++)
+        {
+            await market.StepCycleAsync();
+        }
+    }
+
+    private async Task SeedStarvedHolderAsync(decimal cash, decimal cheapPrice, decimal dearPrice, int sharesEach)
+    {
+        var now = DateTime.UtcNow;
+
+        var cycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
+        context.MarketCycles.Add(cycle);
+
+        var market = new Market { Name = "Test Market", Status = MarketStatus.Running, CreatedAt = now, UpdatedAt = now };
+        context.Markets.Add(market);
+
+        var cheap = new Company { Name = "Cheap Co", IssuedSharesCount = sharesEach, CreatedAt = now, UpdatedAt = now };
+        var dear = new Company { Name = "Dear Co", IssuedSharesCount = sharesEach, CreatedAt = now, UpdatedAt = now };
+        context.Companies.Add(cheap);
+        context.Companies.Add(dear);
+
+        var poor = new Participant
+        {
+            Name = "Poor",
+            Type = ParticipantType.Individual,
+            Temperament = Temperament.Balanced,
+            RiskProfile = RiskProfile.Medium,
+            InitialBalance = cash,
+            CurrentBalance = cash,
+            IsActive = true,
+        };
+        context.Participants.Add(poor);
+        await context.SaveChangesAsync();
+
+        foreach (var (company, price) in new[] { (cheap, cheapPrice), (dear, dearPrice) })
+        {
+            for (var index = 0; index < sharesEach; index++)
+            {
+                context.Shares.Add(new Share
+                {
+                    CompanyId = company.Id,
+                    OwnerId = poor.Id,
+                    InitialPrice = price,
+                    CurrentPrice = price,
+                    LastUpdatedAt = now,
+                });
+            }
+
+            context.PriceSnapshots.Add(new PriceSnapshot
+            {
+                CompanyId = company.Id,
+                Price = price,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = now,
+            });
+        }
+
+        market.CurrentCycleId = cycle.Id;
+        await context.SaveChangesAsync();
+    }
+
+    public void Dispose()
+    {
+        context.Dispose();
+        connection.Dispose();
+    }
+
+    private sealed class FixedRoll(double value) : Random
+    {
+        public override double NextDouble() => value;
+    }
+}

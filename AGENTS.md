@@ -52,3 +52,18 @@ When making changes to the codebase, update documentation in the same PR if the 
 
 Documentation updates are not optional extras — they are part of completing the feature.
 
+## Design Context
+
+Frontend design and brand direction live in `PRODUCT.md` at the repo root — read it before changing any UI. Highlights an agent needs up front:
+
+- **Register: `product`.** The frontend is a build-time observability and control dashboard for the simulation, not a marketing surface. Design serves the task.
+- **Visual direction: trading-terminal in a light scheme.** Numerics are monospaced and tabular; green and red are reserved for market semantics (up/buy, down/sell) and never used as chrome; ink carries chrome and primary actions.
+- **Accessibility bar: WCAG 2.1 AA** — verified text contrast, visible keyboard focus, `prefers-reduced-motion` alternatives, and no color-only signals (buy/sell and up/down also carry text or a glyph).
+- **Design tokens** (OKLCH palette, fixed `rem` type scale, spacing) live in `frontend/src/index.css`; component styles in `frontend/src/App.css`. Reuse the tokens. Anti-references to avoid: warm-cream SaaS palettes, rounded ghost-cards with wide drop shadows, marketing-scale hero headings, and per-section uppercase eyebrows.
+
+## Local launch workflow
+
+- Use `rtk` for shell commands, including launch and verification commands.
+- Run `rtk ./start-dev.sh` from the repository root to start the local backend and frontend together.
+- Keep plan files out of commits.
+- Keep human-facing launch wording in `README.md`; keep agent-only operating notes in this file.
