@@ -37,6 +37,13 @@ The dashboard lists every company with its industry, and a Newswire panel shows 
 
 The market can also be hit by a crisis — a random shock, growing more likely the longer the market runs without one, that drives a few sectors (local) or a large share of all sectors (global) sharply down. A banner highlights a recent crisis and it appears in the Newswire as an alert. A sharp drop, from a crisis or a news event, also cancels the standing buy orders for the affected companies, just as a sharp rise cancels their standing sell orders. The upbeat counterpart is a science investigation — a small, local breakthrough that lifts a few sectors, shown with its own green banner and Newswire items, and which only nudges prices up without touching the order book. A trader whose share holdings grow very valuable can also go bankrupt: its cash is wiped and most of its holdings are dumped onto the market at a steepening discount until they sell, an event that shows up in the Newswire without moving any other prices.
 
-Cash-strapped traders may instead pool into a collective fund, which trades as its own participant and is tagged with a green label in the Traders table. A member contributes most of its cash, stops bidding on its own, and earns a share of the fund's dividends; the fund returns that deposit when the member leaves, and once only two members remain and one departs it sells out and splits the proceeds between them. A fund's page lists who has joined and when.
+Cash-strapped traders may instead pool into a collective fund, which trades as its own participant and is tagged with a green label in the Traders table. A member contributes most of its cash, stops bidding on its own, and earns a share of the fund's dividends; the fund returns that deposit when the member leaves, and once only two members remain and one departs it sells out and splits the proceeds between them. A member drops out of the Traders table while it belongs to a fund and returns once it leaves or the fund closes. A fund's page lists who has joined and when.
 
 No authentication is required between the frontend and backend for local development.
+
+## Documentation
+
+| Page | What it covers |
+| --- | --- |
+| [Domain](docs/domain.md) | The simulation's data model and the core market rules. |
+| [Participant rules](docs/participant-rules.md) | A trader's-eye view: what a participant starts with, what it may and may not do, its states, how it joins a collective fund, and how its orders work. |

@@ -148,6 +148,13 @@ public static class MarketEndpoints
         {
             var participants = await dbContext.Participants.OrderBy(participant => participant.Id).ToListAsync();
 
+            // A trader that has pooled into a fund hands its trading to that fund, so it is dropped from the
+            // traders list while the membership lasts; it returns once it leaves or the fund closes.
+            var memberParticipantIds = (await dbContext.CollectiveFundParticipants
+                    .Select(member => member.ParticipantId)
+                    .ToListAsync())
+                .ToHashSet();
+
             var holdingsByOwner = (await dbContext.Shares
                     .Where(share => share.OwnerId != null)
                     .GroupBy(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId })
@@ -168,6 +175,7 @@ public static class MarketEndpoints
                 group => group.Sum(holding => holding.Count * latestPriceByCompany.GetValueOrDefault(holding.CompanyId)));
 
             var response = participants
+                .Where(participant => !memberParticipantIds.Contains(participant.Id))
                 .Select(participant => new ParticipantResponse(
                     participant.Id,
                     participant.Name,

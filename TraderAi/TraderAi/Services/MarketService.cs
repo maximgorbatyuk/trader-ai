@@ -845,8 +845,8 @@ public sealed class MarketService(
     private async Task<Market> SeedDemoMarketCoreAsync()
     {
         // Tunable size of the generated demo market; bump these to grow the simulation.
-        const int companyCount = 40;
-        const int participantCount = 200;
+        const int companyCount = 100;
+        const int participantCount = 300;
         const int minShares = 100;
         const int maxShares = 1000;
         const int minPrice = 20;
@@ -890,7 +890,8 @@ public sealed class MarketService(
             dbContext.Participants.Add(new Participant
             {
                 Name = participantNames[index],
-                Type = index % 2 == 0 ? ParticipantType.Individual : ParticipantType.AIAgent,
+                // Seeded traders are all individuals for now; AI agents are introduced later.
+                Type = ParticipantType.Individual,
                 Temperament = temperaments[index % temperaments.Length],
                 RiskProfile = riskProfiles[index % riskProfiles.Length],
                 InitialBalance = balance,

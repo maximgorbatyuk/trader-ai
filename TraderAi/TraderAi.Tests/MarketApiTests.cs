@@ -128,9 +128,9 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             var participants = await client.GetFromJsonAsync<ParticipantDto[]>("/participants");
             var openOrders = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
 
-            Assert.Equal(40, companies!.Length);
-            Assert.Equal(200, participants!.Length);
-            Assert.Equal(40, openOrders!.Length);
+            Assert.Equal(100, companies!.Length);
+            Assert.Equal(300, participants!.Length);
+            Assert.Equal(100, openOrders!.Length);
             Assert.All(openOrders, order =>
             {
                 Assert.Null(order.ParticipantId);
@@ -194,7 +194,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(1, cycle.CycleNumber);
             Assert.Empty(transactions!);
             Assert.Single(activity!);
-            Assert.Equal(40, openOrders!.Length);
+            Assert.Equal(100, openOrders!.Length);
             Assert.All(openOrders, order =>
             {
                 Assert.Null(order.ParticipantId);
