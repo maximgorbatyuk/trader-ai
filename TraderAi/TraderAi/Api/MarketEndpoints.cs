@@ -410,28 +410,64 @@ public static class MarketEndpoints
             var industryNameById = await IndustryNameByIdAsync(dbContext);
 
             var response = posts
-                .Select(post => new NewsPostResponse(
-                    post.Id,
-                    post.Title,
-                    post.Content,
-                    post.PublishedInCycleId,
-                    post.PublishedAt,
-                    post.Scope.ToString(),
-                    post.Direction?.ToString(),
-                    post.ImpactPercent,
-                    post.TargetCompanyId,
-                    post.TargetCompanyId is int companyId ? companyNameById.GetValueOrDefault(companyId) : null,
-                    post.Industries
-                        .Select(link => industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}")
-                        .ToArray()))
+                .Select(post => ToNewsResponse(post, companyNameById, industryNameById))
                 .ToArray();
 
             return Results.Ok(response);
+        });
+
+        app.MapPost("/news", async (ManualNewsRequest request, NewsService newsService, AppDbContext dbContext) =>
+        {
+            var result = await newsService.PublishManualNewsAsync(request);
+            if (!result.Success)
+            {
+                return Results.BadRequest(new { error = result.Error });
+            }
+
+            var companyNameById = await dbContext.Companies
+                .ToDictionaryAsync(company => company.Id, company => company.Name);
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+
+            return Results.Ok(ToNewsResponse(result.Post!, companyNameById, industryNameById));
+        });
+
+        app.MapGet("/news/themes", () =>
+            Results.Ok(DemoNewsContent.ThemeOptions
+                .Select(theme => new NewsThemeResponse(theme.Key, theme.Label))
+                .ToArray()));
+
+        app.MapGet("/industries", async (AppDbContext dbContext) =>
+        {
+            var industries = await dbContext.Industries
+                .OrderBy(industry => industry.Name)
+                .Select(industry => new IndustryResponse(industry.Id, industry.Name))
+                .ToArrayAsync();
+
+            return Results.Ok(industries);
         });
     }
 
     private static async Task<Dictionary<int, string>> IndustryNameByIdAsync(AppDbContext dbContext) =>
         await dbContext.Industries.ToDictionaryAsync(industry => industry.Id, industry => industry.Name);
+
+    private static NewsPostResponse ToNewsResponse(
+        NewsPost post,
+        IReadOnlyDictionary<int, string> companyNameById,
+        IReadOnlyDictionary<int, string> industryNameById) =>
+        new(
+            post.Id,
+            post.Title,
+            post.Content,
+            post.PublishedInCycleId,
+            post.PublishedAt,
+            post.Scope.ToString(),
+            post.Direction?.ToString(),
+            post.ImpactPercent,
+            post.TargetCompanyId,
+            post.TargetCompanyId is int companyId ? companyNameById.GetValueOrDefault(companyId) : null,
+            post.Industries
+                .Select(link => industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}")
+                .ToArray());
 
     // The current company price is the most recent snapshot, found per company by its max Id so the
     // whole snapshot history never has to be loaded.
@@ -705,3 +741,7 @@ public sealed record NewsPostResponse(
     int? TargetCompanyId,
     string? TargetCompanyName,
     string[] IndustryNames);
+
+public sealed record IndustryResponse(int Id, string Name);
+
+public sealed record NewsThemeResponse(string Key, string Label);

@@ -1383,3 +1383,44 @@
   color: var(--muted);
   font-weight: 500;
 }
+
+/* ---- Add-news form ---- */
+.news-form {
+  gap: var(--s-3);
+}
+
+.field-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-3);
+}
+
+.industry-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--s-1) var(--s-3);
+  max-height: 220px;
+  overflow-y: auto;
+  padding: var(--s-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.industry-picker[aria-disabled='true'] {
+  opacity: 0.5;
+}
+
+.industry-check {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-xs);
+  color: var(--text);
+}
+
+.industry-check-all {
+  margin-bottom: var(--s-1);
+  font-weight: 600;
+  color: var(--ink);
+}

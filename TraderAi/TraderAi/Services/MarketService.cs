@@ -39,7 +39,8 @@ public sealed class MarketService(
     MatchingEngine matchingEngine,
     IDecisionEngine decisionEngine,
     MarketCycleLock cycleLock,
-    Random random)
+    Random random,
+    NewsService? newsService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -568,6 +569,12 @@ public sealed class MarketService(
         currentCycle.CompletedAt = now;
 
         await PayDividendsIfDueAsync(market, currentCycle, now);
+
+        // Automated news is published on its cycle schedule and shares this transaction's save below.
+        if (newsService is not null)
+        {
+            await newsService.MaybeAddAutomatedNewsForCycleAsync(currentCycle, now);
+        }
 
         var nextCycle = new MarketCycle
         {

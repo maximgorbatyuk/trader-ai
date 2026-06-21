@@ -30,9 +30,8 @@ builder.Services.AddScoped<MarketService>();
 builder.Services.AddScoped<NewsService>();
 builder.Services.AddSingleton<MarketCycleLock>();
 builder.Services.Configure<MarketLoopOptions>(builder.Configuration.GetSection(MarketLoopOptions.SectionName));
-builder.Services.Configure<NewsLoopOptions>(builder.Configuration.GetSection(NewsLoopOptions.SectionName));
+builder.Services.Configure<NewsOptions>(builder.Configuration.GetSection(NewsOptions.SectionName));
 builder.Services.AddHostedService<MarketLoopService>();
-builder.Services.AddHostedService<NewsLoopService>();
 
 builder.Services.AddCors(options =>
 {

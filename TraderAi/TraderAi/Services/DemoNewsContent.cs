@@ -6,9 +6,22 @@ namespace TraderAi.Services;
 // repeats. Drawn from a caller-supplied Random so output is reproducible for a given seed.
 internal static class DemoNewsContent
 {
-    public static (string Title, string Content) Generate(Random random)
+    // Theme keys and human labels, in display order, for the manual news form.
+    public static IReadOnlyList<(string Key, string Label)> ThemeOptions =>
+        Themes.Select(theme => (theme.Key, theme.Label)).ToArray();
+
+    public static (string Title, string Content) Generate(Random random) =>
+        Compose(Themes[random.Next(Themes.Length)], random);
+
+    // Generates from the named theme, or null when the key is unknown.
+    public static (string Title, string Content)? GenerateForTheme(string key, Random random)
     {
-        var theme = Themes[random.Next(Themes.Length)];
+        var theme = Themes.FirstOrDefault(candidate => candidate.Key == key);
+        return theme is null ? null : Compose(theme, random);
+    }
+
+    private static (string Title, string Content) Compose(Theme theme, Random random)
+    {
         var a = theme.A[random.Next(theme.A.Length)];
         var b = theme.B[random.Next(theme.B.Length)];
         var template = theme.Templates[random.Next(theme.Templates.Length)];
@@ -26,12 +39,14 @@ internal static class DemoNewsContent
 
     private sealed record Template(string Title, string Content);
 
-    private sealed record Theme(string[] A, string[] B, Template[] Templates);
+    private sealed record Theme(string Key, string Label, string[] A, string[] B, Template[] Templates);
 
     private static readonly Theme[] Themes =
     [
         // UFO / aliens
         new(
+            "ufo",
+            "UFO & Aliens",
             [
                 "a fleet of silver discs", "a glowing orb", "three triangular craft", "a humming green light",
                 "a saucer the size of a stadium", "a swarm of tiny drones", "a pulsing purple beam",
@@ -53,6 +68,8 @@ internal static class DemoNewsContent
 
         // Animals / wildlife
         new(
+            "wildlife",
+            "Wildlife",
             [
                 "a runaway emu", "a family of raccoons", "an escaped python", "a herd of goats",
                 "a clever octopus", "a lost penguin", "a giant catfish", "a parade of ducks", "a confused moose",
@@ -71,6 +88,8 @@ internal static class DemoNewsContent
 
         // Hobbits / fantasy
         new(
+            "fantasy",
+            "Fantasy & Hobbits",
             [
                 "a band of hobbits", "a grumpy dwarf", "an elven choir", "a wandering wizard",
                 "a hungry troll", "a retired dragon", "a society of garden gnomes", "a talking badger",
@@ -90,6 +109,8 @@ internal static class DemoNewsContent
 
         // Celebrity / pop culture
         new(
+            "celebrity",
+            "Celebrity",
             [
                 "a reclusive pop star", "a beloved chef", "an aging rock band", "a viral dance influencer",
                 "a famous novelist", "an A-list actor", "a retired astronaut",
@@ -108,6 +129,8 @@ internal static class DemoNewsContent
 
         // Weather / nature
         new(
+            "weather",
+            "Weather",
             [
                 "a freak hailstorm", "a double rainbow", "an unseasonal heatwave", "a thick blanket of fog",
                 "a sudden meteor shower", "a record-breaking downpour", "an early frost",
@@ -124,6 +147,8 @@ internal static class DemoNewsContent
 
         // Science / tech (light)
         new(
+            "science",
+            "Science & Tech",
             [
                 "a backyard inventor", "a team of students", "a small startup", "a curious retiree", "a university lab",
             ],
@@ -139,6 +164,8 @@ internal static class DemoNewsContent
 
         // Sports / oddity
         new(
+            "sports",
+            "Sports",
             [
                 "an amateur chess club", "a local underdog team", "a 90-year-old marathoner",
                 "a pet-friendly bowling league", "a one-armed darts champion",
@@ -154,6 +181,8 @@ internal static class DemoNewsContent
 
         // Food / local
         new(
+            "food",
+            "Food",
             [
                 "a tiny bakery", "a roadside diner", "a school cafeteria", "a street-food vendor",
                 "a centuries-old brewery",
@@ -170,6 +199,8 @@ internal static class DemoNewsContent
 
         // Quirky business
         new(
+            "business",
+            "Business",
             [
                 "an anonymous collector", "a group of pensioners", "a teenage entrepreneur",
                 "a small island nation", "a co-op of beekeepers",
@@ -186,6 +217,8 @@ internal static class DemoNewsContent
 
         // Bizarre / mystery
         new(
+            "mystery",
+            "Mystery",
             [
                 "a mysterious statue", "an unsigned letter", "a glowing rock", "an antique clock",
                 "a locked wooden box",
