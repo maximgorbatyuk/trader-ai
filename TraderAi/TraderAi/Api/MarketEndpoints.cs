@@ -471,6 +471,26 @@ public static class MarketEndpoints
 
             return Results.Ok(response);
         });
+
+        app.MapGet("/science-investigations", async (int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 30, 1, 200);
+            var investigations = await dbContext.ScienceInvestigations
+                .OrderByDescending(investigation => investigation.Id)
+                .Take(limit)
+                .Include(investigation => investigation.Industries)
+                .ToListAsync();
+
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumberById = await dbContext.MarketCycles
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+            var response = investigations
+                .Select(investigation => ToScienceInvestigationResponse(investigation, industryNameById, cycleNumberById))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
     }
 
     private static async Task<Dictionary<int, string>> IndustryNameByIdAsync(AppDbContext dbContext) =>
@@ -509,6 +529,24 @@ public static class MarketEndpoints
             crisis.TriggeredAt,
             crisis.Industries
                 .Select(link => new CrisisIndustryResponse(
+                    link.IndustryId,
+                    industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}",
+                    link.ImpactPercent))
+                .ToArray());
+
+    private static ScienceInvestigationResponse ToScienceInvestigationResponse(
+        ScienceInvestigation investigation,
+        IReadOnlyDictionary<int, string> industryNameById,
+        IReadOnlyDictionary<int, int> cycleNumberById) =>
+        new(
+            investigation.Id,
+            investigation.Title,
+            investigation.Content,
+            investigation.TriggeredInCycleId,
+            cycleNumberById.GetValueOrDefault(investigation.TriggeredInCycleId),
+            investigation.TriggeredAt,
+            investigation.Industries
+                .Select(link => new ScienceInvestigationIndustryResponse(
                     link.IndustryId,
                     industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}",
                     link.ImpactPercent))
@@ -817,3 +855,14 @@ public sealed record CrisisResponse(
     CrisisIndustryResponse[] Industries);
 
 public sealed record CrisisIndustryResponse(int IndustryId, string IndustryName, decimal ImpactPercent);
+
+public sealed record ScienceInvestigationResponse(
+    int Id,
+    string Title,
+    string Content,
+    int TriggeredInCycleId,
+    int TriggeredInCycleNumber,
+    DateTime TriggeredAt,
+    ScienceInvestigationIndustryResponse[] Industries);
+
+public sealed record ScienceInvestigationIndustryResponse(int IndustryId, string IndustryName, decimal ImpactPercent);

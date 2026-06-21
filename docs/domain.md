@@ -21,6 +21,7 @@ Each share is stored as a separate row and has one current owner.
 - News events can also be created manually, with a chosen target and impact.
 - A news event with impact moves the share price of either a single company or every company in one or more industries, up or down, by a percentage of the current price (automated events up to 10%, manually created events up to 95%).
 - A market crisis can strike at random, becoming more likely the longer the market runs without one. A local crisis drives a small handful of sectors down; a rarer global crisis drives a large share of all sectors down. Each affected sector falls by its own percentage.
+- A science investigation is the upbeat counterpart: a small, local, positive shock that lifts 1–5 sectors by 0.5–5% each, growing likelier after a 50-cycle quiet window. Unlike a crisis or news move it only nudges price up and does not cancel any orders.
 - Any sharp move also clears the resting orders that were priced against the old level: a price drop (from a crisis or a news event) cancels the standing buy orders for the affected companies and releases their reserved cash, while a price rise cancels the standing sell orders and frees their shares to be listed again.
 - A buy order reserves cash when it is created.
 - The reserved cash amount is `Quantity * LimitPrice`.
@@ -327,3 +328,23 @@ Notes:
 - A local crisis hits a few sectors; a global crisis hits a large share of all sectors.
 - Each affected industry falls by its own percentage, applied by recording a new price point for every company in that industry.
 - The drop also cancels the standing buy orders for the affected companies.
+
+### ScienceInvestigation
+
+A science investigation is a small, positive market event — a research breakthrough — that lifts a few industries at once.
+
+Fields:
+
+- ID
+- Title
+- Content
+- TriggeredInCycleId
+- TriggeredAt
+- Industries (each lifted industry with its own increase)
+
+Notes:
+
+- A science investigation is always local: it lifts 1 to 5 sectors, each by its own increase between 0.5% and 5%.
+- It becomes more likely the longer the market goes without one, after a short quiet window, and its clock resets when it fires.
+- Each lifted industry rises by its own percentage, applied by recording a new price point for every company in that industry.
+- It only nudges price up and never cancels any orders.

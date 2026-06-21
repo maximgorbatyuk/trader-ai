@@ -36,6 +36,7 @@ function App() {
   const [cycleActivity, setCycleActivity] = useState([])
   const [news, setNews] = useState([])
   const [crises, setCrises] = useState([])
+  const [scienceInvestigations, setScienceInvestigations] = useState([])
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
@@ -51,6 +52,7 @@ function App() {
         transactionData,
         newsData,
         crisisData,
+        scienceData,
       ] = await Promise.all([
         api.getMarket(),
         api.getCompanies(),
@@ -60,6 +62,7 @@ function App() {
         api.getShareTransactions(50),
         api.getNews(10),
         api.getCrises(10),
+        api.getScienceInvestigations(10),
       ])
 
       setMarket(marketData)
@@ -70,6 +73,7 @@ function App() {
       setTransactions(transactionData)
       setNews(newsData)
       setCrises(crisisData)
+      setScienceInvestigations(scienceData)
       setConnected(true)
     } catch {
       setConnected(false)
@@ -143,6 +147,10 @@ function App() {
             {market !== null ? (
               <>
                 <CrisisBanner crises={crises} currentCycleNumber={market.currentCycleNumber} />
+                <ScienceBanner
+                  investigations={scienceInvestigations}
+                  currentCycleNumber={market.currentCycleNumber}
+                />
 
                 <div className="dashboard">
                   <MarketMapPanel
@@ -170,7 +178,13 @@ function App() {
                     companyNameById={companyNameById}
                   />
 
-                  <NewswirePanel news={news} crises={crises} companies={companies} onPublished={loadAll} />
+                  <NewswirePanel
+                    news={news}
+                    crises={crises}
+                    scienceInvestigations={scienceInvestigations}
+                    companies={companies}
+                    onPublished={loadAll}
+                  />
                 </div>
               </>
             ) : null}
@@ -502,6 +516,20 @@ function sectorLabel(count) {
   return count === 1 ? 'sector' : 'sectors'
 }
 
+function scienceGainRange(investigation) {
+  const percents = investigation.industries.map((link) => Number(link.impactPercent))
+  if (percents.length === 0) return null
+  return { min: Math.min(...percents), max: Math.max(...percents) }
+}
+
+function formatGainRange(investigation) {
+  const range = scienceGainRange(investigation)
+  if (!range) return ''
+  return range.min === range.max
+    ? `+${range.max.toFixed(1)}%`
+    : `+${range.min.toFixed(1)}% to +${range.max.toFixed(1)}%`
+}
+
 // A prominent alert for the most recent crisis, shown only while it is recent relative to the current cycle.
 function CrisisBanner({ crises, currentCycleNumber }) {
   const latest = crises[0]
@@ -564,14 +592,84 @@ function CrisisSectors({ crisis }) {
   )
 }
 
-// The Newswire blends manual/automated news with crises into one time-ordered feed, trimmed to the latest
-// items; crises render as red alerts so a market-wide shock stands out from ordinary headlines.
-function NewswirePanel({ news, crises, companies, onPublished }) {
+// A green counterpart to the crisis banner for the most recent science investigation, shown only while it
+// is still recent relative to the current cycle so an old breakthrough does not linger at the top.
+function ScienceBanner({ investigations, currentCycleNumber }) {
+  const latest = investigations[0]
+  if (!latest) return null
+  if (
+    currentCycleNumber != null &&
+    currentCycleNumber - latest.triggeredInCycleNumber > CRISIS_RECENT_CYCLES
+  ) {
+    return null
+  }
+
+  const sectorCount = latest.industries.length
+  return (
+    <div className="science-banner" role="status">
+      <span className="science-banner-mark" aria-hidden="true">
+        🔬
+      </span>
+      <div className="crisis-banner-body">
+        <p className="crisis-banner-head">
+          <span className="science-scope">Science breakthrough</span>
+          <span className="crisis-banner-title">{latest.title}</span>
+        </p>
+        <p className="science-banner-meta num">
+          {sectorCount} {sectorLabel(sectorCount)} · {formatGainRange(latest)} · cycle{' '}
+          {latest.triggeredInCycleNumber}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// The market effect of a science investigation: always a rise, summarised as a range across the sectors it lifted.
+function ScienceImpact({ investigation }) {
+  const sectorCount = investigation.industries.length
+  return (
+    <span className="news-impact num tone-up">
+      <span aria-hidden="true">▲ </span>
+      {formatGainRange(investigation)}
+      <span className="news-impact-target">
+        {' '}
+        · {sectorCount} {sectorLabel(sectorCount)}
+      </span>
+    </span>
+  )
+}
+
+function ScienceSectors({ investigation }) {
+  const shown = investigation.industries.slice(0, MAX_SECTOR_CHIPS)
+  const extra = investigation.industries.length - shown.length
+
+  return (
+    <ul className="science-sectors">
+      {shown.map((link) => (
+        <li key={link.industryId} className="science-sector num">
+          {link.industryName} <span className="tone-up">+{Number(link.impactPercent).toFixed(1)}%</span>
+        </li>
+      ))}
+      {extra > 0 ? <li className="science-sector science-sector-more">+{extra} more</li> : null}
+    </ul>
+  )
+}
+
+// The Newswire blends manual/automated news with crises and science investigations into one time-ordered
+// feed, trimmed to the latest items; crises render as red alerts and science breakthroughs as green ones, so
+// market-moving events stand out from ordinary headlines.
+function NewswirePanel({ news, crises, scienceInvestigations, companies, onPublished }) {
   const [adding, setAdding] = useState(false)
 
   const feed = [
     ...news.map((post) => ({ kind: 'news', id: `news-${post.id}`, at: post.publishedAt, post })),
     ...crises.map((crisis) => ({ kind: 'crisis', id: `crisis-${crisis.id}`, at: crisis.triggeredAt, crisis })),
+    ...scienceInvestigations.map((investigation) => ({
+      kind: 'science',
+      id: `science-${investigation.id}`,
+      at: investigation.triggeredAt,
+      investigation,
+    })),
   ]
     .sort((a, b) => new Date(b.at) - new Date(a.at))
     .slice(0, 10)
@@ -591,22 +689,44 @@ function NewswirePanel({ news, crises, companies, onPublished }) {
         <p className="note">No news yet. Start the loop or add a post to see events here.</p>
       ) : (
         <ul className="newswire">
-          {feed.map((item) =>
-            item.kind === 'crisis' ? (
-              <li key={item.id} className="news-item crisis-item">
-                <div className="news-head">
-                  <h3 className="news-title">
-                    <span className="crisis-flag" aria-hidden="true">
-                      ⚠{' '}
-                    </span>
-                    {item.crisis.title}
-                  </h3>
-                  <CrisisImpact crisis={item.crisis} />
-                </div>
-                <p className="news-body">{item.crisis.content}</p>
-                <CrisisSectors crisis={item.crisis} />
-              </li>
-            ) : (
+          {feed.map((item) => {
+            if (item.kind === 'crisis') {
+              return (
+                <li key={item.id} className="news-item crisis-item">
+                  <div className="news-head">
+                    <h3 className="news-title">
+                      <span className="crisis-flag" aria-hidden="true">
+                        ⚠{' '}
+                      </span>
+                      {item.crisis.title}
+                    </h3>
+                    <CrisisImpact crisis={item.crisis} />
+                  </div>
+                  <p className="news-body">{item.crisis.content}</p>
+                  <CrisisSectors crisis={item.crisis} />
+                </li>
+              )
+            }
+
+            if (item.kind === 'science') {
+              return (
+                <li key={item.id} className="news-item science-item">
+                  <div className="news-head">
+                    <h3 className="news-title">
+                      <span className="science-flag" aria-hidden="true">
+                        🔬{' '}
+                      </span>
+                      {item.investigation.title}
+                    </h3>
+                    <ScienceImpact investigation={item.investigation} />
+                  </div>
+                  <p className="news-body">{item.investigation.content}</p>
+                  <ScienceSectors investigation={item.investigation} />
+                </li>
+              )
+            }
+
+            return (
               <li key={item.id} className="news-item">
                 <div className="news-head">
                   <h3 className="news-title">{item.post.title}</h3>
@@ -614,8 +734,8 @@ function NewswirePanel({ news, crises, companies, onPublished }) {
                 </div>
                 <p className="news-body">{item.post.content}</p>
               </li>
-            ),
-          )}
+            )
+          })}
         </ul>
       )}
 

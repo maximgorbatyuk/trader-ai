@@ -19,6 +19,10 @@ public sealed class Market
 
     public int LastGlobalCrisisCycleNumber { get; set; }
 
+    // Cycle number of the last science investigation, the clock its next chance ramps up from; zero means
+    // none has happened yet. Independent of the crisis clocks, so both may fire the same cycle.
+    public int LastScienceInvestigationCycleNumber { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

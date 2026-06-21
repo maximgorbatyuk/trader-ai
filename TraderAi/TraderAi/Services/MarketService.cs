@@ -41,7 +41,8 @@ public sealed class MarketService(
     MarketCycleLock cycleLock,
     Random random,
     NewsService? newsService = null,
-    CrisisService? crisisService = null)
+    CrisisService? crisisService = null,
+    ScienceInvestigationService? scienceService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -583,6 +584,12 @@ public sealed class MarketService(
             await crisisService.MaybeTriggerForCycleAsync(market, currentCycle, now);
         }
 
+        // A science investigation runs on its own clock and may lift a few sectors the same cycle a crisis hits.
+        if (scienceService is not null)
+        {
+            await scienceService.MaybeTriggerForCycleAsync(market, currentCycle, now);
+        }
+
         var nextCycle = new MarketCycle
         {
             CycleNumber = currentCycle.CycleNumber + 1,
@@ -722,6 +729,8 @@ public sealed class MarketService(
 
         await dbContext.CrisisIndustries.ExecuteDeleteAsync();
         await dbContext.Crises.ExecuteDeleteAsync();
+        await dbContext.ScienceInvestigationIndustries.ExecuteDeleteAsync();
+        await dbContext.ScienceInvestigations.ExecuteDeleteAsync();
         await dbContext.NewsPostIndustries.ExecuteDeleteAsync();
         await dbContext.NewsPosts.ExecuteDeleteAsync();
         await dbContext.OrderShares.ExecuteDeleteAsync();
@@ -742,7 +751,8 @@ public sealed class MarketService(
             "DELETE FROM sqlite_sequence WHERE name IN (" +
             "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
             "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Shares', 'OrderShares', " +
-            "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries')");
+            "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', " +
+            "'ScienceInvestigations', 'ScienceInvestigationIndustries')");
 
         var market = await SeedDemoMarketCoreAsync();
         await transaction.CommitAsync();

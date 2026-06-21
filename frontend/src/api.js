@@ -58,6 +58,7 @@ export const api = {
   getPrices: (companyId) => get(`/prices/${companyId}`),
   getNews: (take = 30) => get(`/news?take=${take}`),
   getCrises: (take = 30) => get(`/crises?take=${take}`),
+  getScienceInvestigations: (take = 30) => get(`/science-investigations?take=${take}`),
   getNewsThemes: () => get('/news/themes'),
   getIndustries: () => get('/industries'),
   createNews: (payload) => post('/news', payload),

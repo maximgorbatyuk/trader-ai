@@ -1473,6 +1473,74 @@
   font-weight: 500;
 }
 
+/* ---- Science investigation banner & feed items ---- */
+.science-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  margin-bottom: var(--s-4);
+  border: 1px solid var(--up);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--up-soft);
+}
+
+.science-banner-mark {
+  font-size: var(--t-lg);
+  line-height: 1;
+  color: var(--up-text);
+}
+
+.science-scope {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  color: var(--up-text);
+}
+
+.science-banner-meta {
+  margin: 0;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--up-text);
+}
+
+.science-item {
+  border-color: var(--up);
+  border-left-width: 3px;
+  background: var(--up-soft);
+}
+
+.science-flag {
+  color: var(--up-text);
+}
+
+.science-sectors {
+  list-style: none;
+  margin: var(--s-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-2);
+}
+
+.science-sector {
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  color: var(--text);
+  padding: 2px var(--s-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.science-sector-more {
+  color: var(--muted);
+  font-weight: 500;
+}
+
 /* ---- Add-news form ---- */
 .news-form {
   gap: var(--s-3);

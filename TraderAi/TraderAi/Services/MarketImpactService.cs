@@ -13,12 +13,15 @@ namespace TraderAi.Services;
 // it can run inside the cycle advance's transaction.
 public sealed class MarketImpactService(AppDbContext dbContext)
 {
+    // A positive-only event (a science investigation) passes cancelStaleOrders: false so it nudges price up
+    // without clearing the order book; news and crises keep the default and reprice around the move.
     public async Task<int> ApplyImpactAsync(
         NewsImpactDirection direction,
         IReadOnlyCollection<int> companyIds,
         decimal percent,
         int cycleId,
-        DateTime now)
+        DateTime now,
+        bool cancelStaleOrders = true)
     {
         if (companyIds.Count == 0)
         {
@@ -26,7 +29,11 @@ public sealed class MarketImpactService(AppDbContext dbContext)
         }
 
         var moved = await ApplySnapshotsAsync(direction, percent, companyIds, cycleId, now);
-        await CancelStaleOrdersAsync(direction, companyIds, cycleId, now);
+        if (cancelStaleOrders)
+        {
+            await CancelStaleOrdersAsync(direction, companyIds, cycleId, now);
+        }
+
         return moved;
     }
 
