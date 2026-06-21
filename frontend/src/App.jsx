@@ -4,6 +4,7 @@ import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
+import { CompanyModal } from './CompanyModal'
 
 const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
@@ -56,6 +57,7 @@ function App() {
   const [holdings, setHoldings] = useState([])
   const [selectedCompanyId, setSelectedCompanyId] = useState(null)
   const [selectedParticipantId, setSelectedParticipantId] = useState(null)
+  const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
 
@@ -148,6 +150,7 @@ function App() {
     selectedParticipantRef.current = null
     setSelectedCompanyId(null)
     setSelectedParticipantId(null)
+    setMapModalCompanyId(null)
     setPrices([])
     setHoldings([])
   }
@@ -157,6 +160,7 @@ function App() {
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
   const selectedParticipant = participants.find((participant) => participant.id === selectedParticipantId) ?? null
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId) ?? null
+  const mapModalCompany = companies.find((company) => company.id === mapModalCompanyId) ?? null
   const currentCycleNumber =
     cycles.find((cycle) => cycle.id === market?.currentCycleId)?.cycleNumber ?? cycles.length
 
@@ -194,6 +198,7 @@ function App() {
                   companies={companies}
                   participants={participants}
                   lastDividendTotal={market.lastDividendTotal}
+                  onSelectCompany={setMapModalCompanyId}
                 />
 
                 <ActivityPanel activity={cycleActivity} />
@@ -244,6 +249,14 @@ function App() {
       </main>
 
       <Footer />
+
+      {mapModalCompany ? (
+        <CompanyModal
+          company={mapModalCompany}
+          participantNameById={participantNameById}
+          onClose={() => setMapModalCompanyId(null)}
+        />
+      ) : null}
     </div>
   )
 }
@@ -815,7 +828,7 @@ function squarify(items, width, height) {
 
 // Treemap of the largest companies by capitalisation: tile area tracks market cap, colour tracks the last
 // price move (green up, red down, grey flat) with a glyph and signed percent so it is never colour-only.
-function MarketMapPanel({ companies, participants, lastDividendTotal }) {
+function MarketMapPanel({ companies, participants, lastDividendTotal, onSelectCompany }) {
   const mappedCompanies = companies
     .map((company) => ({
       ...company,
@@ -860,6 +873,15 @@ function MarketMapPanel({ companies, participants, lastDividendTotal }) {
               <div
                 key={company.id}
                 className={`map-tile tone-bg-${tone} ${sizeClass}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => onSelectCompany(company.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onSelectCompany(company.id)
+                  }
+                }}
                 style={{
                   left: `${(x / MAP_BOX_W) * 100}%`,
                   top: `${(y / MAP_BOX_H) * 100}%`,
@@ -869,7 +891,7 @@ function MarketMapPanel({ companies, participants, lastDividendTotal }) {
                   '--map-heat': heatMix(company.priceChangePct),
                 }}
                 title={`${company.name} · ${formatCompactMoney(company.capitalization)} cap · ${formatInt(company.issuedSharesCount)} shares · ${formatMoney(company.currentPrice)} · ${formatPct(company.priceChangePct)}`}
-                aria-label={`${company.name}, ${formatCompactMoney(company.capitalization)} capitalisation, ${formatInt(company.issuedSharesCount)} issued shares, ${formatMoney(company.currentPrice)}, ${TONE_WORD[tone]} ${formatPct(company.priceChangePct)}`}
+                aria-label={`${company.name}, ${formatCompactMoney(company.capitalization)} capitalisation, ${formatInt(company.issuedSharesCount)} issued shares, ${formatMoney(company.currentPrice)}, ${TONE_WORD[tone]} ${formatPct(company.priceChangePct)}. Open details.`}
               >
                 <span className="map-name">{company.name}</span>
                 <span className="map-cap num">{formatCompactMoney(company.capitalization)}</span>
