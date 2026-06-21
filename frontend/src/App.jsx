@@ -37,6 +37,7 @@ function App() {
   const [news, setNews] = useState([])
   const [crises, setCrises] = useState([])
   const [scienceInvestigations, setScienceInvestigations] = useState([])
+  const [bankruptcies, setBankruptcies] = useState([])
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
@@ -53,6 +54,7 @@ function App() {
         newsData,
         crisisData,
         scienceData,
+        bankruptcyData,
       ] = await Promise.all([
         api.getMarket(),
         api.getCompanies(),
@@ -63,6 +65,7 @@ function App() {
         api.getNews(10),
         api.getCrises(10),
         api.getScienceInvestigations(10),
+        api.getBankruptcies(10),
       ])
 
       setMarket(marketData)
@@ -74,6 +77,7 @@ function App() {
       setNews(newsData)
       setCrises(crisisData)
       setScienceInvestigations(scienceData)
+      setBankruptcies(bankruptcyData)
       setConnected(true)
     } catch {
       setConnected(false)
@@ -182,6 +186,7 @@ function App() {
                     news={news}
                     crises={crises}
                     scienceInvestigations={scienceInvestigations}
+                    bankruptcies={bankruptcies}
                     companies={companies}
                     onPublished={loadAll}
                   />
@@ -655,10 +660,25 @@ function ScienceSectors({ investigation }) {
   )
 }
 
-// The Newswire blends manual/automated news with crises and science investigations into one time-ordered
-// feed, trimmed to the latest items; crises render as red alerts and science breakthroughs as green ones, so
-// market-moving events stand out from ordinary headlines.
-function NewswirePanel({ news, crises, scienceInvestigations, companies, onPublished }) {
+// A bankruptcy carries no price impact, so the chip summarises the trader's losses: the cash wiped out and
+// the value of the holdings being liquidated.
+function BankruptcyImpact({ bankruptcy }) {
+  return (
+    <span className="news-impact num tone-down">
+      <span aria-hidden="true">▼ </span>
+      {formatCompactMoney(bankruptcy.cashLost)} cash
+      <span className="news-impact-target">
+        {' '}
+        · {formatCompactMoney(bankruptcy.shareWorth)} in shares
+      </span>
+    </span>
+  )
+}
+
+// The Newswire blends manual/automated news with crises, science investigations, and bankruptcies into one
+// time-ordered feed, trimmed to the latest items; crises and bankruptcies render as red alerts and science
+// breakthroughs as green ones, so market-moving events stand out from ordinary headlines.
+function NewswirePanel({ news, crises, scienceInvestigations, bankruptcies, companies, onPublished }) {
   const [adding, setAdding] = useState(false)
 
   const feed = [
@@ -669,6 +689,12 @@ function NewswirePanel({ news, crises, scienceInvestigations, companies, onPubli
       id: `science-${investigation.id}`,
       at: investigation.triggeredAt,
       investigation,
+    })),
+    ...bankruptcies.map((bankruptcy) => ({
+      kind: 'bankruptcy',
+      id: `bankruptcy-${bankruptcy.id}`,
+      at: bankruptcy.triggeredAt,
+      bankruptcy,
     })),
   ]
     .sort((a, b) => new Date(b.at) - new Date(a.at))
@@ -722,6 +748,23 @@ function NewswirePanel({ news, crises, scienceInvestigations, companies, onPubli
                   </div>
                   <p className="news-body">{item.investigation.content}</p>
                   <ScienceSectors investigation={item.investigation} />
+                </li>
+              )
+            }
+
+            if (item.kind === 'bankruptcy') {
+              return (
+                <li key={item.id} className="news-item bankruptcy-item">
+                  <div className="news-head">
+                    <h3 className="news-title">
+                      <span className="bankruptcy-flag" aria-hidden="true">
+                        💥{' '}
+                      </span>
+                      {item.bankruptcy.title}
+                    </h3>
+                    <BankruptcyImpact bankruptcy={item.bankruptcy} />
+                  </div>
+                  <p className="news-body">{item.bankruptcy.content}</p>
                 </li>
               )
             }
@@ -1192,8 +1235,13 @@ function ParticipantsPanel({ participants }) {
                 const total = (participant.currentBalance ?? 0) + estimation
                 return (
                   <tr key={participant.id}>
-                    <th scope="row" className="cell-ellipsis">
-                      {participant.name}
+                    <th scope="row">
+                      <span className="cell-trader">
+                        <span className="cell-ellipsis">{participant.name}</span>
+                        {participant.isBankrupt ? (
+                          <span className="tag tag-bankrupt">Bankrupt</span>
+                        ) : null}
+                      </span>
                     </th>
                     <td>
                       <span className="tag">{TYPE_LABEL[participant.type] ?? participant.type}</span>

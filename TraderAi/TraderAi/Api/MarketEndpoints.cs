@@ -179,7 +179,8 @@ public static class MarketEndpoints
                     participant.AvailableBalance,
                     sharesOwnedByParticipant.GetValueOrDefault(participant.Id),
                     holdingsValueByParticipant.GetValueOrDefault(participant.Id),
-                    participant.IsActive))
+                    participant.IsActive,
+                    participant.IsBankrupt))
                 .ToArray();
 
             return Results.Ok(response);
@@ -491,6 +492,28 @@ public static class MarketEndpoints
 
             return Results.Ok(response);
         });
+
+        app.MapGet("/bankruptcies", async (int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 30, 1, 200);
+            var bankruptcies = await dbContext.Bankruptcies
+                .OrderByDescending(bankruptcy => bankruptcy.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            var participantIds = bankruptcies.Select(bankruptcy => bankruptcy.ParticipantId).Distinct().ToList();
+            var participantNameById = await dbContext.Participants
+                .Where(participant => participantIds.Contains(participant.Id))
+                .ToDictionaryAsync(participant => participant.Id, participant => participant.Name);
+            var cycleNumberById = await dbContext.MarketCycles
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+            var response = bankruptcies
+                .Select(bankruptcy => ToBankruptcyResponse(bankruptcy, participantNameById, cycleNumberById))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
     }
 
     private static async Task<Dictionary<int, string>> IndustryNameByIdAsync(AppDbContext dbContext) =>
@@ -551,6 +574,22 @@ public static class MarketEndpoints
                     industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}",
                     link.ImpactPercent))
                 .ToArray());
+
+    private static BankruptcyResponse ToBankruptcyResponse(
+        Bankruptcy bankruptcy,
+        IReadOnlyDictionary<int, string> participantNameById,
+        IReadOnlyDictionary<int, int> cycleNumberById) =>
+        new(
+            bankruptcy.Id,
+            bankruptcy.ParticipantId,
+            participantNameById.GetValueOrDefault(bankruptcy.ParticipantId) ?? $"#{bankruptcy.ParticipantId}",
+            bankruptcy.Title,
+            bankruptcy.Content,
+            bankruptcy.CashLost,
+            bankruptcy.ShareWorth,
+            bankruptcy.TriggeredInCycleId,
+            cycleNumberById.GetValueOrDefault(bankruptcy.TriggeredInCycleId),
+            bankruptcy.TriggeredAt);
 
     // The current company price is the most recent snapshot, found per company by its max Id so the
     // whole snapshot history never has to be loaded.
@@ -760,7 +799,8 @@ public sealed record ParticipantResponse(
     decimal AvailableBalance,
     int SharesOwned,
     decimal HoldingsValue,
-    bool IsActive);
+    bool IsActive,
+    bool IsBankrupt);
 
 public sealed record ParticipantDetailResponse(
     int Id,
@@ -866,3 +906,15 @@ public sealed record ScienceInvestigationResponse(
     ScienceInvestigationIndustryResponse[] Industries);
 
 public sealed record ScienceInvestigationIndustryResponse(int IndustryId, string IndustryName, decimal ImpactPercent);
+
+public sealed record BankruptcyResponse(
+    int Id,
+    int ParticipantId,
+    string ParticipantName,
+    string Title,
+    string Content,
+    decimal CashLost,
+    decimal ShareWorth,
+    int TriggeredInCycleId,
+    int TriggeredInCycleNumber,
+    DateTime TriggeredAt);

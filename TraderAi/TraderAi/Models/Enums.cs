@@ -50,6 +50,7 @@ public enum MoneyTransactionType
     Debit,
     Credit,
     Dividend,
+    Bankruptcy,
 }
 
 public enum MarketStatus

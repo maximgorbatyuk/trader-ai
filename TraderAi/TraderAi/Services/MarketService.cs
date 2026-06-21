@@ -42,7 +42,8 @@ public sealed class MarketService(
     Random random,
     NewsService? newsService = null,
     CrisisService? crisisService = null,
-    ScienceInvestigationService? scienceService = null)
+    ScienceInvestigationService? scienceService = null,
+    BankruptcyService? bankruptcyService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -184,6 +185,14 @@ public sealed class MarketService(
         foreach (var order in openOrders)
         {
             var participant = participantsById[order.ParticipantId!.Value];
+
+            // The bankruptcy service owns the lifecycle of a bankrupt trader's forced-sale orders, so generic
+            // ageing must not cancel or reprice them out from under it.
+            if (participant.IsBankrupt)
+            {
+                continue;
+            }
+
             var age = currentCycleNumber - cycleNumbersById.GetValueOrDefault(order.CreatedInCycleId);
 
             if (age >= OrderMaxAgeCycles)
@@ -200,6 +209,13 @@ public sealed class MarketService(
         await dbContext.SaveChangesAsync();
 
         await LiquidateStarvedHoldersAsync(participantsById);
+
+        // Runs before this cycle's matching so a wealthy trader's collapse, and a bankrupt trader's cheaper
+        // re-listing, both reach the order book in time to cross the same cycle.
+        if (bankruptcyService is not null)
+        {
+            await bankruptcyService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+        }
 
         await dbContext.SaveChangesAsync();
     }
@@ -731,6 +747,7 @@ public sealed class MarketService(
         await dbContext.Crises.ExecuteDeleteAsync();
         await dbContext.ScienceInvestigationIndustries.ExecuteDeleteAsync();
         await dbContext.ScienceInvestigations.ExecuteDeleteAsync();
+        await dbContext.Bankruptcies.ExecuteDeleteAsync();
         await dbContext.NewsPostIndustries.ExecuteDeleteAsync();
         await dbContext.NewsPosts.ExecuteDeleteAsync();
         await dbContext.OrderShares.ExecuteDeleteAsync();
@@ -752,7 +769,7 @@ public sealed class MarketService(
             "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
             "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Shares', 'OrderShares', " +
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', " +
-            "'ScienceInvestigations', 'ScienceInvestigationIndustries')");
+            "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies')");
 
         var market = await SeedDemoMarketCoreAsync();
         await transaction.CommitAsync();

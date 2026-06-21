@@ -22,6 +22,7 @@ Each share is stored as a separate row and has one current owner.
 - A news event with impact moves the share price of either a single company or every company in one or more industries, up or down, by a percentage of the current price (automated events up to 10%, manually created events up to 95%).
 - A market crisis can strike at random, becoming more likely the longer the market runs without one. A local crisis drives a small handful of sectors down; a rarer global crisis drives a large share of all sectors down. Each affected sector falls by its own percentage.
 - A science investigation is the upbeat counterpart: a small, local, positive shock that lifts 1–5 sectors by 0.5–5% each, growing likelier after a 50-cycle quiet window. Unlike a crisis or news move it only nudges price up and does not cancel any orders.
+- A wealthy trader can go bankrupt, though never during the market's first 500 cycles: after that window, once its net worth (cash plus the value of its shares) stays above one billion, its chance of collapse rises 0.2% each cycle up to a 10% cap. A bankruptcy wipes the trader's cash and forces it to sell 80% of its holdings, listed 20% below the current price and dropping another 5% each cycle they go unsold until the target is met. It is reported in the newswire but moves no prices and cancels no other trader's orders.
 - Any sharp move also clears the resting orders that were priced against the old level: a price drop (from a crisis or a news event) cancels the standing buy orders for the affected companies and releases their reserved cash, while a price rise cancels the standing sell orders and frees their shares to be listed again.
 - A buy order reserves cash when it is created.
 - The reserved cash amount is `Quantity * LimitPrice`.
@@ -348,3 +349,25 @@ Notes:
 - It becomes more likely the longer the market goes without one, after a short quiet window, and its clock resets when it fires.
 - Each lifted industry rises by its own percentage, applied by recording a new price point for every company in that industry.
 - It only nudges price up and never cancels any orders.
+
+### Bankruptcy
+
+A bankruptcy is the collapse of a single wealthy trader, recorded so it can be shown as a newswire event.
+
+Fields:
+
+- ID
+- ParticipantId
+- Title
+- Content
+- CashLost
+- ShareWorth
+- TriggeredInCycleId
+- TriggeredAt
+
+Notes:
+
+- A trader is at risk only while its net worth (cash plus the market value of its shares) stays above a high wealth line; the longer it stays above, the more likely bankruptcy becomes, up to a ceiling. No trader is ever at risk during the market's opening cycles.
+- When it fires the trader loses all of its cash and most of its holdings are listed for sale below the current price.
+- Unsold forced-sale orders are re-listed a step cheaper each cycle until the sell-down target is reached.
+- A bankruptcy carries no price impact and cancels no other trader's orders; only the bankrupt trader's own orders are affected.

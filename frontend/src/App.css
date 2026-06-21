@@ -1040,6 +1040,11 @@
   letter-spacing: 0.02em;
 }
 
+.tag-bankrupt {
+  background: var(--down-soft);
+  color: var(--down-text);
+}
+
 /* ---- Trade tape ---- */
 .cell-flow {
   color: var(--text);
@@ -1539,6 +1544,17 @@
 .science-sector-more {
   color: var(--muted);
   font-weight: 500;
+}
+
+/* ---- Bankruptcy feed items ---- */
+.bankruptcy-item {
+  border-color: var(--down);
+  border-left-width: 3px;
+  background: var(--down-soft);
+}
+
+.bankruptcy-flag {
+  color: var(--down-text);
 }
 
 /* ---- Add-news form ---- */
