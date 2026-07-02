@@ -60,6 +60,7 @@ export const api = {
   getCrises: (take = 30) => get(`/crises?take=${take}`),
   getScienceInvestigations: (take = 30) => get(`/science-investigations?take=${take}`),
   getBankruptcies: (take = 30) => get(`/bankruptcies?take=${take}`),
+  getMarketExits: (take = 50) => get(`/market-exits?take=${take}`),
   getNewsThemes: () => get('/news/themes'),
   getIndustries: () => get('/industries'),
   createNews: (payload) => post('/news', payload),

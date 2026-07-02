@@ -44,6 +44,18 @@ public sealed class Participant
     // into a collective fund. Unlike CashStarvedCycles it is not reset by the liquidation pass, so it can grow.
     public int CannotBuyCycles { get; set; }
 
+    // The cycle the trader entered the market; 0 for rows seeded before this tracking existed. Copied onto the
+    // MarketExit archive so a departed trader's tenure is still knowable after its row is deleted.
+    public int JoinedInCycleId { get; set; }
+
+    // High-water mark of cash plus holdings value, ratcheted up each cycle and never lowered. Archived on exit
+    // to show how far a trader climbed before leaving broke.
+    public decimal MaxTotalWorth { get; set; }
+
+    // Set when a collective fund closes and hands this member a payout that is a fraction of its deposit; the
+    // market-exit service then gives the member one chance to quit on its first shareless cycle.
+    public bool PendingFundLossExitRoll { get; set; }
+
     [NotMapped]
     public decimal AvailableBalance => CurrentBalance - ReservedBalance;
 }

@@ -367,6 +367,94 @@ public sealed class CollectiveFundServiceTests : IDisposable
         Assert.NotEqual(fund.Id, joinerMembership.CollectiveFundId);
     }
 
+    [Fact]
+    public async Task IdleFundCounterGrowsWhenSharelessAndBroke()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        // Spendable cash 90 (after the 10% buffer) cannot cover the cheapest share at 100, so the fund is idle.
+        var (fund, _) = await AddFundAsync(balance: 100m);
+        var memberOne = await AddTraderAsync(currentBalance: 1_000m);
+        var memberTwo = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(fund, memberOne, deposit: 1_000m, cycle.Id);
+        await AddMembershipAsync(fund, memberTwo, deposit: 1_000m, cycle.Id);
+
+        // Members sit below the leave line (no draw) and stay members (no join draw); the idle check draws nothing.
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(CollectiveFundStatus.Active, refreshed.Status);
+        Assert.Equal(1, refreshed.IdleCycles);
+    }
+
+    [Fact]
+    public async Task IdleCounterResetsAtBufferBoundary()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 90m);
+        // Spendable cash is exactly 90 (100 minus the 10% buffer), meeting the cheapest share, so it is not idle.
+        var (fund, _) = await AddFundAsync(balance: 100m, idleCycles: 5);
+        var memberOne = await AddTraderAsync(currentBalance: 1_000m);
+        var memberTwo = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(fund, memberOne, deposit: 1_000m, cycle.Id);
+        await AddMembershipAsync(fund, memberTwo, deposit: 1_000m, cycle.Id);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(CollectiveFundStatus.Active, refreshed.Status);
+        Assert.Equal(0, refreshed.IdleCycles);
+    }
+
+    [Fact]
+    public async Task IdleFundClosesAtTwentyIdleCycles()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 100m, idleCycles: 19);
+        // Wealthy members skip the re-pool draw once the fund releases them, keeping the script empty.
+        var memberOne = await AddTraderAsync(currentBalance: 600_000m);
+        var memberTwo = await AddTraderAsync(currentBalance: 600_000m);
+        await AddMembershipAsync(fund, memberOne, deposit: 1_000m, cycle.Id);
+        await AddMembershipAsync(fund, memberTwo, deposit: 1_000m, cycle.Id);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(CollectiveFundStatus.Closed, refreshed.Status);
+        Assert.Equal(0, await context.CollectiveFundParticipants.CountAsync());
+
+        var refreshedFundParticipant = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fundParticipant.Id);
+        Assert.False(refreshedFundParticipant.IsActive);
+    }
+
+    [Fact]
+    public async Task FinalizeCloseFlagsDevastatedMembersOnZeroPayout()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        // A broke fund closing with nothing to hand back flags every member as a devastating loss.
+        var (fund, _) = await AddFundAsync(status: CollectiveFundStatus.GoingToBeClosed, balance: 0m);
+        var memberOne = await AddTraderAsync(currentBalance: 600_000m);
+        var memberTwo = await AddTraderAsync(currentBalance: 600_000m);
+        await AddMembershipAsync(fund, memberOne, deposit: 10_000m, cycle.Id);
+        await AddMembershipAsync(fund, memberTwo, deposit: 10_000m, cycle.Id);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshedFund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(CollectiveFundStatus.Closed, refreshedFund.Status);
+
+        var refreshedOne = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == memberOne.Id);
+        var refreshedTwo = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == memberTwo.Id);
+        Assert.True(refreshedOne.PendingFundLossExitRoll);
+        Assert.True(refreshedTwo.PendingFundLossExitRoll);
+    }
+
     private async Task<(Market Market, MarketCycle Cycle, Company Company)> SeedAsync(decimal price, int cycleNumber = 600)
     {
         var now = DateTime.UtcNow;
@@ -429,7 +517,8 @@ public sealed class CollectiveFundServiceTests : IDisposable
 
     private async Task<(CollectiveFund Fund, Participant Participant)> AddFundAsync(
         CollectiveFundStatus status = CollectiveFundStatus.Active,
-        decimal balance = 0m)
+        decimal balance = 0m,
+        int idleCycles = 0)
     {
         var fundParticipant = new Participant
         {
@@ -452,6 +541,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
             Status = status,
             CreatedInCycleId = 0,
             CreatedAt = DateTime.UtcNow,
+            IdleCycles = idleCycles,
         };
         context.CollectiveFunds.Add(fund);
         await context.SaveChangesAsync();

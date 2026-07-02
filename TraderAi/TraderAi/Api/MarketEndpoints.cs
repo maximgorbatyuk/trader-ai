@@ -538,11 +538,45 @@ public static class MarketEndpoints
             var participantNameById = await dbContext.Participants
                 .Where(participant => participantIds.Contains(participant.Id))
                 .ToDictionaryAsync(participant => participant.Id, participant => participant.Name);
+
+            // A bankrupt trader may since have left the market for good: its Participant row is deleted, so fall
+            // back to the name archived on its MarketExit row before the numeric-id last resort in the mapper.
+            var departedIds = participantIds.Where(id => !participantNameById.ContainsKey(id)).ToList();
+            if (departedIds.Count > 0)
+            {
+                var departedNameById = await dbContext.MarketExits
+                    .Where(marketExit => departedIds.Contains(marketExit.ParticipantId))
+                    .ToDictionaryAsync(marketExit => marketExit.ParticipantId, marketExit => marketExit.Name);
+                foreach (var departed in departedNameById)
+                {
+                    participantNameById[departed.Key] = departed.Value;
+                }
+            }
+
             var cycleNumberById = await dbContext.MarketCycles
                 .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
 
             var response = bankruptcies
                 .Select(bankruptcy => ToBankruptcyResponse(bankruptcy, participantNameById, cycleNumberById))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/market-exits", async (int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 30, 1, 200);
+            var marketExits = await dbContext.MarketExits
+                .OrderByDescending(marketExit => marketExit.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            var cycleNumberById = await dbContext.MarketCycles
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+            // The trader's name is denormalised onto the exit row (its Participant row is gone), so no join.
+            var response = marketExits
+                .Select(marketExit => ToMarketExitResponse(marketExit, cycleNumberById))
                 .ToArray();
 
             return Results.Ok(response);
@@ -623,6 +657,22 @@ public static class MarketEndpoints
             bankruptcy.TriggeredInCycleId,
             cycleNumberById.GetValueOrDefault(bankruptcy.TriggeredInCycleId),
             bankruptcy.TriggeredAt);
+
+    private static MarketExitResponse ToMarketExitResponse(
+        MarketExit marketExit,
+        IReadOnlyDictionary<int, int> cycleNumberById) =>
+        new(
+            marketExit.Id,
+            marketExit.ParticipantId,
+            marketExit.Name,
+            marketExit.Reason,
+            cycleNumberById.GetValueOrDefault(marketExit.JoinedInCycleId),
+            cycleNumberById.GetValueOrDefault(marketExit.LeftInCycleId),
+            marketExit.OrdersPlaced,
+            marketExit.InitialBalance,
+            marketExit.MaxTotalWorth,
+            marketExit.QuitBalance,
+            marketExit.LeftAt);
 
     // The current company price is the most recent snapshot, found per company by its max Id so the
     // whole snapshot history never has to be loaded.
@@ -1116,3 +1166,16 @@ public sealed record BankruptcyResponse(
     int TriggeredInCycleId,
     int TriggeredInCycleNumber,
     DateTime TriggeredAt);
+
+public sealed record MarketExitResponse(
+    int Id,
+    int ParticipantId,
+    string ParticipantName,
+    MarketExitReason Reason,
+    int JoinedInCycleNumber,
+    int LeftInCycleNumber,
+    int OrdersPlaced,
+    decimal InitialBalance,
+    decimal MaxTotalWorth,
+    decimal QuitBalance,
+    DateTime LeftAt);

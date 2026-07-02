@@ -90,3 +90,9 @@ public enum CollectiveFundStatus
     GoingToBeClosed,
     Closed,
 }
+
+public enum MarketExitReason
+{
+    FundLoss,
+    Starvation,
+}

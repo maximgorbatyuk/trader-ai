@@ -22,5 +22,9 @@ public sealed class CollectiveFund
 
     public DateTime? ClosedAt { get; set; }
 
+    // Consecutive cycles the fund has owned no shares and cannot afford even the cheapest one; the fund unwinds
+    // through the normal closing flow once it stays idle long enough, freeing its members to move on.
+    public int IdleCycles { get; set; }
+
     public ICollection<CollectiveFundParticipant> Members { get; set; } = new List<CollectiveFundParticipant>();
 }

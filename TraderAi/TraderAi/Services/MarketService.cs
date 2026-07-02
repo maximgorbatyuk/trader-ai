@@ -58,7 +58,8 @@ public sealed class MarketService(
     CrisisService? crisisService = null,
     ScienceInvestigationService? scienceService = null,
     BankruptcyService? bankruptcyService = null,
-    CollectiveFundService? collectiveFundService = null)
+    CollectiveFundService? collectiveFundService = null,
+    MarketExitService? marketExitService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -259,7 +260,17 @@ public sealed class MarketService(
             await collectiveFundService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
         }
 
+        // Saved before exit processing so a fund that closed this cycle has persisted its payouts, membership
+        // deletes, and loss flags; the exit rolls then read a settled database.
         await dbContext.SaveChangesAsync();
+
+        // Departures and their replacements land before this cycle's decision pass, so no ghost bids survive
+        // matching and a replacement can trade the same tick.
+        if (marketExitService is not null)
+        {
+            await marketExitService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
     }
 
     private void CancelOrder(Order order, Participant participant, int currentCycleId)
@@ -723,7 +734,8 @@ public sealed class MarketService(
 
     private async Task<CreatePlayerResult> CreatePlayerCoreAsync(string? name)
     {
-        if (await dbContext.Markets.FirstOrDefaultAsync() is null)
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market is null)
         {
             return CreatePlayerResult.Fail("No market exists.");
         }
@@ -747,6 +759,9 @@ public sealed class MarketService(
             CurrentBalance = balance,
             ReservedBalance = 0m,
             IsActive = true,
+            // Recorded for consistency with churned-in traders, though the player never departs.
+            JoinedInCycleId = market.CurrentCycleId ?? 0,
+            MaxTotalWorth = balance,
         };
 
         dbContext.Participants.Add(player);
@@ -951,6 +966,7 @@ public sealed class MarketService(
         await dbContext.ScienceInvestigationIndustries.ExecuteDeleteAsync();
         await dbContext.ScienceInvestigations.ExecuteDeleteAsync();
         await dbContext.Bankruptcies.ExecuteDeleteAsync();
+        await dbContext.MarketExits.ExecuteDeleteAsync();
         await dbContext.CollectiveFundParticipants.ExecuteDeleteAsync();
         await dbContext.CollectiveFunds.ExecuteDeleteAsync();
         await dbContext.NewsPostIndustries.ExecuteDeleteAsync();
@@ -975,7 +991,7 @@ public sealed class MarketService(
             "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
             "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Shares', 'OrderShares', " +
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', " +
-            "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', " +
+            "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
             "'CollectiveFunds', 'CollectiveFundParticipants', 'ParticipantWorthSnapshots')");
 
         var market = await SeedDemoMarketCoreAsync();

@@ -17,6 +17,11 @@ over conversation history and must remain fully accessible throughout the entire
 3. Delete any comment that only restates what the adjacent code already makes clear.
 4. Never reference PR numbers or ticket numbers in code comments — keep only the concise reason.
 
+## Architectural Patterns
+
+- **Frontend routing: shared app-shell layout route.** Every page is a React Router route nested under one pathless layout route rendered by `AppShell` (`frontend/src/AppShell.jsx`, wired in `frontend/src/main.jsx`). The shell owns the persistent left sidebar (the `Primary` nav) and renders the active page through an `<Outlet />`, so the sidebar stays mounted while only the content area swaps. Each page owns its own topbar and its own polling loop — a `setTimeout(0)` + `setInterval` pair cleaned up on unmount, StrictMode-safe — rather than a shared global fetch; `ParticipantPage` and `DepartedTradersPage` are the reference shape. Active nav uses `NavLink`'s `is-active` modifier, styled by shape and weight rather than color alone.
+- **Per-cycle simulation services.** Rules that mutate the market each tick (bankruptcies, collective funds, market exits) are sealed services taking `(AppDbContext, IOptions<TOptions>, Random)`, gated by an opt-in `Enabled` option, and invoked from `MarketService.MaintainOrdersCoreAsync` before the decision pass. They stage changes on the shared context and let the caller save; each documents its random-draw discipline in a top comment so a scripted `Random` stays reproducible in tests. `BankruptcyService` is the canonical template.
+
 ## Documentation
 
 Human-facing documentation lives in `docs/` and `README.md`. Agent-facing documentation lives in `AGENTS.md` files (this file and per-service variants). Do not cross-link from human docs to `AGENTS.md` — those are for AI agents only.

@@ -1,8 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using TraderAi.Data;
+using TraderAi.Models;
 using TraderAi.Services;
 
 namespace TraderAi.Tests;
@@ -737,6 +740,120 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
+    [Fact]
+    public async Task MarketExitsEndpointMapsCycleNumbers()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var joined = new MarketCycle { CycleNumber = 5, Status = CycleStatus.Completed, StartedAt = now };
+                var left = new MarketCycle { CycleNumber = 42, Status = CycleStatus.Running, StartedAt = now };
+                dbContext.MarketCycles.AddRange(joined, left);
+                await dbContext.SaveChangesAsync();
+
+                dbContext.MarketExits.Add(new MarketExit
+                {
+                    ParticipantId = 999,
+                    Name = "Gone Trader",
+                    Reason = MarketExitReason.Starvation,
+                    JoinedInCycleId = joined.Id,
+                    LeftInCycleId = left.Id,
+                    OrdersPlaced = 7,
+                    InitialBalance = 100_000m,
+                    MaxTotalWorth = 250_000m,
+                    QuitBalance = 3_000m,
+                    LeftAt = now,
+                });
+                await dbContext.SaveChangesAsync();
+            }
+
+            var exits = await client.GetFromJsonAsync<MarketExitDto[]>("/market-exits");
+            var exit = Assert.Single(exits!);
+            Assert.Equal("Gone Trader", exit.ParticipantName);
+            Assert.Equal("Starvation", exit.Reason);
+            Assert.Equal(5, exit.JoinedInCycleNumber);
+            Assert.Equal(42, exit.LeftInCycleNumber);
+            Assert.Equal(7, exit.OrdersPlaced);
+            Assert.Equal(100_000m, exit.InitialBalance);
+            Assert.Equal(250_000m, exit.MaxTotalWorth);
+            Assert.Equal(3_000m, exit.QuitBalance);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task BankruptciesResolveDepartedTraderNameViaFallback()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            const int departedId = 777;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 12, Status = CycleStatus.Completed, StartedAt = now };
+                dbContext.MarketCycles.Add(cycle);
+                await dbContext.SaveChangesAsync();
+
+                // The bankrupt trader has since left the market: no Participant row survives, but its name is
+                // archived on the MarketExit row for the fallback to resolve.
+                dbContext.MarketExits.Add(new MarketExit
+                {
+                    ParticipantId = departedId,
+                    Name = "Departed Bankrupt",
+                    Reason = MarketExitReason.Starvation,
+                    JoinedInCycleId = 0,
+                    LeftInCycleId = cycle.Id,
+                    OrdersPlaced = 3,
+                    InitialBalance = 50_000m,
+                    MaxTotalWorth = 60_000m,
+                    QuitBalance = 0m,
+                    LeftAt = now,
+                });
+                dbContext.Bankruptcies.Add(new Bankruptcy
+                {
+                    ParticipantId = departedId,
+                    Title = "Collapse",
+                    Content = "Wiped out.",
+                    CashLost = 10_000m,
+                    ShareWorth = 0m,
+                    TriggeredInCycleId = cycle.Id,
+                    TriggeredAt = now,
+                });
+                await dbContext.SaveChangesAsync();
+            }
+
+            var bankruptcies = await client.GetFromJsonAsync<BankruptcyDto[]>("/bankruptcies");
+            var bankruptcy = Assert.Single(bankruptcies!);
+            Assert.Equal(departedId, bankruptcy.ParticipantId);
+            Assert.Equal("Departed Bankrupt", bankruptcy.ParticipantName);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
@@ -777,6 +894,21 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal PctOfIssued);
 
     private sealed record ShareTransactionDto(int Id, int? SellerId, int BuyerId, int Quantity, decimal Price);
+
+    private sealed record MarketExitDto(
+        int Id,
+        int ParticipantId,
+        string ParticipantName,
+        string Reason,
+        int JoinedInCycleNumber,
+        int LeftInCycleNumber,
+        int OrdersPlaced,
+        decimal InitialBalance,
+        decimal MaxTotalWorth,
+        decimal QuitBalance,
+        DateTime LeftAt);
+
+    private sealed record BankruptcyDto(int Id, int ParticipantId, string ParticipantName);
 
     private sealed record CycleTickDto(bool Ran, int? CompletedCycleNumber, int OrdersPlaced, int FillCount);
 

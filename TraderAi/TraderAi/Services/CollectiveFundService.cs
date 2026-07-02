@@ -44,6 +44,17 @@ public sealed class CollectiveFundService(
     // Share of a fund's own dividend receipt that is passed straight through to its members, split by deposit.
     private const decimal DividendPassThroughFraction = 0.50m;
 
+    // A fund that owns nothing and cannot afford even the cheapest share for this many consecutive cycles unwinds.
+    private const int MaxIdleCycles = 20;
+
+    // The slice of its cash a fund never spends (mirrors MarketService.CollectiveFundCashBufferFraction), so
+    // idleness is judged against what the fund would actually be able to deal with.
+    private const decimal CashBufferFraction = 0.10m;
+
+    // A closing fund that hands a member a payout at or below this fraction of its deposit inflicted a
+    // devastating loss; the member is flagged so the market-exit service can offer it a one-shot chance to quit.
+    private const decimal FundLossFlagFraction = 0.20m;
+
     private Dictionary<int, Participant> participantsById = null!;
     private List<CollectiveFund> funds = null!;
     private Dictionary<int, List<CollectiveFundParticipant>> membershipsByFundId = null!;
@@ -72,6 +83,12 @@ public sealed class CollectiveFundService(
 
         foreach (var fund in funds.Where(fund => fund.Status == CollectiveFundStatus.Active).OrderBy(fund => fund.Id).ToList())
         {
+            TrackIdleAndMaybeClose(fund, currentCycleId, now);
+            if (fund.Status != CollectiveFundStatus.Active)
+            {
+                continue;
+            }
+
             foreach (var membership in membershipsByFundId[fund.Id].OrderBy(member => member.ParticipantId).ToList())
             {
                 if (fund.Status != CollectiveFundStatus.Active)
@@ -264,6 +281,35 @@ public sealed class CollectiveFundService(
         }
     }
 
+    // A fund that owns no shares and whose spendable cash cannot cover even the cheapest share is idle; after
+    // MaxIdleCycles of that it unwinds through the normal closing flow. No random draws, so scripted tests are
+    // unaffected. Idleness is judged against the same cash buffer the fund trades within.
+    private void TrackIdleAndMaybeClose(CollectiveFund fund, int currentCycleId, DateTime now)
+    {
+        // Before any prices exist there is nothing to deal on either way, so idleness is not yet meaningful.
+        if (latestPriceByCompany.Count == 0)
+        {
+            return;
+        }
+
+        var fundParticipant = participantsById[fund.ParticipantId];
+        var ownsShares = (ownedByParticipant.GetValueOrDefault(fundParticipant.Id) ?? []).Count > 0;
+        var spendable = fundParticipant.AvailableBalance * (1m - CashBufferFraction);
+        var idle = !ownsShares && spendable < latestPriceByCompany.Values.Min();
+
+        if (!idle)
+        {
+            fund.IdleCycles = 0;
+            return;
+        }
+
+        fund.IdleCycles++;
+        if (fund.IdleCycles >= MaxIdleCycles)
+        {
+            BeginClosing(fund, fundParticipant, currentCycleId, now);
+        }
+    }
+
     private void BeginClosing(CollectiveFund fund, Participant fundParticipant, int currentCycleId, DateTime now)
     {
         fund.Status = CollectiveFundStatus.GoingToBeClosed;
@@ -303,11 +349,18 @@ public sealed class CollectiveFundService(
             var share = Round(fundParticipant.AvailableBalance / members.Count);
             foreach (var membership in members.ToList())
             {
+                var member = participantsById[membership.ParticipantId];
                 if (share > 0m)
                 {
-                    var member = participantsById[membership.ParticipantId];
                     member.CurrentBalance += share;
                     AddFundTransaction(member.Id, share, currentCycleId, now);
+                }
+
+                // A payout that barely dents the deposit (a zero payout dents nothing) is a devastating loss:
+                // flag the member so the market-exit service can offer a one-shot quit on its first shareless cycle.
+                if (membership.DepositAmount > 0m && share <= membership.DepositAmount * FundLossFlagFraction)
+                {
+                    member.PendingFundLossExitRoll = true;
                 }
 
                 RemoveMembership(fund, membership);

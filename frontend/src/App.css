@@ -5,6 +5,57 @@
   background: var(--bg);
 }
 
+/* ---- App shell (sidebar + routed page) ---- */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.app-shell .app {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  flex: 0 0 13rem;
+  height: 100dvh;
+  padding: var(--s-4) var(--s-3);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.side-link {
+  padding: var(--s-2) var(--s-3);
+  border-left: 2px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.side-link:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+/* Active nav uses shape + weight (not color alone) so it reads without relying on hue. */
+.side-link.is-active {
+  border-left-color: var(--ink);
+  background: var(--surface-3);
+  color: var(--ink);
+  font-weight: 700;
+}
+
 /* ---- Top bar ---- */
 .topbar {
   position: sticky;
@@ -1123,6 +1174,32 @@
 
   .controls {
     margin-left: 0;
+  }
+
+  /* Narrow viewports stack the sidebar into a full-width horizontal strip above the page. */
+  .app-shell {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    flex-basis: auto;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+  }
+
+  .side-link {
+    border-left: none;
+    border-bottom: 2px solid transparent;
+  }
+
+  .side-link.is-active {
+    border-left-color: transparent;
+    border-bottom-color: var(--ink);
   }
 }
 

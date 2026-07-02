@@ -33,6 +33,7 @@ builder.Services.AddScoped<CrisisService>();
 builder.Services.AddScoped<ScienceInvestigationService>();
 builder.Services.AddScoped<BankruptcyService>();
 builder.Services.AddScoped<CollectiveFundService>();
+builder.Services.AddScoped<MarketExitService>();
 builder.Services.AddSingleton<MarketCycleLock>();
 builder.Services.Configure<MarketLoopOptions>(builder.Configuration.GetSection(MarketLoopOptions.SectionName));
 builder.Services.Configure<NewsOptions>(builder.Configuration.GetSection(NewsOptions.SectionName));
@@ -40,6 +41,7 @@ builder.Services.Configure<CrisisOptions>(builder.Configuration.GetSection(Crisi
 builder.Services.Configure<ScienceInvestigationOptions>(builder.Configuration.GetSection(ScienceInvestigationOptions.SectionName));
 builder.Services.Configure<BankruptcyOptions>(builder.Configuration.GetSection(BankruptcyOptions.SectionName));
 builder.Services.Configure<CollectiveFundOptions>(builder.Configuration.GetSection(CollectiveFundOptions.SectionName));
+builder.Services.Configure<MarketExitOptions>(builder.Configuration.GetSection(MarketExitOptions.SectionName));
 builder.Services.AddHostedService<MarketLoopService>();
 
 builder.Services.AddCors(options =>
