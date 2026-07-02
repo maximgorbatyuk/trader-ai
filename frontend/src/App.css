@@ -20,6 +20,8 @@
 .sidebar {
   position: sticky;
   top: 0;
+  display: flex;
+  flex-direction: column;
   flex: 0 0 13rem;
   height: 100dvh;
   padding: var(--s-4) var(--s-3);
@@ -53,6 +55,41 @@
   border-left-color: var(--ink);
   background: var(--surface-3);
   color: var(--ink);
+  font-weight: 700;
+}
+
+/* Player stats pinned to the sidebar foot; margin-top:auto keeps them at the bottom of the tall column. */
+.sidebar-player {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-player-title {
+  color: var(--ink);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sidebar-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-stat-value {
+  color: var(--ink);
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+
+.sidebar-stat-value.is-lead {
+  font-size: var(--t-lg);
   font-weight: 700;
 }
 

@@ -18,12 +18,92 @@ function formatPct(value) {
   return `${sign}${(Math.abs(value) * 100).toFixed(2)}%`
 }
 
+// Inline buy form for the player, scoped to one company. Side is fixed to Buy and the company is
+// fixed, so only quantity and limit price are asked; the limit defaults to the current price so a
+// buy needs only a quantity. Placed with a per-company key so its state resets between companies.
+function BuyOrderForm({ player, company }) {
+  const [quantity, setQuantity] = useState('')
+  const [limitPrice, setLimitPrice] = useState(company.currentPrice != null ? String(company.currentPrice) : '')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+  const [confirmation, setConfirmation] = useState(null)
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    setError(null)
+    setConfirmation(null)
+    setSubmitting(true)
+    try {
+      await api.placeOrder({
+        participantId: player.id,
+        companyId: company.id,
+        type: 'Buy',
+        quantity: Number(quantity),
+        limitPrice: Number(limitPrice),
+      })
+      setConfirmation(`Buy order placed: ${formatInt(Number(quantity))} @ ${formatMoney(Number(limitPrice))}.`)
+      setQuantity('')
+    } catch (submitError) {
+      setError(submitError.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <form className="modal-section player-section" onSubmit={handleSubmit}>
+      <span className="map-stat-label">Buy shares</span>
+      <div className="field-pair">
+        <label className="field">
+          <span>Quantity</span>
+          <input
+            className="select num"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="0"
+            value={quantity}
+            onChange={(event) => setQuantity(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>Limit price</span>
+          <input
+            className="select num"
+            type="number"
+            min="0.01"
+            step="0.01"
+            placeholder="0.00"
+            value={limitPrice}
+            onChange={(event) => setLimitPrice(event.target.value)}
+          />
+        </label>
+      </div>
+      {error ? (
+        <p className="command-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {confirmation ? (
+        <p className="note note-sm" role="status">
+          {confirmation}
+        </p>
+      ) : null}
+      <button type="submit" className="btn btn-primary" disabled={submitting}>
+        {submitting ? 'Placing…' : 'Place buy order'}
+      </button>
+    </form>
+  )
+}
+
 // Detail dialog for one company opened from the market map. Live price, cap and share count come from the
 // dashboard's already-polled company record; the price history and most recent trade are fetched here.
 export function CompanyModal({ company, participantNameById, onClose }) {
   const companyId = company?.id
   const [prices, setPrices] = useState([])
   const [latestDeal, setLatestDeal] = useState(null)
+  const [player, setPlayer] = useState(null)
+  const [showBuyForm, setShowBuyForm] = useState(false)
   const dialogRef = useRef(null)
   const closeRef = useRef(null)
 
@@ -33,13 +113,15 @@ export function CompanyModal({ company, participantNameById, onClose }) {
     let active = true
     async function load() {
       try {
-        const [priceData, dealData] = await Promise.all([
+        const [priceData, dealData, playerData] = await Promise.all([
           api.getPrices(companyId),
           api.getCompanyShareTransactions(companyId, 1),
+          api.getPlayer(),
         ])
         if (!active) return
         setPrices(priceData)
         setLatestDeal(dealData[0] ?? null)
+        setPlayer(playerData)
       } catch {
         // Keep the last known values when a refresh fails.
       }
@@ -201,15 +283,27 @@ export function CompanyModal({ company, participantNameById, onClose }) {
               <p className="note">No trades for this company yet.</p>
             )}
           </div>
+
+          {player && showBuyForm ? <BuyOrderForm key={company.id} player={player} company={company} /> : null}
         </div>
 
         <footer className="modal-foot">
           <button type="button" className="btn" ref={closeRef} onClick={onClose}>
             Close
           </button>
-          <Link className="btn btn-primary" to={`/companies/${company.id}`}>
+          <Link className="btn" to={`/companies/${company.id}`}>
             Open page
           </Link>
+          {player ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              aria-expanded={showBuyForm}
+              onClick={() => setShowBuyForm((open) => !open)}
+            >
+              Buy shares
+            </button>
+          ) : null}
         </footer>
       </div>
     </div>

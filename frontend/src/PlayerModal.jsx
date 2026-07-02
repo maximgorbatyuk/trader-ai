@@ -366,6 +366,16 @@ function PlaceOrderForm({ player, companies, onPlaced }) {
 
   const resolvedCompanyId = companyId || companies[0]?.id || ''
 
+  // Selecting a company seeds the limit price with its current share price, so the trader starts from the
+  // live market quote instead of a blank field.
+  function handleCompanyChange(id) {
+    setCompanyId(String(id))
+    const picked = companies.find((company) => String(company.id) === String(id))
+    if (picked?.currentPrice != null) {
+      setLimitPrice(picked.currentPrice.toFixed(2))
+    }
+  }
+
   async function handleSubmit(event) {
     event.preventDefault()
     setError(null)
@@ -401,7 +411,7 @@ function PlaceOrderForm({ player, companies, onPlaced }) {
         </label>
         <div className="field">
           <span>Company</span>
-          <CompanyCombobox companies={companies} value={resolvedCompanyId} onChange={(id) => setCompanyId(String(id))} />
+          <CompanyCombobox companies={companies} value={resolvedCompanyId} onChange={handleCompanyChange} />
         </div>
       </div>
       <div className="field-pair">
