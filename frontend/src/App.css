@@ -1099,46 +1099,33 @@
 }
 
 /* ---- Order book ---- */
-.book {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--s-4);
-  max-height: 28rem;
-  overflow-y: auto;
+/* The Buy/Sell tablist sits on its own divider so the active side reads by an ink underline, matching the
+   dashboard tabs; the per-side count rides on each tab. */
+.book-tabs {
+  margin-bottom: var(--s-3);
+  border-bottom: 1px solid var(--border);
 }
 
-.book-side {
-  min-width: 0;
-}
-
-.book-side-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 3px 8px;
-  margin-bottom: var(--s-2);
-  border-radius: var(--radius-sm);
+.book-tab-count {
+  margin-left: var(--s-2);
+  color: var(--muted);
   font-size: var(--t-2xs);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
-.book-side-head.tone-up {
-  color: var(--up-text);
-  background: var(--up-soft);
-}
-
-.book-side-head.tone-down {
-  color: var(--down-text);
-  background: var(--down-soft);
+.tab.is-active .book-tab-count {
+  color: var(--ink);
 }
 
 .tbl-book td {
   font-size: var(--t-sm);
+}
+
+/* Sits beside the order price: its gap from the live market, coloured by direction with a glyph so the cue
+   is not carried by colour alone. */
+.book-diff {
+  margin-left: var(--s-2);
+  font-size: var(--t-2xs);
+  font-weight: 600;
 }
 
 /* ---- Traders ---- */
@@ -1318,6 +1305,22 @@
   opacity: 0.6;
 }
 
+/* Bids the player can sell into (they hold the shares): a slight green wash plus a leading dot so the
+   cue is not carried by colour alone. */
+.book-row.is-sellable {
+  background: color-mix(in oklch, var(--up-soft) 55%, var(--surface));
+}
+
+.book-row.is-sellable:hover {
+  background: color-mix(in oklch, var(--up-soft) 80%, var(--surface));
+}
+
+.book-hold {
+  color: var(--up-text);
+  font-size: 0.7em;
+  vertical-align: middle;
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 1080px) {
   .grid-detail {
@@ -1404,11 +1407,6 @@
   .map-tile.is-small .map-cap,
   .map-tile.is-small .map-change {
     display: none;
-  }
-
-  .book {
-    grid-template-columns: 1fr;
-    gap: var(--s-3);
   }
 
   .command-id {

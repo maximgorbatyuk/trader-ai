@@ -41,6 +41,7 @@ function App() {
   const [scienceInvestigations, setScienceInvestigations] = useState([])
   const [bankruptcies, setBankruptcies] = useState([])
   const [player, setPlayer] = useState(null)
+  const [playerHoldingCompanyIds, setPlayerHoldingCompanyIds] = useState(() => new Set())
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
   const [playerModalOpen, setPlayerModalOpen] = useState(false)
   const [pending, setPending] = useState(false)
@@ -85,6 +86,16 @@ function App() {
       setScienceInvestigations(scienceData)
       setBankruptcies(bankruptcyData)
       setPlayer(playerData)
+
+      if (playerData) {
+        const holdings = await api.getHoldings(playerData.id)
+        setPlayerHoldingCompanyIds(
+          new Set(holdings.filter((holding) => holding.shares > 0).map((holding) => holding.companyId)),
+        )
+      } else {
+        setPlayerHoldingCompanyIds(new Set())
+      }
+
       setConnected(true)
     } catch {
       setConnected(false)
@@ -189,6 +200,7 @@ function App() {
                     companyNameById={companyNameById}
                     companyPriceById={companyPriceById}
                     player={player}
+                    playerHoldingCompanyIds={playerHoldingCompanyIds}
                     onTraded={loadAll}
                   />
 
@@ -1100,8 +1112,19 @@ function AddNewsModal({ companies, onClose, onPublished }) {
   )
 }
 
-function OrderBookPanel({ orders, participantNameById, companyNameById, companyPriceById, player, onTraded }) {
+function OrderBookPanel({
+  orders,
+  participantNameById,
+  companyNameById,
+  companyPriceById,
+  player,
+  playerHoldingCompanyIds,
+  onTraded,
+}) {
   const [tradeOrder, setTradeOrder] = useState(null)
+  const [activeSide, setActiveSide] = useState('Buy')
+  const tabRefs = useRef({})
+
   const buys = orders
     .filter((order) => order.type === 'Buy')
     .sort((a, b) => b.limitPrice - a.limitPrice)
@@ -1109,30 +1132,65 @@ function OrderBookPanel({ orders, participantNameById, companyNameById, companyP
     .filter((order) => order.type === 'Sell')
     .sort((a, b) => a.limitPrice - b.limitPrice)
 
+  const sides = [
+    { key: 'Buy', tone: 'up', orders: buys },
+    { key: 'Sell', tone: 'down', orders: sells },
+  ]
+  const active = sides.find((side) => side.key === activeSide) ?? sides[0]
+
+  function focusTab(key) {
+    setActiveSide(key)
+    tabRefs.current[key]?.focus()
+  }
+
+  function onTabKeyDown(event) {
+    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
+    event.preventDefault()
+    focusTab(activeSide === 'Buy' ? 'Sell' : 'Buy')
+  }
+
   return (
     <Panel title="Order book" count={`${orders.length} open`} className="panel-book">
-      <div className="book">
+      <div className="book-tabs tabs" role="tablist" aria-label="Order book side" onKeyDown={onTabKeyDown}>
+        {sides.map((side) => {
+          const selected = side.key === activeSide
+          return (
+            <button
+              key={side.key}
+              type="button"
+              role="tab"
+              id={`booktab-${side.key}`}
+              aria-selected={selected}
+              aria-controls={`bookpanel-${side.key}`}
+              tabIndex={selected ? 0 : -1}
+              ref={(element) => {
+                tabRefs.current[side.key] = element
+              }}
+              className={`tab${selected ? ' is-active' : ''}`}
+              onClick={() => setActiveSide(side.key)}
+            >
+              {side.key}
+              <span className="num book-tab-count">{side.orders.length}</span>
+            </button>
+          )
+        })}
+      </div>
+      <div className="tabpanel" role="tabpanel" id={`bookpanel-${active.key}`} aria-labelledby={`booktab-${active.key}`}>
         <OrderSide
-          side="Buy"
-          tone="up"
-          orders={buys}
+          side={active.key}
+          tone={active.tone}
+          orders={active.orders}
           participantNameById={participantNameById}
           companyNameById={companyNameById}
+          companyPriceById={companyPriceById}
           player={player}
-          onTrade={setTradeOrder}
-        />
-        <OrderSide
-          side="Sell"
-          tone="down"
-          orders={sells}
-          participantNameById={participantNameById}
-          companyNameById={companyNameById}
-          player={player}
+          playerHoldingCompanyIds={playerHoldingCompanyIds}
           onTrade={setTradeOrder}
         />
       </div>
       {tradeOrder ? (
         <TradeOrderModal
+          key={tradeOrder.id}
           order={tradeOrder}
           player={player}
           companyName={companyNameById.get(tradeOrder.companyId) ?? `#${tradeOrder.companyId}`}
@@ -1145,70 +1203,97 @@ function OrderBookPanel({ orders, participantNameById, companyNameById, companyP
   )
 }
 
-function OrderSide({ side, tone, orders, participantNameById, companyNameById, player, onTrade }) {
+function OrderSide({ side, tone, orders, participantNameById, companyNameById, companyPriceById, player, playerHoldingCompanyIds, onTrade }) {
+  if (orders.length === 0) {
+    return <p className="note note-sm">No {side.toLowerCase()} orders.</p>
+  }
+
   return (
-    <div className="book-side">
-      <div className={`book-side-head tone-${tone}`}>
-        <span>{side}</span>
-        <span className="num">{orders.length}</span>
-      </div>
-      {orders.length === 0 ? (
-        <p className="note note-sm">No {side.toLowerCase()} orders.</p>
-      ) : (
-        <table className="tbl tbl-book">
-          <thead>
-            <tr>
-              <th scope="col">Price</th>
-              <th scope="col" className="ta-r">
-                Qty
-              </th>
-              <th scope="col">Trader</th>
-            </tr>
-          </thead>
-          <tbody>
-            {orders.map((order) => {
-              const isOwn = player != null && order.participantId === player.id
-              const actionable = player != null && !isOwn
-              const remaining = order.quantity - order.filledQuantity
-              const companyName = companyNameById.get(order.companyId) ?? `#${order.companyId}`
-              // The player takes the opposite side: buy a resting sell offer, sell into a resting buy order.
-              const actionLabel =
-                side === 'Sell'
-                  ? `Buy ${remaining} ${companyName} shares at ${formatMoney(order.limitPrice)}`
-                  : `Sell ${remaining} ${companyName} shares at ${formatMoney(order.limitPrice)}`
-              const rowClass = `book-row${actionable ? ' is-actionable' : ''}${isOwn ? ' is-own' : ''}`
-              const handlers = actionable
-                ? {
-                    role: 'button',
-                    tabIndex: 0,
-                    'aria-label': actionLabel,
-                    title: side === 'Sell' ? 'Buy this offer' : 'Sell into this bid',
-                    onClick: () => onTrade(order),
-                    onKeyDown: (event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        onTrade(order)
-                      }
-                    },
-                  }
-                : {}
-              return (
-                <tr key={order.id} className={rowClass} {...handlers}>
-                  <td className={`num tone-${tone}`}>{formatMoney(order.limitPrice)}</td>
-                  <td className="num ta-r">
-                    {remaining}
-                    <span className="muted-sub">/{order.quantity}</span>
-                  </td>
-                  <td className="cell-ellipsis">
-                    {isOwn ? 'You' : traderName(order.participantId, participantNameById)}
-                    <span className="muted-sub"> · {companyName}</span>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      )}
+    <div className="tbl-scroll">
+      <table className="tbl tbl-book">
+        <thead>
+          <tr>
+            <th scope="col" className="ta-r">
+              Order price
+            </th>
+            <th scope="col" className="ta-r">
+              Market price
+            </th>
+            <th scope="col" className="ta-r">
+              Quantity
+            </th>
+            <th scope="col">Trader</th>
+          </tr>
+        </thead>
+        <tbody>
+          {orders.map((order) => {
+            const isOwn = player != null && order.participantId === player.id
+            const actionable = player != null && !isOwn
+            const remaining = order.quantity - order.filledQuantity
+            const companyName = companyNameById.get(order.companyId) ?? `#${order.companyId}`
+            const marketPrice = companyPriceById.get(order.companyId) ?? null
+            // How far the order's limit sits from the live market price, so the gap reads at a glance.
+            const percentDiff =
+              marketPrice != null && marketPrice > 0 ? ((order.limitPrice - marketPrice) / marketPrice) * 100 : null
+            const diffLabel =
+              percentDiff != null
+                ? `${percentDiff > 0 ? '+' : percentDiff < 0 ? '−' : ''}${Math.abs(percentDiff).toFixed(1)}%`
+                : null
+            const diffGlyph = percentDiff == null ? '' : percentDiff > 0 ? '▲' : percentDiff < 0 ? '▼' : '◆'
+            const diffTone = percentDiff == null || percentDiff === 0 ? 'flat' : percentDiff > 0 ? 'up' : 'down'
+            // A bid the player can sell into: they hold shares of its company and it is not their own order.
+            const sellable = side === 'Buy' && actionable && !!playerHoldingCompanyIds?.has(order.companyId)
+            // The player takes the opposite side: buy a resting sell offer, sell into a resting buy order.
+            const actionLabel =
+              side === 'Sell'
+                ? `Buy ${remaining} ${companyName} shares at ${formatMoney(order.limitPrice)}`
+                : `Sell ${remaining} ${companyName} shares at ${formatMoney(order.limitPrice)}`
+            const rowClass = `book-row${actionable ? ' is-actionable' : ''}${isOwn ? ' is-own' : ''}${sellable ? ' is-sellable' : ''}`
+            const handlers = actionable
+              ? {
+                  role: 'button',
+                  tabIndex: 0,
+                  'aria-label': actionLabel,
+                  title: side === 'Sell' ? 'Buy this offer' : 'Sell into this bid',
+                  onClick: () => onTrade(order),
+                  onKeyDown: (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      onTrade(order)
+                    }
+                  },
+                }
+              : {}
+            return (
+              <tr key={order.id} className={rowClass} {...handlers}>
+                <td className={`num ta-r tone-${tone}`}>
+                  {formatMoney(order.limitPrice)}
+                  {diffLabel ? (
+                    <span className={`book-diff num tone-${diffTone}`} title="Order price versus current market price">
+                      <span aria-hidden="true">{diffGlyph} </span>
+                      {diffLabel}
+                    </span>
+                  ) : null}
+                </td>
+                <td className="num ta-r">{marketPrice != null ? formatMoney(marketPrice) : '—'}</td>
+                <td className="num ta-r">
+                  {remaining}
+                  <span className="muted-sub">/{order.quantity}</span>
+                </td>
+                <td className="cell-ellipsis">
+                  {sellable ? (
+                    <span className="book-hold" title="You hold shares to sell into this bid" aria-hidden="true">
+                      ●{' '}
+                    </span>
+                  ) : null}
+                  {isOwn ? 'You' : traderName(order.participantId, participantNameById)}
+                  <span className="muted-sub"> · {companyName}</span>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -1220,7 +1305,9 @@ function TradeOrderModal({ order, player, companyName, currentPrice, onClose, on
   const takingSellOffer = order.type === 'Sell'
   const playerSide = takingSellOffer ? 'Buy' : 'Sell'
   const remaining = order.quantity - order.filledQuantity
-  const [quantity, setQuantity] = useState(String(remaining))
+  // Selling into a bid needs the player's holding for this company; buying an offer does not (null = pending).
+  const [ownedShares, setOwnedShares] = useState(takingSellOffer ? 0 : null)
+  const [quantity, setQuantity] = useState(takingSellOffer ? String(remaining) : '')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
@@ -1238,12 +1325,38 @@ function TradeOrderModal({ order, player, companyName, currentPrice, onClose, on
     }
   }, [onClose])
 
+  // A sell can only offer shares the player holds, so seed the quantity with the most that both the holding
+  // and the resting bid can absorb.
+  useEffect(() => {
+    if (takingSellOffer) return undefined
+
+    let active = true
+    api
+      .getHoldings(player.id)
+      .then((holdings) => {
+        if (!active) return
+        const holding = holdings.find((item) => item.companyId === order.companyId)
+        const owned = holding ? holding.shares : 0
+        setOwnedShares(owned)
+        setQuantity(owned > 0 ? String(Math.min(owned, remaining)) : '')
+      })
+      .catch(() => {
+        if (active) setOwnedShares(0)
+      })
+    return () => {
+      active = false
+    }
+  }, [takingSellOffer, player.id, order.companyId, remaining])
+
   function onBackdropClick(event) {
     if (event.target === event.currentTarget) onClose()
   }
 
+  const loadingHoldings = !takingSellOffer && ownedShares === null
+  const noShares = !takingSellOffer && ownedShares === 0
+  const maxQuantity = takingSellOffer ? remaining : Math.min(ownedShares ?? 0, remaining)
   const quantityNumber = Number(quantity)
-  const validQuantity = Number.isInteger(quantityNumber) && quantityNumber > 0 && quantityNumber <= remaining
+  const validQuantity = Number.isInteger(quantityNumber) && quantityNumber > 0 && quantityNumber <= maxQuantity
   const total = (validQuantity ? quantityNumber : 0) * order.limitPrice
 
   // How far the order's limit sits from the live market price, so the player can judge the deal at a glance.
@@ -1326,23 +1439,31 @@ function TradeOrderModal({ order, player, companyName, currentPrice, onClose, on
             </div>
           </dl>
 
-          <label className="field">
-            <span>Quantity (max {remaining})</span>
-            <input
-              className="select num"
-              type="number"
-              min="1"
-              max={remaining}
-              step="1"
-              value={quantity}
-              onChange={(event) => setQuantity(event.target.value)}
-              autoFocus
-            />
-          </label>
+          {loadingHoldings ? (
+            <p className="note note-sm">Checking your holdings…</p>
+          ) : noShares ? (
+            <p className="note note-sm">You hold no {companyName} shares to sell.</p>
+          ) : (
+            <>
+              <label className="field">
+                <span>Quantity (max {maxQuantity})</span>
+                <input
+                  className="select num"
+                  type="number"
+                  min="1"
+                  max={maxQuantity}
+                  step="1"
+                  value={quantity}
+                  onChange={(event) => setQuantity(event.target.value)}
+                  autoFocus
+                />
+              </label>
 
-          <p className="note note-sm">
-            Places a matching {playerSide.toLowerCase()} order that fills on the next cycle at the midpoint price.
-          </p>
+              <p className="note note-sm">
+                Places a matching {playerSide.toLowerCase()} order that fills on the next cycle at the midpoint price.
+              </p>
+            </>
+          )}
 
           {error ? (
             <p className="command-error" role="alert">
@@ -1352,11 +1473,13 @@ function TradeOrderModal({ order, player, companyName, currentPrice, onClose, on
 
           <footer className="modal-foot">
             <button type="button" className="btn" onClick={onClose}>
-              Cancel
+              {noShares ? 'Close' : 'Cancel'}
             </button>
-            <button type="submit" className="btn btn-primary" disabled={submitting || !validQuantity}>
-              {submitting ? 'Placing…' : `Place ${playerSide.toLowerCase()} order`}
-            </button>
+            {loadingHoldings || noShares ? null : (
+              <button type="submit" className="btn btn-primary" disabled={submitting || !validQuantity}>
+                {submitting ? 'Placing…' : `Place ${playerSide.toLowerCase()} order`}
+              </button>
+            )}
           </footer>
         </form>
       </div>
