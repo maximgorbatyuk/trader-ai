@@ -77,4 +77,7 @@ export const api = {
   startMarket: () => post('/market/start'),
   stepCycle: () => post('/cycles/tick'),
   placeOrder: (order) => post('/orders', order),
+  getPlayer: () => get('/player'),
+  createPlayer: (payload) => post('/player', payload),
+  cancelPlayerOrder: (orderId) => post(`/player/orders/${orderId}/cancel`),
 }

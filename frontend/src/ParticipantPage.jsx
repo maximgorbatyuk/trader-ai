@@ -8,7 +8,7 @@ import { Panel } from './Panel'
 const POLL_INTERVAL_MS = 2500
 const TEMPERAMENTS = ['Aggressive', 'Balanced', 'Conservative']
 const RISK_PROFILES = ['High', 'Medium', 'Low']
-const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund' }
+const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund', Player: 'Player' }
 const FUND_STATUS_LABEL = { Active: 'Active', GoingToBeClosed: 'Closing', Closed: 'Closed' }
 
 function fundStatusClass(status) {

@@ -152,6 +152,33 @@
   background: var(--surface-3);
 }
 
+.cycle-badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  padding: 4px 10px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  white-space: nowrap;
+}
+
+.cycle-badge-label {
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.cycle-badge-value {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- Main shell ---- */
 .main {
   flex: 1;
@@ -1350,6 +1377,28 @@
     opacity: 0;
     transform: translateY(8px);
   }
+}
+
+/* ---- Player modal ---- */
+/* The player modal stacks label-plus-table sections and multi-row forms, so it needs more breathing room
+   between children than the tighter default modal section. */
+.player-section {
+  gap: var(--s-3);
+}
+
+/* Reserved and available read as details under the current balance, so they sit indented and quieter. */
+.kv-sub {
+  padding-left: var(--s-3);
+}
+
+.kv-sub dt,
+.kv-sub dd {
+  font-size: var(--t-xs);
+}
+
+.kv-sub dd {
+  font-weight: 500;
+  color: var(--text);
 }
 
 /* ---- Newswire ---- */

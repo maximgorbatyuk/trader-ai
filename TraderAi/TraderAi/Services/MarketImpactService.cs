@@ -106,6 +106,13 @@ public sealed class MarketImpactService(AppDbContext dbContext)
 
         foreach (var order in orders)
         {
+            // The player is a human; crisis and news shocks never cancel their orders.
+            if (participantsById.TryGetValue(order.ParticipantId!.Value, out var owner)
+                && owner.Type == ParticipantType.Player)
+            {
+                continue;
+            }
+
             if (order.Type == OrderType.Buy)
             {
                 var release = order.ReservedCashAmount;

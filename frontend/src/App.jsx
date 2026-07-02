@@ -4,6 +4,8 @@ import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { Panel } from './Panel'
 import { CompanyModal } from './CompanyModal'
+import { CompanyCombobox } from './CompanyCombobox'
+import { PlayerModal } from './PlayerModal'
 
 const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
@@ -39,6 +41,7 @@ function App() {
   const [scienceInvestigations, setScienceInvestigations] = useState([])
   const [bankruptcies, setBankruptcies] = useState([])
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
+  const [playerModalOpen, setPlayerModalOpen] = useState(false)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
 
@@ -128,6 +131,7 @@ function App() {
         pending={pending}
         runAction={runAction}
         resetMarket={resetMarket}
+        onOpenPlayer={() => setPlayerModalOpen(true)}
       />
 
       <main className="main">
@@ -206,11 +210,15 @@ function App() {
           onClose={() => setMapModalCompanyId(null)}
         />
       ) : null}
+
+      {playerModalOpen ? (
+        <PlayerModal companies={companies} onClose={() => setPlayerModalOpen(false)} />
+      ) : null}
     </div>
   )
 }
 
-function TopBar({ connected, ready, market, pending, runAction, resetMarket }) {
+function TopBar({ connected, ready, market, pending, runAction, resetMarket, onOpenPlayer }) {
   return (
     <header className="topbar">
       <a className="brand" href="/" aria-label="Trader AI dashboard">
@@ -226,6 +234,12 @@ function TopBar({ connected, ready, market, pending, runAction, resetMarket }) {
         {market ? (
           <Controls market={market} pending={pending} runAction={runAction} resetMarket={resetMarket} />
         ) : null}
+        {market ? (
+          <button type="button" className="btn" onClick={onOpenPlayer}>
+            Player
+          </button>
+        ) : null}
+        {market ? <CycleBadge cycleNumber={market.currentCycleNumber} /> : null}
         {market ? <StatusBadge status={market.status} /> : null}
         <ConnPill connected={connected} ready={ready} />
       </div>
@@ -327,6 +341,20 @@ function ConnPill({ connected, ready }) {
     <span className={`conn conn-${state}`} role="status">
       <span className="conn-dot" aria-hidden="true" />
       {label}
+    </span>
+  )
+}
+
+// Null until the market has run its first cycle, so the badge stays hidden rather than showing "#—".
+function CycleBadge({ cycleNumber }) {
+  if (cycleNumber == null) return null
+
+  return (
+    <span className="cycle-badge" role="status" aria-label={`Current cycle ${cycleNumber}`}>
+      <span className="cycle-badge-label" aria-hidden="true">
+        Cycle
+      </span>
+      <span className="cycle-badge-value">#{formatInt(cycleNumber)}</span>
     </span>
   )
 }
@@ -789,116 +817,6 @@ function NewswirePanel({ news, crises, scienceInvestigations, bankruptcies, comp
   )
 }
 
-// Type-ahead picker for a single company: filters as you type, navigable by keyboard. Controlled by the
-// parent through value (company id) and onChange.
-function CompanyCombobox({ companies, value, onChange }) {
-  const [query, setQuery] = useState('')
-  const [open, setOpen] = useState(false)
-  const [activeIndex, setActiveIndex] = useState(0)
-  const rootRef = useRef(null)
-  const listRef = useRef(null)
-
-  const selected = companies.find((company) => String(company.id) === String(value)) ?? null
-  const trimmed = query.trim().toLowerCase()
-  const matches = trimmed
-    ? companies.filter((company) => company.name.toLowerCase().includes(trimmed))
-    : companies
-
-  useEffect(() => {
-    function onPointerDown(event) {
-      if (rootRef.current && !rootRef.current.contains(event.target)) {
-        setOpen(false)
-        setQuery('')
-      }
-    }
-    document.addEventListener('mousedown', onPointerDown)
-    return () => document.removeEventListener('mousedown', onPointerDown)
-  }, [])
-
-  useEffect(() => {
-    if (open) listRef.current?.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' })
-  }, [activeIndex, open])
-
-  function openList() {
-    setQuery('')
-    setActiveIndex(0)
-    setOpen(true)
-  }
-
-  function choose(company) {
-    onChange(company.id)
-    setOpen(false)
-    setQuery('')
-  }
-
-  function onKeyDown(event) {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      if (!open) openList()
-      else setActiveIndex((index) => Math.min(index + 1, matches.length - 1))
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      setActiveIndex((index) => Math.max(index - 1, 0))
-    } else if (event.key === 'Enter' && open) {
-      event.preventDefault()
-      if (matches[activeIndex]) choose(matches[activeIndex])
-    } else if (event.key === 'Escape' && open) {
-      // Close only the dropdown first; keep the keypress from reaching the modal's Escape-to-close.
-      event.preventDefault()
-      event.stopPropagation()
-      setOpen(false)
-      setQuery('')
-    }
-  }
-
-  return (
-    <div className="combobox" ref={rootRef}>
-      <input
-        className="select"
-        type="text"
-        role="combobox"
-        aria-label="Company"
-        aria-expanded={open}
-        aria-controls="company-combobox-list"
-        aria-autocomplete="list"
-        autoComplete="off"
-        placeholder="Search companies…"
-        value={open ? query : selected?.name ?? ''}
-        onChange={(event) => {
-          setQuery(event.target.value)
-          setActiveIndex(0)
-          setOpen(true)
-        }}
-        onFocus={openList}
-        onKeyDown={onKeyDown}
-      />
-      {open ? (
-        <ul className="combobox-list" id="company-combobox-list" role="listbox" ref={listRef}>
-          {matches.length === 0 ? (
-            <li className="combobox-empty">No companies match.</li>
-          ) : (
-            matches.map((company, index) => (
-              <li
-                key={company.id}
-                role="option"
-                aria-selected={String(company.id) === String(value)}
-                className={`combobox-option ${index === activeIndex ? 'is-active' : ''}`}
-                onMouseEnter={() => setActiveIndex(index)}
-                onMouseDown={(event) => {
-                  event.preventDefault()
-                  choose(company)
-                }}
-              >
-                {company.name}
-              </li>
-            ))
-          )}
-        </ul>
-      ) : null}
-    </div>
-  )
-}
-
 // Manual news composer: pick a target (one company or one/several industries), a theme for the wording, and
 // the impact direction and percent. Submitting posts to the backend, which generates the headline and moves
 // the affected prices.
@@ -1159,7 +1077,7 @@ function OrderSide({ side, tone, orders, participantNameById, companyNameById })
   )
 }
 
-const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI', CollectiveFund: 'Fund' }
+const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI', CollectiveFund: 'Fund', Player: 'Player' }
 
 // Net worth proxy used for the Total column and its default sort: cash on hand plus the estimated
 // market value of shares held.
@@ -1195,7 +1113,7 @@ function ParticipantsPanel({ participants }) {
       if (participant.type in acc) acc[participant.type] += 1
       return acc
     },
-    { Individual: 0, AIAgent: 0, CollectiveFund: 0 },
+    { Individual: 0, AIAgent: 0, CollectiveFund: 0, Player: 0 },
   )
 
   function sortableHeader(key, label, title) {
@@ -1228,6 +1146,7 @@ function ParticipantsPanel({ participants }) {
       <option value="AIAgent">AI</option>
       <option value="Individual">Individual</option>
       <option value="CollectiveFund">Fund</option>
+      <option value="Player">Player</option>
     </select>
   )
 
@@ -1238,8 +1157,8 @@ function ParticipantsPanel({ participants }) {
       ) : (
         <>
           <p className="trader-stats">
-            {counts.Individual} individuals · {counts.AIAgent} AI · {counts.CollectiveFund} funds · Total:{' '}
-            {participants.length}
+            {counts.Individual} individuals · {counts.AIAgent} AI · {counts.CollectiveFund} funds
+            {counts.Player > 0 ? ` · ${counts.Player} player` : ''} · Total: {participants.length}
           </p>
           {visible.length === 0 ? (
             <p className="note">No traders of this type.</p>
@@ -1273,6 +1192,7 @@ function ParticipantsPanel({ participants }) {
                             {participant.type === 'CollectiveFund' ? (
                               <span className="tag tag-collective">Fund</span>
                             ) : null}
+                            {participant.type === 'Player' ? <span className="tag">Player</span> : null}
                             {participant.isBankrupt ? (
                               <span className="tag tag-bankrupt">Bankrupt</span>
                             ) : null}

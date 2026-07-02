@@ -34,6 +34,20 @@ public sealed record CycleTickResult(bool Ran, int OrdersPlaced, int FillCount, 
         new(true, ordersPlaced, fillCount, completedCycleNumber);
 }
 
+public sealed record CreatePlayerResult(bool Success, Participant? Player, string? Error)
+{
+    public static CreatePlayerResult Ok(Participant player) => new(true, player, null);
+
+    public static CreatePlayerResult Fail(string error) => new(false, null, error);
+}
+
+public sealed record CancelOrderResult(bool Success, Order? Order, string? Error)
+{
+    public static CancelOrderResult Ok(Order order) => new(true, order, null);
+
+    public static CancelOrderResult Fail(string error) => new(false, null, error);
+}
+
 public sealed class MarketService(
     AppDbContext dbContext,
     MatchingEngine matchingEngine,
@@ -77,6 +91,10 @@ public sealed class MarketService(
     private const decimal MinSellOffset = 0.01m;
     private const decimal MaxSellOffset = 0.05m;
 
+    // A joining human player starts with a whole-dollar balance drawn from this range.
+    private const int PlayerMinBalance = 10_000;
+    private const int PlayerMaxBalance = 200_000;
+
     public Task<Market?> GetMarketAsync() => dbContext.Markets.FirstOrDefaultAsync();
 
     public Task<PlaceOrderResult> PlaceOrderAsync(
@@ -102,6 +120,12 @@ public sealed class MarketService(
     public Task<Market> SeedDemoMarketAsync() => WithLockAsync(SeedDemoMarketCoreAsync);
 
     public Task<Market> ResetDemoMarketAsync() => WithLockAsync(ResetDemoMarketCoreAsync);
+
+    public Task<CreatePlayerResult> CreatePlayerAsync(string? name) =>
+        WithLockAsync(() => CreatePlayerCoreAsync(name));
+
+    public Task<CancelOrderResult> CancelPlayerOrderAsync(int orderId) =>
+        WithLockAsync(() => CancelPlayerOrderCoreAsync(orderId));
 
     public Task<Market?> SetStatusAsync(MarketStatus status) => WithLockAsync(async () =>
     {
@@ -194,6 +218,12 @@ public sealed class MarketService(
             // The bankruptcy service owns the lifecycle of a bankrupt trader's forced-sale orders, so generic
             // ageing must not cancel or reprice them out from under it.
             if (participant.IsBankrupt)
+            {
+                continue;
+            }
+
+            // The player is a human; the market never ages, reprices, or expires their orders — they cancel manually.
+            if (participant.Type == ParticipantType.Player)
             {
                 continue;
             }
@@ -635,6 +665,10 @@ public sealed class MarketService(
         dbContext.MarketCycles.Add(nextCycle);
         await dbContext.SaveChangesAsync();
 
+        // Runs once this cycle's fills and shocks are persisted so the player's holdings reflect final prices;
+        // the added rows flush with the market update below, inside the advance transaction.
+        await WritePlayerWorthSnapshotsAsync(currentCycle.Id, now);
+
         market.CurrentCycleId = nextCycle.Id;
         market.UpdatedAt = now;
         await dbContext.SaveChangesAsync();
@@ -642,6 +676,113 @@ public sealed class MarketService(
         await transaction.CommitAsync();
 
         return AdvanceCycleResult.Ok(currentCycle.CycleNumber, fillCount);
+    }
+
+    // Records each player's cash and holdings value for the just-completed cycle so per-cycle change figures
+    // can be derived later. Skips all work when no player exists, since snapshots are a player-only concept.
+    private async Task WritePlayerWorthSnapshotsAsync(int completedCycleId, DateTime now)
+    {
+        var players = await dbContext.Participants
+            .Where(participant => participant.Type == ParticipantType.Player)
+            .ToListAsync();
+        if (players.Count == 0)
+        {
+            return;
+        }
+
+        var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        var playerIds = players.Select(player => player.Id).ToList();
+
+        var holdingsByOwner = (await dbContext.Shares
+                .Where(share => share.OwnerId != null && playerIds.Contains(share.OwnerId.Value))
+                .Select(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId })
+                .ToListAsync())
+            .GroupBy(share => share.OwnerId)
+            .ToDictionary(
+                ownerGroup => ownerGroup.Key,
+                ownerGroup => ownerGroup
+                    .GroupBy(share => share.CompanyId)
+                    .ToDictionary(companyGroup => companyGroup.Key, companyGroup => companyGroup.Count()));
+
+        foreach (var player in players)
+        {
+            var holdingsValue = holdingsByOwner.TryGetValue(player.Id, out var holdings)
+                ? holdings.Sum(holding => holding.Value * latestPriceByCompany.GetValueOrDefault(holding.Key))
+                : 0m;
+
+            dbContext.ParticipantWorthSnapshots.Add(new ParticipantWorthSnapshot
+            {
+                ParticipantId = player.Id,
+                CreatedInCycleId = completedCycleId,
+                Balance = player.CurrentBalance,
+                HoldingsValue = holdingsValue,
+                CreatedAt = now,
+            });
+        }
+    }
+
+    private async Task<CreatePlayerResult> CreatePlayerCoreAsync(string? name)
+    {
+        if (await dbContext.Markets.FirstOrDefaultAsync() is null)
+        {
+            return CreatePlayerResult.Fail("No market exists.");
+        }
+
+        if (await dbContext.Participants.AnyAsync(participant => participant.Type == ParticipantType.Player))
+        {
+            return CreatePlayerResult.Fail("A player already exists.");
+        }
+
+        var trimmed = name?.Trim();
+        var balance = random.Next(PlayerMinBalance, PlayerMaxBalance + 1);
+
+        var player = new Participant
+        {
+            Name = string.IsNullOrWhiteSpace(trimmed) ? "Player" : trimmed,
+            Type = ParticipantType.Player,
+            // A player does not use temperament or risk, but keeps the row well-formed like every other trader.
+            Temperament = Temperament.Balanced,
+            RiskProfile = RiskProfile.Medium,
+            InitialBalance = balance,
+            CurrentBalance = balance,
+            ReservedBalance = 0m,
+            IsActive = true,
+        };
+
+        dbContext.Participants.Add(player);
+        await dbContext.SaveChangesAsync();
+        return CreatePlayerResult.Ok(player);
+    }
+
+    private async Task<CancelOrderResult> CancelPlayerOrderCoreAsync(int orderId)
+    {
+        var player = await dbContext.Participants
+            .FirstOrDefaultAsync(participant => participant.Type == ParticipantType.Player);
+        if (player is null)
+        {
+            return CancelOrderResult.Fail("No player exists.");
+        }
+
+        var order = await dbContext.Orders
+            .Include(candidate => candidate.OrderShares)
+            .FirstOrDefaultAsync(candidate => candidate.Id == orderId);
+        if (order is null || order.ParticipantId != player.Id)
+        {
+            return CancelOrderResult.Fail("Order does not belong to the player.");
+        }
+
+        if (order.Status != OrderStatus.Open && order.Status != OrderStatus.PartiallyFilled)
+        {
+            return CancelOrderResult.Fail("Only an open order can be cancelled.");
+        }
+
+        // Release is stamped with the open cycle, matching the ageing cancel; fall back to the order's own cycle.
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        var currentCycleId = market?.CurrentCycleId ?? order.CreatedInCycleId;
+
+        CancelOrder(order, player, currentCycleId);
+        await dbContext.SaveChangesAsync();
+        return CancelOrderResult.Ok(order);
     }
 
     private async Task<RunDecisionsResult> GenerateDecisionsCoreAsync()
@@ -822,6 +963,7 @@ public sealed class MarketService(
         await dbContext.ShareTransactions.ExecuteDeleteAsync();
         await dbContext.Orders.ExecuteDeleteAsync();
         await dbContext.MarketCycles.ExecuteDeleteAsync();
+        await dbContext.ParticipantWorthSnapshots.ExecuteDeleteAsync();
         await dbContext.Participants.ExecuteDeleteAsync();
         await dbContext.Companies.ExecuteDeleteAsync();
         await dbContext.Industries.ExecuteDeleteAsync();
@@ -834,7 +976,7 @@ public sealed class MarketService(
             "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Shares', 'OrderShares', " +
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', " +
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', " +
-            "'CollectiveFunds', 'CollectiveFundParticipants')");
+            "'CollectiveFunds', 'CollectiveFundParticipants', 'ParticipantWorthSnapshots')");
 
         var market = await SeedDemoMarketCoreAsync();
         await transaction.CommitAsync();

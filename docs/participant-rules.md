@@ -13,11 +13,12 @@ Starting balances are not uniform. Most traders start with $10,000 to $200,000. 
 
 ## Trader types
 
-There are four participant types: Individual, Company, AIAgent, and CollectiveFund.
+There are five participant types: Individual, Company, AIAgent, CollectiveFund, and Player.
 
 - Individual and AIAgent are the active traders. They make a decision every cycle.
 - Company is the share issuer. It is not an automated trader.
 - CollectiveFund is a pooled trader. It is not seeded at the start. It is created during the simulation when traders pool together.
+- Player is a real person trading by hand. It is not seeded and it is not automated; a human creates it on demand and places its orders. See "The player" below.
 
 ## Cash and balances
 
@@ -151,3 +152,16 @@ A trader can pool its cash into a collective fund. The rules from the trader's s
 - Over the line, its chance to leave starts at 20% and ramps 2 points each cycle to a 90% cap.
 - On leaving, its full deposit is returned. If the fund is short on cash, it sells shares to raise it.
 - When only two members remain and one leaves, the fund sells everything and splits the proceeds evenly. Both then trade on their own again.
+
+## The player
+
+The player is a human-controlled trader. Unlike every other trader, no automated logic ever acts for it.
+
+- A person creates the player on demand from the dashboard. It is never seeded, and a market holds at most one player at a time.
+- It starts with a random cash balance from $10,000 to $200,000. It never starts as a whale.
+- It places buy and sell orders under the same reservation and matching rules as every other trader, and it receives dividends on the shares it holds like any owner.
+- The market never manages its orders. They are never nudged toward the market, never cancelled for resting too long, and never cancelled by a crisis or a news event.
+- Because its orders never expire on their own, the player cancels unwanted orders by hand. Otherwise cash reserved by a buy order could stay locked away for good.
+- It never goes bankrupt and it never joins a collective fund.
+- The automated decision pass skips it. The player trades only when the person behind it says so.
+- A database reset clears the player along with the rest of the market.

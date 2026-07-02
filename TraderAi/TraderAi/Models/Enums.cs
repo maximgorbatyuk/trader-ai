@@ -6,6 +6,7 @@ public enum ParticipantType
     Company,
     AIAgent,
     CollectiveFund,
+    Player,
 }
 
 public enum Temperament

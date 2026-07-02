@@ -28,6 +28,8 @@ Cash-strapped traders may instead pool into a collective fund, which trades as i
 
 ![A collective fund's page: its green status tag and the Fund members who have joined, with the cycle each joined, deposits, and payouts.](docs/images/collective-fund.png)
 
+You can also step into the market yourself. Join as a human player and you are handed a random starting balance, then trade by hand under the same rules as everyone else — your buy and sell orders reserve cash and match just like theirs, and you collect dividends on the shares you hold. The difference is that the market never touches your orders: they are never re-priced, never cancelled for resting too long, and never swept away by a crisis or a news event, so you cancel the ones you no longer want yourself. A player never goes bankrupt and never joins a collective fund, and a market holds at most one player at a time. A Player panel opens from the dashboard and shows your holdings and balances alongside how your cash and total worth have changed over the last cycle and overall, and it is where you place and cancel your orders.
+
 No authentication is required between the frontend and backend for local development.
 
 ## Documentation

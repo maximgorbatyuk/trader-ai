@@ -44,7 +44,7 @@ Human-facing documentation lives in `docs/` and `README.md`. Agent-facing docume
 
 When making changes to the codebase, update documentation in the same PR if the change affects any of the following:
 
-- **New service or top-level directory** — update `docs/monorepo.md` (adding a new service section), `README.md` (if repository layout description needs it), and this file's Services Overview and Service Anatomy sections.
+- **New service or top-level directory** — update `README.md` if repository layout description needs it
 - **New or changed architectural pattern** — update the Architectural Patterns section in this file. If the pattern is broadly relevant to developers (not just agents), also update `README.md`.
 - **New third-party integration** — update the Third-Party Integrations table in `README.md`.
 - **Changed local development workflow** — update the Local Development section in `README.md`.

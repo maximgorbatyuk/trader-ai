@@ -325,6 +325,31 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
+        app.MapGet("/player", async (AppDbContext dbContext) =>
+            Results.Ok(await BuildPlayerResponseAsync(dbContext)));
+
+        app.MapPost("/player", async (CreatePlayerRequest? request, MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.CreatePlayerAsync(request?.Name);
+            if (!result.Success)
+            {
+                // The absent market is a bad request; an existing player is a conflict.
+                return result.Error == "No market exists."
+                    ? Results.BadRequest(new { error = result.Error })
+                    : Results.Conflict(new { error = result.Error });
+            }
+
+            return Results.Ok(await BuildPlayerResponseAsync(dbContext));
+        });
+
+        app.MapPost("/player/orders/{orderId:int}/cancel", async (int orderId, MarketService marketService) =>
+        {
+            var result = await marketService.CancelPlayerOrderAsync(orderId);
+            return result is { Success: true, Order: not null }
+                ? Results.Ok(ToOrderResponse(result.Order))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
         app.MapPost("/cycles/tick", async (MarketService marketService) =>
         {
             var result = await marketService.StepCycleAsync();
@@ -750,6 +775,61 @@ public static class MarketEndpoints
             memberOfFundName);
     }
 
+    private static async Task<PlayerResponse?> BuildPlayerResponseAsync(AppDbContext dbContext)
+    {
+        var player = await dbContext.Participants
+            .FirstOrDefaultAsync(participant => participant.Type == ParticipantType.Player);
+        if (player is null)
+        {
+            return null;
+        }
+
+        var holdings = await dbContext.Shares
+            .Where(share => share.OwnerId == player.Id)
+            .GroupBy(share => share.CompanyId)
+            .Select(group => new { CompanyId = group.Key, Shares = group.Count() })
+            .ToListAsync();
+
+        var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+        var sharesOwned = holdings.Sum(holding => holding.Shares);
+        var holdingsValue = holdings.Sum(holding =>
+            holding.Shares * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
+        var totalWorth = player.CurrentBalance + holdingsValue;
+
+        // The two newest snapshots are cycles N and N−1; last-cycle deltas stay null until both exist.
+        var recentSnapshots = await dbContext.ParticipantWorthSnapshots
+            .Where(snapshot => snapshot.ParticipantId == player.Id)
+            .OrderByDescending(snapshot => snapshot.Id)
+            .Take(2)
+            .ToListAsync();
+
+        decimal? lastCycleMoneyChange = null;
+        decimal? lastCycleWorthChange = null;
+        if (recentSnapshots.Count == 2)
+        {
+            var latest = recentSnapshots[0];
+            var prior = recentSnapshots[1];
+            lastCycleMoneyChange = latest.Balance - prior.Balance;
+            lastCycleWorthChange = latest.Balance + latest.HoldingsValue - (prior.Balance + prior.HoldingsValue);
+        }
+
+        return new PlayerResponse(
+            player.Id,
+            player.Name,
+            player.InitialBalance,
+            player.CurrentBalance,
+            player.ReservedBalance,
+            player.AvailableBalance,
+            sharesOwned,
+            holdingsValue,
+            totalWorth,
+            player.CurrentBalance - player.InitialBalance,
+            totalWorth - player.InitialBalance,
+            lastCycleMoneyChange,
+            lastCycleWorthChange,
+            player.IsActive);
+    }
+
     private static async Task<(string? Status, CollectiveFundMemberResponse[] Members)> BuildCollectiveFundMembersAsync(
         AppDbContext dbContext,
         int fundParticipantId)
@@ -916,6 +996,24 @@ public sealed record CollectiveFundMemberResponse(
     bool IsLeaving);
 
 public sealed record UpdateParticipantProfileRequest(Temperament Temperament, RiskProfile RiskProfile);
+
+public sealed record CreatePlayerRequest(string? Name);
+
+public sealed record PlayerResponse(
+    int Id,
+    string Name,
+    decimal InitialBalance,
+    decimal CurrentBalance,
+    decimal ReservedBalance,
+    decimal AvailableBalance,
+    int SharesOwned,
+    decimal HoldingsValue,
+    decimal TotalWorth,
+    decimal OverallMoneyChange,
+    decimal OverallWorthChange,
+    decimal? LastCycleMoneyChange,
+    decimal? LastCycleWorthChange,
+    bool IsActive);
 
 public sealed record PlaceOrderRequest(int ParticipantId, int CompanyId, OrderType Type, int Quantity, decimal LimitPrice);
 

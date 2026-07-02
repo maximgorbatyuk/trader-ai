@@ -1,9 +1,5 @@
 # Product
 
-## Register
-
-product
-
 ## Users
 
 A single developer — the person building the simulation — using the dashboard during active development. There is no external user base and no authentication. The context is a build-time observability and control panel: kept open while iterating on the backend, used to watch the market move and to drive it. The primary jobs are equally weighted — **observe** (prices, trades, open orders, participant balances, agent behavior across cycles) and **control** (seed the demo market, start/pause the loop, advance cycles, run decisions, place manual orders). Both must be effortless without switching modes.
