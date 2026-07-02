@@ -93,8 +93,9 @@ Each cycle, every active automated trader makes one choice: buy, sell, or do not
 - A rising price pulls it toward buying. A falling price pulls it toward selling.
 - Strong resting buy demand on a company adds to the buy pull.
 - After an extreme run-up, holders take profit. After an extreme drop, others hunt the bargain.
-- When no pull dominates, the trader picks at random among the actions open to it.
-- Order size comes from a sizer, bounded by what the trader can afford or owns.
+- Its risk profile scales how strongly these pulls act. A high-risk trader reacts harder to price moves and acts more readily; a low-risk trader holds back and waits.
+- When no pull dominates, the trader picks at random among the actions open to it, weighted by personality: an aggressive or high-risk trader leans toward acting, a conservative or low-risk one toward doing nothing.
+- Its temperament sets order size. An aggressive trader buys and sells in larger packages; a conservative trader takes smaller bites to hold shares longer for dividends. Size is still bounded by what the trader can afford or owns.
 
 ## Cash-starved selling
 

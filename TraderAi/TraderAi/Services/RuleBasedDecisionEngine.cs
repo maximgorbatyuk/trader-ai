@@ -28,6 +28,11 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
     private const double MaxBuyPull = 0.80;
     private const double MaxSellPull = 0.80;
 
+    // Risk profile scales the signal pulls: a high-risk trader reacts harder to price moves, a low-risk
+    // one holds back. Medium leaves the pull untouched so its behaviour matches the signal alone.
+    private const double HighRiskPullFactor = 1.5;
+    private const double LowRiskPullFactor = 0.6;
+
     private const decimal MinPriceOffset = 0.01m;
     private const decimal MaxPriceOffset = 0.05m;
 
@@ -55,6 +60,10 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
         var (buyTarget, buyPull) = StrongestBuy(context, buyCandidates);
         var (sellTarget, sellPull) = StrongestSell(sellCandidates);
 
+        var riskFactor = RiskPullFactor(context.Participant.RiskProfile);
+        buyPull = Math.Min(MaxBuyPull, buyPull * riskFactor);
+        sellPull = Math.Min(MaxSellPull, sellPull * riskFactor);
+
         // One draw splits into a buy band [0, buyPull) and a sell band [buyPull, buyPull + sellPull);
         // anything above is left to the uniform fallback. A pulled action that cannot be built (no cash,
         // nothing to sell) also falls through rather than spilling into the other band.
@@ -74,15 +83,32 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
             }
         }
 
-        var actions = new List<TradeAction> { TradeAction.Skip };
+        // The uniform fallback is where the personality frequency nudge lives: low-risk and conservative
+        // traders get extra weight on doing nothing, high-risk and aggressive ones get extra weight on
+        // acting. A balanced/medium trader keeps a single copy of each, matching the original behaviour.
+        var skipWeight = SkipWeight(context.Participant);
+        var actionWeight = ActionWeight(context.Participant);
+
+        var actions = new List<TradeAction>();
+        for (var copy = 0; copy < skipWeight; copy++)
+        {
+            actions.Add(TradeAction.Skip);
+        }
+
         if (sellCandidates.Count > 0)
         {
-            actions.Add(TradeAction.Sell);
+            for (var copy = 0; copy < actionWeight; copy++)
+            {
+                actions.Add(TradeAction.Sell);
+            }
         }
 
         if (buyCandidates.Count > 0)
         {
-            actions.Add(TradeAction.Buy);
+            for (var copy = 0; copy < actionWeight; copy++)
+            {
+                actions.Add(TradeAction.Buy);
+            }
         }
 
         var intent = actions[random.Next(actions.Count)] switch
@@ -166,6 +192,21 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
         favourableChangePct > 0m
             ? Math.Min(RecentMoveCap, (double)favourableChangePct * RecentMoveScale)
             : 0.0;
+
+    private static double RiskPullFactor(RiskProfile riskProfile) => riskProfile switch
+    {
+        RiskProfile.High => HighRiskPullFactor,
+        RiskProfile.Low => LowRiskPullFactor,
+        _ => 1.0,
+    };
+
+    private static int SkipWeight(Participant participant) =>
+        1 + (participant.RiskProfile == RiskProfile.Low ? 1 : 0)
+          + (participant.Temperament == Temperament.Conservative ? 1 : 0);
+
+    private static int ActionWeight(Participant participant) =>
+        1 + (participant.RiskProfile == RiskProfile.High ? 1 : 0)
+          + (participant.Temperament == Temperament.Aggressive ? 1 : 0);
 
     private OrderIntent? BuildSell(DecisionContext context, CompanyQuote quote)
     {

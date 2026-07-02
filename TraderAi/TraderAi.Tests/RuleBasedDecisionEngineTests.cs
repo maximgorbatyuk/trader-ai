@@ -142,6 +142,48 @@ public sealed class RuleBasedDecisionEngineTests
         Assert.True(dipped.Count > flat.Count, "a deep drop should pull non-owners into buying more often");
     }
 
+    [Fact]
+    public void HigherRiskPlacesOrdersOnMoreCyclesThanLowerRisk()
+    {
+        var high = CountOrders(Temperament.Balanced, RiskProfile.High);
+        var medium = CountOrders(Temperament.Balanced, RiskProfile.Medium);
+        var low = CountOrders(Temperament.Balanced, RiskProfile.Low);
+
+        Assert.True(high > medium, $"high {high} should exceed medium {medium}");
+        Assert.True(medium > low, $"medium {medium} should exceed low {low}");
+    }
+
+    [Fact]
+    public void AggressiveTemperamentPlacesOrdersOnMoreCyclesThanConservative()
+    {
+        var aggressive = CountOrders(Temperament.Aggressive, RiskProfile.Medium);
+        var conservative = CountOrders(Temperament.Conservative, RiskProfile.Medium);
+
+        Assert.True(aggressive > conservative, $"aggressive {aggressive} should exceed conservative {conservative}");
+    }
+
+    // A flat, no-signal market with both cash and shares leaves every choice to the weighted fallback, so
+    // the order count isolates how personality shifts trading frequency. A fresh, equally seeded engine per
+    // profile keeps the only difference the profile itself.
+    private static int CountOrders(Temperament temperament, RiskProfile riskProfile)
+    {
+        var engine = new RuleBasedDecisionEngine(new MaxTradeSizer(), new Random(20260619));
+        var context = ContextFor(
+            availableCash: 5000m,
+            sharesOwned: 10,
+            companyPrice: 100m,
+            temperament: temperament,
+            riskProfile: riskProfile);
+
+        var orders = 0;
+        for (var iteration = 0; iteration < 1000; iteration++)
+        {
+            orders += engine.Decide(context).Count;
+        }
+
+        return orders;
+    }
+
     // Skip is always one of the choices, so the engine is exercised many times to surface the action
     // branch; the invariants must then hold across every outcome.
     private IReadOnlyList<OrderIntent> CollectIntents(DecisionContext context)
@@ -162,7 +204,9 @@ public sealed class RuleBasedDecisionEngineTests
         int[]? companiesWithOpenOrders = null,
         decimal priceChangePct = 0m,
         int netShareDemand = 0,
-        decimal longRangeChangePct = 0m)
+        decimal longRangeChangePct = 0m,
+        Temperament temperament = Temperament.Balanced,
+        RiskProfile riskProfile = RiskProfile.Medium)
     {
         const int companyId = 1;
 
@@ -171,19 +215,22 @@ public sealed class RuleBasedDecisionEngineTests
             : new Dictionary<int, int>();
 
         return new DecisionContext(
-            NewParticipant(availableCash),
+            NewParticipant(availableCash, temperament, riskProfile),
             availableCash,
             [new CompanyQuote(companyId, companyPrice, priceChangePct, netShareDemand, longRangeChangePct)],
             holdings,
             new HashSet<int>(companiesWithOpenOrders ?? []));
     }
 
-    private static Participant NewParticipant(decimal availableCash) => new()
+    private static Participant NewParticipant(
+        decimal availableCash,
+        Temperament temperament = Temperament.Balanced,
+        RiskProfile riskProfile = RiskProfile.Medium) => new()
     {
         Name = "Trader",
         Type = ParticipantType.Individual,
-        Temperament = Temperament.Balanced,
-        RiskProfile = RiskProfile.Medium,
+        Temperament = temperament,
+        RiskProfile = riskProfile,
         InitialBalance = availableCash,
         CurrentBalance = availableCash,
         IsActive = true,
