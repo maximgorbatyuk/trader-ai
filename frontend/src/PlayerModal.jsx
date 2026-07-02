@@ -22,15 +22,13 @@ function ChangeAmount({ value }) {
   )
 }
 
-// The human player's control panel, opened from the top bar. It owns its own polling of the player's live
-// state and mirrors the company modal's dialog accessibility (backdrop/Escape close, focus trap, scroll lock).
-export function PlayerModal({ companies, onClose }) {
+// The player's live control surface: worth headline, balances, performance, holdings, the order form, and
+// open orders. Owns its own polling so it can be dropped into either the dashboard tab or the modal.
+export function PlayerPanel({ companies }) {
   const [loading, setLoading] = useState(true)
   const [player, setPlayer] = useState(null)
   const [holdings, setHoldings] = useState([])
   const [orders, setOrders] = useState([])
-  const dialogRef = useRef(null)
-  const closeRef = useRef(null)
   const mountedRef = useRef(true)
 
   const refresh = useCallback(async () => {
@@ -73,6 +71,43 @@ export function PlayerModal({ companies, onClose }) {
     const intervalId = setInterval(refresh, POLL_INTERVAL_MS)
     return () => clearInterval(intervalId)
   }, [refresh])
+
+  const worthTone = player ? toneOf(player.overallWorthChange) : 'flat'
+
+  return (
+    <div className="player-panel">
+      <div className="player-panel-head">
+        <div className="command-id">
+          <span className="command-label">Player</span>
+          <span className="command-name">{player ? player.name : 'Play the market'}</span>
+        </div>
+        {player ? (
+          <div className="quote">
+            <strong className="quote-last num">{formatMoney(player.totalWorth)}</strong>
+            <span className={`quote-change num tone-${worthTone}`}>
+              <span aria-hidden="true">{CHANGE_GLYPH[worthTone]} </span>
+              {formatSigned(player.overallWorthChange)}
+            </span>
+          </div>
+        ) : null}
+      </div>
+
+      {loading ? (
+        <p className="note">Loading the player…</p>
+      ) : player === null ? (
+        <JoinPanel onJoined={refresh} />
+      ) : (
+        <PlayerStats player={player} holdings={holdings} orders={orders} companies={companies} onRefresh={refresh} />
+      )}
+    </div>
+  )
+}
+
+// The player's control panel as a modal opened from the top bar. It contributes only the dialog chrome
+// (backdrop/Escape close, focus trap, scroll lock) and delegates all live content to PlayerPanel.
+export function PlayerModal({ companies, onClose }) {
+  const dialogRef = useRef(null)
+  const closeRef = useRef(null)
 
   // Close on Escape and lock background scroll while the dialog is open.
   useEffect(() => {
@@ -128,45 +163,18 @@ export function PlayerModal({ companies, onClose }) {
     }
   }
 
-  const titleId = 'player-modal-title'
-  const worthTone = player ? toneOf(player.overallWorthChange) : 'flat'
-
   return (
     <div className="modal-backdrop" onClick={onBackdropClick}>
       <div
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-labelledby={titleId}
+        aria-label="Player"
         ref={dialogRef}
         onKeyDown={onDialogKeyDown}
       >
-        <header className="modal-head">
-          <div className="command-id">
-            <span className="command-label">Player</span>
-            <h2 className="command-name" id={titleId}>
-              {player ? player.name : 'Play the market'}
-            </h2>
-          </div>
-          {player ? (
-            <div className="quote">
-              <strong className="quote-last num">{formatMoney(player.totalWorth)}</strong>
-              <span className={`quote-change num tone-${worthTone}`}>
-                <span aria-hidden="true">{CHANGE_GLYPH[worthTone]} </span>
-                {formatSigned(player.overallWorthChange)}
-              </span>
-            </div>
-          ) : null}
-        </header>
-
         <div className="modal-body">
-          {loading ? (
-            <p className="note">Loading the player…</p>
-          ) : player === null ? (
-            <JoinPanel onJoined={refresh} />
-          ) : (
-            <PlayerStats player={player} holdings={holdings} orders={orders} companies={companies} onRefresh={refresh} />
-          )}
+          <PlayerPanel companies={companies} />
         </div>
 
         <footer className="modal-foot">

@@ -5,7 +5,7 @@ import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { Panel } from './Panel'
 import { CompanyModal } from './CompanyModal'
 import { CompanyCombobox } from './CompanyCombobox'
-import { PlayerModal } from './PlayerModal'
+import { PlayerModal, PlayerPanel } from './PlayerModal'
 
 const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
@@ -40,6 +40,7 @@ function App() {
   const [crises, setCrises] = useState([])
   const [scienceInvestigations, setScienceInvestigations] = useState([])
   const [bankruptcies, setBankruptcies] = useState([])
+  const [player, setPlayer] = useState(null)
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
   const [playerModalOpen, setPlayerModalOpen] = useState(false)
   const [pending, setPending] = useState(false)
@@ -58,6 +59,7 @@ function App() {
         crisisData,
         scienceData,
         bankruptcyData,
+        playerData,
       ] = await Promise.all([
         api.getMarket(),
         api.getCompanies(),
@@ -69,6 +71,7 @@ function App() {
         api.getCrises(10),
         api.getScienceInvestigations(10),
         api.getBankruptcies(10),
+        api.getPlayer(),
       ])
 
       setMarket(marketData)
@@ -81,6 +84,7 @@ function App() {
       setCrises(crisisData)
       setScienceInvestigations(scienceData)
       setBankruptcies(bankruptcyData)
+      setPlayer(playerData)
       setConnected(true)
     } catch {
       setConnected(false)
@@ -119,6 +123,7 @@ function App() {
 
   const participantNameById = new Map(participants.map((participant) => [participant.id, participant.name]))
   const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
+  const companyPriceById = new Map(companies.map((company) => [company.id, company.currentPrice]))
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
   const mapModalCompany = companies.find((company) => company.id === mapModalCompanyId) ?? null
 
@@ -168,22 +173,23 @@ function App() {
                     onSelectCompany={setMapModalCompanyId}
                   />
 
-                  <ActivityPanel activity={cycleActivity} />
-
-                  <ParticipantsPanel participants={participants} />
-
-                  <CompaniesPanel companies={companies} />
+                  <DashboardTabs
+                    companies={companies}
+                    participants={participants}
+                    transactions={transactions}
+                    activity={cycleActivity}
+                    participantNameById={participantNameById}
+                    companyNameById={companyNameById}
+                    onSelectCompany={setMapModalCompanyId}
+                  />
 
                   <OrderBookPanel
                     orders={openOrders}
                     participantNameById={participantNameById}
                     companyNameById={companyNameById}
-                  />
-
-                  <TradeTapePanel
-                    transactions={transactions}
-                    participantNameById={participantNameById}
-                    companyNameById={companyNameById}
+                    companyPriceById={companyPriceById}
+                    player={player}
+                    onTraded={loadAll}
                   />
 
                   <NewswirePanel
@@ -410,7 +416,87 @@ const COMPANY_SORTS = {
   cost: (company) => (company.issuedSharesCount ?? 0) * (company.currentPrice ?? 0),
 }
 
-function CompaniesPanel({ companies }) {
+const DASHBOARD_TABS = [
+  { key: 'player', label: 'Player' },
+  { key: 'traders', label: 'Traders' },
+  { key: 'companies', label: 'Companies' },
+  { key: 'tape', label: 'Trade tape' },
+  { key: 'activity', label: 'Market activity' },
+]
+
+// Tabbed block under the market map that consolidates the player control surface with the traders,
+// companies, and trade-tape tables. A WCAG tablist (roving tabindex, arrow-key navigation) drives which
+// body renders; the active tab reads by weight and an ink underline rather than colour alone.
+function DashboardTabs({ companies, participants, transactions, activity, participantNameById, companyNameById, onSelectCompany }) {
+  const [active, setActive] = useState('player')
+  const tabRefs = useRef({})
+
+  function focusTab(key) {
+    setActive(key)
+    tabRefs.current[key]?.focus()
+  }
+
+  function onTabKeyDown(event) {
+    const index = DASHBOARD_TABS.findIndex((tab) => tab.key === active)
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      event.preventDefault()
+      const step = event.key === 'ArrowRight' ? 1 : -1
+      const next = DASHBOARD_TABS[(index + step + DASHBOARD_TABS.length) % DASHBOARD_TABS.length]
+      focusTab(next.key)
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      focusTab(DASHBOARD_TABS[0].key)
+    } else if (event.key === 'End') {
+      event.preventDefault()
+      focusTab(DASHBOARD_TABS[DASHBOARD_TABS.length - 1].key)
+    }
+  }
+
+  return (
+    <article className="panel panel-tabs">
+      <div className="panel-head">
+        <div className="tabs" role="tablist" aria-label="Dashboard sections" onKeyDown={onTabKeyDown}>
+          {DASHBOARD_TABS.map((tab) => {
+            const selected = tab.key === active
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                role="tab"
+                id={`dashtab-${tab.key}`}
+                aria-selected={selected}
+                aria-controls={`dashpanel-${tab.key}`}
+                tabIndex={selected ? 0 : -1}
+                ref={(element) => {
+                  tabRefs.current[tab.key] = element
+                }}
+                className={`tab${selected ? ' is-active' : ''}`}
+                onClick={() => setActive(tab.key)}
+              >
+                {tab.label}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+      <div className="tabpanel" role="tabpanel" id={`dashpanel-${active}`} aria-labelledby={`dashtab-${active}`}>
+        {active === 'player' ? <PlayerPanel companies={companies} /> : null}
+        {active === 'traders' ? <TradersTable participants={participants} /> : null}
+        {active === 'companies' ? <CompaniesTable companies={companies} onSelectCompany={onSelectCompany} /> : null}
+        {active === 'tape' ? (
+          <TradeTapeTable
+            transactions={transactions}
+            participantNameById={participantNameById}
+            companyNameById={companyNameById}
+          />
+        ) : null}
+        {active === 'activity' ? <ActivityBody activity={activity} /> : null}
+      </div>
+    </article>
+  )
+}
+
+function CompaniesTable({ companies, onSelectCompany }) {
   const [sortKey, setSortKey] = useState('cost')
   const [sortDir, setSortDir] = useState('desc')
 
@@ -448,58 +534,66 @@ function CompaniesPanel({ companies }) {
     )
   }
 
+  if (companies.length === 0) {
+    return <p className="note">No companies yet.</p>
+  }
+
   return (
-    <Panel title="Companies" count={`${companies.length}`} className="panel-watchlist">
-      {companies.length === 0 ? (
-        <p className="note">No companies yet.</p>
-      ) : (
-        <div className="tbl-scroll">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Industry</th>
-                {sortableHeader('shares', 'Shares')}
-                {sortableHeader('price', 'Share price')}
-                {sortableHeader('cost', 'Cost estimation', 'Issued shares valued at the current share price')}
-                <th scope="col" className="ta-r">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((company) => {
-                const cost = (company.issuedSharesCount ?? 0) * (company.currentPrice ?? 0)
-                return (
-                  <tr key={company.id}>
-                    <th scope="row" className="cell-ellipsis">
+    <>
+      <p className="tabpanel-meta">{companies.length} companies</p>
+      <div className="tbl-scroll">
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Industry</th>
+              {sortableHeader('shares', 'Shares')}
+              {sortableHeader('price', 'Share price')}
+              {sortableHeader('cost', 'Cost estimation', 'Issued shares valued at the current share price')}
+              <th scope="col" className="ta-r">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((company) => {
+              const cost = (company.issuedSharesCount ?? 0) * (company.currentPrice ?? 0)
+              return (
+                <tr key={company.id}>
+                  <th scope="row" className="cell-ellipsis">
+                    <button
+                      type="button"
+                      className="cell-name-btn"
+                      onClick={() => onSelectCompany(company.id)}
+                      title={`Open ${company.name} details`}
+                    >
                       {company.name}
-                    </th>
-                    <td className="cell-ellipsis">
-                      <span className="tag">{company.industryName ?? '—'}</span>
-                    </td>
-                    <td className="num ta-r">{formatInt(company.issuedSharesCount)}</td>
-                    <td className="num ta-r">{formatMoney(company.currentPrice)}</td>
-                    <td className="num ta-r">{formatMoney(cost)}</td>
-                    <td className="ta-r">
-                      <a
-                        className="cell-link"
-                        href={`/companies/${company.id}`}
-                        target="_blank"
-                        rel="noopener"
-                        aria-label={`Open ${company.name} page in a new tab`}
-                      >
-                        Open page<span aria-hidden="true"> ↗</span>
-                      </a>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Panel>
+                    </button>
+                  </th>
+                  <td className="cell-ellipsis">
+                    <span className="tag">{company.industryName ?? '—'}</span>
+                  </td>
+                  <td className="num ta-r">{formatInt(company.issuedSharesCount)}</td>
+                  <td className="num ta-r">{formatMoney(company.currentPrice)}</td>
+                  <td className="num ta-r">{formatMoney(cost)}</td>
+                  <td className="ta-r">
+                    <a
+                      className="cell-link"
+                      href={`/companies/${company.id}`}
+                      target="_blank"
+                      rel="noopener"
+                      aria-label={`Open ${company.name} page in a new tab`}
+                    >
+                      Open page<span aria-hidden="true"> ↗</span>
+                    </a>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
   )
 }
 
@@ -1006,7 +1100,8 @@ function AddNewsModal({ companies, onClose, onPublished }) {
   )
 }
 
-function OrderBookPanel({ orders, participantNameById, companyNameById }) {
+function OrderBookPanel({ orders, participantNameById, companyNameById, companyPriceById, player, onTraded }) {
+  const [tradeOrder, setTradeOrder] = useState(null)
   const buys = orders
     .filter((order) => order.type === 'Buy')
     .sort((a, b) => b.limitPrice - a.limitPrice)
@@ -1023,6 +1118,8 @@ function OrderBookPanel({ orders, participantNameById, companyNameById }) {
           orders={buys}
           participantNameById={participantNameById}
           companyNameById={companyNameById}
+          player={player}
+          onTrade={setTradeOrder}
         />
         <OrderSide
           side="Sell"
@@ -1030,13 +1127,25 @@ function OrderBookPanel({ orders, participantNameById, companyNameById }) {
           orders={sells}
           participantNameById={participantNameById}
           companyNameById={companyNameById}
+          player={player}
+          onTrade={setTradeOrder}
         />
       </div>
+      {tradeOrder ? (
+        <TradeOrderModal
+          order={tradeOrder}
+          player={player}
+          companyName={companyNameById.get(tradeOrder.companyId) ?? `#${tradeOrder.companyId}`}
+          currentPrice={companyPriceById.get(tradeOrder.companyId) ?? null}
+          onClose={() => setTradeOrder(null)}
+          onTraded={onTraded}
+        />
+      ) : null}
     </Panel>
   )
 }
 
-function OrderSide({ side, tone, orders, participantNameById, companyNameById }) {
+function OrderSide({ side, tone, orders, participantNameById, companyNameById, player, onTrade }) {
   return (
     <div className="book-side">
       <div className={`book-side-head tone-${tone}`}>
@@ -1057,22 +1166,200 @@ function OrderSide({ side, tone, orders, participantNameById, companyNameById })
             </tr>
           </thead>
           <tbody>
-            {orders.map((order) => (
-              <tr key={order.id}>
-                <td className={`num tone-${tone}`}>{formatMoney(order.limitPrice)}</td>
-                <td className="num ta-r">
-                  {order.quantity - order.filledQuantity}
-                  <span className="muted-sub">/{order.quantity}</span>
-                </td>
-                <td className="cell-ellipsis">
-                  {traderName(order.participantId, participantNameById)}
-                  <span className="muted-sub"> · {companyNameById.get(order.companyId) ?? `#${order.companyId}`}</span>
-                </td>
-              </tr>
-            ))}
+            {orders.map((order) => {
+              const isOwn = player != null && order.participantId === player.id
+              const actionable = player != null && !isOwn
+              const remaining = order.quantity - order.filledQuantity
+              const companyName = companyNameById.get(order.companyId) ?? `#${order.companyId}`
+              // The player takes the opposite side: buy a resting sell offer, sell into a resting buy order.
+              const actionLabel =
+                side === 'Sell'
+                  ? `Buy ${remaining} ${companyName} shares at ${formatMoney(order.limitPrice)}`
+                  : `Sell ${remaining} ${companyName} shares at ${formatMoney(order.limitPrice)}`
+              const rowClass = `book-row${actionable ? ' is-actionable' : ''}${isOwn ? ' is-own' : ''}`
+              const handlers = actionable
+                ? {
+                    role: 'button',
+                    tabIndex: 0,
+                    'aria-label': actionLabel,
+                    title: side === 'Sell' ? 'Buy this offer' : 'Sell into this bid',
+                    onClick: () => onTrade(order),
+                    onKeyDown: (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onTrade(order)
+                      }
+                    },
+                  }
+                : {}
+              return (
+                <tr key={order.id} className={rowClass} {...handlers}>
+                  <td className={`num tone-${tone}`}>{formatMoney(order.limitPrice)}</td>
+                  <td className="num ta-r">
+                    {remaining}
+                    <span className="muted-sub">/{order.quantity}</span>
+                  </td>
+                  <td className="cell-ellipsis">
+                    {isOwn ? 'You' : traderName(order.participantId, participantNameById)}
+                    <span className="muted-sub"> · {companyName}</span>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       )}
+    </div>
+  )
+}
+
+// Confirms a player trade against one resting order. The player takes the opposite side at that order's
+// limit; like every order it settles on the next cycle at the midpoint, so this books a competitive order
+// rather than instantly hitting the shown counterparty.
+function TradeOrderModal({ order, player, companyName, currentPrice, onClose, onTraded }) {
+  const takingSellOffer = order.type === 'Sell'
+  const playerSide = takingSellOffer ? 'Buy' : 'Sell'
+  const remaining = order.quantity - order.filledQuantity
+  const [quantity, setQuantity] = useState(String(remaining))
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    function onKeyDown(event) {
+      if (event.key === 'Escape') onClose()
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+    }
+  }, [onClose])
+
+  function onBackdropClick(event) {
+    if (event.target === event.currentTarget) onClose()
+  }
+
+  const quantityNumber = Number(quantity)
+  const validQuantity = Number.isInteger(quantityNumber) && quantityNumber > 0 && quantityNumber <= remaining
+  const total = (validQuantity ? quantityNumber : 0) * order.limitPrice
+
+  // How far the order's limit sits from the live market price, so the player can judge the deal at a glance.
+  const percentDiff =
+    currentPrice != null && currentPrice > 0 ? ((order.limitPrice - currentPrice) / currentPrice) * 100 : null
+  const diffLabel =
+    percentDiff != null
+      ? `${percentDiff > 0 ? '+' : percentDiff < 0 ? '−' : ''}${Math.abs(percentDiff).toFixed(1)}%`
+      : null
+  const diffGlyph = percentDiff == null ? '' : percentDiff > 0 ? '▲' : percentDiff < 0 ? '▼' : '◆'
+  // The deal favors the player when they buy below market or sell above it, which drives the badge colour.
+  const favorable =
+    percentDiff == null || percentDiff === 0 ? null : takingSellOffer ? percentDiff < 0 : percentDiff > 0
+  const diffTone = favorable == null ? 'flat' : favorable ? 'up' : 'down'
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    setError(null)
+    setSubmitting(true)
+    try {
+      await api.placeOrder({
+        participantId: player.id,
+        companyId: order.companyId,
+        type: playerSide,
+        quantity: quantityNumber,
+        limitPrice: order.limitPrice,
+      })
+      await onTraded()
+      onClose()
+    } catch (submitError) {
+      setError(submitError.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onBackdropClick}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label="Trade against order">
+        <header className="modal-head">
+          <div className="command-id">
+            <span className="command-label">Order book</span>
+            <h2 className="command-name">{takingSellOffer ? 'Buy this offer' : 'Sell into this bid'}</h2>
+          </div>
+        </header>
+
+        <form className="modal-body" onSubmit={handleSubmit}>
+          <div className="trade-quote">
+            <span className="map-stat-label">Order price</span>
+            <div className="quote">
+              <span className="quote-last num">{formatMoney(order.limitPrice)}</span>
+              {diffLabel ? (
+                <span className={`quote-change num tone-${diffTone}`} title="Order price versus current market price">
+                  <span aria-hidden="true">{diffGlyph} </span>
+                  {diffLabel} vs market
+                </span>
+              ) : null}
+            </div>
+          </div>
+
+          <dl className="modal-stats">
+            <div>
+              <dt>Company</dt>
+              <dd>{companyName}</dd>
+            </div>
+            <div>
+              <dt>You</dt>
+              <dd className={`tone-${takingSellOffer ? 'up' : 'down'}`}>
+                <span aria-hidden="true">{takingSellOffer ? '▲' : '▼'} </span>
+                {playerSide}
+              </dd>
+            </div>
+            <div>
+              <dt>Market price</dt>
+              <dd className="num">{currentPrice != null ? formatMoney(currentPrice) : '—'}</dd>
+            </div>
+            <div>
+              <dt>Total</dt>
+              <dd className="num">{formatMoney(total)}</dd>
+            </div>
+          </dl>
+
+          <label className="field">
+            <span>Quantity (max {remaining})</span>
+            <input
+              className="select num"
+              type="number"
+              min="1"
+              max={remaining}
+              step="1"
+              value={quantity}
+              onChange={(event) => setQuantity(event.target.value)}
+              autoFocus
+            />
+          </label>
+
+          <p className="note note-sm">
+            Places a matching {playerSide.toLowerCase()} order that fills on the next cycle at the midpoint price.
+          </p>
+
+          {error ? (
+            <p className="command-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+
+          <footer className="modal-foot">
+            <button type="button" className="btn" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-primary" disabled={submitting || !validQuantity}>
+              {submitting ? 'Placing…' : `Place ${playerSide.toLowerCase()} order`}
+            </button>
+          </footer>
+        </form>
+      </div>
     </div>
   )
 }
@@ -1087,7 +1374,7 @@ const TRADER_SORTS = {
   total: (participant) => (participant.currentBalance ?? 0) + (participant.holdingsValue ?? 0),
 }
 
-function ParticipantsPanel({ participants }) {
+function TradersTable({ participants }) {
   const [sortKey, setSortKey] = useState('total')
   const [sortDir, setSortDir] = useState('desc')
   const [typeFilter, setTypeFilter] = useState('all')
@@ -1135,97 +1422,94 @@ function ParticipantsPanel({ participants }) {
     )
   }
 
-  const filterSelect = (
-    <select
-      className="select select-sm"
-      aria-label="Filter traders by type"
-      value={typeFilter}
-      onChange={(event) => setTypeFilter(event.target.value)}
-    >
-      <option value="all">All</option>
-      <option value="AIAgent">AI</option>
-      <option value="Individual">Individual</option>
-      <option value="CollectiveFund">Fund</option>
-      <option value="Player">Player</option>
-    </select>
-  )
+  if (participants.length === 0) {
+    return <p className="note">No participants yet.</p>
+  }
 
   return (
-    <Panel title="Traders" count={`${visible.length}`} className="panel-traders" headerExtra={filterSelect}>
-      {participants.length === 0 ? (
-        <p className="note">No participants yet.</p>
+    <>
+      <div className="tabpanel-toolbar">
+        <p className="trader-stats">
+          {counts.Individual} individuals · {counts.AIAgent} AI · {counts.CollectiveFund} funds
+          {counts.Player > 0 ? ` · ${counts.Player} player` : ''} · Total: {participants.length}
+        </p>
+        <select
+          className="select select-sm"
+          aria-label="Filter traders by type"
+          value={typeFilter}
+          onChange={(event) => setTypeFilter(event.target.value)}
+        >
+          <option value="all">All</option>
+          <option value="AIAgent">AI</option>
+          <option value="Individual">Individual</option>
+          <option value="CollectiveFund">Fund</option>
+          <option value="Player">Player</option>
+        </select>
+      </div>
+      {visible.length === 0 ? (
+        <p className="note">No traders of this type.</p>
       ) : (
-        <>
-          <p className="trader-stats">
-            {counts.Individual} individuals · {counts.AIAgent} AI · {counts.CollectiveFund} funds
-            {counts.Player > 0 ? ` · ${counts.Player} player` : ''} · Total: {participants.length}
-          </p>
-          {visible.length === 0 ? (
-            <p className="note">No traders of this type.</p>
-          ) : (
-            <div className="tbl-scroll">
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th scope="col">Name</th>
-                    <th scope="col">Type</th>
-                    <th scope="col" className="ta-r">
-                      Shares
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Type</th>
+                <th scope="col" className="ta-r">
+                  Shares
+                </th>
+                {sortableHeader('balance', 'Current balance')}
+                {sortableHeader('estimation', 'Holdings (est.)', 'Estimated market value of shares held')}
+                {sortableHeader('total', 'Total', 'Current balance plus holdings estimation')}
+                <th scope="col" className="ta-r">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((participant) => {
+                const estimation = participant.holdingsValue ?? 0
+                const total = (participant.currentBalance ?? 0) + estimation
+                return (
+                  <tr key={participant.id}>
+                    <th scope="row">
+                      <span className="cell-trader">
+                        <span className="cell-ellipsis">{participant.name}</span>
+                        {participant.type === 'CollectiveFund' ? (
+                          <span className="tag tag-collective">Fund</span>
+                        ) : null}
+                        {participant.type === 'Player' ? <span className="tag">Player</span> : null}
+                        {participant.isBankrupt ? (
+                          <span className="tag tag-bankrupt">Bankrupt</span>
+                        ) : null}
+                      </span>
                     </th>
-                    {sortableHeader('balance', 'Current balance')}
-                    {sortableHeader('estimation', 'Holdings (est.)', 'Estimated market value of shares held')}
-                    {sortableHeader('total', 'Total', 'Current balance plus holdings estimation')}
-                    <th scope="col" className="ta-r">
-                      Actions
-                    </th>
+                    <td>
+                      <span className="tag">{TYPE_LABEL[participant.type] ?? participant.type}</span>
+                    </td>
+                    <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
+                    <td className="num ta-r">{formatMoney(participant.currentBalance)}</td>
+                    <td className="num ta-r">{formatMoney(estimation)}</td>
+                    <td className="num ta-r">{formatMoney(total)}</td>
+                    <td className="ta-r">
+                      <a
+                        className="cell-link"
+                        href={`/participants/${participant.id}`}
+                        target="_blank"
+                        rel="noopener"
+                        aria-label={`Open ${participant.name} page in a new tab`}
+                      >
+                        Open page<span aria-hidden="true"> ↗</span>
+                      </a>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {visible.map((participant) => {
-                    const estimation = participant.holdingsValue ?? 0
-                    const total = (participant.currentBalance ?? 0) + estimation
-                    return (
-                      <tr key={participant.id}>
-                        <th scope="row">
-                          <span className="cell-trader">
-                            <span className="cell-ellipsis">{participant.name}</span>
-                            {participant.type === 'CollectiveFund' ? (
-                              <span className="tag tag-collective">Fund</span>
-                            ) : null}
-                            {participant.type === 'Player' ? <span className="tag">Player</span> : null}
-                            {participant.isBankrupt ? (
-                              <span className="tag tag-bankrupt">Bankrupt</span>
-                            ) : null}
-                          </span>
-                        </th>
-                        <td>
-                          <span className="tag">{TYPE_LABEL[participant.type] ?? participant.type}</span>
-                        </td>
-                        <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
-                        <td className="num ta-r">{formatMoney(participant.currentBalance)}</td>
-                        <td className="num ta-r">{formatMoney(estimation)}</td>
-                        <td className="num ta-r">{formatMoney(total)}</td>
-                        <td className="ta-r">
-                          <a
-                            className="cell-link"
-                            href={`/participants/${participant.id}`}
-                            target="_blank"
-                            rel="noopener"
-                            aria-label={`Open ${participant.name} page in a new tab`}
-                          >
-                            Open page<span aria-hidden="true"> ↗</span>
-                          </a>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
-    </Panel>
+    </>
   )
 }
 
@@ -1423,7 +1707,7 @@ function MarketMapPanel({ companies, participants, lastDividendTotal, onSelectCo
 
 const ACTIVITY_WINDOW = 48
 
-function ActivityPanel({ activity }) {
+function ActivityBody({ activity }) {
   // The first cycle can hold a large backlog of orders, so the chart shows a recent window to keep
   // the scale readable; the total stays all-time.
   const points = activity.slice(-ACTIVITY_WINDOW)
@@ -1432,24 +1716,19 @@ function ActivityPanel({ activity }) {
   const peak = windowCounts.length ? Math.max(...windowCounts) : 0
   const hasDividend = points.some((point) => point.paidDividend)
 
+  if (points.length < 2) {
+    return <p className="note">Start the loop or step a cycle to see orders placed per loop.</p>
+  }
+
   return (
-    <Panel
-      title="Market activity"
-      count={`${formatInt(total)} orders`}
-      className="panel-activity"
-    >
-      {points.length < 2 ? (
-        <p className="note">Start the loop or step a cycle to see orders placed per loop.</p>
-      ) : (
-        <>
-          <div className="quote">
-            <span className="muted-sub">Peak {formatInt(peak)} in last {points.length}</span>
-            {hasDividend ? <span className="activity-legend">dividend cycle</span> : null}
-          </div>
-          <ActivityChart points={points} />
-        </>
-      )}
-    </Panel>
+    <>
+      <p className="tabpanel-meta">{formatInt(total)} orders</p>
+      <div className="quote">
+        <span className="muted-sub">Peak {formatInt(peak)} in last {points.length}</span>
+        {hasDividend ? <span className="activity-legend">dividend cycle</span> : null}
+      </div>
+      <ActivityChart points={points} />
+    </>
   )
 }
 
@@ -1543,15 +1822,16 @@ function ActivityChart({ points }) {
   )
 }
 
-function TradeTapePanel({ transactions, participantNameById, companyNameById }) {
+function TradeTapeTable({ transactions, participantNameById, companyNameById }) {
   const rows = transactions.slice(0, 14)
+  if (transactions.length === 0) {
+    return <p className="note">No trades yet.</p>
+  }
   return (
-    <Panel title="Trade tape" count={`${transactions.length} settled`} className="panel-tape">
-      {transactions.length === 0 ? (
-        <p className="note">No trades yet.</p>
-      ) : (
-        <div className="tbl-scroll">
-          <table className="tbl">
+    <>
+      <p className="tabpanel-meta">{transactions.length} settled</p>
+      <div className="tbl-scroll">
+        <table className="tbl">
             <thead>
               <tr>
                 <th scope="col">Company</th>
@@ -1588,8 +1868,7 @@ function TradeTapePanel({ transactions, participantNameById, companyNameById }) 
             </tbody>
           </table>
         </div>
-      )}
-    </Panel>
+    </>
   )
 }
 
