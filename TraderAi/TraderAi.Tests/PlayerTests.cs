@@ -160,10 +160,10 @@ public sealed class PlayerTests : IDisposable
 
         await market.StepCycleAsync();
 
-        // 10 shares at price 100 with the floor rate (0.1%) pay 0.10 each, so 1.00 in total.
+        // 10 shares at price 100 with the floor rate (0.01%) pay 0.01 each, so 0.10 in total.
         var dividend = await context.MoneyTransactions.SingleAsync(money =>
             money.ParticipantId == player.Id && money.Type == MoneyTransactionType.Dividend);
-        Assert.Equal(1m, dividend.Amount);
+        Assert.Equal(0.1m, dividend.Amount);
         Assert.Equal(dueCycleId, dividend.CreatedInCycleId);
     }
 
@@ -243,12 +243,12 @@ public sealed class PlayerTests : IDisposable
         var previous = snapshots[0];
         var latest = snapshots[1];
         Assert.Equal(startingBalance, previous.Balance);
-        Assert.Equal(startingBalance + 1m, latest.Balance);
+        Assert.Equal(startingBalance + 0.1m, latest.Balance);
 
         var moneyChange = latest.Balance - previous.Balance;
         var worthChange = (latest.Balance + latest.HoldingsValue) - (previous.Balance + previous.HoldingsValue);
-        Assert.Equal(1m, moneyChange);
-        Assert.Equal(1m, worthChange);
+        Assert.Equal(0.1m, moneyChange);
+        Assert.Equal(0.1m, worthChange);
     }
 
     // Behavior 6: cancelling a player buy releases the reserved cash and records a Release transaction.

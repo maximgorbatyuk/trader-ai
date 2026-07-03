@@ -16,7 +16,7 @@ Each share is stored as a separate row and has one current owner.
 - An unfilled order is cancelled automatically once it has rested for too many cycles; cancelling a buy releases its reserved cash and cancelling a sell frees its shares to be listed again.
 - While unfilled, a stale order is re-priced toward the market on each later cycle so it has a chance to fill before that cancellation cap.
 - A holder that cannot afford any share for several consecutive cycles sells down its most valuable holding to raise cash.
-- Every share owner is paid a dividend at a recurring interval, sized as a small percentage of each held share's current price and credited straight to the owner's balance.
+- Share owners are paid a dividend at a recurring interval: each company sets aside a small percentage of its total market value and shares it evenly across all its shares, credited straight to each owner's balance in proportion to its holding. A company pays when a window comes due only if it clears a chance that is high while its market value has been steady and low once it has swung sharply, and a stock split leaves what a holder collects unchanged.
 - While the market runs, a news event is published automatically every fixed number of cycles; some carry market impact.
 - News events can also be created manually, with a chosen target and impact.
 - A news event with impact moves the share price of either a single company or every company in one or more industries, up or down, by a percentage of the current price (automated events up to 10%, manually created events up to 95%).

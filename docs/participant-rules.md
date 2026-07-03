@@ -105,9 +105,10 @@ Each cycle, every active automated trader makes one choice: buy, sell, or do not
 
 ## Dividends
 
-- Every share owner is paid a dividend every ten to twenty-five cycles.
-- The payout is 0.1% to 2% of each held share's current price.
-- It is credited straight to the owner's balance.
+- A dividend window comes due every ten to twenty-five cycles.
+- Each company sets aside 0.01% to 0.5% of its total market value and shares it evenly across all its shares, so a share owner is paid in proportion to how many shares it holds. A stock split leaves what a holder collects unchanged: it holds more shares, but each pays proportionally less.
+- A company does not always pay when a window comes due. If its market value has held roughly steady since the last window (within about five percent), it pays with a high chance; if its value has swung sharply, it pays with a much lower one.
+- Payouts are credited straight to the owner's balance.
 
 ## Bankruptcy
 

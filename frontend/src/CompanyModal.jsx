@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from './api'
-import { formatInt, formatMoney, toneOf } from './format'
+import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { LineChart } from './LineChart'
 
 const POLL_INTERVAL_MS = 1000
@@ -252,7 +252,12 @@ export function CompanyModal({ company, participantNameById, onClose }) {
           {capValues.length < 2 ? (
             <p className="note">Not enough capitalization history yet. Start the loop or step a cycle to record trades.</p>
           ) : (
-            <LineChart values={capValues.slice(-32)} tone={toneOf(capSeriesChange)} />
+            <LineChart
+              values={capValues.slice(-32)}
+              tone={toneOf(capSeriesChange)}
+              formatValue={formatCompactMoney}
+              label="Capitalization history"
+            />
           )}
 
           <dl className="modal-stats">

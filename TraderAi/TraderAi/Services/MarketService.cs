@@ -86,12 +86,19 @@ public sealed class MarketService(
     // (cash plus holdings). The debt surfaces as a negative balance, which incoming cash then pays down first.
     private const decimal DebtLimitFraction = 0.20m;
 
-    // Dividends are paid at a random interval drawn in this range and credited at a per-company rate
-    // drawn in [MinDividendRate, MaxDividendRate] of the share's current price.
+    // Dividends are paid at a random interval drawn in this range. Each paying company draws a rate in
+    // [MinDividendRate, MaxDividendRate] of its capitalisation for the whole payout pool, split evenly across
+    // its issued shares — so per share it works out to rate × price and a stock split cuts it proportionally.
     private const int MinDividendIntervalCycles = 10;
     private const int MaxDividendIntervalCycles = 25;
-    private const decimal MinDividendRate = 0.001m;
-    private const decimal MaxDividendRate = 0.02m;
+    private const decimal MinDividendRate = 0.0001m;
+    private const decimal MaxDividendRate = 0.005m;
+
+    // A company pays this window only if a per-company roll passes; the chance is high while its capitalisation
+    // is stable and low once it has moved sharply, so payouts thin out during volatile stretches.
+    private const decimal StableCapitalizationChance = 0.75m;
+    private const decimal VolatileCapitalizationChance = 0.25m;
+    private const decimal CapitalizationStabilityThreshold = 0.05m;
 
     // Anti-inflation ceiling on the total dividend cash one company injects per payout. Above it the effective
     // yield compresses toward zero as the company grows, so dividend injection stops tracking an ever-rising
@@ -457,6 +464,9 @@ public sealed class MarketService(
         await PayDividendsAsync(currentCycle.Id, now);
     }
 
+    // Draw discipline for a scripted Random: companies are walked in ascending Id order, and each one with a
+    // price draws exactly one NextDouble for its pay-or-skip roll; a company that pays then draws one more for
+    // its rate. Skipped companies draw nothing further.
     private async Task PayDividendsAsync(int currentCycleId, DateTime now)
     {
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
@@ -465,16 +475,40 @@ public sealed class MarketService(
             return;
         }
 
-        // Each company declares its own rate this round, so all its shares pay the same per-share amount.
-        var rateByCompany = latestPriceByCompany.Keys.ToDictionary(companyId => companyId, _ => RandomDividendRate());
+        var pricedCompanyIds = latestPriceByCompany.Keys.ToList();
+        var companies = await dbContext.Companies
+            .Where(company => pricedCompanyIds.Contains(company.Id))
+            .OrderBy(company => company.Id)
+            .ToListAsync();
 
+        // Each priced company rolls whether to pay this window and, if it pays, declares its own rate; every
+        // company's capitalisation baseline is refreshed either way so the next window measures from here.
+        var rateByCompany = new Dictionary<int, decimal>();
+        foreach (var company in companies)
+        {
+            var capitalization = latestPriceByCompany[company.Id] * company.IssuedSharesCount;
+            if (RollPaysDividend(company.LastDividendCapitalization, capitalization))
+            {
+                rateByCompany[company.Id] = RandomDividendRate();
+            }
+
+            company.LastDividendCapitalization = capitalization;
+        }
+
+        if (rateByCompany.Count == 0)
+        {
+            return;
+        }
+
+        var payingCompanyIds = rateByCompany.Keys.ToList();
         var holdings = await dbContext.Holdings
-            .Where(holding => holding.Quantity > 0)
+            .Where(holding => holding.Quantity > 0 && payingCompanyIds.Contains(holding.CompanyId))
             .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
             .ToListAsync();
 
-        // Compress each company's rate so its total payout never tops the ceiling: above it the effective yield
-        // falls as the company grows, capping new-cash injection instead of letting it track the market cap.
+        // A company's pool is rate × capitalisation shared evenly over its issued shares, i.e. rate × price per
+        // share; compress the rate so the total paid to holders never tops the ceiling, capping new-cash
+        // injection instead of letting it track an ever-rising market cap.
         var effectiveRateByCompany = holdings
             .GroupBy(holding => holding.CompanyId)
             .ToDictionary(
@@ -550,6 +584,18 @@ public sealed class MarketService(
 
     private decimal RandomDividendRate() =>
         MinDividendRate + ((decimal)random.NextDouble() * (MaxDividendRate - MinDividendRate));
+
+    // A company pays with the high chance while its capitalisation has held within the stability band since the
+    // last window (and on its first window, when there is no baseline yet), and the low chance once it moved
+    // past the band — a proxy for skipping dividends during turbulent stretches. Always draws once.
+    private bool RollPaysDividend(decimal? baselineCapitalization, decimal capitalization)
+    {
+        var stable = baselineCapitalization is not decimal baseline
+            || baseline <= 0m
+            || Math.Abs(capitalization - baseline) / baseline <= CapitalizationStabilityThreshold;
+        var chance = stable ? StableCapitalizationChance : VolatileCapitalizationChance;
+        return (decimal)random.NextDouble() < chance;
+    }
 
     // Reprice probability climbs as the order ages: modest while fresh, then near-certain near the cap.
     private static double RepriceChance(int age) => age switch
@@ -868,7 +914,9 @@ public sealed class MarketService(
             .GroupBy(order => order.CompanyId)
             .ToDictionary(
                 group => group.Key,
-                group => group.Sum(order => order.Type == OrderType.Buy ? order.Remaining : -order.Remaining));
+                // Sum in long: aggregate remaining buy demand across all participants for one company is
+                // unbounded by share count and overflows a 32-bit accumulator on a hot company.
+                group => group.Sum(order => order.Type == OrderType.Buy ? (long)order.Remaining : -(long)order.Remaining));
 
         var cycleNumbersById = await dbContext.MarketCycles
             .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
@@ -898,7 +946,7 @@ public sealed class MarketService(
                     group.Key,
                     latest.Price,
                     changePct,
-                    netDemandByCompany.GetValueOrDefault(group.Key),
+                    (int)Math.Clamp(netDemandByCompany.GetValueOrDefault(group.Key), int.MinValue, int.MaxValue),
                     longRangeChangePct);
             })
             .ToList();

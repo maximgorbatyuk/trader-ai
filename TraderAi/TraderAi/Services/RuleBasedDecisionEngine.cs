@@ -295,7 +295,9 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
             return null;
         }
 
-        var maxAffordable = (int)Math.Floor(context.AvailableCash / buyLimit);
+        // Cash divided by a low post-split price can exceed the 32-bit order-quantity field; clamp before
+        // the checked decimal-to-int cast so an affordable count past the limit cannot overflow.
+        var maxAffordable = (int)Math.Clamp(Math.Floor(context.AvailableCash / buyLimit), 0m, int.MaxValue);
         var quantity = tradeSizer.Size(context.Participant.Temperament, maxAffordable);
         return quantity >= 1
             ? new OrderIntent(OrderType.Buy, quote.CompanyId, quantity, buyLimit)

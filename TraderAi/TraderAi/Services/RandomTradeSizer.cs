@@ -17,7 +17,9 @@ public sealed class RandomTradeSizer(Random random) : ITradeSizer
             return 0;
         }
 
-        var baseline = random.Next(1, maxQuantity + 1);
+        // Next's upper bound is exclusive; guard the +1 so a cap at the 32-bit max cannot overflow it.
+        var upperExclusive = maxQuantity == int.MaxValue ? maxQuantity : maxQuantity + 1;
+        var baseline = random.Next(1, upperExclusive);
 
         var scaled = temperament switch
         {
