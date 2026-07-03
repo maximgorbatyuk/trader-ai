@@ -1049,6 +1049,17 @@
   background: var(--surface-2);
 }
 
+/* The row whose detail is open below the Traders table: a surface tint plus an inset left bar so the
+   selection reads by shape, not colour alone. */
+.tbl tbody tr.is-selected th,
+.tbl tbody tr.is-selected td {
+  background: var(--surface-3);
+}
+
+.tbl tbody tr.is-selected th:first-child {
+  box-shadow: inset 3px 0 0 var(--border-2);
+}
+
 .tbl tbody th {
   color: var(--ink);
   font-weight: 600;
@@ -1934,4 +1945,26 @@
   padding: 6px 8px;
   font-size: var(--t-sm);
   color: var(--muted);
+}
+
+/* ---- Traders / Companies page detail block ---- */
+.detail-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin-top: var(--s-4);
+}
+
+.detail-stack > .command,
+.detail-stack > .grid-detail {
+  margin-bottom: 0;
+}
+
+.traders-hint {
+  margin-top: var(--s-4);
+}
+
+/* Short summary dialog opened from the dashboard Traders table. */
+.modal-compact {
+  width: min(460px, 100%);
 }

@@ -92,6 +92,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasIndex(cycle => cycle.CycleNumber)
             .IsUnique();
 
+        // Worth snapshots are read back per trader in cycle order to chart total worth over time.
+        modelBuilder.Entity<ParticipantWorthSnapshot>()
+            .HasIndex(snapshot => new { snapshot.ParticipantId, snapshot.CreatedInCycleId });
+
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
             foreach (var property in entityType.GetProperties())

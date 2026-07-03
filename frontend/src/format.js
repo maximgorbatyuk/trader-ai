@@ -36,3 +36,13 @@ export function toneOf(value) {
   if (typeof value !== 'number' || value === 0) return 'flat'
   return value > 0 ? 'up' : 'down'
 }
+
+// Short, column-friendly labels for the participant-type enum, shared by the traders table and its summary
+// modal. The trader detail block uses its own longer labels.
+export const TRADER_TYPE_LABEL = {
+  Individual: 'Individual',
+  Company: 'Company',
+  AIAgent: 'AI',
+  CollectiveFund: 'Fund',
+  Player: 'Player',
+}

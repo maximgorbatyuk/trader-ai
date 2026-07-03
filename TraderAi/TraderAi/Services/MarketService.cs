@@ -676,9 +676,9 @@ public sealed class MarketService(
         dbContext.MarketCycles.Add(nextCycle);
         await dbContext.SaveChangesAsync();
 
-        // Runs once this cycle's fills and shocks are persisted so the player's holdings reflect final prices;
+        // Runs once this cycle's fills and shocks are persisted so each trader's holdings reflect final prices;
         // the added rows flush with the market update below, inside the advance transaction.
-        await WritePlayerWorthSnapshotsAsync(currentCycle.Id, now);
+        await WriteWorthSnapshotsAsync(currentCycle.Id, now);
 
         market.CurrentCycleId = nextCycle.Id;
         market.UpdatedAt = now;
@@ -689,23 +689,20 @@ public sealed class MarketService(
         return AdvanceCycleResult.Ok(currentCycle.CycleNumber, fillCount);
     }
 
-    // Records each player's cash and holdings value for the just-completed cycle so per-cycle change figures
-    // can be derived later. Skips all work when no player exists, since snapshots are a player-only concept.
-    private async Task WritePlayerWorthSnapshotsAsync(int completedCycleId, DateTime now)
+    // Records each trader's cash and holdings value for the just-completed cycle so per-cycle change figures
+    // and the total-worth chart can be derived later. Every participant is captured, not just the human player.
+    private async Task WriteWorthSnapshotsAsync(int completedCycleId, DateTime now)
     {
-        var players = await dbContext.Participants
-            .Where(participant => participant.Type == ParticipantType.Player)
-            .ToListAsync();
-        if (players.Count == 0)
+        var participants = await dbContext.Participants.ToListAsync();
+        if (participants.Count == 0)
         {
             return;
         }
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
-        var playerIds = players.Select(player => player.Id).ToList();
 
         var holdingsByOwner = (await dbContext.Shares
-                .Where(share => share.OwnerId != null && playerIds.Contains(share.OwnerId.Value))
+                .Where(share => share.OwnerId != null)
                 .Select(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId })
                 .ToListAsync())
             .GroupBy(share => share.OwnerId)
@@ -715,17 +712,17 @@ public sealed class MarketService(
                     .GroupBy(share => share.CompanyId)
                     .ToDictionary(companyGroup => companyGroup.Key, companyGroup => companyGroup.Count()));
 
-        foreach (var player in players)
+        foreach (var participant in participants)
         {
-            var holdingsValue = holdingsByOwner.TryGetValue(player.Id, out var holdings)
+            var holdingsValue = holdingsByOwner.TryGetValue(participant.Id, out var holdings)
                 ? holdings.Sum(holding => holding.Value * latestPriceByCompany.GetValueOrDefault(holding.Key))
                 : 0m;
 
             dbContext.ParticipantWorthSnapshots.Add(new ParticipantWorthSnapshot
             {
-                ParticipantId = player.Id,
+                ParticipantId = participant.Id,
                 CreatedInCycleId = completedCycleId,
-                Balance = player.CurrentBalance,
+                Balance = participant.CurrentBalance,
                 HoldingsValue = holdingsValue,
                 CreatedAt = now,
             });

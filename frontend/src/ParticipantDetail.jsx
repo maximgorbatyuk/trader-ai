@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { Panel } from './Panel'
+import { LineChart } from './LineChart'
 
 const POLL_INTERVAL_MS = 2500
+const WORTH_HISTORY_POINTS = 64
 const TEMPERAMENTS = ['Aggressive', 'Balanced', 'Conservative']
 const RISK_PROFILES = ['High', 'Medium', 'Low']
 const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund', Player: 'Player' }
@@ -17,10 +19,10 @@ function fundStatusClass(status) {
   return 'tag'
 }
 
-function ParticipantPage() {
-  const { id } = useParams()
-  const participantId = Number(id)
-
+// The trader detail block: identity, a total-worth chart, editable profile, bank statement, holdings, orders,
+// cash movements, and trades. Owns its own polling keyed on participantId so it can sit under the Traders
+// table and swap as the selected trader changes.
+export function ParticipantDetail({ participantId }) {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [detail, setDetail] = useState(null)
@@ -29,6 +31,7 @@ function ParticipantPage() {
   const [trades, setTrades] = useState([])
   const [cashMoves, setCashMoves] = useState([])
   const [companies, setCompanies] = useState([])
+  const [worthHistory, setWorthHistory] = useState([])
 
   // The profile selects are editable, so polling must not overwrite an unsaved edit.
   const [form, setForm] = useState({ temperament: '', riskProfile: '' })
@@ -42,13 +45,14 @@ function ParticipantPage() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, holdingsData, orderData, tradeData, cashData, companyData] = await Promise.all([
+      const [detailData, holdingsData, orderData, tradeData, cashData, companyData, worthData] = await Promise.all([
         api.getParticipant(participantId),
         api.getHoldings(participantId),
         api.getParticipantOrders(participantId),
         api.getParticipantShareTransactions(participantId),
         api.getParticipantMoneyTransactions(participantId),
         api.getCompanies(),
+        api.getParticipantWorthHistory(participantId),
       ])
 
       setDetail(detailData)
@@ -57,6 +61,7 @@ function ParticipantPage() {
       setTrades(tradeData)
       setCashMoves(cashData)
       setCompanies(companyData)
+      setWorthHistory(worthData ?? [])
       setLoadError(null)
 
       if (!dirtyRef.current && detailData) {
@@ -103,112 +108,124 @@ function ParticipantPage() {
   const costBasis = holdings.reduce((sum, holding) => sum + holding.costBasis, 0)
   const holdingsPnl = marketValue - costBasis
 
+  if (!ready) {
+    return (
+      <section className="placeholder" aria-busy="true">
+        <span className="spinner" aria-hidden="true" />
+        <p>Loading trader…</p>
+      </section>
+    )
+  }
+
+  if (detail === null) {
+    return (
+      <div className="banner" role="alert">
+        <strong>Couldn&apos;t load this trader.</strong>
+        <span>{loadError ?? 'Pick another trader from the table.'}</span>
+      </div>
+    )
+  }
+
   return (
-    <div className="app">
-      <header className="topbar">
-        <Link className="brand" to="/" aria-label="Back to the Trader AI dashboard">
-          <span className="brand-mark" aria-hidden="true">
-            TA
-          </span>
-          <span className="brand-name">Trader&nbsp;AI</span>
-          <span className="brand-tag" aria-hidden="true">
-            Participant
-          </span>
-        </Link>
-        <Link className="btn" to="/">
-          ← Dashboard
-        </Link>
-      </header>
+    <section className="detail-stack" aria-label={`${detail.name} details`}>
+      {loadError ? (
+        <div className="banner" role="alert">
+          <strong>Showing last known state.</strong>
+          <span>{loadError}</span>
+        </div>
+      ) : null}
 
-      <main className="main participant-page">
-        {!ready ? (
-          <section className="placeholder" aria-busy="true">
-            <span className="spinner" aria-hidden="true" />
-            <p>Loading participant…</p>
-          </section>
-        ) : detail === null ? (
-          <div className="banner" role="alert">
-            <strong>Couldn&apos;t load this participant.</strong>
-            <span>{loadError ?? 'Try again from the dashboard.'}</span>
+      <section className="command" aria-label="Trader identity">
+        <div className="command-id">
+          <span className="command-label">{TYPE_LABEL[detail.type] ?? detail.type}</span>
+          <h2 className="command-name">{detail.name}</h2>
+          {detail.collectiveFundStatus ? (
+            <span className={fundStatusClass(detail.collectiveFundStatus)}>
+              {FUND_STATUS_LABEL[detail.collectiveFundStatus] ?? detail.collectiveFundStatus}
+            </span>
+          ) : null}
+          {detail.memberOfCollectiveFundId ? (
+            <p className="command-member">
+              Member of{' '}
+              <Link className="cell-link" to={`/traders?trader=${detail.memberOfCollectiveFundId}`}>
+                {detail.memberOfCollectiveFundName ?? 'a collective fund'}
+              </Link>
+            </p>
+          ) : null}
+        </div>
+        <dl className="statbar">
+          <div className="stat">
+            <dt>Total worth</dt>
+            <dd className="num">{formatMoney(detail.currentBalance + marketValue)}</dd>
           </div>
-        ) : (
-          <>
-            {loadError ? (
-              <div className="banner" role="alert">
-                <strong>Showing last known state.</strong>
-                <span>{loadError}</span>
-              </div>
-            ) : null}
+          <div className="stat">
+            <dt>Available</dt>
+            <dd className="num">{formatMoney(detail.availableBalance)}</dd>
+          </div>
+          <div className="stat">
+            <dt>Shares owned</dt>
+            <dd className="num">{formatInt(detail.sharesOwned)}</dd>
+          </div>
+          <div className="stat">
+            <dt>Holdings value</dt>
+            <dd className="num">{formatMoney(marketValue)}</dd>
+          </div>
+          <div className="stat">
+            <dt>Unrealized P/L</dt>
+            <dd className={`num tone-${toneOf(holdingsPnl)}`}>{formatSigned(holdingsPnl)}</dd>
+          </div>
+        </dl>
+      </section>
 
-            <section className="command" aria-label="Participant identity">
-              <div className="command-id">
-                <span className="command-label">{TYPE_LABEL[detail.type] ?? detail.type}</span>
-                <h1 className="command-name">{detail.name}</h1>
-                {detail.collectiveFundStatus ? (
-                  <span className={fundStatusClass(detail.collectiveFundStatus)}>
-                    {FUND_STATUS_LABEL[detail.collectiveFundStatus] ?? detail.collectiveFundStatus}
-                  </span>
-                ) : null}
-                {detail.memberOfCollectiveFundId ? (
-                  <p className="command-member">
-                    Member of{' '}
-                    <Link className="cell-link" to={`/participants/${detail.memberOfCollectiveFundId}`}>
-                      {detail.memberOfCollectiveFundName ?? 'a collective fund'}
-                    </Link>
-                  </p>
-                ) : null}
-              </div>
-              <dl className="statbar">
-                <div className="stat">
-                  <dt>Available</dt>
-                  <dd className="num">{formatMoney(detail.availableBalance)}</dd>
-                </div>
-                <div className="stat">
-                  <dt>Shares owned</dt>
-                  <dd className="num">{formatInt(detail.sharesOwned)}</dd>
-                </div>
-                <div className="stat">
-                  <dt>Holdings value</dt>
-                  <dd className="num">{formatMoney(marketValue)}</dd>
-                </div>
-                <div className="stat">
-                  <dt>Unrealized P/L</dt>
-                  <dd className={`num tone-${toneOf(holdingsPnl)}`}>{formatSigned(holdingsPnl)}</dd>
-                </div>
-              </dl>
-            </section>
+      <WorthChartPanel worthHistory={worthHistory} />
 
-            {detail.collectiveFundStatus ? (
-              <MembersPanel members={detail.collectiveFundMembers ?? []} />
-            ) : null}
+      {detail.collectiveFundStatus ? (
+        <MembersPanel members={detail.collectiveFundMembers ?? []} />
+      ) : null}
 
-            <div className="grid-detail">
-              <ProfilePanel
-                form={form}
-                dirty={dirty}
-                saving={saving}
-                saveError={saveError}
-                onChange={(field, value) => {
-                  setForm((current) => ({ ...current, [field]: value }))
-                  setDirty(true)
-                }}
-                onSave={handleSave}
-              />
-              <BankPanel detail={detail} marketValue={marketValue} costBasis={costBasis} holdingsPnl={holdingsPnl} />
-            </div>
+      <div className="grid-detail">
+        <ProfilePanel
+          form={form}
+          dirty={dirty}
+          saving={saving}
+          saveError={saveError}
+          onChange={(field, value) => {
+            setForm((current) => ({ ...current, [field]: value }))
+            setDirty(true)
+          }}
+          onSave={handleSave}
+        />
+        <BankPanel detail={detail} marketValue={marketValue} costBasis={costBasis} holdingsPnl={holdingsPnl} />
+      </div>
 
-            <HoldingsPanel holdings={holdings} />
+      <HoldingsPanel holdings={holdings} />
 
-            <div className="grid-detail">
-              <OrdersPanel orders={orders} companyName={companyName} />
-              <CashPanel moves={cashMoves} />
-            </div>
+      <div className="grid-detail">
+        <OrdersPanel orders={orders} companyName={companyName} />
+        <CashPanel moves={cashMoves} />
+      </div>
 
-            <TradesPanel trades={trades} participantId={participantId} companyName={companyName} />
-          </>
-        )}
-      </main>
-    </div>
+      <TradesPanel trades={trades} participantId={participantId} companyName={companyName} />
+    </section>
+  )
+}
+
+function WorthChartPanel({ worthHistory }) {
+  const values = worthHistory.map((point) => point.totalWorth)
+  const change = values.length >= 2 ? values.at(-1) - values.at(0) : 0
+
+  return (
+    <Panel
+      title="Total worth"
+      count={`${worthHistory.length} snapshot${worthHistory.length === 1 ? '' : 's'}`}
+      className="panel-worth"
+    >
+      {values.length < 2 ? (
+        <p className="note">Not enough history yet. Total worth is recorded once per completed cycle.</p>
+      ) : (
+        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} />
+      )}
+    </Panel>
   )
 }
 
@@ -312,7 +329,7 @@ function MembersPanel({ members }) {
               {members.map((member) => (
                 <tr key={member.participantId}>
                   <th scope="row" className="cell-ellipsis">
-                    <Link className="cell-link" to={`/participants/${member.participantId}`}>
+                    <Link className="cell-link" to={`/traders?trader=${member.participantId}`}>
                       {member.name}
                     </Link>
                   </th>
@@ -341,7 +358,7 @@ function HoldingsPanel({ holdings }) {
   return (
     <Panel title="Shares by company" count={`${formatInt(totalShares)} shares`} className="panel-holdings">
       {holdings.length === 0 ? (
-        <p className="note">This participant holds no shares.</p>
+        <p className="note">This trader holds no shares.</p>
       ) : (
         <div className="tbl-scroll">
           <table className="tbl">
@@ -511,5 +528,3 @@ function CashPanel({ moves }) {
     </Panel>
   )
 }
-
-export default ParticipantPage

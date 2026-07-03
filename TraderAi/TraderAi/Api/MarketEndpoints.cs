@@ -169,6 +169,11 @@ public static class MarketEndpoints
                 group => group.Key,
                 group => group.Sum(holding => holding.Count));
 
+            // Distinct companies a trader holds shares in — one group per company after the owner+company grouping.
+            var companiesOwnedByParticipant = holdingsByOwner.ToDictionary(
+                group => group.Key,
+                group => group.Count());
+
             // Estimated market value of a trader's shares: each holding valued at its company's latest price.
             var holdingsValueByParticipant = holdingsByOwner.ToDictionary(
                 group => group.Key,
@@ -186,6 +191,7 @@ public static class MarketEndpoints
                     participant.ReservedBalance,
                     participant.AvailableBalance,
                     sharesOwnedByParticipant.GetValueOrDefault(participant.Id),
+                    companiesOwnedByParticipant.GetValueOrDefault(participant.Id),
                     holdingsValueByParticipant.GetValueOrDefault(participant.Id),
                     participant.IsActive,
                     participant.IsBankrupt))
@@ -292,6 +298,33 @@ public static class MarketEndpoints
                     transaction.RelatedShareTransactionId,
                     transaction.CreatedInCycleId,
                     transaction.CreatedAt))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/participants/{participantId:int}/worth-history", async (int participantId, int? take, AppDbContext dbContext) =>
+        {
+            // Newest first for the cap, then flipped to chronological so the chart reads left-to-right.
+            var limit = Math.Clamp(take ?? 200, 1, 1000);
+            var snapshots = await dbContext.ParticipantWorthSnapshots
+                .Where(snapshot => snapshot.ParticipantId == participantId)
+                .OrderByDescending(snapshot => snapshot.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            var cycleNumberById = await dbContext.MarketCycles
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+            var response = snapshots
+                .OrderBy(snapshot => snapshot.Id)
+                .Select(snapshot => new ParticipantWorthPointResponse(
+                    snapshot.CreatedInCycleId,
+                    cycleNumberById.GetValueOrDefault(snapshot.CreatedInCycleId),
+                    snapshot.Balance,
+                    snapshot.HoldingsValue,
+                    snapshot.Balance + snapshot.HoldingsValue,
+                    snapshot.CreatedAt))
                 .ToArray();
 
             return Results.Ok(response);
@@ -1014,6 +1047,7 @@ public sealed record ParticipantResponse(
     decimal ReservedBalance,
     decimal AvailableBalance,
     int SharesOwned,
+    int CompaniesOwned,
     decimal HoldingsValue,
     bool IsActive,
     bool IsBankrupt);
@@ -1114,6 +1148,14 @@ public sealed record ShareTransactionResponse(
     DateTime CreatedAt);
 
 public sealed record PriceSnapshotResponse(int Id, int CompanyId, decimal Price, int CreatedInCycleId, DateTime CreatedAt);
+
+public sealed record ParticipantWorthPointResponse(
+    int CreatedInCycleId,
+    int CycleNumber,
+    decimal Balance,
+    decimal HoldingsValue,
+    decimal TotalWorth,
+    DateTime CreatedAt);
 
 public sealed record NewsPostResponse(
     int Id,

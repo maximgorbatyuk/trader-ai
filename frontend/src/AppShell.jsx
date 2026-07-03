@@ -45,6 +45,12 @@ export function AppShell() {
           <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/" end>
             Dashboard
           </NavLink>
+          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/traders">
+            Traders
+          </NavLink>
+          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/companies">
+            Companies
+          </NavLink>
           <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/departed-traders">
             Departed traders
           </NavLink>

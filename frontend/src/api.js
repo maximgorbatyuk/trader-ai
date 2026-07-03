@@ -71,6 +71,8 @@ export const api = {
     get(`/participants/${participantId}/share-transactions?take=${take}`),
   getParticipantMoneyTransactions: (participantId, take = 10) =>
     get(`/participants/${participantId}/money-transactions?take=${take}`),
+  getParticipantWorthHistory: (participantId, take) =>
+    get(take ? `/participants/${participantId}/worth-history?take=${take}` : `/participants/${participantId}/worth-history`),
   updateParticipantProfile: (participantId, profile) => put(`/participants/${participantId}/profile`, profile),
   seedMarket: () => post('/market/seed'),
   resetMarket: () => post('/market/reset'),

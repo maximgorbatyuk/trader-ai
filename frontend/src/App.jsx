@@ -6,6 +6,9 @@ import { Panel } from './Panel'
 import { CompanyModal } from './CompanyModal'
 import { CompanyCombobox } from './CompanyCombobox'
 import { PlayerModal, PlayerPanel } from './PlayerModal'
+import { TradersTable } from './TradersTable'
+import { CompaniesTable } from './CompaniesTable'
+import { ParticipantSummaryModal } from './ParticipantSummaryModal'
 
 const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
@@ -44,6 +47,7 @@ function App() {
   const [playerHoldingCompanyIds, setPlayerHoldingCompanyIds] = useState(() => new Set())
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
   const [playerModalOpen, setPlayerModalOpen] = useState(false)
+  const [summaryParticipant, setSummaryParticipant] = useState(null)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
 
@@ -192,6 +196,7 @@ function App() {
                     participantNameById={participantNameById}
                     companyNameById={companyNameById}
                     onSelectCompany={setMapModalCompanyId}
+                    onSelectTrader={setSummaryParticipant}
                   />
 
                   <OrderBookPanel
@@ -231,6 +236,10 @@ function App() {
 
       {playerModalOpen ? (
         <PlayerModal companies={companies} onClose={() => setPlayerModalOpen(false)} />
+      ) : null}
+
+      {summaryParticipant ? (
+        <ParticipantSummaryModal participant={summaryParticipant} onClose={() => setSummaryParticipant(null)} />
       ) : null}
     </div>
   )
@@ -421,13 +430,6 @@ function SeedPanel({ pending, runAction }) {
   )
 }
 
-// Cost estimation is a company's capitalisation: issued shares valued at the current share price.
-const COMPANY_SORTS = {
-  shares: (company) => company.issuedSharesCount ?? 0,
-  price: (company) => company.currentPrice ?? 0,
-  cost: (company) => (company.issuedSharesCount ?? 0) * (company.currentPrice ?? 0),
-}
-
 const DASHBOARD_TABS = [
   { key: 'player', label: 'Player' },
   { key: 'traders', label: 'Traders' },
@@ -439,7 +441,7 @@ const DASHBOARD_TABS = [
 // Tabbed block under the market map that consolidates the player control surface with the traders,
 // companies, and trade-tape tables. A WCAG tablist (roving tabindex, arrow-key navigation) drives which
 // body renders; the active tab reads by weight and an ink underline rather than colour alone.
-function DashboardTabs({ companies, participants, transactions, activity, participantNameById, companyNameById, onSelectCompany }) {
+function DashboardTabs({ companies, participants, transactions, activity, participantNameById, companyNameById, onSelectCompany, onSelectTrader }) {
   const [active, setActive] = useState('player')
   const tabRefs = useRef({})
 
@@ -493,7 +495,7 @@ function DashboardTabs({ companies, participants, transactions, activity, partic
       </div>
       <div className="tabpanel" role="tabpanel" id={`dashpanel-${active}`} aria-labelledby={`dashtab-${active}`}>
         {active === 'player' ? <PlayerPanel companies={companies} /> : null}
-        {active === 'traders' ? <TradersTable participants={participants} /> : null}
+        {active === 'traders' ? <TradersTable participants={participants} onSelectTrader={onSelectTrader} /> : null}
         {active === 'companies' ? <CompaniesTable companies={companies} onSelectCompany={onSelectCompany} /> : null}
         {active === 'tape' ? (
           <TradeTapeTable
@@ -505,107 +507,6 @@ function DashboardTabs({ companies, participants, transactions, activity, partic
         {active === 'activity' ? <ActivityBody activity={activity} /> : null}
       </div>
     </article>
-  )
-}
-
-function CompaniesTable({ companies, onSelectCompany }) {
-  const [sortKey, setSortKey] = useState('cost')
-  const [sortDir, setSortDir] = useState('desc')
-
-  function toggleSort(key) {
-    if (key === sortKey) {
-      setSortDir((dir) => (dir === 'desc' ? 'asc' : 'desc'))
-    } else {
-      setSortKey(key)
-      setSortDir('desc')
-    }
-  }
-
-  const selector = COMPANY_SORTS[sortKey]
-  const sorted = [...companies].sort((a, b) => {
-    const diff = selector(a) - selector(b)
-    return sortDir === 'desc' ? -diff : diff
-  })
-
-  function sortableHeader(key, label, title) {
-    const active = sortKey === key
-    return (
-      <th scope="col" className="ta-r" aria-sort={active ? (sortDir === 'desc' ? 'descending' : 'ascending') : 'none'}>
-        <button
-          type="button"
-          className={`th-sort ${active ? 'is-active' : ''}`}
-          onClick={() => toggleSort(key)}
-          title={title}
-        >
-          {label}
-          <span className="th-sort-glyph" aria-hidden="true">
-            {active ? (sortDir === 'desc' ? '▼' : '▲') : '↕'}
-          </span>
-        </button>
-      </th>
-    )
-  }
-
-  if (companies.length === 0) {
-    return <p className="note">No companies yet.</p>
-  }
-
-  return (
-    <>
-      <p className="tabpanel-meta">{companies.length} companies</p>
-      <div className="tbl-scroll">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Industry</th>
-              {sortableHeader('shares', 'Shares')}
-              {sortableHeader('price', 'Share price')}
-              {sortableHeader('cost', 'Cost estimation', 'Issued shares valued at the current share price')}
-              <th scope="col" className="ta-r">
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((company) => {
-              const cost = (company.issuedSharesCount ?? 0) * (company.currentPrice ?? 0)
-              return (
-                <tr key={company.id}>
-                  <th scope="row" className="cell-ellipsis">
-                    <button
-                      type="button"
-                      className="cell-name-btn"
-                      onClick={() => onSelectCompany(company.id)}
-                      title={`Open ${company.name} details`}
-                    >
-                      {company.name}
-                    </button>
-                  </th>
-                  <td className="cell-ellipsis">
-                    <span className="tag">{company.industryName ?? '—'}</span>
-                  </td>
-                  <td className="num ta-r">{formatInt(company.issuedSharesCount)}</td>
-                  <td className="num ta-r">{formatMoney(company.currentPrice)}</td>
-                  <td className="num ta-r">{formatMoney(cost)}</td>
-                  <td className="ta-r">
-                    <a
-                      className="cell-link"
-                      href={`/companies/${company.id}`}
-                      target="_blank"
-                      rel="noopener"
-                      aria-label={`Open ${company.name} page in a new tab`}
-                    >
-                      Open page<span aria-hidden="true"> ↗</span>
-                    </a>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-    </>
   )
 }
 
@@ -1484,155 +1385,6 @@ function TradeOrderModal({ order, player, companyName, currentPrice, onClose, on
         </form>
       </div>
     </div>
-  )
-}
-
-const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI', CollectiveFund: 'Fund', Player: 'Player' }
-
-// Net worth proxy used for the Total column and its default sort: cash on hand plus the estimated
-// market value of shares held.
-const TRADER_SORTS = {
-  balance: (participant) => participant.currentBalance ?? 0,
-  estimation: (participant) => participant.holdingsValue ?? 0,
-  total: (participant) => (participant.currentBalance ?? 0) + (participant.holdingsValue ?? 0),
-}
-
-function TradersTable({ participants }) {
-  const [sortKey, setSortKey] = useState('total')
-  const [sortDir, setSortDir] = useState('desc')
-  const [typeFilter, setTypeFilter] = useState('all')
-
-  function toggleSort(key) {
-    if (key === sortKey) {
-      setSortDir((dir) => (dir === 'desc' ? 'asc' : 'desc'))
-    } else {
-      setSortKey(key)
-      setSortDir('desc')
-    }
-  }
-
-  const selector = TRADER_SORTS[sortKey]
-  const sorted = [...participants].sort((a, b) => {
-    const diff = selector(a) - selector(b)
-    return sortDir === 'desc' ? -diff : diff
-  })
-  const visible = typeFilter === 'all' ? sorted : sorted.filter((participant) => participant.type === typeFilter)
-
-  const counts = participants.reduce(
-    (acc, participant) => {
-      if (participant.type in acc) acc[participant.type] += 1
-      return acc
-    },
-    { Individual: 0, AIAgent: 0, CollectiveFund: 0, Player: 0 },
-  )
-
-  function sortableHeader(key, label, title) {
-    const active = sortKey === key
-    return (
-      <th scope="col" className="ta-r" aria-sort={active ? (sortDir === 'desc' ? 'descending' : 'ascending') : 'none'}>
-        <button
-          type="button"
-          className={`th-sort ${active ? 'is-active' : ''}`}
-          onClick={() => toggleSort(key)}
-          title={title}
-        >
-          {label}
-          <span className="th-sort-glyph" aria-hidden="true">
-            {active ? (sortDir === 'desc' ? '▼' : '▲') : '↕'}
-          </span>
-        </button>
-      </th>
-    )
-  }
-
-  if (participants.length === 0) {
-    return <p className="note">No participants yet.</p>
-  }
-
-  return (
-    <>
-      <div className="tabpanel-toolbar">
-        <p className="trader-stats">
-          {counts.Individual} individuals · {counts.AIAgent} AI · {counts.CollectiveFund} funds
-          {counts.Player > 0 ? ` · ${counts.Player} player` : ''} · Total: {participants.length}
-        </p>
-        <select
-          className="select select-sm"
-          aria-label="Filter traders by type"
-          value={typeFilter}
-          onChange={(event) => setTypeFilter(event.target.value)}
-        >
-          <option value="all">All</option>
-          <option value="AIAgent">AI</option>
-          <option value="Individual">Individual</option>
-          <option value="CollectiveFund">Fund</option>
-          <option value="Player">Player</option>
-        </select>
-      </div>
-      {visible.length === 0 ? (
-        <p className="note">No traders of this type.</p>
-      ) : (
-        <div className="tbl-scroll">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Type</th>
-                <th scope="col" className="ta-r">
-                  Shares
-                </th>
-                {sortableHeader('balance', 'Current balance')}
-                {sortableHeader('estimation', 'Holdings (est.)', 'Estimated market value of shares held')}
-                {sortableHeader('total', 'Total', 'Current balance plus holdings estimation')}
-                <th scope="col" className="ta-r">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((participant) => {
-                const estimation = participant.holdingsValue ?? 0
-                const total = (participant.currentBalance ?? 0) + estimation
-                return (
-                  <tr key={participant.id}>
-                    <th scope="row">
-                      <span className="cell-trader">
-                        <span className="cell-ellipsis">{participant.name}</span>
-                        {participant.type === 'CollectiveFund' ? (
-                          <span className="tag tag-collective">Fund</span>
-                        ) : null}
-                        {participant.type === 'Player' ? <span className="tag">Player</span> : null}
-                        {participant.isBankrupt ? (
-                          <span className="tag tag-bankrupt">Bankrupt</span>
-                        ) : null}
-                      </span>
-                    </th>
-                    <td>
-                      <span className="tag">{TYPE_LABEL[participant.type] ?? participant.type}</span>
-                    </td>
-                    <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
-                    <td className="num ta-r">{formatMoney(participant.currentBalance)}</td>
-                    <td className="num ta-r">{formatMoney(estimation)}</td>
-                    <td className="num ta-r">{formatMoney(total)}</td>
-                    <td className="ta-r">
-                      <a
-                        className="cell-link"
-                        href={`/participants/${participant.id}`}
-                        target="_blank"
-                        rel="noopener"
-                        aria-label={`Open ${participant.name} page in a new tab`}
-                      >
-                        Open page<span aria-hidden="true"> ↗</span>
-                      </a>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </>
   )
 }
 

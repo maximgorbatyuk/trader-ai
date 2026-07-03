@@ -309,8 +309,8 @@ export function CompanyModal({ company, participantNameById, onClose }) {
           <button type="button" className="btn" ref={closeRef} onClick={onClose}>
             Close
           </button>
-          <Link className="btn" to={`/companies/${company.id}`}>
-            Open page
+          <Link className="btn" to={`/companies?company=${company.id}`}>
+            Open in Companies page
           </Link>
           {player ? (
             <button

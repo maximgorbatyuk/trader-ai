@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt, formatMoney, formatSigned, toneOf } from './format'
@@ -7,6 +7,7 @@ import { Panel } from './Panel'
 import { LineChart } from './LineChart'
 
 const POLL_INTERVAL_MS = 2500
+const PRICE_HISTORY_POINTS = 32
 
 function formatPct(fraction) {
   if (typeof fraction !== 'number') return '—'
@@ -14,10 +15,10 @@ function formatPct(fraction) {
   return `${sign}${(Math.abs(fraction) * 100).toFixed(2)}%`
 }
 
-function CompanyPage() {
-  const { id } = useParams()
-  const companyId = Number(id)
-
+// The company detail block: identity, a price-history chart, ownership and shareholders, and recent orders
+// and trades. Owns its own polling keyed on companyId so it can sit under the Companies table and swap as the
+// selected company changes.
+export function CompanyDetail({ companyId }) {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [detail, setDetail] = useState(null)
@@ -58,92 +59,79 @@ function CompanyPage() {
     }
   }, [loadAll])
 
-  const changeTone = toneOf(detail?.priceChangePct)
+  if (!ready) {
+    return (
+      <section className="placeholder" aria-busy="true">
+        <span className="spinner" aria-hidden="true" />
+        <p>Loading company…</p>
+      </section>
+    )
+  }
+
+  if (detail === null) {
+    return (
+      <div className="banner" role="alert">
+        <strong>Couldn&apos;t load this company.</strong>
+        <span>{loadError ?? 'Pick another company from the table.'}</span>
+      </div>
+    )
+  }
+
+  const changeTone = toneOf(detail.priceChangePct)
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <Link className="brand" to="/" aria-label="Back to the Trader AI dashboard">
-          <span className="brand-mark" aria-hidden="true">
-            TA
-          </span>
-          <span className="brand-name">Trader&nbsp;AI</span>
-          <span className="brand-tag" aria-hidden="true">
-            Company
-          </span>
-        </Link>
-        <Link className="btn" to="/">
-          ← Dashboard
-        </Link>
-      </header>
+    <section className="detail-stack" aria-label={`${detail.name} details`}>
+      {loadError ? (
+        <div className="banner" role="alert">
+          <strong>Showing last known state.</strong>
+          <span>{loadError}</span>
+        </div>
+      ) : null}
 
-      <main className="main participant-page">
-        {!ready ? (
-          <section className="placeholder" aria-busy="true">
-            <span className="spinner" aria-hidden="true" />
-            <p>Loading company…</p>
-          </section>
-        ) : detail === null ? (
-          <div className="banner" role="alert">
-            <strong>Couldn&apos;t load this company.</strong>
-            <span>{loadError ?? 'Try again from the dashboard.'}</span>
+      <section className="command" aria-label="Company identity">
+        <div className="command-id">
+          <span className="command-label">Company</span>
+          <h2 className="command-name">{detail.name}</h2>
+        </div>
+        <dl className="statbar">
+          <div className="stat">
+            <dt>Industry</dt>
+            <dd>{detail.industryName ?? '—'}</dd>
           </div>
-        ) : (
-          <>
-            {loadError ? (
-              <div className="banner" role="alert">
-                <strong>Showing last known state.</strong>
-                <span>{loadError}</span>
-              </div>
-            ) : null}
+          <div className="stat">
+            <dt>Price</dt>
+            <dd className="num">{formatMoney(detail.currentPrice)}</dd>
+          </div>
+          <div className="stat">
+            <dt>Change</dt>
+            <dd className={`num tone-${changeTone}`}>
+              <span aria-hidden="true">{changeTone === 'up' ? '▲ ' : changeTone === 'down' ? '▼ ' : ''}</span>
+              {formatPct(detail.priceChangePct)}
+            </dd>
+          </div>
+          <div className="stat">
+            <dt>Issued shares</dt>
+            <dd className="num">{formatInt(detail.issuedSharesCount)}</dd>
+          </div>
+          <div className="stat">
+            <dt>Market cap</dt>
+            <dd className="num">{formatMoney(detail.marketCap)}</dd>
+          </div>
+        </dl>
+      </section>
 
-            <section className="command" aria-label="Company identity">
-              <div className="command-id">
-                <span className="command-label">Company</span>
-                <h1 className="command-name">{detail.name}</h1>
-              </div>
-              <dl className="statbar">
-                <div className="stat">
-                  <dt>Industry</dt>
-                  <dd>{detail.industryName ?? '—'}</dd>
-                </div>
-                <div className="stat">
-                  <dt>Price</dt>
-                  <dd className="num">{formatMoney(detail.currentPrice)}</dd>
-                </div>
-                <div className="stat">
-                  <dt>Change</dt>
-                  <dd className={`num tone-${changeTone}`}>
-                    <span aria-hidden="true">{changeTone === 'up' ? '▲ ' : changeTone === 'down' ? '▼ ' : ''}</span>
-                    {formatPct(detail.priceChangePct)}
-                  </dd>
-                </div>
-                <div className="stat">
-                  <dt>Issued shares</dt>
-                  <dd className="num">{formatInt(detail.issuedSharesCount)}</dd>
-                </div>
-                <div className="stat">
-                  <dt>Market cap</dt>
-                  <dd className="num">{formatMoney(detail.marketCap)}</dd>
-                </div>
-              </dl>
-            </section>
+      <PriceChartPanel name={detail.name} prices={prices} />
 
-            <PriceChartPanel name={detail.name} prices={prices} />
+      <div className="grid-detail">
+        <OwnershipPanel detail={detail} />
+        <ShareholdersPanel shareholders={shareholders} />
+      </div>
 
-            <div className="grid-detail">
-              <OwnershipPanel detail={detail} />
-              <ShareholdersPanel shareholders={shareholders} />
-            </div>
-
-            <div className="grid-detail">
-              <OrdersPanel orders={orders} />
-              <TradesPanel trades={trades} />
-            </div>
-          </>
-        )}
-      </main>
-    </div>
+      <div className="grid-detail">
+        <OrdersPanel orders={orders} />
+        <TradesPanel trades={trades} />
+      </div>
+    </section>
   )
 }
 
@@ -178,7 +166,7 @@ function PriceChartPanel({ name, prices }) {
               </span>
             </span>
           </div>
-          <LineChart values={values.slice(-32)} tone={tone} />
+          <LineChart values={values.slice(-PRICE_HISTORY_POINTS)} tone={tone} />
           <dl className="quote-meta">
             <div>
               <dt>Open</dt>
@@ -252,16 +240,13 @@ function ShareholdersPanel({ shareholders }) {
               {shareholders.map((holder) => (
                 <tr key={holder.ownerId}>
                   <th scope="row" className="cell-ellipsis">
-                    <a
+                    <Link
                       className="cell-link"
-                      href={`/participants/${holder.ownerId}`}
-                      target="_blank"
-                      rel="noopener"
-                      title={`Open ${holder.ownerName} detail page in a new tab`}
+                      to={`/traders?trader=${holder.ownerId}`}
+                      title={`Open ${holder.ownerName} in the Traders page`}
                     >
                       {holder.ownerName}
-                      <span aria-hidden="true"> ↗</span>
-                    </a>
+                    </Link>
                   </th>
                   <td className="num ta-r">{formatInt(holder.shares)}</td>
                   <td className="num ta-r">{formatPct(holder.pctOfIssued)}</td>
@@ -356,5 +341,3 @@ function TradesPanel({ trades }) {
     </Panel>
   )
 }
-
-export default CompanyPage

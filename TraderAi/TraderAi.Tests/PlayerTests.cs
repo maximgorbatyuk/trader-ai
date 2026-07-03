@@ -167,10 +167,10 @@ public sealed class PlayerTests : IDisposable
         Assert.Equal(dueCycleId, dividend.CreatedInCycleId);
     }
 
-    // Behavior 5: exactly one snapshot is written for the player, tagged with the completed cycle, and none for
-    // the two Individual participants present.
+    // Behavior 5: a worth snapshot is written for every trader each cycle — the two seeded Individuals plus the
+    // player — and each is tagged with the completed cycle.
     [Fact]
-    public async Task AdvancingWithAPlayerWritesOneSnapshotTaggedWithTheCompletedCycle()
+    public async Task AdvancingWritesAWorthSnapshotForEveryTraderTaggedWithTheCompletedCycle()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var market = Service(new FixedRoll(0d));
@@ -179,20 +179,22 @@ public sealed class PlayerTests : IDisposable
 
         await market.StepCycleAsync();
 
-        var snapshot = await context.ParticipantWorthSnapshots.SingleAsync();
-        Assert.Equal(player.Id, snapshot.ParticipantId);
-        Assert.Equal(completedCycleId, snapshot.CreatedInCycleId);
+        var snapshots = await context.ParticipantWorthSnapshots.ToListAsync();
+        Assert.Equal(3, snapshots.Count);
+        Assert.All(snapshots, snapshot => Assert.Equal(completedCycleId, snapshot.CreatedInCycleId));
+        Assert.Contains(snapshots, snapshot => snapshot.ParticipantId == player.Id);
     }
 
-    // Behavior 5: snapshots are a player-only concept, so an advance without a player writes none.
+    // Behavior 5: snapshots cover every trader, so an advance without a human player still records the two
+    // seeded Individuals.
     [Fact]
-    public async Task NoWorthSnapshotIsWrittenWhenNoPlayerExists()
+    public async Task AdvancingWithoutAPlayerStillWritesSnapshotsForOtherTraders()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
 
         await Service(new FixedRoll(0d)).StepCycleAsync();
 
-        Assert.Equal(0, await context.ParticipantWorthSnapshots.CountAsync());
+        Assert.Equal(2, await context.ParticipantWorthSnapshots.CountAsync());
     }
 
     // Behavior 5: the snapshot captures cash and holdings valued at the completing cycle's latest price.
@@ -208,7 +210,7 @@ public sealed class PlayerTests : IDisposable
         await market.StepCycleAsync();
 
         await context.Entry(player).ReloadAsync();
-        var snapshot = await context.ParticipantWorthSnapshots.SingleAsync();
+        var snapshot = await context.ParticipantWorthSnapshots.SingleAsync(snapshot => snapshot.ParticipantId == player.Id);
         Assert.Equal(player.CurrentBalance, snapshot.Balance);
         Assert.Equal(1000m, snapshot.HoldingsValue);
     }
