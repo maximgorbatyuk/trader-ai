@@ -77,10 +77,10 @@ public sealed class CollectiveFundService(
     private List<CollectiveFund> funds = null!;
     private Dictionary<int, List<CollectiveFundParticipant>> membershipsByFundId = null!;
     private Dictionary<int, CollectiveFundParticipant> membershipByParticipantId = null!;
-    private Dictionary<int, List<OwnedShare>> ownedByParticipant = null!;
+    private Dictionary<int, List<OwnedHolding>> ownedByParticipant = null!;
     private Dictionary<int, List<Order>> openOrdersByParticipant = null!;
     private Dictionary<int, decimal> latestPriceByCompany = null!;
-    private HashSet<int> committed = null!;
+    private Dictionary<(int ParticipantId, int CompanyId), int> available = null!;
 
     // Distinct dividend-payout cycle ids, most recent first (ids rise monotonically with cycles), and each fund
     // participant's dividend receipts keyed by payout cycle id; both feed fund scoring and the founder close.
@@ -234,25 +234,40 @@ public sealed class CollectiveFundService(
     {
         latestPriceByCompany = await LatestPriceByCompanyAsync();
 
-        ownedByParticipant = (await dbContext.Shares
-                .Where(share => share.OwnerId != null)
-                .Select(share => new OwnedShare(share.OwnerId!.Value, share.CompanyId, share.Id))
+        ownedByParticipant = (await dbContext.Holdings
+                .Where(holding => holding.Quantity > 0)
+                .Select(holding => new OwnedHolding(holding.ParticipantId, holding.CompanyId, holding.Quantity))
                 .ToListAsync())
-            .GroupBy(share => share.OwnerId)
+            .GroupBy(holding => holding.OwnerId)
             .ToDictionary(group => group.Key, group => group.ToList());
 
         var openOrders = await dbContext.Orders
             .Where(order => order.ParticipantId != null
                 && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
-            .Include(order => order.OrderShares)
             .ToListAsync();
         openOrdersByParticipant = openOrders
             .GroupBy(order => order.ParticipantId!.Value)
             .ToDictionary(group => group.Key, group => group.ToList());
 
-        // A share is only ever offered by its own owner's sell order, so this single set tracks every share
-        // currently committed to an open order across all participants.
-        committed = openOrders.SelectMany(order => order.OrderShares).Select(link => link.ShareId).ToHashSet();
+        // Uncommitted quantity per (participant, company): owned shares minus what is already listed for sale.
+        // Listing a fund sell draws it down, so a share is never offered by two orders at once.
+        available = new Dictionary<(int ParticipantId, int CompanyId), int>();
+        foreach (var (participantId, holdings) in ownedByParticipant)
+        {
+            foreach (var holding in holdings)
+            {
+                available[(participantId, holding.CompanyId)] = holding.Quantity;
+            }
+        }
+
+        foreach (var order in openOrders.Where(order => order.Type == OrderType.Sell))
+        {
+            var key = (order.ParticipantId!.Value, order.CompanyId);
+            if (available.TryGetValue(key, out var remaining))
+            {
+                available[key] = remaining - order.RemainingQuantity;
+            }
+        }
 
         participantsById = await dbContext.Participants.ToDictionaryAsync(participant => participant.Id);
 
@@ -453,7 +468,7 @@ public sealed class CollectiveFundService(
     private decimal FundNetWorth(Participant fundParticipant)
     {
         var owned = ownedByParticipant.GetValueOrDefault(fundParticipant.Id) ?? [];
-        var holdingsValue = owned.Sum(share => latestPriceByCompany.GetValueOrDefault(share.CompanyId));
+        var holdingsValue = owned.Sum(holding => holding.Quantity * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
         return fundParticipant.CurrentBalance + holdingsValue;
     }
 
@@ -522,10 +537,10 @@ public sealed class CollectiveFundService(
             return;
         }
 
-        var uncommitted = owned.Where(share => !committed.Contains(share.Id)).ToList();
-        if (uncommitted.Count > 0)
+        var uncommitted = owned.Sum(holding => available.GetValueOrDefault((fundParticipant.Id, holding.CompanyId)));
+        if (uncommitted > 0)
         {
-            ListFundSells(fundParticipant, uncommitted, sharesToList: uncommitted.Count, currentCycleId, now);
+            ListFundSells(fundParticipant, owned, sharesToList: uncommitted, currentCycleId, now);
         }
     }
 
@@ -693,14 +708,14 @@ public sealed class CollectiveFundService(
         var owned = ownedByParticipant.GetValueOrDefault(fundParticipant.Id) ?? [];
         var raised = 0m;
 
-        foreach (var byCompany in owned.GroupBy(share => share.CompanyId))
+        foreach (var holding in owned.OrderBy(entry => entry.CompanyId))
         {
             if (raised >= cashNeeded)
             {
                 break;
             }
 
-            if (!latestPriceByCompany.TryGetValue(byCompany.Key, out var price) || price <= 0m)
+            if (!latestPriceByCompany.TryGetValue(holding.CompanyId, out var price) || price <= 0m)
             {
                 continue;
             }
@@ -712,22 +727,22 @@ public sealed class CollectiveFundService(
             }
 
             var sharesNeeded = (int)Math.Ceiling((double)((cashNeeded - raised) / sellPrice));
-            var listed = ListCompanySell(fundParticipant, byCompany, sellPrice, sharesNeeded, currentCycleId, now);
+            var listed = ListCompanySell(fundParticipant, holding.CompanyId, sellPrice, sharesNeeded, currentCycleId, now);
             raised += listed * sellPrice;
         }
     }
 
-    private void ListFundSells(Participant fundParticipant, List<OwnedShare> owned, int sharesToList, int currentCycleId, DateTime now)
+    private void ListFundSells(Participant fundParticipant, List<OwnedHolding> owned, int sharesToList, int currentCycleId, DateTime now)
     {
         var remaining = sharesToList;
-        foreach (var byCompany in owned.GroupBy(share => share.CompanyId))
+        foreach (var holding in owned.OrderBy(entry => entry.CompanyId))
         {
             if (remaining <= 0)
             {
                 break;
             }
 
-            if (!latestPriceByCompany.TryGetValue(byCompany.Key, out var price) || price <= 0m)
+            if (!latestPriceByCompany.TryGetValue(holding.CompanyId, out var price) || price <= 0m)
             {
                 continue;
             }
@@ -738,13 +753,13 @@ public sealed class CollectiveFundService(
                 continue;
             }
 
-            remaining -= ListCompanySell(fundParticipant, byCompany, sellPrice, remaining, currentCycleId, now);
+            remaining -= ListCompanySell(fundParticipant, holding.CompanyId, sellPrice, remaining, currentCycleId, now);
         }
     }
 
     private int ListCompanySell(
         Participant fundParticipant,
-        IGrouping<int, OwnedShare> byCompany,
+        int companyId,
         decimal sellPrice,
         int maxShares,
         int currentCycleId,
@@ -755,38 +770,30 @@ public sealed class CollectiveFundService(
             return 0;
         }
 
-        var freeShareIds = byCompany
-            .Where(share => !committed.Contains(share.Id))
-            .Select(share => share.Id)
-            .Take(maxShares)
-            .ToList();
-        if (freeShareIds.Count == 0)
+        var availableQuantity = available.GetValueOrDefault((fundParticipant.Id, companyId));
+        var quantity = Math.Min(maxShares, availableQuantity);
+        if (quantity <= 0)
         {
             return 0;
         }
 
-        var order = new Order
+        dbContext.Orders.Add(new Order
         {
             ParticipantId = fundParticipant.Id,
-            CompanyId = byCompany.Key,
+            CompanyId = companyId,
             Type = OrderType.Sell,
             Status = OrderStatus.Open,
-            Quantity = freeShareIds.Count,
+            Quantity = quantity,
             FilledQuantity = 0,
             LimitPrice = sellPrice,
             ReservedCashAmount = 0m,
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
             UpdatedAt = now,
-        };
-        foreach (var shareId in freeShareIds)
-        {
-            order.OrderShares.Add(new OrderShare { ShareId = shareId });
-            committed.Add(shareId);
-        }
+        });
 
-        dbContext.Orders.Add(order);
-        return freeShareIds.Count;
+        available[(fundParticipant.Id, companyId)] = availableQuantity - quantity;
+        return quantity;
     }
 
     private void CancelBuy(Order order, Participant participant, int currentCycleId, DateTime now)
@@ -854,5 +861,5 @@ public sealed class CollectiveFundService(
 
     private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 
-    private readonly record struct OwnedShare(int OwnerId, int CompanyId, int Id);
+    private readonly record struct OwnedHolding(int OwnerId, int CompanyId, int Quantity);
 }

@@ -59,7 +59,8 @@ public sealed class MarketService(
     ScienceInvestigationService? scienceService = null,
     BankruptcyService? bankruptcyService = null,
     CollectiveFundService? collectiveFundService = null,
-    MarketExitService? marketExitService = null)
+    MarketExitService? marketExitService = null,
+    StockSplitService? stockSplitService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -91,6 +92,11 @@ public sealed class MarketService(
     private const int MaxDividendIntervalCycles = 25;
     private const decimal MinDividendRate = 0.001m;
     private const decimal MaxDividendRate = 0.02m;
+
+    // Anti-inflation ceiling on the total dividend cash one company injects per payout. Above it the effective
+    // yield compresses toward zero as the company grows, so dividend injection stops tracking an ever-rising
+    // market cap — the feedback loop that otherwise inflates prices without bound. Tunable.
+    private const decimal MaxDividendCashPerCompanyPerPayout = 1_000_000m;
 
     // Forced-liquidation sells undercut the market by 1–5% so the order actually crosses.
     private const decimal MinSellOffset = 0.01m;
@@ -211,7 +217,6 @@ public sealed class MarketService(
         var openOrders = await dbContext.Orders
             .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
                 && order.ParticipantId != null)
-            .Include(order => order.OrderShares)
             .ToListAsync();
 
         var participantsById = await dbContext.Participants.ToDictionaryAsync(participant => participant.Id);
@@ -247,6 +252,14 @@ public sealed class MarketService(
 
         // Persist cancellations first so freed shares and cash are visible to the liquidation pass.
         await dbContext.SaveChangesAsync();
+
+        // Splits re-denominate prices and share counts before any worth-reading service runs, so bankruptcy,
+        // funds, and exits all see the post-split state; saved at once since those services query the database.
+        if (stockSplitService is not null)
+        {
+            await stockSplitService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
 
         await LiquidateStarvedHoldersAsync(participantsById);
 
@@ -297,13 +310,8 @@ public sealed class MarketService(
                 });
             }
         }
-        else
-        {
-            // The unsold share links return to the owner so the shares can be listed again.
-            dbContext.OrderShares.RemoveRange(order.OrderShares);
-            order.OrderShares.Clear();
-        }
-
+        // A sell reserves no cash and holds no links; cancelling it simply stops the order counting
+        // toward the seller's outstanding sells, freeing that quantity to be listed again.
         order.Status = OrderStatus.Cancelled;
         order.UpdatedAt = DateTime.UtcNow;
     }
@@ -354,20 +362,33 @@ public sealed class MarketService(
 
         var cheapestShare = latestPriceByCompany.Values.Min();
 
-        // Owned shares not already listed in an open order, grouped by owner then company.
-        var offeredShareIds = (await dbContext.OrderShares.Select(orderShare => orderShare.ShareId).ToListAsync())
-            .ToHashSet();
-        var availableHoldings = (await dbContext.Shares
-                .Where(share => share.OwnerId != null)
-                .Select(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId, share.Id })
+        // Each seller's shares already committed to open sell orders, per company, so they are not
+        // listed twice.
+        var listedByOwnerCompany = (await dbContext.Orders
+                .Where(order => order.Type == OrderType.Sell
+                    && order.ParticipantId != null
+                    && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
+                .Select(order => new { ParticipantId = order.ParticipantId!.Value, order.CompanyId, Remaining = order.Quantity - order.FilledQuantity })
                 .ToListAsync())
-            .Where(share => !offeredShareIds.Contains(share.Id))
-            .GroupBy(share => share.OwnerId)
+            .GroupBy(order => (order.ParticipantId, order.CompanyId))
+            .ToDictionary(group => group.Key, group => group.Sum(order => order.Remaining));
+
+        // Uncommitted holdings (quantity minus what is already listed), grouped by owner then company.
+        var availableHoldings = (await dbContext.Holdings
+                .Where(holding => holding.Quantity > 0)
+                .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
+                .ToListAsync())
+            .GroupBy(holding => holding.ParticipantId)
             .ToDictionary(
                 ownerGroup => ownerGroup.Key,
                 ownerGroup => ownerGroup
-                    .GroupBy(share => share.CompanyId)
-                    .ToDictionary(companyGroup => companyGroup.Key, companyGroup => companyGroup.Count()));
+                    .Select(holding => new
+                    {
+                        holding.CompanyId,
+                        Available = holding.Quantity - listedByOwnerCompany.GetValueOrDefault((holding.ParticipantId, holding.CompanyId)),
+                    })
+                    .Where(holding => holding.Available > 0)
+                    .ToDictionary(holding => holding.CompanyId, holding => holding.Available));
 
         var traders = participantsById.Values
             .Where(participant => participant.IsActive
@@ -447,15 +468,29 @@ public sealed class MarketService(
         // Each company declares its own rate this round, so all its shares pay the same per-share amount.
         var rateByCompany = latestPriceByCompany.Keys.ToDictionary(companyId => companyId, _ => RandomDividendRate());
 
-        var holdings = await dbContext.Shares
-            .Where(share => share.OwnerId != null)
-            .GroupBy(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId })
-            .Select(group => new { group.Key.OwnerId, group.Key.CompanyId, Count = group.Count() })
+        var holdings = await dbContext.Holdings
+            .Where(holding => holding.Quantity > 0)
+            .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
             .ToListAsync();
+
+        // Compress each company's rate so its total payout never tops the ceiling: above it the effective yield
+        // falls as the company grows, capping new-cash injection instead of letting it track the market cap.
+        var effectiveRateByCompany = holdings
+            .GroupBy(holding => holding.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var rate = rateByCompany[group.Key];
+                    var uncapped = latestPriceByCompany[group.Key] * rate * group.Sum(holding => holding.Quantity);
+                    return uncapped > MaxDividendCashPerCompanyPerPayout
+                        ? rate * (MaxDividendCashPerCompanyPerPayout / uncapped)
+                        : rate;
+                });
 
         var participantsById = await dbContext.Participants.ToDictionaryAsync(participant => participant.Id);
 
-        foreach (var ownerGroup in holdings.GroupBy(holding => holding.OwnerId))
+        foreach (var ownerGroup in holdings.GroupBy(holding => holding.ParticipantId))
         {
             if (!participantsById.TryGetValue(ownerGroup.Key, out var owner))
             {
@@ -463,7 +498,7 @@ public sealed class MarketService(
             }
 
             var payout = ownerGroup.Sum(holding =>
-                latestPriceByCompany[holding.CompanyId] * rateByCompany[holding.CompanyId] * holding.Count);
+                latestPriceByCompany[holding.CompanyId] * effectiveRateByCompany[holding.CompanyId] * holding.Quantity);
             payout = Round(payout);
             if (payout <= 0m)
             {
@@ -501,11 +536,11 @@ public sealed class MarketService(
     private async Task<decimal> DebtAllowanceAsync(Participant participant)
     {
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
-        var holdingsValue = (await dbContext.Shares
-                .Where(share => share.OwnerId == participant.Id)
-                .Select(share => share.CompanyId)
+        var holdingsValue = (await dbContext.Holdings
+                .Where(holding => holding.ParticipantId == participant.Id && holding.Quantity > 0)
+                .Select(holding => new { holding.CompanyId, holding.Quantity })
                 .ToListAsync())
-            .Sum(companyId => latestPriceByCompany.GetValueOrDefault(companyId));
+            .Sum(holding => holding.Quantity * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
 
         return Math.Max(0m, DebtLimitFraction * (participant.CurrentBalance + holdingsValue));
     }
@@ -610,27 +645,28 @@ public sealed class MarketService(
         }
         else
         {
-            var ownedShareIds = await dbContext.Shares
-                .Where(share => share.OwnerId == participantId && share.CompanyId == companyId)
-                .Select(share => share.Id)
-                .ToListAsync();
+            var owned = await dbContext.Holdings
+                .Where(holding => holding.ParticipantId == participantId && holding.CompanyId == companyId)
+                .Select(holding => holding.Quantity)
+                .FirstOrDefaultAsync();
 
-            var offeredShareIds = await dbContext.OrderShares
-                .Where(orderShare => ownedShareIds.Contains(orderShare.ShareId))
-                .Select(orderShare => orderShare.ShareId)
-                .ToListAsync();
+            // Shares already committed to this seller's other open sell orders for the company cannot be
+            // offered again, so a new sell can only list what remains uncommitted.
+            var alreadyListed = (await dbContext.Orders
+                    .Where(existing => existing.ParticipantId == participantId
+                        && existing.CompanyId == companyId
+                        && existing.Type == OrderType.Sell
+                        && (existing.Status == OrderStatus.Open || existing.Status == OrderStatus.PartiallyFilled))
+                    .Select(existing => existing.Quantity - existing.FilledQuantity)
+                    .ToListAsync())
+                .Sum();
 
-            var availableShareIds = ownedShareIds.Except(offeredShareIds).Take(quantity).ToList();
-            if (availableShareIds.Count < quantity)
+            if (owned - alreadyListed < quantity)
             {
                 return PlaceOrderResult.Fail("Not enough available shares to sell.");
             }
 
             dbContext.Orders.Add(order);
-            foreach (var shareId in availableShareIds)
-            {
-                dbContext.OrderShares.Add(new OrderShare { Order = order, ShareId = shareId });
-            }
         }
 
         await dbContext.SaveChangesAsync();
@@ -720,16 +756,15 @@ public sealed class MarketService(
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
 
-        var holdingsByOwner = (await dbContext.Shares
-                .Where(share => share.OwnerId != null)
-                .Select(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId })
+        var holdingsByOwner = (await dbContext.Holdings
+                .Where(holding => holding.Quantity > 0)
+                .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
                 .ToListAsync())
-            .GroupBy(share => share.OwnerId)
+            .GroupBy(holding => holding.ParticipantId)
             .ToDictionary(
                 ownerGroup => ownerGroup.Key,
                 ownerGroup => ownerGroup
-                    .GroupBy(share => share.CompanyId)
-                    .ToDictionary(companyGroup => companyGroup.Key, companyGroup => companyGroup.Count()));
+                    .ToDictionary(holding => holding.CompanyId, holding => holding.Quantity));
 
         foreach (var participant in participants)
         {
@@ -795,7 +830,6 @@ public sealed class MarketService(
         }
 
         var order = await dbContext.Orders
-            .Include(candidate => candidate.OrderShares)
             .FirstOrDefaultAsync(candidate => candidate.Id == orderId);
         if (order is null || order.ParticipantId != player.Id)
         {
@@ -882,16 +916,15 @@ public sealed class MarketService(
             .OrderBy(participant => participant.Id)
             .ToListAsync();
 
-        var holdingsByOwner = (await dbContext.Shares
-                .Where(share => share.OwnerId != null)
-                .Select(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId })
+        var holdingsByOwner = (await dbContext.Holdings
+                .Where(holding => holding.Quantity > 0)
+                .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
                 .ToListAsync())
-            .GroupBy(share => share.OwnerId)
+            .GroupBy(holding => holding.ParticipantId)
             .ToDictionary(
                 ownerGroup => ownerGroup.Key,
                 ownerGroup => (IReadOnlyDictionary<int, int>)ownerGroup
-                    .GroupBy(share => share.CompanyId)
-                    .ToDictionary(companyGroup => companyGroup.Key, companyGroup => companyGroup.Count()));
+                    .ToDictionary(holding => holding.CompanyId, holding => holding.Quantity));
 
         var openOrdersByParticipant = (await dbContext.Orders
                 .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
@@ -990,11 +1023,10 @@ public sealed class MarketService(
         await dbContext.CollectiveFunds.ExecuteDeleteAsync();
         await dbContext.NewsPostIndustries.ExecuteDeleteAsync();
         await dbContext.NewsPosts.ExecuteDeleteAsync();
-        await dbContext.OrderShares.ExecuteDeleteAsync();
         await dbContext.OrderFills.ExecuteDeleteAsync();
         await dbContext.MoneyTransactions.ExecuteDeleteAsync();
         await dbContext.PriceSnapshots.ExecuteDeleteAsync();
-        await dbContext.Shares.ExecuteDeleteAsync();
+        await dbContext.Holdings.ExecuteDeleteAsync();
         await dbContext.ShareTransactions.ExecuteDeleteAsync();
         await dbContext.Orders.ExecuteDeleteAsync();
         await dbContext.MarketCycles.ExecuteDeleteAsync();
@@ -1008,7 +1040,7 @@ public sealed class MarketService(
         await dbContext.Database.ExecuteSqlRawAsync(
             "DELETE FROM sqlite_sequence WHERE name IN (" +
             "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
-            "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Shares', 'OrderShares', " +
+            "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', " +
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
             "'CollectiveFunds', 'CollectiveFundParticipants', 'ParticipantWorthSnapshots')");
@@ -1123,9 +1155,9 @@ public sealed class MarketService(
                 var price = companyPrices[index];
                 var shareCount = companyShareCounts[index];
 
-                // Every issued share starts unowned and is listed in a single company-originated sell
-                // order, so all shares are immediately available for participants to buy.
-                var sellOrder = new Order
+                // Every issued share starts unowned as the company float, listed in a single
+                // company-originated sell order so the whole supply is immediately available to buy.
+                dbContext.Orders.Add(new Order
                 {
                     ParticipantId = null,
                     CompanyId = company.Id,
@@ -1138,29 +1170,13 @@ public sealed class MarketService(
                     CreatedInCycleId = firstCycle.Id,
                     CreatedAt = now,
                     UpdatedAt = now,
-                };
-
-                for (var shareIndex = 0; shareIndex < shareCount; shareIndex++)
-                {
-                    sellOrder.OrderShares.Add(new OrderShare
-                    {
-                        Share = new Share
-                        {
-                            CompanyId = company.Id,
-                            OwnerId = null,
-                            InitialPrice = price,
-                            CurrentPrice = price,
-                            LastUpdatedAt = now,
-                        },
-                    });
-                }
-
-                dbContext.Orders.Add(sellOrder);
+                });
 
                 dbContext.PriceSnapshots.Add(new PriceSnapshot
                 {
                     CompanyId = company.Id,
                     Price = price,
+                    Capitalization = price * shareCount,
                     CreatedInCycleId = firstCycle.Id,
                     CreatedAt = now,
                 });

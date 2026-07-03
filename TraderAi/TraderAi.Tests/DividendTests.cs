@@ -89,6 +89,48 @@ public sealed class DividendTests : IDisposable
         Assert.True(market.NextDividendCycleNumber > 0);
     }
 
+    [Fact]
+    public async Task PayoutIsCappedAtThePerCompanyCeiling()
+    {
+        var now = DateTime.UtcNow;
+        var cycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
+        context.MarketCycles.Add(cycle);
+        var market = new Market { Name = "Demo", Status = MarketStatus.Running, CreatedAt = now, UpdatedAt = now };
+        context.Markets.Add(market);
+        var industry = new Industry { Name = "Tech" };
+        context.Industries.Add(industry);
+        await context.SaveChangesAsync();
+
+        var company = new Company { Name = "Acme", IndustryId = industry.Id, IssuedSharesCount = 2_000_000, CreatedAt = now, UpdatedAt = now };
+        context.Companies.Add(company);
+        var whale = new Participant
+        {
+            Name = "Whale",
+            Type = ParticipantType.Individual,
+            Temperament = Temperament.Balanced,
+            RiskProfile = RiskProfile.Medium,
+            InitialBalance = 0m,
+            CurrentBalance = 0m,
+            ReservedBalance = 0m,
+            IsActive = true,
+        };
+        context.Participants.Add(whale);
+        await context.SaveChangesAsync();
+
+        context.Holdings.Add(new Holding { ParticipantId = whale.Id, CompanyId = company.Id, Quantity = 2_000_000, AverageCost = 500m });
+        context.PriceSnapshots.Add(new PriceSnapshot { CompanyId = company.Id, Price = 1000m, CreatedInCycleId = cycle.Id, CreatedAt = now });
+        market.CurrentCycleId = cycle.Id;
+        market.NextDividendCycleNumber = 1;
+        await context.SaveChangesAsync();
+
+        await Service().StepCycleAsync();
+
+        // Uncapped would be price*rate*qty = 1000 * 0.001 * 2,000,000 = 2,000,000; the ceiling holds it to 1,000,000.
+        var dividend = await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.Dividend);
+        Assert.Equal(whale.Id, dividend.ParticipantId);
+        Assert.Equal(1_000_000m, dividend.Amount);
+    }
+
     public void Dispose()
     {
         context.Dispose();

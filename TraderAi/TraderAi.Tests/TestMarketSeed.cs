@@ -58,17 +58,13 @@ internal static class TestMarketSeed
 
         await context.SaveChangesAsync();
 
-        for (var index = 0; index < 10; index++)
+        context.Holdings.Add(new Holding
         {
-            context.Shares.Add(new Share
-            {
-                CompanyId = company.Id,
-                OwnerId = seller.Id,
-                InitialPrice = 100m,
-                CurrentPrice = 100m,
-                LastUpdatedAt = now,
-            });
-        }
+            ParticipantId = seller.Id,
+            CompanyId = company.Id,
+            Quantity = 10,
+            AverageCost = 100m,
+        });
 
         context.PriceSnapshots.Add(new PriceSnapshot
         {

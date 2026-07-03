@@ -38,7 +38,7 @@ public sealed class MarketExitService(
         [RiskProfile.High, RiskProfile.Medium, RiskProfile.Low];
 
     private Dictionary<int, decimal> latestPriceByCompany = null!;
-    private Dictionary<int, List<OwnedShare>> ownedByParticipant = null!;
+    private Dictionary<int, List<OwnedHolding>> ownedByParticipant = null!;
     private Dictionary<int, List<Order>> openBuyOrdersByParticipant = null!;
     private HashSet<int> fundMemberIds = null!;
     private HashSet<string> takenNames = null!;
@@ -68,7 +68,7 @@ public sealed class MarketExitService(
 
             var owned = ownedByParticipant.GetValueOrDefault(participant.Id) ?? [];
             var worth = participant.CurrentBalance
-                + owned.Sum(share => latestPriceByCompany.GetValueOrDefault(share.CompanyId));
+                + owned.Sum(holding => holding.Quantity * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
             if (worth > participant.MaxTotalWorth)
             {
                 participant.MaxTotalWorth = worth;
@@ -114,7 +114,7 @@ public sealed class MarketExitService(
         }
     }
 
-    private bool IsStarvationCandidate(Participant participant, List<OwnedShare> owned) =>
+    private bool IsStarvationCandidate(Participant participant, List<OwnedHolding> owned) =>
         participant.IsActive
         && !participant.IsBankrupt
         && participant.Type is ParticipantType.Individual or ParticipantType.AIAgent
@@ -213,11 +213,11 @@ public sealed class MarketExitService(
     {
         latestPriceByCompany = await LatestPriceByCompanyAsync();
 
-        ownedByParticipant = (await dbContext.Shares
-                .Where(share => share.OwnerId != null)
-                .Select(share => new OwnedShare(share.OwnerId!.Value, share.CompanyId, share.Id))
+        ownedByParticipant = (await dbContext.Holdings
+                .Where(holding => holding.Quantity > 0)
+                .Select(holding => new OwnedHolding(holding.ParticipantId, holding.CompanyId, holding.Quantity))
                 .ToListAsync())
-            .GroupBy(share => share.OwnerId)
+            .GroupBy(holding => holding.OwnerId)
             .ToDictionary(group => group.Key, group => group.ToList());
 
         openBuyOrdersByParticipant = (await dbContext.Orders
@@ -247,5 +247,5 @@ public sealed class MarketExitService(
             .ToDictionary(group => group.Key, group => group.OrderByDescending(snapshot => snapshot.Id).First().Price);
     }
 
-    private readonly record struct OwnedShare(int OwnerId, int CompanyId, int Id);
+    private readonly record struct OwnedHolding(int OwnerId, int CompanyId, int Quantity);
 }

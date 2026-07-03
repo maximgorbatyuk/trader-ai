@@ -87,7 +87,8 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
         // A science lift never touches the order book: the standing sell order stays open with its shares.
         var order = await context.Orders.AsNoTracking().FirstAsync(order => order.ParticipantId == seller.Id);
         Assert.Equal(OrderStatus.Open, order.Status);
-        Assert.Equal(2, await context.OrderShares.CountAsync(orderShare => orderShare.OrderId == order.Id));
+        // The seller keeps its two shares — the science lift never touches holdings.
+        Assert.Equal(2, await context.Holdings.Where(holding => holding.ParticipantId == seller.Id).SumAsync(holding => holding.Quantity));
 
         var savedMarket = await context.Markets.AsNoTracking().FirstAsync();
         Assert.Equal(100, savedMarket.LastScienceInvestigationCycleNumber);
@@ -132,20 +133,13 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
             UpdatedAt = now,
         };
 
-        for (var index = 0; index < 2; index++)
+        context.Holdings.Add(new Holding
         {
-            order.OrderShares.Add(new OrderShare
-            {
-                Share = new Share
-                {
-                    CompanyId = companyId,
-                    OwnerId = seller.Id,
-                    InitialPrice = 100m,
-                    CurrentPrice = 100m,
-                    LastUpdatedAt = now,
-                },
-            });
-        }
+            ParticipantId = seller.Id,
+            CompanyId = companyId,
+            Quantity = 2,
+            AverageCost = 100m,
+        });
 
         context.Orders.Add(order);
         await context.SaveChangesAsync();

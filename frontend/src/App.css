@@ -1558,6 +1558,12 @@
   animation: modal-rise 160ms ease-out;
 }
 
+/* The company detail dialog runs ~30% larger than the shared modal to give its chart more room. */
+.modal-company {
+  width: min(884px, 100%);
+  max-height: min(90vh, 988px);
+}
+
 .modal-head {
   display: flex;
   flex-wrap: wrap;

@@ -29,8 +29,6 @@ public sealed class Order
 
     public DateTime UpdatedAt { get; set; }
 
-    public ICollection<OrderShare> OrderShares { get; set; } = new List<OrderShare>();
-
     [NotMapped]
     public int RemainingQuantity => Quantity - FilledQuantity;
 }

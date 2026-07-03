@@ -9,13 +9,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<Participant> Participants => Set<Participant>();
 
-    public DbSet<Share> Shares => Set<Share>();
+    public DbSet<Holding> Holdings => Set<Holding>();
 
     public DbSet<MarketCycle> MarketCycles => Set<MarketCycle>();
 
     public DbSet<Order> Orders => Set<Order>();
-
-    public DbSet<OrderShare> OrderShares => Set<OrderShare>();
 
     public DbSet<OrderFill> OrderFills => Set<OrderFill>();
 
@@ -73,20 +71,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .WithOne()
             .HasForeignKey(member => member.CollectiveFundId);
 
-        // A share can be offered by at most one open sell order; consumed links are deleted on fill.
-        modelBuilder.Entity<OrderShare>()
-            .HasIndex(orderShare => orderShare.ShareId)
+        // One position row per (participant, company); every holdings read groups on these columns.
+        modelBuilder.Entity<Holding>()
+            .HasIndex(holding => new { holding.ParticipantId, holding.CompanyId })
             .IsUnique();
 
-        modelBuilder.Entity<OrderShare>()
-            .HasOne(orderShare => orderShare.Order)
-            .WithMany(order => order.OrderShares)
-            .HasForeignKey(orderShare => orderShare.OrderId);
-
-        modelBuilder.Entity<OrderShare>()
-            .HasOne(orderShare => orderShare.Share)
-            .WithMany()
-            .HasForeignKey(orderShare => orderShare.ShareId);
+        modelBuilder.Entity<Holding>()
+            .HasIndex(holding => holding.CompanyId);
 
         modelBuilder.Entity<MarketCycle>()
             .HasIndex(cycle => cycle.CycleNumber)

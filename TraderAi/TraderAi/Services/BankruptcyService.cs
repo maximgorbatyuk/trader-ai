@@ -52,38 +52,55 @@ public sealed class BankruptcyService(
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
 
-        var ownedShares = await dbContext.Shares
-            .Where(share => share.OwnerId != null)
-            .Select(share => new OwnedShare(share.OwnerId!.Value, share.CompanyId, share.Id))
-            .ToListAsync();
-        var ownedByParticipant = ownedShares
-            .GroupBy(share => share.OwnerId)
-            .ToDictionary(group => group.Key, group => group.ToList());
+        var ownedByParticipant = (await dbContext.Holdings
+                .Where(holding => holding.Quantity > 0)
+                .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
+                .ToListAsync())
+            .GroupBy(holding => holding.ParticipantId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToDictionary(holding => holding.CompanyId, holding => holding.Quantity));
 
         var openOrders = await dbContext.Orders
             .Where(order => order.ParticipantId != null
                 && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
-            .Include(order => order.OrderShares)
             .ToListAsync();
         var openOrdersByParticipant = openOrders
             .GroupBy(order => order.ParticipantId!.Value)
             .ToDictionary(group => group.Key, group => group.ToList());
 
-        // A share is only ever offered by its own owner's sell order, so this single set tracks every share
-        // currently committed to an open order across all participants; listing and cancelling keep it current.
-        var committed = openOrders.SelectMany(order => order.OrderShares).Select(link => link.ShareId).ToHashSet();
+        // Uncommitted quantity per (participant, company): owned shares minus what is already listed for sale.
+        // Listing a forced sale draws it down and cancelling one gives it back — the quantity analogue of the
+        // old committed-share set, so a share is never offered by two orders at once.
+        var available = new Dictionary<(int ParticipantId, int CompanyId), int>();
+        foreach (var (participantId, byCompany) in ownedByParticipant)
+        {
+            foreach (var (companyId, quantity) in byCompany)
+            {
+                available[(participantId, companyId)] = quantity;
+            }
+        }
+
+        foreach (var order in openOrders.Where(order => order.Type == OrderType.Sell))
+        {
+            var key = (order.ParticipantId!.Value, order.CompanyId);
+            if (available.TryGetValue(key, out var remaining))
+            {
+                available[key] = remaining - order.RemainingQuantity;
+            }
+        }
 
         // Stable id order keeps the per-trader random draws reproducible for a scripted Random in tests.
         var participants = await dbContext.Participants.OrderBy(participant => participant.Id).ToListAsync();
 
         foreach (var participant in participants)
         {
-            var owned = ownedByParticipant.GetValueOrDefault(participant.Id) ?? [];
+            var owned = ownedByParticipant.GetValueOrDefault(participant.Id) ?? new Dictionary<int, int>();
             var openForParticipant = openOrdersByParticipant.GetValueOrDefault(participant.Id) ?? [];
 
             if (participant.IsBankrupt)
             {
-                ContinueSellDown(participant, owned, openForParticipant, latestPriceByCompany, committed, currentCycleId, now);
+                ContinueSellDown(participant, owned, openForParticipant, latestPriceByCompany, available, currentCycleId, now);
                 continue;
             }
 
@@ -93,16 +110,16 @@ public sealed class BankruptcyService(
                 continue;
             }
 
-            MaybeTrigger(participant, owned, openForParticipant, latestPriceByCompany, committed, currentCycleId, now);
+            MaybeTrigger(participant, owned, openForParticipant, latestPriceByCompany, available, currentCycleId, now);
         }
     }
 
     private void MaybeTrigger(
         Participant participant,
-        List<OwnedShare> owned,
+        IReadOnlyDictionary<int, int> owned,
         List<Order> openOrders,
         IReadOnlyDictionary<int, decimal> latestPriceByCompany,
-        HashSet<int> committed,
+        Dictionary<(int ParticipantId, int CompanyId), int> available,
         int currentCycleId,
         DateTime now)
     {
@@ -147,7 +164,7 @@ public sealed class BankruptcyService(
             }
             else
             {
-                CancelSell(order, committed, now);
+                CancelSell(order, available, now);
             }
         }
 
@@ -167,7 +184,7 @@ public sealed class BankruptcyService(
         participant.ReservedBalance = 0m;
         participant.IsActive = false;
         participant.IsBankrupt = true;
-        participant.BankruptcyOwnedAtStart = owned.Count;
+        participant.BankruptcyOwnedAtStart = owned.Values.Sum();
         participant.BankruptcyDiscountStep = 0;
 
         var (title, content) = DemoBankruptcyContent.Generate(participant.Name, cashLost, shareWorth, random);
@@ -182,19 +199,19 @@ public sealed class BankruptcyService(
             TriggeredAt = now,
         });
 
-        ListForcedSells(participant, SellDownTarget(participant), owned, latestPriceByCompany, committed, currentCycleId, now);
+        ListForcedSells(participant, SellDownTarget(participant), owned, latestPriceByCompany, available, currentCycleId, now);
     }
 
     private void ContinueSellDown(
         Participant participant,
-        List<OwnedShare> owned,
+        IReadOnlyDictionary<int, int> owned,
         List<Order> openOrders,
         IReadOnlyDictionary<int, decimal> latestPriceByCompany,
-        HashSet<int> committed,
+        Dictionary<(int ParticipantId, int CompanyId), int> available,
         int currentCycleId,
         DateTime now)
     {
-        var sold = participant.BankruptcyOwnedAtStart - owned.Count;
+        var sold = participant.BankruptcyOwnedAtStart - owned.Values.Sum();
         var remaining = SellDownTarget(participant) - sold;
         if (remaining <= 0)
         {
@@ -210,21 +227,21 @@ public sealed class BankruptcyService(
         {
             foreach (var order in openSells)
             {
-                CancelSell(order, committed, now);
+                CancelSell(order, available, now);
             }
 
             participant.BankruptcyDiscountStep++;
         }
 
-        ListForcedSells(participant, remaining, owned, latestPriceByCompany, committed, currentCycleId, now);
+        ListForcedSells(participant, remaining, owned, latestPriceByCompany, available, currentCycleId, now);
     }
 
     private void ListForcedSells(
         Participant participant,
         int sharesToList,
-        List<OwnedShare> owned,
+        IReadOnlyDictionary<int, int> owned,
         IReadOnlyDictionary<int, decimal> latestPriceByCompany,
-        HashSet<int> committed,
+        Dictionary<(int ParticipantId, int CompanyId), int> available,
         int currentCycleId,
         DateTime now)
     {
@@ -236,14 +253,20 @@ public sealed class BankruptcyService(
         var discount = Math.Min(BaseDiscount + (DiscountStepSize * participant.BankruptcyDiscountStep), MaxDiscount);
         var remaining = sharesToList;
 
-        foreach (var byCompany in owned.GroupBy(share => share.CompanyId))
+        foreach (var companyId in owned.Keys.OrderBy(id => id))
         {
             if (remaining <= 0)
             {
                 break;
             }
 
-            if (!latestPriceByCompany.TryGetValue(byCompany.Key, out var price) || price <= 0m)
+            if (!latestPriceByCompany.TryGetValue(companyId, out var price) || price <= 0m)
+            {
+                continue;
+            }
+
+            var availableQuantity = available.GetValueOrDefault((participant.Id, companyId));
+            if (availableQuantity <= 0)
             {
                 continue;
             }
@@ -254,39 +277,25 @@ public sealed class BankruptcyService(
                 continue;
             }
 
-            var freeShareIds = byCompany
-                .Where(share => !committed.Contains(share.Id))
-                .Select(share => share.Id)
-                .Take(remaining)
-                .ToList();
-            if (freeShareIds.Count == 0)
-            {
-                continue;
-            }
+            var quantity = Math.Min(remaining, availableQuantity);
 
-            var order = new Order
+            dbContext.Orders.Add(new Order
             {
                 ParticipantId = participant.Id,
-                CompanyId = byCompany.Key,
+                CompanyId = companyId,
                 Type = OrderType.Sell,
                 Status = OrderStatus.Open,
-                Quantity = freeShareIds.Count,
+                Quantity = quantity,
                 FilledQuantity = 0,
                 LimitPrice = sellPrice,
                 ReservedCashAmount = 0m,
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
                 UpdatedAt = now,
-            };
+            });
 
-            foreach (var shareId in freeShareIds)
-            {
-                order.OrderShares.Add(new OrderShare { ShareId = shareId });
-                committed.Add(shareId);
-            }
-
-            dbContext.Orders.Add(order);
-            remaining -= freeShareIds.Count;
+            available[(participant.Id, companyId)] = availableQuantity - quantity;
+            remaining -= quantity;
         }
     }
 
@@ -312,15 +321,14 @@ public sealed class BankruptcyService(
         order.UpdatedAt = now;
     }
 
-    private void CancelSell(Order order, HashSet<int> committed, DateTime now)
+    private static void CancelSell(
+        Order order,
+        Dictionary<(int ParticipantId, int CompanyId), int> available,
+        DateTime now)
     {
-        foreach (var link in order.OrderShares)
-        {
-            committed.Remove(link.ShareId);
-        }
-
-        dbContext.OrderShares.RemoveRange(order.OrderShares);
-        order.OrderShares.Clear();
+        // The unsold quantity returns to the seller's available pool so it can be re-listed.
+        var key = (order.ParticipantId!.Value, order.CompanyId);
+        available[key] = available.GetValueOrDefault(key) + order.RemainingQuantity;
         order.Status = OrderStatus.Cancelled;
         order.UpdatedAt = now;
     }
@@ -328,8 +336,8 @@ public sealed class BankruptcyService(
     private static int SellDownTarget(Participant participant) =>
         (int)Math.Round(participant.BankruptcyOwnedAtStart * SellDownFraction, MidpointRounding.AwayFromZero);
 
-    private static decimal ShareWorth(List<OwnedShare> owned, IReadOnlyDictionary<int, decimal> latestPriceByCompany) =>
-        owned.Sum(share => latestPriceByCompany.GetValueOrDefault(share.CompanyId));
+    private static decimal ShareWorth(IReadOnlyDictionary<int, int> owned, IReadOnlyDictionary<int, decimal> latestPriceByCompany) =>
+        owned.Sum(holding => holding.Value * latestPriceByCompany.GetValueOrDefault(holding.Key));
 
     // Bankruptcy chance from a negative balance: debt as a percent of total worth (cash plus holdings), clamped
     // at the borrow ceiling, times the per-percent step. A trader whose debt outruns its holdings caps out.
@@ -358,6 +366,4 @@ public sealed class BankruptcyService(
     }
 
     private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
-
-    private readonly record struct OwnedShare(int OwnerId, int CompanyId, int Id);
 }

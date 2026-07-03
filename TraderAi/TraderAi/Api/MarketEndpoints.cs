@@ -40,11 +40,10 @@ public static class MarketEndpoints
 
         app.MapGet("/companies/{companyId:int}/shareholders", async (int companyId, AppDbContext dbContext) =>
         {
-            // CurrentPrice on a held share is what its owner last paid, so summing per owner is the cost basis.
-            var sharesByOwner = await dbContext.Shares
-                .Where(share => share.CompanyId == companyId && share.OwnerId != null)
-                .GroupBy(share => share.OwnerId!.Value)
-                .Select(group => new { OwnerId = group.Key, Shares = group.Count(), CostBasis = group.Sum(share => share.CurrentPrice) })
+            // AverageCost is the weighted-average price the owner paid, so cost basis is quantity times it.
+            var sharesByOwner = await dbContext.Holdings
+                .Where(holding => holding.CompanyId == companyId && holding.Quantity > 0)
+                .Select(holding => new { OwnerId = holding.ParticipantId, Shares = holding.Quantity, CostBasis = holding.Quantity * holding.AverageCost })
                 .ToListAsync();
 
             var ownerNameById = await dbContext.Participants
@@ -155,10 +154,9 @@ public static class MarketEndpoints
                     .ToListAsync())
                 .ToHashSet();
 
-            var holdingsByOwner = (await dbContext.Shares
-                    .Where(share => share.OwnerId != null)
-                    .GroupBy(share => new { OwnerId = share.OwnerId!.Value, share.CompanyId })
-                    .Select(group => new { group.Key.OwnerId, group.Key.CompanyId, Count = group.Count() })
+            var holdingsByOwner = (await dbContext.Holdings
+                    .Where(holding => holding.Quantity > 0)
+                    .Select(holding => new { OwnerId = holding.ParticipantId, holding.CompanyId, Count = holding.Quantity })
                     .ToListAsync())
                 .GroupBy(entry => entry.OwnerId)
                 .ToList();
@@ -226,12 +224,11 @@ public static class MarketEndpoints
 
         app.MapGet("/participants/{participantId:int}/holdings", async (int participantId, AppDbContext dbContext) =>
         {
-            // Share.CurrentPrice is the execution price the share last transferred at, so for a currently
-            // held share it equals what this owner paid — summing it per company gives the cost basis.
-            var sharesByCompany = await dbContext.Shares
-                .Where(share => share.OwnerId == participantId)
-                .GroupBy(share => share.CompanyId)
-                .Select(group => new { CompanyId = group.Key, Shares = group.Count(), CostBasis = group.Sum(share => share.CurrentPrice) })
+            // AverageCost is the weighted-average price this owner paid for the position, so cost basis is
+            // quantity times it.
+            var sharesByCompany = await dbContext.Holdings
+                .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
+                .Select(holding => new { holding.CompanyId, Shares = holding.Quantity, CostBasis = holding.Quantity * holding.AverageCost })
                 .ToListAsync();
 
             var companyNameById = await dbContext.Companies
@@ -462,6 +459,7 @@ public static class MarketEndpoints
                     snapshot.Id,
                     snapshot.CompanyId,
                     snapshot.Price,
+                    snapshot.Capitalization,
                     snapshot.CreatedInCycleId,
                     snapshot.CreatedAt))
                 .ToArray();
@@ -772,16 +770,14 @@ public static class MarketEndpoints
             return null;
         }
 
-        // Shares the issuer has not yet sold carry no owner; the rest are outstanding in participants' hands.
-        var sharesHeldByIssuer = await dbContext.Shares
-            .CountAsync(share => share.CompanyId == companyId && share.OwnerId == null);
-        var sharesOutstanding = await dbContext.Shares
-            .CountAsync(share => share.CompanyId == companyId && share.OwnerId != null);
-        var shareholderCount = await dbContext.Shares
-            .Where(share => share.CompanyId == companyId && share.OwnerId != null)
-            .Select(share => share.OwnerId)
-            .Distinct()
-            .CountAsync();
+        // Outstanding shares are the sum of participants' holdings; the rest of the issued supply is the
+        // unsold float still held by the issuer.
+        var sharesOutstanding = await dbContext.Holdings
+            .Where(holding => holding.CompanyId == companyId && holding.Quantity > 0)
+            .SumAsync(holding => holding.Quantity);
+        var sharesHeldByIssuer = company.IssuedSharesCount - sharesOutstanding;
+        var shareholderCount = await dbContext.Holdings
+            .CountAsync(holding => holding.CompanyId == companyId && holding.Quantity > 0);
 
         var currentPrice = (await LatestPriceByCompanyAsync(dbContext)).GetValueOrDefault(companyId);
         var priceChangePct = (await PriceChangePctByCompanyAsync(dbContext)).GetValueOrDefault(companyId);
@@ -813,7 +809,9 @@ public static class MarketEndpoints
             return null;
         }
 
-        var sharesOwned = await dbContext.Shares.CountAsync(share => share.OwnerId == participantId);
+        var sharesOwned = await dbContext.Holdings
+            .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
+            .SumAsync(holding => holding.Quantity);
 
         string? fundStatus = null;
         CollectiveFundMemberResponse[] fundMembers = [];
@@ -867,10 +865,9 @@ public static class MarketEndpoints
             return null;
         }
 
-        var holdings = await dbContext.Shares
-            .Where(share => share.OwnerId == player.Id)
-            .GroupBy(share => share.CompanyId)
-            .Select(group => new { CompanyId = group.Key, Shares = group.Count() })
+        var holdings = await dbContext.Holdings
+            .Where(holding => holding.ParticipantId == player.Id && holding.Quantity > 0)
+            .Select(holding => new { holding.CompanyId, Shares = holding.Quantity })
             .ToListAsync();
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
@@ -1147,7 +1144,7 @@ public sealed record ShareTransactionResponse(
     int CreatedInCycleId,
     DateTime CreatedAt);
 
-public sealed record PriceSnapshotResponse(int Id, int CompanyId, decimal Price, int CreatedInCycleId, DateTime CreatedAt);
+public sealed record PriceSnapshotResponse(int Id, int CompanyId, decimal Price, decimal? Capitalization, int CreatedInCycleId, DateTime CreatedAt);
 
 public sealed record ParticipantWorthPointResponse(
     int CreatedInCycleId,

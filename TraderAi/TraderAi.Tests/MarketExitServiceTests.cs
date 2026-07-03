@@ -355,18 +355,13 @@ public sealed class MarketExitServiceTests : IDisposable
 
     private async Task AddSharesAsync(int ownerId, int companyId, int count, decimal price)
     {
-        var now = DateTime.UtcNow;
-        for (var index = 0; index < count; index++)
+        context.Holdings.Add(new Holding
         {
-            context.Shares.Add(new Share
-            {
-                CompanyId = companyId,
-                OwnerId = ownerId,
-                InitialPrice = price,
-                CurrentPrice = price,
-                LastUpdatedAt = now,
-            });
-        }
+            ParticipantId = ownerId,
+            CompanyId = companyId,
+            Quantity = count,
+            AverageCost = price,
+        });
 
         await context.SaveChangesAsync();
     }

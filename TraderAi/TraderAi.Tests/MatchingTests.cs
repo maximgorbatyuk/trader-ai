@@ -47,8 +47,8 @@ public sealed class MatchingTests : IDisposable
         Assert.Equal(0m, seed.Buyer.ReservedBalance);
         Assert.Equal(1525m, seed.Seller.CurrentBalance);
 
-        Assert.Equal(5, await context.Shares.CountAsync(share => share.OwnerId == seed.Buyer.Id));
-        Assert.Equal(5, await context.Shares.CountAsync(share => share.OwnerId == seed.Seller.Id));
+        Assert.Equal(5, await context.Holdings.Where(holding => holding.ParticipantId == seed.Buyer.Id).SumAsync(holding => holding.Quantity));
+        Assert.Equal(5, await context.Holdings.Where(holding => holding.ParticipantId == seed.Seller.Id).SumAsync(holding => holding.Quantity));
 
         var transaction = await context.ShareTransactions.SingleAsync();
         Assert.Equal(5, transaction.Quantity);
@@ -156,7 +156,7 @@ public sealed class MatchingTests : IDisposable
 
         Assert.Equal(OrderStatus.Filled, highBuyOrder!.Status);
         Assert.Equal(OrderStatus.Open, lowBuyOrder!.Status);
-        Assert.Equal(5, await context.Shares.CountAsync(share => share.OwnerId == secondBuyer.Id));
+        Assert.Equal(5, await context.Holdings.Where(holding => holding.ParticipantId == secondBuyer.Id).SumAsync(holding => holding.Quantity));
     }
 
     [Fact]
@@ -295,15 +295,14 @@ public sealed class MatchingTests : IDisposable
 
         await context.SaveChangesAsync();
 
-        for (var index = 0; index < sellerShares; index++)
+        if (sellerShares > 0)
         {
-            context.Shares.Add(new Share
+            context.Holdings.Add(new Holding
             {
+                ParticipantId = seller.Id,
                 CompanyId = company.Id,
-                OwnerId = seller.Id,
-                InitialPrice = sharePrice,
-                CurrentPrice = sharePrice,
-                LastUpdatedAt = now,
+                Quantity = sellerShares,
+                AverageCost = sharePrice,
             });
         }
 

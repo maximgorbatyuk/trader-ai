@@ -45,6 +45,9 @@ public sealed class MarketImpactService(AppDbContext dbContext)
         DateTime now)
     {
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        var sharesByCompany = await dbContext.Companies
+            .Where(company => companyIds.Contains(company.Id))
+            .ToDictionaryAsync(company => company.Id, company => company.IssuedSharesCount);
         var factor = direction == NewsImpactDirection.Increase
             ? 1m + (percent / 100m)
             : 1m - (percent / 100m);
@@ -67,6 +70,7 @@ public sealed class MarketImpactService(AppDbContext dbContext)
             {
                 CompanyId = companyId,
                 Price = newPrice,
+                Capitalization = newPrice * sharesByCompany.GetValueOrDefault(companyId),
                 CreatedInCycleId = cycleId,
                 CreatedAt = now,
             });
@@ -91,7 +95,6 @@ public sealed class MarketImpactService(AppDbContext dbContext)
                 && order.Type == staleType
                 && companyIds.Contains(order.CompanyId)
                 && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
-            .Include(order => order.OrderShares)
             .ToListAsync();
 
         if (orders.Count == 0)
@@ -131,13 +134,8 @@ public sealed class MarketImpactService(AppDbContext dbContext)
                     });
                 }
             }
-            else
-            {
-                // Freeing the share links lets the shares be listed again at a price that reflects the rise.
-                dbContext.OrderShares.RemoveRange(order.OrderShares);
-                order.OrderShares.Clear();
-            }
-
+            // A sell reserves no cash and holds no links; cancelling just frees its listed quantity so the
+            // shares can be re-listed at a price that reflects the rise.
             order.Status = OrderStatus.Cancelled;
             order.UpdatedAt = now;
         }

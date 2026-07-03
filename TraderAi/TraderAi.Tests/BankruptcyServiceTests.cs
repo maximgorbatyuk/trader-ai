@@ -122,7 +122,8 @@ public sealed class BankruptcyServiceTests : IDisposable
         Assert.Equal(OrderStatus.Open, sell.Status);
         Assert.Equal(7, sell.Quantity);
         Assert.Equal(160_000_000m, sell.LimitPrice);
-        Assert.Equal(7, await context.OrderShares.CountAsync(link => link.OrderId == sell.Id));
+        // Listing a forced sale does not reduce the holding; all ten shares remain owned until sold.
+        Assert.Equal(10, await context.Holdings.Where(holding => holding.ParticipantId == trader.Id).SumAsync(holding => holding.Quantity));
 
         Assert.True(await context.MoneyTransactions.AnyAsync(transaction =>
             transaction.ParticipantId == trader.Id
@@ -289,18 +290,13 @@ public sealed class BankruptcyServiceTests : IDisposable
 
     private async Task AddSharesAsync(int ownerId, int companyId, int count, decimal price)
     {
-        var now = DateTime.UtcNow;
-        for (var index = 0; index < count; index++)
+        context.Holdings.Add(new Holding
         {
-            context.Shares.Add(new Share
-            {
-                CompanyId = companyId,
-                OwnerId = ownerId,
-                InitialPrice = price,
-                CurrentPrice = price,
-                LastUpdatedAt = now,
-            });
-        }
+            ParticipantId = ownerId,
+            CompanyId = companyId,
+            Quantity = count,
+            AverageCost = price,
+        });
 
         await context.SaveChangesAsync();
     }
@@ -330,12 +326,6 @@ public sealed class BankruptcyServiceTests : IDisposable
     private async Task<Order> AddOpenSellOrderAsync(int participantId, int companyId, int shareCount, decimal price, int cycleId)
     {
         var now = DateTime.UtcNow;
-        var shareIds = await context.Shares
-            .Where(share => share.OwnerId == participantId && share.CompanyId == companyId)
-            .Select(share => share.Id)
-            .Take(shareCount)
-            .ToListAsync();
-
         var order = new Order
         {
             ParticipantId = participantId,
@@ -350,10 +340,6 @@ public sealed class BankruptcyServiceTests : IDisposable
             CreatedAt = now,
             UpdatedAt = now,
         };
-        foreach (var shareId in shareIds)
-        {
-            order.OrderShares.Add(new OrderShare { ShareId = shareId });
-        }
 
         context.Orders.Add(order);
         await context.SaveChangesAsync();

@@ -96,24 +96,23 @@ Notes:
 - A company belongs to one industry; an industry can hold many companies.
 - Industries exist mainly so a single news event can move a whole sector at once.
 
-### Share
+### Holding
 
-A share is one owned unit of a company.
+A holding is a participant's position in one company: how many shares it owns and the average price it paid for them.
 
 Fields:
 
 - ID
+- ParticipantId
 - CompanyId
-- OwnerId
-- InitialPrice
-- CurrentPrice
-- LastUpdatedAt
-- LastShareTransactionId
+- Quantity
+- AverageCost
 
 Notes:
 
-- A share is owned by at most one participant, or is held unowned by its issuing company until it is first sold.
-- A share can be reserved by one open sell order.
+- A participant has at most one holding per company.
+- The issuer's unsold shares are not a holding; that float is the issued supply minus the shares participants hold.
+- A buy blends its execution price into the average cost; a sell leaves the average cost of the remaining shares unchanged.
 - Ownership changes only through a completed share transaction.
 
 ### MarketCycle
@@ -159,26 +158,10 @@ Notes:
 - Buy orders request a quantity of shares for one company.
 - Buy orders reserve cash at creation.
 - Buy order reservation is reduced when cash is spent or released.
-- Sell orders offer specific shares for one company.
+- Sell orders offer a quantity from the seller's holding for one company.
 - A sell order can be company-originated to list the issuer's own shares; such an order has no participant.
 - Open orders stay available across cycles.
 - The remaining quantity is `Quantity - FilledQuantity`.
-
-### OrderShare
-
-An order share links a sell order to the exact shares being offered.
-
-Fields:
-
-- ID
-- OrderId
-- ShareId
-
-Notes:
-
-- This model exists because each share is stored as its own row.
-- It prevents the same share from being used in more than one open sell order.
-- Only sell orders use order shares.
 
 ### OrderFill
 

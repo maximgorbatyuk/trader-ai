@@ -15,10 +15,16 @@ public sealed class MatchingEngine(AppDbContext dbContext)
         var now = DateTime.UtcNow;
         var participants = await dbContext.Participants.ToDictionaryAsync(participant => participant.Id);
 
+        // Positions of everyone who might trade this cycle; buyers acquiring their first shares of a
+        // company get a fresh row added on the fly.
+        var holdings = await dbContext.Holdings.ToDictionaryAsync(holding => (holding.ParticipantId, holding.CompanyId));
+
+        // Issued-share counts value each fill's price snapshot at total capitalisation; splits do not run
+        // during matching, so a single up-front read stays correct for the whole pass.
+        var sharesByCompany = await dbContext.Companies.ToDictionaryAsync(company => company.Id, company => company.IssuedSharesCount);
+
         var openOrders = await dbContext.Orders
             .Where(order => order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
-            .Include(order => order.OrderShares)
-                .ThenInclude(orderShare => orderShare.Share)
             .ToListAsync();
 
         var fillCount = 0;
@@ -59,7 +65,7 @@ public sealed class MatchingEngine(AppDbContext dbContext)
                 // seller's, so the buyer's unused reservation is still refunded below.
                 var executionPrice = Round((buy.LimitPrice + sell.LimitPrice) / 2m);
 
-                ExecuteFill(buy, sell, matchQuantity, executionPrice, cycle, participants, now);
+                ExecuteFill(buy, sell, matchQuantity, executionPrice, cycle, participants, holdings, sharesByCompany, now);
                 fillCount++;
 
                 if (buy.RemainingQuantity == 0)
@@ -86,17 +92,19 @@ public sealed class MatchingEngine(AppDbContext dbContext)
         decimal executionPrice,
         MarketCycle cycle,
         IReadOnlyDictionary<int, Participant> participants,
+        Dictionary<(int ParticipantId, int CompanyId), Holding> holdings,
+        IReadOnlyDictionary<int, int> sharesByCompany,
         DateTime now)
     {
         var buyer = participants[buy.ParticipantId!.Value];
         var seller = sell.ParticipantId is int sellerId ? participants[sellerId] : null;
-        var shareLinks = sell.OrderShares.Take(quantity).ToList();
+        var companyId = buy.CompanyId;
 
         var shareTransaction = new ShareTransaction
         {
             SellerId = seller?.Id,
             BuyerId = buyer.Id,
-            CompanyId = buy.CompanyId,
+            CompanyId = companyId,
             Quantity = quantity,
             Price = executionPrice,
             TotalCost = executionPrice * quantity,
@@ -106,21 +114,13 @@ public sealed class MatchingEngine(AppDbContext dbContext)
         };
         dbContext.ShareTransactions.Add(shareTransaction);
 
-        foreach (var link in shareLinks)
+        // A company-originated offer has no seller position; only a participant seller's holding shrinks.
+        if (seller is not null)
         {
-            var share = link.Share!;
-            share.OwnerId = buyer.Id;
-            share.CurrentPrice = executionPrice;
-            share.LastUpdatedAt = now;
-            share.LastShareTransaction = shareTransaction;
+            ReduceHolding(holdings, seller.Id, companyId, quantity);
         }
 
-        // Sold shares leave the offer so the share can be listed again by its new owner.
-        dbContext.OrderShares.RemoveRange(shareLinks);
-        foreach (var link in shareLinks)
-        {
-            sell.OrderShares.Remove(link);
-        }
+        AddToHolding(holdings, buyer.Id, companyId, quantity, executionPrice);
 
         var spent = executionPrice * quantity;
         var reservationForFilled = buy.LimitPrice * quantity;
@@ -186,8 +186,9 @@ public sealed class MatchingEngine(AppDbContext dbContext)
 
         dbContext.PriceSnapshots.Add(new PriceSnapshot
         {
-            CompanyId = buy.CompanyId,
+            CompanyId = companyId,
             Price = executionPrice,
+            Capitalization = executionPrice * sharesByCompany.GetValueOrDefault(companyId),
             SourceShareTransaction = shareTransaction,
             CreatedInCycleId = cycle.Id,
             CreatedAt = now,
@@ -200,5 +201,43 @@ public sealed class MatchingEngine(AppDbContext dbContext)
         sell.FilledQuantity += quantity;
         sell.Status = sell.RemainingQuantity == 0 ? OrderStatus.Filled : OrderStatus.PartiallyFilled;
         sell.UpdatedAt = now;
+    }
+
+    private void AddToHolding(
+        Dictionary<(int ParticipantId, int CompanyId), Holding> holdings,
+        int participantId,
+        int companyId,
+        int quantity,
+        decimal price)
+    {
+        if (holdings.TryGetValue((participantId, companyId), out var holding))
+        {
+            var blended = ((holding.Quantity * holding.AverageCost) + (quantity * price)) / (holding.Quantity + quantity);
+            holding.AverageCost = Round(blended);
+            holding.Quantity += quantity;
+            return;
+        }
+
+        var created = new Holding
+        {
+            ParticipantId = participantId,
+            CompanyId = companyId,
+            Quantity = quantity,
+            AverageCost = price,
+        };
+        dbContext.Holdings.Add(created);
+        holdings[(participantId, companyId)] = created;
+    }
+
+    private static void ReduceHolding(
+        Dictionary<(int ParticipantId, int CompanyId), Holding> holdings,
+        int participantId,
+        int companyId,
+        int quantity)
+    {
+        // Leave a zero-quantity row rather than deleting it: every holdings read filters on Quantity > 0, and
+        // keeping the row avoids a delete-then-insert on the same (participant, company) unique key when a
+        // seller sells out and rebuys the same company within one matching run.
+        holdings[(participantId, companyId)].Quantity -= quantity;
     }
 }

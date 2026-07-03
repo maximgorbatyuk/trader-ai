@@ -276,7 +276,7 @@ public sealed class PlayerTests : IDisposable
 
     // Behavior 6: cancelling a player sell frees the shares it had listed.
     [Fact]
-    public async Task CancellingPlayerSellFreesItsOrderShares()
+    public async Task CancellingPlayerSellFreesItsListing()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var company = await context.Companies.FirstAsync();
@@ -284,13 +284,18 @@ public sealed class PlayerTests : IDisposable
         var player = (await market.CreatePlayerAsync("Ada")).Player!;
         await GiveSharesAsync(company.Id, player.Id, 5, 100m);
         var order = (await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Sell, 5, 120m)).Order!;
-        Assert.Equal(5, await context.OrderShares.CountAsync());
+        Assert.Equal(1, await context.Orders.CountAsync(sell =>
+            sell.ParticipantId == player.Id && sell.Type == OrderType.Sell && sell.Status == OrderStatus.Open));
 
         var result = await market.CancelPlayerOrderAsync(order.Id);
 
         Assert.True(result.Success);
         Assert.Equal(OrderStatus.Cancelled, result.Order!.Status);
-        Assert.Equal(0, await context.OrderShares.CountAsync());
+        // Cancelling frees the listing: no open sell remains and the player keeps all five shares.
+        Assert.Equal(0, await context.Orders.CountAsync(sell =>
+            sell.ParticipantId == player.Id && sell.Type == OrderType.Sell
+            && (sell.Status == OrderStatus.Open || sell.Status == OrderStatus.PartiallyFilled)));
+        Assert.Equal(5, await context.Holdings.Where(holding => holding.ParticipantId == player.Id).SumAsync(holding => holding.Quantity));
     }
 
     // Behavior 6: the player cannot cancel an order that is not its own.
@@ -374,18 +379,13 @@ public sealed class PlayerTests : IDisposable
 
     private async Task GiveSharesAsync(int companyId, int ownerId, int count, decimal price)
     {
-        var now = DateTime.UtcNow;
-        for (var index = 0; index < count; index++)
+        context.Holdings.Add(new Holding
         {
-            context.Shares.Add(new Share
-            {
-                CompanyId = companyId,
-                OwnerId = ownerId,
-                InitialPrice = price,
-                CurrentPrice = price,
-                LastUpdatedAt = now,
-            });
-        }
+            ParticipantId = ownerId,
+            CompanyId = companyId,
+            Quantity = count,
+            AverageCost = price,
+        });
 
         await context.SaveChangesAsync();
     }

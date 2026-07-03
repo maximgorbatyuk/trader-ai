@@ -291,7 +291,8 @@ public sealed class CollectiveFundServiceTests : IDisposable
             .SingleAsync(order => order.ParticipantId == fundParticipant.Id && order.Type == OrderType.Sell);
         Assert.Equal(15, sell.Quantity);
         Assert.Equal(90m, sell.LimitPrice);
-        Assert.Equal(15, await context.OrderShares.CountAsync(link => link.OrderId == sell.Id));
+        // Listing a fund sell does not reduce the position; all fifteen shares remain held until sold.
+        Assert.Equal(15, await context.Holdings.Where(holding => holding.ParticipantId == fundParticipant.Id).SumAsync(holding => holding.Quantity));
     }
 
     [Fact]
@@ -880,18 +881,13 @@ public sealed class CollectiveFundServiceTests : IDisposable
 
     private async Task AddSharesAsync(int ownerId, int companyId, int count, decimal price)
     {
-        var now = DateTime.UtcNow;
-        for (var index = 0; index < count; index++)
+        context.Holdings.Add(new Holding
         {
-            context.Shares.Add(new Share
-            {
-                CompanyId = companyId,
-                OwnerId = ownerId,
-                InitialPrice = price,
-                CurrentPrice = price,
-                LastUpdatedAt = now,
-            });
-        }
+            ParticipantId = ownerId,
+            CompanyId = companyId,
+            Quantity = count,
+            AverageCost = price,
+        });
 
         await context.SaveChangesAsync();
     }

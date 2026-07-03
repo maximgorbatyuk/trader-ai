@@ -24,7 +24,7 @@ function ChangeAmount({ value }) {
 
 // The player's live control surface: worth headline, balances, performance, holdings, the order form, and
 // open orders. Owns its own polling so it can be dropped into either the dashboard tab or the modal.
-export function PlayerPanel({ companies }) {
+export function PlayerPanel({ companies, onSelectCompany }) {
   const [loading, setLoading] = useState(true)
   const [player, setPlayer] = useState(null)
   const [holdings, setHoldings] = useState([])
@@ -101,7 +101,7 @@ export function PlayerPanel({ companies }) {
       ) : player === null ? (
         <JoinPanel onJoined={refresh} />
       ) : (
-        <PlayerStats player={player} holdings={holdings} orders={orders} companies={companies} onRefresh={refresh} />
+        <PlayerStats player={player} holdings={holdings} orders={orders} companies={companies} onSelectCompany={onSelectCompany} onRefresh={refresh} />
       )}
     </div>
   )
@@ -238,7 +238,7 @@ function JoinPanel({ onJoined }) {
   )
 }
 
-function PlayerStats({ player, holdings, orders, companies, onRefresh }) {
+function PlayerStats({ player, holdings, orders, companies, onSelectCompany, onRefresh }) {
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
   const lastCycleMissing = player.lastCycleMoneyChange == null || player.lastCycleWorthChange == null
 
@@ -310,7 +310,7 @@ function PlayerStats({ player, holdings, orders, companies, onRefresh }) {
         ) : null}
       </div>
 
-      <HoldingsSection holdings={holdings} />
+      <HoldingsSection holdings={holdings} onSelectCompany={onSelectCompany} />
 
       <PlaceOrderForm player={player} companies={companies} onPlaced={onRefresh} />
 
@@ -319,7 +319,7 @@ function PlayerStats({ player, holdings, orders, companies, onRefresh }) {
   )
 }
 
-function HoldingsSection({ holdings }) {
+function HoldingsSection({ holdings, onSelectCompany }) {
   return (
     <div className="modal-section player-section">
       <span className="map-stat-label">Active assets</span>
@@ -350,8 +350,19 @@ function HoldingsSection({ holdings }) {
                 const pnl = holding.marketValue - holding.costBasis
                 return (
                   <tr key={holding.companyId}>
-                    <th scope="row" className="cell-ellipsis">
-                      {holding.companyName}
+                    <th scope="row">
+                      {onSelectCompany ? (
+                        <button
+                          type="button"
+                          className="cell-name-btn cell-ellipsis"
+                          onClick={() => onSelectCompany(holding.companyId)}
+                          title={`Open ${holding.companyName} details`}
+                        >
+                          {holding.companyName}
+                        </button>
+                      ) : (
+                        <span className="cell-ellipsis">{holding.companyName}</span>
+                      )}
                     </th>
                     <td className="num ta-r">{formatInt(holding.shares)}</td>
                     <td className="num ta-r">{formatMoney(holding.costBasis)}</td>

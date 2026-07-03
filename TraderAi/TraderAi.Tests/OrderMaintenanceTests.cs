@@ -82,8 +82,9 @@ public sealed class OrderMaintenanceTests : IDisposable
         var order = await context.Orders.FindAsync(placed.Order!.Id);
         Assert.Equal(OrderStatus.Cancelled, order!.Status);
 
-        // The shares it held are released, so none remain attached to any order.
-        Assert.Equal(0, await context.OrderShares.CountAsync());
+        // The listing is cancelled, so no open sell order ties up the shares any longer.
+        Assert.Equal(0, await context.Orders.CountAsync(sell =>
+            sell.Type == OrderType.Sell && (sell.Status == OrderStatus.Open || sell.Status == OrderStatus.PartiallyFilled)));
     }
 
     [Fact]
@@ -185,17 +186,13 @@ public sealed class OrderMaintenanceTests : IDisposable
 
         foreach (var (company, price) in new[] { (cheap, cheapPrice), (dear, dearPrice) })
         {
-            for (var index = 0; index < sharesEach; index++)
+            context.Holdings.Add(new Holding
             {
-                context.Shares.Add(new Share
-                {
-                    CompanyId = company.Id,
-                    OwnerId = poor.Id,
-                    InitialPrice = price,
-                    CurrentPrice = price,
-                    LastUpdatedAt = now,
-                });
-            }
+                ParticipantId = poor.Id,
+                CompanyId = company.Id,
+                Quantity = sharesEach,
+                AverageCost = price,
+            });
 
             context.PriceSnapshots.Add(new PriceSnapshot
             {

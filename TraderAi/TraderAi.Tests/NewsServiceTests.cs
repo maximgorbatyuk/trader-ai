@@ -126,12 +126,6 @@ public sealed class NewsServiceTests : IDisposable
         var company = await context.Companies.FirstAsync();
         var cycle = await context.MarketCycles.FirstAsync();
         var seller = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
-        var shareIds = await context.Shares
-            .Where(share => share.OwnerId == seller.Id)
-            .Select(share => share.Id)
-            .Take(2)
-            .ToListAsync();
-
         var order = new Order
         {
             ParticipantId = seller.Id,
@@ -146,10 +140,6 @@ public sealed class NewsServiceTests : IDisposable
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         };
-        foreach (var shareId in shareIds)
-        {
-            order.OrderShares.Add(new OrderShare { ShareId = shareId });
-        }
 
         context.Orders.Add(order);
         await context.SaveChangesAsync();
@@ -160,7 +150,8 @@ public sealed class NewsServiceTests : IDisposable
         Assert.True(result.Success);
         var saved = await context.Orders.AsNoTracking().FirstAsync(saved => saved.Id == order.Id);
         Assert.Equal(OrderStatus.Cancelled, saved.Status);
-        Assert.Equal(0, await context.OrderShares.CountAsync(link => link.OrderId == order.Id));
+        // Cancelling the stale sell frees the seller's shares; the whole position is theirs again.
+        Assert.Equal(10, await context.Holdings.Where(holding => holding.ParticipantId == seller.Id).SumAsync(holding => holding.Quantity));
     }
 
     [Fact]

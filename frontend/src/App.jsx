@@ -186,6 +186,7 @@ function App() {
                     companies={companies}
                     participants={participants}
                     lastDividendTotal={market.lastDividendTotal}
+                    currentCycleNumber={market.currentCycleNumber}
                     onSelectCompany={setMapModalCompanyId}
                   />
 
@@ -496,7 +497,7 @@ function DashboardTabs({ companies, participants, transactions, activity, partic
         </div>
       </div>
       <div className="tabpanel" role="tabpanel" id={`dashpanel-${active}`} aria-labelledby={`dashtab-${active}`}>
-        {active === 'player' ? <PlayerPanel companies={companies} /> : null}
+        {active === 'player' ? <PlayerPanel companies={companies} onSelectCompany={onSelectCompany} /> : null}
         {active === 'traders' ? <TradersTable participants={participants} onSelectTrader={onSelectTrader} /> : null}
         {active === 'companies' ? <CompaniesTable companies={companies} onSelectCompany={onSelectCompany} /> : null}
         {active === 'tape' ? (
@@ -1029,10 +1030,16 @@ function OrderBookPanel({
   const [activeSide, setActiveSide] = useState('Buy')
   const tabRefs = useRef({})
 
-  // Both sides list highest price first so the most competitive bids and the priciest offers sit at the top.
+  // Sells list highest price first. Buys surface the companies the player already holds first (so it can add
+  // to or defend those positions), then everything else, each group ordered by highest price.
   const buys = orders
     .filter((order) => order.type === 'Buy')
-    .sort((a, b) => b.limitPrice - a.limitPrice)
+    .sort((a, b) => {
+      const aHeld = playerHoldingCompanyIds.has(a.companyId)
+      const bHeld = playerHoldingCompanyIds.has(b.companyId)
+      if (aHeld !== bHeld) return aHeld ? -1 : 1
+      return b.limitPrice - a.limitPrice
+    })
   const sells = orders
     .filter((order) => order.type === 'Sell')
     .sort((a, b) => b.limitPrice - a.limitPrice)
@@ -1489,13 +1496,33 @@ function squarify(items, width, height) {
   return placed
 }
 
-// Treemap of the largest companies by capitalisation: tile area tracks market cap, colour tracks the last
-// price move (green up, red down, grey flat) with a glyph and signed percent so it is never colour-only.
-function MarketMapPanel({ companies, participants, lastDividendTotal, onSelectCompany }) {
+// Treemap of the largest companies by capitalisation: tile area tracks market cap, colour tracks the change
+// in capitalisation (green up, red down, grey flat) with a glyph and signed percent so it is never colour-only.
+function MarketMapPanel({ companies, participants, lastDividendTotal, currentCycleNumber, onSelectCompany }) {
+  // Tile colour tracks the change in a company's total capitalisation, not its per-share price, so a stock
+  // split (shares up, price down, capitalisation unchanged) reads as flat rather than a market-wide crash.
+  // Anchored to the cycle number, not the poll: the move is measured against the previous cycle's caps and the
+  // colour holds through every poll of the current cycle, only re-computing when a new cycle advances.
+  const [capChange, setCapChange] = useState({ cycle: null, capById: new Map(), changeById: new Map() })
+  if (capChange.cycle !== currentCycleNumber) {
+    const previousCaps = capChange.capById
+    const capById = new Map()
+    const changeById = new Map()
+    for (const company of companies) {
+      const cap = company.issuedSharesCount * (company.currentPrice ?? 0)
+      capById.set(company.id, cap)
+      const previousCap = previousCaps.get(company.id)
+      changeById.set(company.id, previousCap > 0 ? (cap - previousCap) / previousCap : 0)
+    }
+    setCapChange({ cycle: currentCycleNumber, capById, changeById })
+  }
+  const capChangeById = capChange.changeById
+
   const mappedCompanies = companies
     .map((company) => ({
       ...company,
       capitalization: company.issuedSharesCount * (company.currentPrice ?? 0),
+      capChangePct: capChangeById.get(company.id) ?? 0,
     }))
     .filter((company) => company.capitalization > 0)
     .sort((a, b) => b.capitalization - a.capitalization)
@@ -1527,7 +1554,7 @@ function MarketMapPanel({ companies, participants, lastDividendTotal, onSelectCo
         <div className="map-layout">
         <div className="market-map" style={{ aspectRatio: `${MAP_BOX_W} / ${MAP_BOX_H}` }}>
           {tiles.map(({ company, x, y, w, h }) => {
-            const tone = toneOf(company.priceChangePct)
+            const tone = toneOf(company.capChangePct)
             const widthPct = (w / MAP_BOX_W) * 100
             const heightPct = (h / MAP_BOX_H) * 100
             const areaPct = (company.capitalization / totalCapitalization) * 100
@@ -1551,15 +1578,15 @@ function MarketMapPanel({ companies, participants, lastDividendTotal, onSelectCo
                   width: `${widthPct}%`,
                   height: `${heightPct}%`,
                   '--map-area': areaPct.toFixed(2),
-                  '--map-heat': heatMix(company.priceChangePct),
+                  '--map-heat': heatMix(company.capChangePct),
                 }}
-                title={`${company.name} · ${formatCompactMoney(company.capitalization)} cap · ${formatInt(company.issuedSharesCount)} shares · ${formatMoney(company.currentPrice)} · ${formatPct(company.priceChangePct)}`}
-                aria-label={`${company.name}, ${formatCompactMoney(company.capitalization)} capitalisation, ${formatInt(company.issuedSharesCount)} issued shares, ${formatMoney(company.currentPrice)}, ${TONE_WORD[tone]} ${formatPct(company.priceChangePct)}. Open details.`}
+                title={`${company.name} · ${formatCompactMoney(company.capitalization)} cap · ${formatInt(company.issuedSharesCount)} shares · ${formatMoney(company.currentPrice)} · ${formatPct(company.capChangePct)}`}
+                aria-label={`${company.name}, ${formatCompactMoney(company.capitalization)} capitalisation, ${formatInt(company.issuedSharesCount)} issued shares, ${formatMoney(company.currentPrice)}, ${TONE_WORD[tone]} ${formatPct(company.capChangePct)}. Open details.`}
               >
                 <span className="map-name">{company.name}</span>
                 <span className="map-cap num">{formatCompactMoney(company.capitalization)}</span>
                 <span className="map-change num">
-                  <span aria-hidden="true">{TONE_GLYPH[tone]}</span> {formatPct(company.priceChangePct)}
+                  <span aria-hidden="true">{TONE_GLYPH[tone]}</span> {formatPct(company.capChangePct)}
                 </span>
               </div>
             )

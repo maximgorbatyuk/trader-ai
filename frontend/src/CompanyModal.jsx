@@ -179,10 +179,14 @@ export function CompanyModal({ company, participantNameById, onClose }) {
   const capitalization = company.issuedSharesCount * (company.currentPrice ?? 0)
   const values = prices.map((snapshot) => snapshot.price)
   const open = values.at(0)
-  const last = values.at(-1)
   const low = values.length ? Math.min(...values) : undefined
   const high = values.length ? Math.max(...values) : undefined
-  const seriesChange = values.length >= 2 ? last - open : 0
+  // The trend line charts capitalisation, not price, so a stock split (price down, shares up, cap flat) does
+  // not read as a crash. Capitalisation is recorded going forward, so snapshots predating it are skipped.
+  const capValues = prices
+    .filter((snapshot) => snapshot.capitalization != null)
+    .map((snapshot) => snapshot.capitalization)
+  const capSeriesChange = capValues.length >= 2 ? capValues.at(-1) - capValues.at(0) : 0
   const headlineTone = toneOf(company.priceChangePct)
   const titleId = `company-modal-title-${company.id}`
 
@@ -219,7 +223,7 @@ export function CompanyModal({ company, participantNameById, onClose }) {
   return (
     <div className="modal-backdrop" onClick={onBackdropClick}>
       <div
-        className="modal"
+        className="modal modal-company"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -245,10 +249,10 @@ export function CompanyModal({ company, participantNameById, onClose }) {
         </header>
 
         <div className="modal-body">
-          {values.length < 2 ? (
-            <p className="note">Not enough price history yet. Start the loop or step a cycle to record trades.</p>
+          {capValues.length < 2 ? (
+            <p className="note">Not enough capitalization history yet. Start the loop or step a cycle to record trades.</p>
           ) : (
-            <LineChart values={values.slice(-32)} tone={toneOf(seriesChange)} />
+            <LineChart values={capValues.slice(-32)} tone={toneOf(capSeriesChange)} />
           )}
 
           <dl className="modal-stats">
