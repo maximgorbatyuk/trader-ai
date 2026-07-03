@@ -162,6 +162,73 @@ public sealed class RuleBasedDecisionEngineTests
         Assert.True(aggressive > conservative, $"aggressive {aggressive} should exceed conservative {conservative}");
     }
 
+    [Fact]
+    public void DebtPullsAnOwnerTowardSellingMoreOften()
+    {
+        var withDebt = CountSells(DebtorContext(currentBalance: -180m, sharesOwned: 10, companyPrice: 100m, RiskProfile.Low));
+        var noDebt = CountSells(DebtorContext(currentBalance: 0m, sharesOwned: 10, companyPrice: 100m, RiskProfile.Low));
+
+        Assert.True(withDebt > noDebt, $"debt {withDebt} should raise selling above no-debt {noDebt}");
+    }
+
+    [Fact]
+    public void LowRiskDeleveragesHarderThanHighRisk()
+    {
+        // Isolate the debt-driven pull from the baseline personality by comparing each profile's own increase.
+        var lowIncrease = CountSells(DebtorContext(-180m, 10, 100m, RiskProfile.Low))
+            - CountSells(DebtorContext(0m, 10, 100m, RiskProfile.Low));
+        var highIncrease = CountSells(DebtorContext(-180m, 10, 100m, RiskProfile.High))
+            - CountSells(DebtorContext(0m, 10, 100m, RiskProfile.High));
+
+        Assert.True(lowIncrease > highIncrease,
+            $"low-risk debt selling increase {lowIncrease} should exceed high-risk {highIncrease}");
+    }
+
+    [Fact]
+    public void DeeperDebtSellsMoreThanShallowDebt()
+    {
+        var deep = CountSells(DebtorContext(-180m, 10, 100m, RiskProfile.Medium));
+        var shallow = CountSells(DebtorContext(-5m, 10, 100m, RiskProfile.Medium));
+
+        Assert.True(deep > shallow, $"deep debt {deep} should sell more than shallow debt {shallow}");
+    }
+
+    // Same fixed seed per engine so the only difference between compared runs is the debt/risk under test.
+    private static int CountSells(DecisionContext context)
+    {
+        var engine = new RuleBasedDecisionEngine(new MaxTradeSizer(), new Random(20260619));
+        var sells = 0;
+        for (var iteration = 0; iteration < 2000; iteration++)
+        {
+            sells += engine.Decide(context).Count(intent => intent.Type == OrderType.Sell);
+        }
+
+        return sells;
+    }
+
+    // A trader carrying debt (negative balance) that still owns sellable shares, with no spare buying power.
+    private static DecisionContext DebtorContext(decimal currentBalance, int sharesOwned, decimal companyPrice, RiskProfile riskProfile)
+    {
+        const int companyId = 1;
+        var participant = new Participant
+        {
+            Name = "Debtor",
+            Type = ParticipantType.Individual,
+            Temperament = Temperament.Balanced,
+            RiskProfile = riskProfile,
+            InitialBalance = 0m,
+            CurrentBalance = currentBalance,
+            IsActive = true,
+        };
+
+        return new DecisionContext(
+            participant,
+            AvailableCash: 0m,
+            [new CompanyQuote(companyId, companyPrice)],
+            new Dictionary<int, int> { [companyId] = sharesOwned },
+            new HashSet<int>());
+    }
+
     // A flat, no-signal market with both cash and shares leaves every choice to the weighted fallback, so
     // the order count isolates how personality shifts trading frequency. A fresh, equally seeded engine per
     // profile keeps the only difference the profile itself.

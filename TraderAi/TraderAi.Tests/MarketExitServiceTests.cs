@@ -212,6 +212,25 @@ public sealed class MarketExitServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task FundLossFlagDefersWhileInAFund()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        // Shareless and solvent, but back in a fund: departing now would delete the participant out from under a
+        // live membership, so the flag is kept and no roll is drawn.
+        var flagged = await AddTraderAsync(currentBalance: 10_000m, pendingFundLossExitRoll: true);
+        await MakeFundMemberAsync(flagged, cycle.Id);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, await context.MarketExits.CountAsync());
+        Assert.True(await context.Participants.AnyAsync(participant => participant.Id == flagged.Id));
+        var refreshed = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == flagged.Id);
+        Assert.True(refreshed.PendingFundLossExitRoll);
+    }
+
+    [Fact]
     public async Task FundLossFlagClearsOnFailedRoll()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);

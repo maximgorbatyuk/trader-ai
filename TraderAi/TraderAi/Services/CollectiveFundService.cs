@@ -55,6 +55,24 @@ public sealed class CollectiveFundService(
     // devastating loss; the member is flagged so the market-exit service can offer it a one-shot chance to quit.
     private const decimal FundLossFlagFraction = 0.20m;
 
+    // A non-founder member may leave to chase a better fund only after this tenure; each cycle past it, it rolls
+    // to switch at the base chance shifted by temperament (aggressive leaves more readily, conservative less).
+    private const int MinTenureToSwitchCycles = 20;
+    private const double SwitchBaseChance = 0.25;
+    private const double SwitchTemperamentDelta = 0.05;
+
+    // The founder closes the fund once its net worth collapses to this fraction of its all-time peak, or once it
+    // has drawn no dividend income across its last FounderDividendLookbackPayouts post-founding payout cycles.
+    private const decimal FounderLossFraction = 0.15m;
+    private const int FounderDividendLookbackPayouts = 2;
+
+    // A joiner scores each candidate fund on size, net worth, and dividends over its last this-many payout
+    // events, each min-max normalised across the candidates and summed with the weights below.
+    private const int JoinDividendLookbackPayouts = 3;
+    private const double ScoreWeightSize = 1.0;
+    private const double ScoreWeightWorth = 1.0;
+    private const double ScoreWeightDividends = 1.0;
+
     private Dictionary<int, Participant> participantsById = null!;
     private List<CollectiveFund> funds = null!;
     private Dictionary<int, List<CollectiveFundParticipant>> membershipsByFundId = null!;
@@ -64,9 +82,16 @@ public sealed class CollectiveFundService(
     private Dictionary<int, decimal> latestPriceByCompany = null!;
     private HashSet<int> committed = null!;
 
-    // Draw discipline for a scripted Random in tests: no draws while closing funds or returning deposits; one
-    // NextDouble() per active-fund member at or above the leave line (fund id, then participant id order); one
-    // NextDouble() per eligible independent trader, in id order, for the join/open band.
+    // Distinct dividend-payout cycle ids, most recent first (ids rise monotonically with cycles), and each fund
+    // participant's dividend receipts keyed by payout cycle id; both feed fund scoring and the founder close.
+    private List<int> payoutCycleIdsDesc = null!;
+    private Dictionary<int, Dictionary<int, decimal>> fundDividendByCycleId = null!;
+
+    // Draw discipline for a scripted Random in tests: no draws while closing funds, returning deposits, ratcheting
+    // peak worth, running the founder close, or dropping a stale membership. In the member pass (fund id, then participant id order) each
+    // member draws at most once — the forced-leave roll if it sits at or above the leave line, otherwise the
+    // switch roll if it is a non-founder past the minimum tenure, otherwise nothing. In the join pass (independent
+    // traders, id order) a switch-flagged member draws nothing, and every other eligible trader draws once.
     public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now)
     {
         if (!options.Value.Enabled)
@@ -83,6 +108,12 @@ public sealed class CollectiveFundService(
 
         foreach (var fund in funds.Where(fund => fund.Status == CollectiveFundStatus.Active).OrderBy(fund => fund.Id).ToList())
         {
+            RatchetPeakNetWorth(fund);
+            if (MaybeFounderClose(fund, currentCycleId, now))
+            {
+                continue;
+            }
+
             TrackIdleAndMaybeClose(fund, currentCycleId, now);
             if (fund.Status != CollectiveFundStatus.Active)
             {
@@ -96,7 +127,16 @@ public sealed class CollectiveFundService(
                     break;
                 }
 
-                var member = participantsById[membership.ParticipantId];
+                // A member whose participant row left the market leaves a stale membership behind; drop it
+                // rather than dereferencing a key that no longer exists.
+                if (!participantsById.TryGetValue(membership.ParticipantId, out var member))
+                {
+                    RemoveMembership(fund, membership);
+                    continue;
+                }
+
+                membership.TenureCycles++;
+
                 if (membership.IsLeaving)
                 {
                     AdvanceLeave(fund, membership, member, currentCycleId, now);
@@ -216,6 +256,23 @@ public sealed class CollectiveFundService(
 
         participantsById = await dbContext.Participants.ToDictionaryAsync(participant => participant.Id);
 
+        var dividendReceipts = await dbContext.MoneyTransactions
+            .Where(transaction => transaction.Type == MoneyTransactionType.Dividend)
+            .Select(transaction => new { transaction.ParticipantId, transaction.CreatedInCycleId, transaction.Amount })
+            .ToListAsync();
+        payoutCycleIdsDesc = dividendReceipts
+            .Select(receipt => receipt.CreatedInCycleId)
+            .Distinct()
+            .OrderByDescending(cycleId => cycleId)
+            .ToList();
+        fundDividendByCycleId = dividendReceipts
+            .GroupBy(receipt => receipt.ParticipantId)
+            .ToDictionary(
+                byParticipant => byParticipant.Key,
+                byParticipant => byParticipant
+                    .GroupBy(receipt => receipt.CreatedInCycleId)
+                    .ToDictionary(byCycle => byCycle.Key, byCycle => byCycle.Sum(receipt => receipt.Amount)));
+
         funds = await dbContext.CollectiveFunds.ToListAsync();
         var memberships = await dbContext.CollectiveFundParticipants.ToListAsync();
         membershipByParticipantId = memberships.ToDictionary(member => member.ParticipantId);
@@ -226,22 +283,46 @@ public sealed class CollectiveFundService(
 
     private void MaybeDecideLeave(CollectiveFund fund, CollectiveFundParticipant membership, Participant member, int currentCycleId, DateTime now)
     {
-        if (member.CurrentBalance < LeaveBalanceThreshold)
+        // A member that has grown rich graduates out of the fund on the ramping leave roll and does not come back.
+        if (member.CurrentBalance >= LeaveBalanceThreshold)
         {
-            membership.LeaveRampCycles = 0;
+            membership.LeaveRampCycles++;
+            var rampChance = Math.Min(LeaveBaseChance + (LeaveStepPerCycle * (membership.LeaveRampCycles - 1)), LeaveMaxChance);
+            if (random.NextDouble() >= rampChance)
+            {
+                return;
+            }
+
+            membership.IsLeaving = true;
+            AdvanceLeave(fund, membership, member, currentCycleId, now);
             return;
         }
 
-        membership.LeaveRampCycles++;
-        var chance = Math.Min(LeaveBaseChance + (LeaveStepPerCycle * (membership.LeaveRampCycles - 1)), LeaveMaxChance);
-        if (random.NextDouble() >= chance)
+        membership.LeaveRampCycles = 0;
+
+        // Founders stay put; everyone else, once past the minimum tenure, rolls to leave and chase a better fund.
+        if (member.Id == fund.FoundedByParticipantId || membership.TenureCycles < MinTenureToSwitchCycles)
         {
             return;
         }
 
+        if (random.NextDouble() >= SwitchChance(member.Temperament))
+        {
+            return;
+        }
+
+        member.PendingFundSwitch = true;
         membership.IsLeaving = true;
         AdvanceLeave(fund, membership, member, currentCycleId, now);
     }
+
+    private static double SwitchChance(Temperament temperament) =>
+        SwitchBaseChance + temperament switch
+        {
+            Temperament.Aggressive => SwitchTemperamentDelta,
+            Temperament.Conservative => -SwitchTemperamentDelta,
+            _ => 0.0,
+        };
 
     // Returns a leaving member's deposit once the fund has the cash, otherwise lists shares to raise the
     // shortfall and waits. If the exit would shrink the fund below a pair, the whole fund unwinds instead.
@@ -279,6 +360,113 @@ public sealed class CollectiveFundService(
         {
             ListFundSellsForCash(fundParticipant, stillToRaise, currentCycleId, now);
         }
+    }
+
+    private void RatchetPeakNetWorth(CollectiveFund fund)
+    {
+        var worth = FundNetWorth(participantsById[fund.ParticipantId]);
+        if (worth > fund.PeakNetWorth)
+        {
+            fund.PeakNetWorth = worth;
+        }
+    }
+
+    // The founder unwinds the fund the moment it has clearly failed: its worth has collapsed to a small fraction
+    // of its peak, or it has drawn no dividend income across its last couple of post-founding payout cycles. No
+    // random draws, so scripted tests are unaffected.
+    private bool MaybeFounderClose(CollectiveFund fund, int currentCycleId, DateTime now)
+    {
+        var fundParticipant = participantsById[fund.ParticipantId];
+        var lostMoney = fund.PeakNetWorth > 0m && FundNetWorth(fundParticipant) <= fund.PeakNetWorth * FounderLossFraction;
+
+        if (lostMoney || DividendStarved(fund))
+        {
+            BeginClosing(fund, fundParticipant, currentCycleId, now);
+            return true;
+        }
+
+        return false;
+    }
+
+    // A fund that received nothing across each of its last few post-founding payout cycles is dividend-starved.
+    // Payout cycles before the fund existed are ignored, and a fund without that much history is given the benefit
+    // of the doubt.
+    private bool DividendStarved(CollectiveFund fund)
+    {
+        var relevantPayouts = payoutCycleIdsDesc
+            .Where(cycleId => cycleId > fund.CreatedInCycleId)
+            .Take(FounderDividendLookbackPayouts)
+            .ToList();
+        if (relevantPayouts.Count < FounderDividendLookbackPayouts)
+        {
+            return false;
+        }
+
+        var byCycle = fundDividendByCycleId.GetValueOrDefault(fund.ParticipantId);
+        return relevantPayouts.All(cycleId => (byCycle?.GetValueOrDefault(cycleId) ?? 0m) <= 0m);
+    }
+
+    private List<CollectiveFund> JoinableFunds() =>
+        funds
+            .Where(fund => fund.Status == CollectiveFundStatus.Active && membershipsByFundId[fund.Id].Count < MaxMembers)
+            .ToList();
+
+    // Picks the fund a joiner prefers: bigger, worth more, and paying more dividends recently. Each metric is
+    // min-max normalised across the candidates so no single scale dominates, then summed with the score weights;
+    // ties fall to the lowest fund id.
+    private CollectiveFund? SelectBestFund(List<CollectiveFund> candidates)
+    {
+        if (candidates.Count <= 1)
+        {
+            return candidates.Count == 1 ? candidates[0] : null;
+        }
+
+        var scored = candidates
+            .Select(fund => new
+            {
+                Fund = fund,
+                Size = (double)membershipsByFundId[fund.Id].Count,
+                Worth = (double)FundNetWorth(participantsById[fund.ParticipantId]),
+                Dividends = (double)RecentDividends(fund.ParticipantId),
+            })
+            .ToList();
+
+        var sizeMin = scored.Min(entry => entry.Size);
+        var sizeMax = scored.Max(entry => entry.Size);
+        var worthMin = scored.Min(entry => entry.Worth);
+        var worthMax = scored.Max(entry => entry.Worth);
+        var dividendMin = scored.Min(entry => entry.Dividends);
+        var dividendMax = scored.Max(entry => entry.Dividends);
+
+        static double Normalise(double value, double min, double max) => max > min ? (value - min) / (max - min) : 0.0;
+
+        return scored
+            .OrderByDescending(entry =>
+                (ScoreWeightSize * Normalise(entry.Size, sizeMin, sizeMax))
+                + (ScoreWeightWorth * Normalise(entry.Worth, worthMin, worthMax))
+                + (ScoreWeightDividends * Normalise(entry.Dividends, dividendMin, dividendMax)))
+            .ThenBy(entry => entry.Fund.Id)
+            .First()
+            .Fund;
+    }
+
+    private decimal FundNetWorth(Participant fundParticipant)
+    {
+        var owned = ownedByParticipant.GetValueOrDefault(fundParticipant.Id) ?? [];
+        var holdingsValue = owned.Sum(share => latestPriceByCompany.GetValueOrDefault(share.CompanyId));
+        return fundParticipant.CurrentBalance + holdingsValue;
+    }
+
+    private decimal RecentDividends(int fundParticipantId)
+    {
+        if (!fundDividendByCycleId.TryGetValue(fundParticipantId, out var byCycle))
+        {
+            return 0m;
+        }
+
+        return payoutCycleIdsDesc
+            .Take(JoinDividendLookbackPayouts)
+            .Sum(cycleId => byCycle.GetValueOrDefault(cycleId));
     }
 
     // A fund that owns no shares and whose spendable cash cannot cover even the cheapest share is idle; after
@@ -349,7 +537,13 @@ public sealed class CollectiveFundService(
             var share = Round(fundParticipant.AvailableBalance / members.Count);
             foreach (var membership in members.ToList())
             {
-                var member = participantsById[membership.ParticipantId];
+                // A member whose participant row left the market leaves a stale membership behind; just drop it.
+                if (!participantsById.TryGetValue(membership.ParticipantId, out var member))
+                {
+                    RemoveMembership(fund, membership);
+                    continue;
+                }
+
                 if (share > 0m)
                 {
                     member.CurrentBalance += share;
@@ -377,6 +571,24 @@ public sealed class CollectiveFundService(
 
     private async Task MaybeJoinOrOpenAsync(Participant participant, int currentCycleId, int currentCycleNumber, DateTime now)
     {
+        // A member that left to chase a better fund waits, flag still set, until its old membership is fully wound
+        // up; once free it lands in the best available fund with no cash ceiling and no roll, then the flag clears.
+        if (participant.PendingFundSwitch)
+        {
+            if (membershipByParticipantId.ContainsKey(participant.Id))
+            {
+                return;
+            }
+
+            participant.PendingFundSwitch = false;
+            if (participant.IsActive && !participant.IsBankrupt && SelectBestFund(JoinableFunds()) is { } switchTarget)
+            {
+                JoinFund(switchTarget, participantsById[switchTarget.ParticipantId], participant, currentCycleId, now);
+            }
+
+            return;
+        }
+
         if (!participant.IsActive
             || participant.IsBankrupt
             || participant.CurrentBalance >= JoinBalanceCeiling
@@ -385,9 +597,7 @@ public sealed class CollectiveFundService(
             return;
         }
 
-        var joinable = funds
-            .Where(fund => fund.Status == CollectiveFundStatus.Active && membershipsByFundId[fund.Id].Count < MaxMembers)
-            .ToList();
+        var joinable = JoinableFunds();
 
         var roll = random.NextDouble();
         var joinChance = JoinChance(participant.CannotBuyCycles);
@@ -395,11 +605,7 @@ public sealed class CollectiveFundService(
 
         if (joinable.Count > 0 && roll < joinChance)
         {
-            // Spread joiners toward the emptiest fund so capacity fills evenly rather than piling onto one.
-            var target = joinable
-                .OrderBy(fund => membershipsByFundId[fund.Id].Count)
-                .ThenBy(fund => fund.Id)
-                .First();
+            var target = SelectBestFund(joinable)!;
             JoinFund(target, participantsById[target.ParticipantId], participant, currentCycleId, now);
             return;
         }
@@ -417,8 +623,10 @@ public sealed class CollectiveFundService(
         {
             Name = $"{founder.Name}'s Fund #{currentCycleNumber}",
             Type = ParticipantType.CollectiveFund,
-            Temperament = Temperament.Balanced,
-            RiskProfile = RiskProfile.Medium,
+            // The founder runs the fund, so it trades with their personality: snapshot the founder's characteristics
+            // at creation and keep them even if the founder later reprofiles, leaves, or exits the market.
+            Temperament = founder.Temperament,
+            RiskProfile = founder.RiskProfile,
             InitialBalance = 0m,
             CurrentBalance = 0m,
             ReservedBalance = 0m,

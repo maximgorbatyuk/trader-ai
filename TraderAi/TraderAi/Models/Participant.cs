@@ -56,6 +56,10 @@ public sealed class Participant
     // market-exit service then gives the member one chance to quit on its first shareless cycle.
     public bool PendingFundLossExitRoll { get; set; }
 
+    // Set when a member leaves its fund to chase a better-performing one; the fund's join pass then places it in
+    // the best available fund regardless of the usual cash ceiling and clears the flag.
+    public bool PendingFundSwitch { get; set; }
+
     [NotMapped]
     public decimal AvailableBalance => CurrentBalance - ReservedBalance;
 }

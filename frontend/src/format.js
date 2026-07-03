@@ -46,3 +46,10 @@ export const TRADER_TYPE_LABEL = {
   CollectiveFund: 'Fund',
   Player: 'Player',
 }
+
+// Color-modifier class per temperament value; hues stay off market green/red, which are reserved for up/down.
+export const TEMPERAMENT_TAG_CLASS = {
+  Aggressive: 'tag-temperament-aggressive',
+  Balanced: 'tag-temperament-balanced',
+  Conservative: 'tag-temperament-conservative',
+}

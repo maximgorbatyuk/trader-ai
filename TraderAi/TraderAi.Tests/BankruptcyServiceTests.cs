@@ -173,6 +173,54 @@ public sealed class BankruptcyServiceTests : IDisposable
         Assert.Equal(0, await context.Orders.CountAsync(order => order.ParticipantId == trader.Id));
     }
 
+    [Fact]
+    public async Task IndebtedTraderBelowWealthLineGoesBankruptAndDebtIsDischarged()
+    {
+        var (_, cycle, company) = await SeedAsync(price: 100m);
+        var trader = await AddTraderAsync(currentBalance: -180m);
+        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+
+        // Worth is 820 (1000 in shares less 180 debt), so debt sits at the 20% ceiling → 5% chance; 0.0 fires.
+        await Service(enabled: true, new ScriptedRandom([0.0d], [0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var bankruptcy = await context.Bankruptcies.AsNoTracking().SingleAsync();
+        Assert.Equal(trader.Id, bankruptcy.ParticipantId);
+        Assert.Equal(0m, bankruptcy.CashLost);
+
+        var refreshed = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == trader.Id);
+        Assert.True(refreshed.IsBankrupt);
+        Assert.False(refreshed.IsActive);
+        Assert.Equal(0m, refreshed.CurrentBalance);
+
+        // A debtor loses no cash on the wipe, so no bankruptcy loss is recorded in the ledger.
+        Assert.False(await context.MoneyTransactions.AnyAsync(transaction =>
+            transaction.ParticipantId == trader.Id && transaction.Type == MoneyTransactionType.Bankruptcy));
+    }
+
+    [Fact]
+    public async Task DebtBankruptcyChanceScalesWithDebtDepth()
+    {
+        var (_, cycle, company) = await SeedAsync(price: 100m);
+        var deep = await AddTraderAsync(currentBalance: -180m);
+        await AddSharesAsync(deep.Id, company.Id, count: 10, price: 100m);
+        var shallow = await AddTraderAsync(currentBalance: -30m);
+        await AddSharesAsync(shallow.Id, company.Id, count: 10, price: 100m);
+
+        // One 0.04 roll each in id order: under the deep trader's ~5% chance but over the shallow trader's ~0.8%.
+        await Service(enabled: true, new ScriptedRandom([0.04d, 0.04d], [0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshedDeep = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == deep.Id);
+        var refreshedShallow = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == shallow.Id);
+
+        Assert.True(refreshedDeep.IsBankrupt);
+        Assert.False(refreshedShallow.IsBankrupt);
+        Assert.Equal(-30m, refreshedShallow.CurrentBalance);
+    }
+
     // Default cycle is past the 500-cycle opening protection so a trigger test can actually fire; tests of the
     // protection itself pass a low cycle number explicitly.
     private async Task<(Market Market, MarketCycle Cycle, Company Company)> SeedAsync(decimal price, int cycleNumber = 600)

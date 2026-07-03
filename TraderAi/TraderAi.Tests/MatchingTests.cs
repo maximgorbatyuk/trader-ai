@@ -208,6 +208,55 @@ public sealed class MatchingTests : IDisposable
         Assert.False(second.Success);
     }
 
+    [Fact]
+    public async Task BuyOrderAllowedIntoDebtWithinWorthFraction()
+    {
+        // Worth is 1000 cash, so the 20% allowance lets the buyer reserve up to 1200 and go 200 into the red.
+        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 1000m, sellerShares: 12, sharePrice: 100m);
+
+        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 12, 100m);
+
+        Assert.True(result.Success);
+
+        await context.Entry(seed.Buyer).ReloadAsync();
+        Assert.Equal(1200m, seed.Buyer.ReservedBalance);
+        Assert.Equal(-200m, seed.Buyer.AvailableBalance);
+    }
+
+    [Fact]
+    public async Task BuyOrderRejectedBeyondDebtAllowance()
+    {
+        // 1300 reservation exceeds the 1200 ceiling of available cash plus the 200 debt allowance.
+        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 1000m, sellerShares: 13, sharePrice: 100m);
+
+        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 13, 100m);
+
+        Assert.False(result.Success);
+        Assert.Equal(0, await context.Orders.CountAsync());
+    }
+
+    [Fact]
+    public async Task IncomePaysDownNegativeBalanceFromDebt()
+    {
+        var seed = await SeedAsync(sellerCash: 100000m, buyerCash: 1000m, sellerShares: 12, sharePrice: 100m);
+
+        // Buyer spends into debt: 12 shares at 100 costs 1200 against 1000 cash, leaving a -200 balance.
+        await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 12, 100m);
+        await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 12, 100m);
+        await marketService.AdvanceCycleAsync();
+
+        await context.Entry(seed.Buyer).ReloadAsync();
+        Assert.Equal(-200m, seed.Buyer.CurrentBalance);
+
+        // Sale proceeds of 500 credit straight onto the negative balance, covering the debt before any surplus.
+        await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Sell, 5, 100m);
+        await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Buy, 5, 100m);
+        await marketService.AdvanceCycleAsync();
+
+        await context.Entry(seed.Buyer).ReloadAsync();
+        Assert.Equal(300m, seed.Buyer.CurrentBalance);
+    }
+
     private async Task<SeedResult> SeedAsync(decimal sellerCash, decimal buyerCash, int sellerShares, decimal sharePrice)
     {
         var now = DateTime.UtcNow;

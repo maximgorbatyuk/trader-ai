@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { formatInt, formatMoney, TRADER_TYPE_LABEL } from './format'
+import { TemperamentTag } from './TemperamentTag'
 
 // Net worth proxy used for the Total column and its default sort: cash on hand plus the estimated
 // market value of shares held.
@@ -118,6 +119,7 @@ export function TradersTable({ participants, onSelectTrader, selectedId }) {
                         >
                           {participant.name}
                         </button>
+                        <TemperamentTag temperament={participant.temperament} type={participant.type} />
                         {participant.type === 'CollectiveFund' ? (
                           <span className="tag tag-collective">Fund</span>
                         ) : null}

@@ -29,6 +29,11 @@ public sealed class BankruptcyService(
     private const double StepPerCycle = 0.002;
     private const double MaxProbability = 0.10;
 
+    // Debt carries its own bankruptcy risk, stacked on top of the wealth ramp: each percentage point of debt
+    // against total worth adds this much chance, clamped at the 20% borrow ceiling so it tops out near 5%.
+    private const double DebtBankruptcyChancePerPercent = 0.0025;
+    private const decimal MaxDebtPercent = 20m;
+
     // A bankrupt trader must sell down this fraction of the shares it held when bankruptcy struck.
     private const decimal SellDownFraction = 0.65m;
 
@@ -109,20 +114,28 @@ public sealed class BankruptcyService(
         }
 
         var shareWorth = ShareWorth(owned, latestPriceByCompany);
-        if (shareWorth < ShareWorthThreshold)
+
+        double wealthyProbability;
+        if (shareWorth >= ShareWorthThreshold)
+        {
+            participant.WealthyCycles++;
+            wealthyProbability = Math.Min(participant.WealthyCycles * StepPerCycle, MaxProbability);
+        }
+        else
         {
             participant.WealthyCycles = 0;
-            return;
+            wealthyProbability = 0.0;
         }
 
-        participant.WealthyCycles++;
-        var probability = Math.Min(participant.WealthyCycles * StepPerCycle, MaxProbability);
-        if (random.NextDouble() >= probability)
+        var probability = wealthyProbability + DebtBankruptcyProbability(participant, shareWorth);
+        if (probability <= 0.0 || random.NextDouble() >= probability)
         {
             return;
         }
 
-        var cashLost = participant.CurrentBalance;
+        // A debtor holds negative cash, so nothing is lost on the wipe; clamping keeps the ledger and story
+        // non-negative while zeroing the balance below discharges the debt.
+        var cashLost = Math.Max(0m, participant.CurrentBalance);
 
         // Wipe the trader: cancel every open order (releasing reserved cash and freeing offered shares), then
         // zero the balance and record the loss in the ledger.
@@ -317,6 +330,24 @@ public sealed class BankruptcyService(
 
     private static decimal ShareWorth(List<OwnedShare> owned, IReadOnlyDictionary<int, decimal> latestPriceByCompany) =>
         owned.Sum(share => latestPriceByCompany.GetValueOrDefault(share.CompanyId));
+
+    // Bankruptcy chance from a negative balance: debt as a percent of total worth (cash plus holdings), clamped
+    // at the borrow ceiling, times the per-percent step. A trader whose debt outruns its holdings caps out.
+    private static double DebtBankruptcyProbability(Participant participant, decimal shareWorth)
+    {
+        if (participant.CurrentBalance >= 0m)
+        {
+            return 0.0;
+        }
+
+        var debt = -participant.CurrentBalance;
+        var worth = participant.CurrentBalance + shareWorth;
+        var debtPercent = worth > 0m
+            ? Math.Min(debt / worth * 100m, MaxDebtPercent)
+            : MaxDebtPercent;
+
+        return (double)debtPercent * DebtBankruptcyChancePerPercent;
+    }
 
     private async Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync()
     {

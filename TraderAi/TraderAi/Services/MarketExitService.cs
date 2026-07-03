@@ -82,9 +82,10 @@ public sealed class MarketExitService(
 
             if (participant.PendingFundLossExitRoll)
             {
-                // Defer the roll (keep the flag, no draw) until the member can leave cleanly — not bankrupt and
-                // holding nothing. The one chance is spent on its first genuinely shareless, solvent cycle.
-                if (participant.IsBankrupt || owned.Count > 0)
+                // Defer the roll (keep the flag, no draw) until the member can leave cleanly — not bankrupt,
+                // shareless, and free of any fund, since deleting a current fund member would orphan its live
+                // membership row. The one chance is then spent on its first eligible cycle.
+                if (participant.IsBankrupt || owned.Count > 0 || fundMemberIds.Contains(participant.Id))
                 {
                     continue;
                 }
@@ -151,6 +152,7 @@ public sealed class MarketExitService(
 
         // Nothing FK-references the Participants table, so the row deletes cleanly, leaving only orphaned scalar
         // ids in history tables that every read path already tolerates (numeric-id fallbacks / id-keyed lookups).
+        // Both exit gates exclude current fund members, so no live CollectiveFundParticipant is ever orphaned.
         dbContext.Participants.Remove(participant);
 
         SpawnReplacement(currentCycleId, now);

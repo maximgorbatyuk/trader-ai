@@ -26,5 +26,9 @@ public sealed class CollectiveFund
     // through the normal closing flow once it stays idle long enough, freeing its members to move on.
     public int IdleCycles { get; set; }
 
+    // Highest net worth (cash plus holdings) the fund has ever reached, ratcheted up each cycle; the founder
+    // closes the fund once its current worth collapses to a small fraction of this peak.
+    public decimal PeakNetWorth { get; set; }
+
     public ICollection<CollectiveFundParticipant> Members { get; set; } = new List<CollectiveFundParticipant>();
 }

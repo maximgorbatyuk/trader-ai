@@ -438,6 +438,12 @@
   letter-spacing: 0.07em;
 }
 
+.command-name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
 .command-name {
   margin: 0;
   color: var(--ink);
@@ -1167,6 +1173,22 @@
 .tag-collective {
   background: var(--up-soft);
   color: var(--up-text);
+}
+
+/* Temperament labels: distinct non-market hues (violet/slate/blue) so up/down green and red stay reserved. */
+.tag-temperament-aggressive {
+  background: oklch(0.94 0.045 300);
+  color: oklch(0.44 0.16 300);
+}
+
+.tag-temperament-balanced {
+  background: oklch(0.93 0.012 255);
+  color: oklch(0.42 0.02 255);
+}
+
+.tag-temperament-conservative {
+  background: oklch(0.93 0.05 255);
+  color: oklch(0.45 0.13 255);
 }
 
 .trader-stats {

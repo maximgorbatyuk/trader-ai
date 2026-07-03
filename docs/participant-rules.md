@@ -145,7 +145,7 @@ A trader can pool its cash into a collective fund. The rules from the trader's s
 - It then stops bidding for itself, but may keep selling shares it already owns.
 - It draws a share of the fund's dividends, sized by its deposit. The fund passes through half of each dividend it receives.
 - A trader that opens a new fund becomes its first member.
-- A fund holds up to 20 members. New joiners go to the emptiest fund.
+- A fund holds up to 20 members. When more than one fund has room, a joiner prefers the stronger one — larger, worth more, and paying more dividends lately.
 
 **Leaving**
 
@@ -153,6 +153,17 @@ A trader can pool its cash into a collective fund. The rules from the trader's s
 - Over the line, its chance to leave starts at 20% and ramps 2 points each cycle to a 90% cap.
 - On leaving, its full deposit is returned. If the fund is short on cash, it sells shares to raise it.
 - When only two members remain and one leaves, the fund sells everything and splits the proceeds evenly. Both then trade on their own again.
+
+**Switching to a better fund**
+
+- After twenty cycles in a fund, a member that did not found it may leave to chase a stronger fund.
+- Each cycle past that point it has a 25% chance to leave: an aggressive trader adds 5 points, a conservative one subtracts 5.
+- Leaving follows the ordinary rules above; once its deposit is back it joins the best fund with room, even when its returned cash would otherwise put it over the join limit.
+- A founder never switches away from its own fund.
+
+**Closing by the founder**
+
+- The founder winds the fund down when it has clearly failed: its worth has collapsed to a fraction of its all-time peak, or it has drawn no dividend income across its recent payout cycles.
 
 ## The player
 

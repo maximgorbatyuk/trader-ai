@@ -137,6 +137,7 @@ function App() {
   }
 
   const participantNameById = new Map(participants.map((participant) => [participant.id, participant.name]))
+  const bankruptParticipantIds = new Set(participants.filter((participant) => participant.isBankrupt).map((participant) => participant.id))
   const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
   const companyPriceById = new Map(companies.map((company) => [company.id, company.currentPrice]))
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
@@ -202,6 +203,7 @@ function App() {
                   <OrderBookPanel
                     orders={openOrders}
                     participantNameById={participantNameById}
+                    bankruptParticipantIds={bankruptParticipantIds}
                     companyNameById={companyNameById}
                     companyPriceById={companyPriceById}
                     player={player}
@@ -1016,6 +1018,7 @@ function AddNewsModal({ companies, onClose, onPublished }) {
 function OrderBookPanel({
   orders,
   participantNameById,
+  bankruptParticipantIds,
   companyNameById,
   companyPriceById,
   player,
@@ -1026,12 +1029,13 @@ function OrderBookPanel({
   const [activeSide, setActiveSide] = useState('Buy')
   const tabRefs = useRef({})
 
+  // Both sides list highest price first so the most competitive bids and the priciest offers sit at the top.
   const buys = orders
     .filter((order) => order.type === 'Buy')
     .sort((a, b) => b.limitPrice - a.limitPrice)
   const sells = orders
     .filter((order) => order.type === 'Sell')
-    .sort((a, b) => a.limitPrice - b.limitPrice)
+    .sort((a, b) => b.limitPrice - a.limitPrice)
 
   const sides = [
     { key: 'Buy', tone: 'up', orders: buys },
@@ -1082,6 +1086,7 @@ function OrderBookPanel({
           tone={active.tone}
           orders={active.orders}
           participantNameById={participantNameById}
+          bankruptParticipantIds={bankruptParticipantIds}
           companyNameById={companyNameById}
           companyPriceById={companyPriceById}
           player={player}
@@ -1104,7 +1109,7 @@ function OrderBookPanel({
   )
 }
 
-function OrderSide({ side, tone, orders, participantNameById, companyNameById, companyPriceById, player, playerHoldingCompanyIds, onTrade }) {
+function OrderSide({ side, tone, orders, participantNameById, bankruptParticipantIds, companyNameById, companyPriceById, player, playerHoldingCompanyIds, onTrade }) {
   if (orders.length === 0) {
     return <p className="note note-sm">No {side.toLowerCase()} orders.</p>
   }
@@ -1130,6 +1135,7 @@ function OrderSide({ side, tone, orders, participantNameById, companyNameById, c
           {orders.map((order) => {
             const isOwn = player != null && order.participantId === player.id
             const actionable = player != null && !isOwn
+            const isBankrupt = !!bankruptParticipantIds?.has(order.participantId)
             const remaining = order.quantity - order.filledQuantity
             const companyName = companyNameById.get(order.companyId) ?? `#${order.companyId}`
             const marketPrice = companyPriceById.get(order.companyId) ?? null
@@ -1181,14 +1187,19 @@ function OrderSide({ side, tone, orders, participantNameById, companyNameById, c
                   {remaining}
                   <span className="muted-sub">/{order.quantity}</span>
                 </td>
-                <td className="cell-ellipsis">
-                  {sellable ? (
-                    <span className="book-hold" title="You hold shares to sell into this bid" aria-hidden="true">
-                      ●{' '}
+                <td>
+                  <span className="cell-trader">
+                    <span className="cell-ellipsis">
+                      {sellable ? (
+                        <span className="book-hold" title="You hold shares to sell into this bid" aria-hidden="true">
+                          ●{' '}
+                        </span>
+                      ) : null}
+                      {isOwn ? 'You' : traderName(order.participantId, participantNameById)}
+                      <span className="muted-sub"> · {companyName}</span>
                     </span>
-                  ) : null}
-                  {isOwn ? 'You' : traderName(order.participantId, participantNameById)}
-                  <span className="muted-sub"> · {companyName}</span>
+                    {side === 'Sell' && isBankrupt ? <span className="tag tag-bankrupt">Bankrupt</span> : null}
+                  </span>
                 </td>
               </tr>
             )

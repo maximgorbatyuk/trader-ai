@@ -33,6 +33,13 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
     private const double HighRiskPullFactor = 1.5;
     private const double LowRiskPullFactor = 0.6;
 
+    // A trader in debt wants to sell to repay it: each percentage point of debt against total worth adds this
+    // much sell pull, clamped at the 20% borrow ceiling. Cautious traders deleverage hardest, gamblers least.
+    private const double LowRiskDebtSellPerPercent = 0.0075;
+    private const double MediumRiskDebtSellPerPercent = 0.005;
+    private const double HighRiskDebtSellPerPercent = 0.0025;
+    private const decimal MaxDebtPercent = 20m;
+
     private const decimal MinPriceOffset = 0.01m;
     private const decimal MaxPriceOffset = 0.05m;
 
@@ -62,7 +69,17 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
 
         var riskFactor = RiskPullFactor(context.Participant.RiskProfile);
         buyPull = Math.Min(MaxBuyPull, buyPull * riskFactor);
-        sellPull = Math.Min(MaxSellPull, sellPull * riskFactor);
+        sellPull *= riskFactor;
+
+        // Debt leans the trader toward selling to repay; the pull scales with how deep the debt runs against
+        // its worth and with risk appetite, and it needs some holding worth selling before it applies.
+        var debtSellPull = DebtSellPull(context, sellCandidates);
+        if (debtSellPull > 0.0 && sellTarget is null)
+        {
+            sellTarget = MostValuableHolding(context, sellCandidates);
+        }
+
+        sellPull = Math.Min(MaxSellPull, sellPull + debtSellPull);
 
         // One draw splits into a buy band [0, buyPull) and a sell band [buyPull, buyPull + sellPull);
         // anything above is left to the uniform fallback. A pulled action that cannot be built (no cash,
@@ -199,6 +216,52 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
         RiskProfile.Low => LowRiskPullFactor,
         _ => 1.0,
     };
+
+    private static double DebtSellPull(DecisionContext context, IReadOnlyList<CompanyQuote> sellCandidates)
+    {
+        if (sellCandidates.Count == 0 || context.Participant.CurrentBalance >= 0m)
+        {
+            return 0.0;
+        }
+
+        var debt = -context.Participant.CurrentBalance;
+        var worth = context.Participant.CurrentBalance + HoldingsValue(context);
+        var debtPercent = worth > 0m
+            ? Math.Min(debt / worth * 100m, MaxDebtPercent)
+            : MaxDebtPercent;
+
+        return (double)debtPercent * DebtSellRate(context.Participant.RiskProfile);
+    }
+
+    private static double DebtSellRate(RiskProfile riskProfile) => riskProfile switch
+    {
+        RiskProfile.High => HighRiskDebtSellPerPercent,
+        RiskProfile.Low => LowRiskDebtSellPerPercent,
+        _ => MediumRiskDebtSellPerPercent,
+    };
+
+    private static decimal HoldingsValue(DecisionContext context) =>
+        context.Companies.Sum(quote =>
+            context.SharesOwnedByCompany.GetValueOrDefault(quote.CompanyId) * quote.Price);
+
+    // The holding whose shares are worth the most raises the most cash toward the debt, so debt-driven selling
+    // targets it when no price signal already points somewhere.
+    private static CompanyQuote? MostValuableHolding(DecisionContext context, IReadOnlyList<CompanyQuote> sellCandidates)
+    {
+        CompanyQuote? best = null;
+        var bestValue = 0m;
+        foreach (var quote in sellCandidates)
+        {
+            var value = context.SharesOwnedByCompany.GetValueOrDefault(quote.CompanyId) * quote.Price;
+            if (value > bestValue)
+            {
+                bestValue = value;
+                best = quote;
+            }
+        }
+
+        return best;
+    }
 
     private static int SkipWeight(Participant participant) =>
         1 + (participant.RiskProfile == RiskProfile.Low ? 1 : 0)

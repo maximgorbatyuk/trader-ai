@@ -72,7 +72,9 @@ export function PlayerPanel({ companies }) {
     return () => clearInterval(intervalId)
   }, [refresh])
 
-  const worthTone = player ? toneOf(player.overallWorthChange) : 'flat'
+  // Headline delta tracks the last completed cycle; it stays hidden until the first cycle produces a figure.
+  const lastCycleWorthChange = player?.lastCycleWorthChange
+  const worthTone = typeof lastCycleWorthChange === 'number' ? toneOf(lastCycleWorthChange) : null
 
   return (
     <div className="player-panel">
@@ -84,10 +86,12 @@ export function PlayerPanel({ companies }) {
         {player ? (
           <div className="quote">
             <strong className="quote-last num">{formatMoney(player.totalWorth)}</strong>
-            <span className={`quote-change num tone-${worthTone}`}>
-              <span aria-hidden="true">{CHANGE_GLYPH[worthTone]} </span>
-              {formatSigned(player.overallWorthChange)}
-            </span>
+            {worthTone ? (
+              <span className={`quote-change num tone-${worthTone}`} title="Change over the last completed cycle">
+                <span aria-hidden="true">{CHANGE_GLYPH[worthTone]} </span>
+                {formatSigned(lastCycleWorthChange)}
+              </span>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -463,7 +467,7 @@ function PlaceOrderForm({ player, companies, onPlaced }) {
 function OpenOrdersSection({ orders, companies, onCancelled }) {
   const [cancelingId, setCancelingId] = useState(null)
   const [error, setError] = useState(null)
-  const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
+  const companyById = new Map(companies.map((company) => [company.id, company]))
 
   async function handleCancel(orderId) {
     setError(null)
@@ -502,22 +506,30 @@ function OpenOrdersSection({ orders, companies, onCancelled }) {
                   Limit
                 </th>
                 <th scope="col" className="ta-r">
+                  Market
+                </th>
+                <th scope="col" className="ta-r">
                   Action
                 </th>
               </tr>
             </thead>
             <tbody>
-              {orders.map((order) => (
+              {orders.map((order) => {
+                const company = companyById.get(order.companyId)
+                return (
                 <tr key={order.id}>
                   <td className={`tone-${order.type === 'Buy' ? 'up' : 'down'}`}>{order.type}</td>
                   <th scope="row" className="cell-ellipsis">
-                    {companyNameById.get(order.companyId) ?? `#${order.companyId}`}
+                    {company?.name ?? `#${order.companyId}`}
                   </th>
                   <td className="num ta-r">
                     {order.filledQuantity}
                     <span className="muted-sub">/{order.quantity}</span>
                   </td>
                   <td className="num ta-r">{formatMoney(order.limitPrice)}</td>
+                  <td className="num ta-r">
+                    {company?.currentPrice != null ? formatMoney(company.currentPrice) : '—'}
+                  </td>
                   <td className="ta-r">
                     <button
                       type="button"
@@ -529,7 +541,8 @@ function OpenOrdersSection({ orders, companies, onCancelled }) {
                     </button>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>

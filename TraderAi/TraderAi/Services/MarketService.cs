@@ -81,6 +81,10 @@ public sealed class MarketService(
     // spending only the rest when it trades.
     private const decimal CollectiveFundCashBufferFraction = 0.10m;
 
+    // A trader may reserve for buys beyond its available cash, borrowing up to this share of its total worth
+    // (cash plus holdings). The debt surfaces as a negative balance, which incoming cash then pays down first.
+    private const decimal DebtLimitFraction = 0.20m;
+
     // Dividends are paid at a random interval drawn in this range and credited at a per-company rate
     // drawn in [MinDividendRate, MaxDividendRate] of the share's current price.
     private const int MinDividendIntervalCycles = 10;
@@ -492,6 +496,20 @@ public sealed class MarketService(
             .ToDictionary(group => group.Key, group => group.OrderByDescending(snapshot => snapshot.Id).First().Price);
     }
 
+    // How much a participant may reserve on top of its available cash: a share of total worth (cash plus
+    // holdings at the latest price), never negative so a trader already underwater cannot borrow further.
+    private async Task<decimal> DebtAllowanceAsync(Participant participant)
+    {
+        var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        var holdingsValue = (await dbContext.Shares
+                .Where(share => share.OwnerId == participant.Id)
+                .Select(share => share.CompanyId)
+                .ToListAsync())
+            .Sum(companyId => latestPriceByCompany.GetValueOrDefault(companyId));
+
+        return Math.Max(0m, DebtLimitFraction * (participant.CurrentBalance + holdingsValue));
+    }
+
     private static int RandomDividendInterval(Random rng) =>
         rng.Next(MinDividendIntervalCycles, MaxDividendIntervalCycles + 1);
 
@@ -570,9 +588,10 @@ public sealed class MarketService(
         if (type == OrderType.Buy)
         {
             var reserved = limitPrice * quantity;
-            if (participant.AvailableBalance < reserved)
+            if (participant.AvailableBalance < reserved
+                && participant.AvailableBalance + await DebtAllowanceAsync(participant) < reserved)
             {
-                return PlaceOrderResult.Fail("Insufficient available cash to reserve for the buy order.");
+                return PlaceOrderResult.Fail("Insufficient available cash to reserve for the buy order, even on the debt allowance.");
             }
 
             participant.ReservedBalance += reserved;
@@ -929,8 +948,9 @@ public sealed class MarketService(
         return RunDecisionsResult.Ok(ordersPlaced);
     }
 
-    // A fund member hands its buying to the fund — cash is zeroed so the engine can only sell its own shares —
-    // while a fund itself keeps a tenth of its total worth liquid for deposit returns and spends the rest.
+    // A fund member hands its buying to the fund — cash is zeroed so the engine can only sell its own shares.
+    // Everyone else may size into a debt allowance on top of available cash; a fund still reserves a tenth of
+    // its worth liquid for deposit returns before that borrowing headroom applies.
     private static decimal AvailableCashForDecisions(
         Participant trader,
         IReadOnlySet<int> memberParticipantIds,
@@ -942,16 +962,18 @@ public sealed class MarketService(
             return 0m;
         }
 
-        if (trader.Type != ParticipantType.CollectiveFund)
-        {
-            return trader.AvailableBalance;
-        }
-
         var holdingsValue = holdingsByOwner.TryGetValue(trader.Id, out var holdings)
             ? holdings.Sum(holding => holding.Value * priceByCompany.GetValueOrDefault(holding.Key))
             : 0m;
+        var debtAllowance = Math.Max(0m, DebtLimitFraction * (trader.CurrentBalance + holdingsValue));
+
+        if (trader.Type != ParticipantType.CollectiveFund)
+        {
+            return trader.AvailableBalance + debtAllowance;
+        }
+
         var totalWorth = trader.AvailableBalance + holdingsValue;
-        return Math.Max(0m, trader.AvailableBalance - (CollectiveFundCashBufferFraction * totalWorth));
+        return Math.Max(0m, trader.AvailableBalance - (CollectiveFundCashBufferFraction * totalWorth)) + debtAllowance;
     }
 
     private async Task<Market> ResetDemoMarketCoreAsync()

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { formatInt, formatMoney, TRADER_TYPE_LABEL } from './format'
+import { TemperamentTag } from './TemperamentTag'
 
 // Short trader summary opened from the dashboard Traders table: type, balances, and how many companies the
 // trader holds, with a link into the full Traders page. Contributes only the dialog chrome (backdrop/Escape
@@ -83,9 +84,12 @@ export function ParticipantSummaryModal({ participant, onClose }) {
         <header className="modal-head">
           <div className="command-id">
             <span className="command-label">Trader</span>
-            <h2 className="command-name" id={titleId}>
-              {participant.name}
-            </h2>
+            <div className="command-name-row">
+              <h2 className="command-name" id={titleId}>
+                {participant.name}
+              </h2>
+              <TemperamentTag temperament={participant.temperament} type={participant.type} />
+            </div>
           </div>
         </header>
 
