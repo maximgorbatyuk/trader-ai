@@ -537,7 +537,12 @@ public sealed class CollectiveFundService(
             return;
         }
 
-        var uncommitted = owned.Sum(holding => available.GetValueOrDefault((fundParticipant.Id, holding.CompanyId)));
+        // A dominant fund's uncommitted shares summed across companies can exceed the 32-bit accumulator;
+        // sum in long and clamp before it feeds the int share-count parameter.
+        var uncommitted = (int)Math.Clamp(
+            owned.Sum(holding => (long)available.GetValueOrDefault((fundParticipant.Id, holding.CompanyId))),
+            0L,
+            int.MaxValue);
         if (uncommitted > 0)
         {
             ListFundSells(fundParticipant, owned, sharesToList: uncommitted, currentCycleId, now);
@@ -726,7 +731,9 @@ public sealed class CollectiveFundService(
                 continue;
             }
 
-            var sharesNeeded = (int)Math.Ceiling((double)((cashNeeded - raised) / sellPrice));
+            // Cash needed divided by a low price can exceed int range; clamp the double before the cast so it
+            // cannot silently wrap to a negative share count.
+            var sharesNeeded = (int)Math.Clamp(Math.Ceiling((double)((cashNeeded - raised) / sellPrice)), 0d, int.MaxValue);
             var listed = ListCompanySell(fundParticipant, holding.CompanyId, sellPrice, sharesNeeded, currentCycleId, now);
             raised += listed * sellPrice;
         }

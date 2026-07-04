@@ -184,7 +184,7 @@ public sealed class BankruptcyService(
         participant.ReservedBalance = 0m;
         participant.IsActive = false;
         participant.IsBankrupt = true;
-        participant.BankruptcyOwnedAtStart = owned.Values.Sum();
+        participant.BankruptcyOwnedAtStart = TotalOwned(owned);
         participant.BankruptcyDiscountStep = 0;
 
         var (title, content) = DemoBankruptcyContent.Generate(participant.Name, cashLost, shareWorth, random);
@@ -211,7 +211,7 @@ public sealed class BankruptcyService(
         int currentCycleId,
         DateTime now)
     {
-        var sold = participant.BankruptcyOwnedAtStart - owned.Values.Sum();
+        var sold = participant.BankruptcyOwnedAtStart - TotalOwned(owned);
         var remaining = SellDownTarget(participant) - sold;
         if (remaining <= 0)
         {
@@ -335,6 +335,11 @@ public sealed class BankruptcyService(
 
     private static int SellDownTarget(Participant participant) =>
         (int)Math.Round(participant.BankruptcyOwnedAtStart * SellDownFraction, MidpointRounding.AwayFromZero);
+
+    // Aggregate holdings across all companies can exceed the 32-bit field for a dominant holder; sum in
+    // long and clamp so the checked int accumulator cannot overflow.
+    private static int TotalOwned(IReadOnlyDictionary<int, int> owned) =>
+        (int)Math.Clamp(owned.Values.Sum(quantity => (long)quantity), 0L, int.MaxValue);
 
     private static decimal ShareWorth(IReadOnlyDictionary<int, int> owned, IReadOnlyDictionary<int, decimal> latestPriceByCompany) =>
         owned.Sum(holding => holding.Value * latestPriceByCompany.GetValueOrDefault(holding.Key));
