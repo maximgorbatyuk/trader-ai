@@ -56,8 +56,10 @@ public sealed class ShareEmissionService(
                 group => group.Key,
                 group => group.Max(emission => cycleNumbersById.GetValueOrDefault(emission.CreatedInCycleId)));
 
+        // Keyed on any existing holding row, not just Quantity > 0: a sold-out position keeps a zero-quantity
+        // row (see MatchingEngine.ReduceHolding), and inserting a second row for the same (participant, company)
+        // would violate the unique key. Excluding them also matches "must not already hold the stock".
         var holdersByCompany = (await dbContext.Holdings
-                .Where(holding => holding.Quantity > 0)
                 .Select(holding => new { holding.CompanyId, holding.ParticipantId })
                 .ToListAsync())
             .GroupBy(holding => holding.CompanyId)

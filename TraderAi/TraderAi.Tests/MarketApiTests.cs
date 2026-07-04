@@ -795,6 +795,109 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task ParticipantsHideClosedFundsWhileClosedFundsEndpointReturnsThem()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int activeFundId;
+            int closedFundId;
+            int individualId;
+            int cycleNumber;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 8, Status = CycleStatus.Completed, StartedAt = now };
+                dbContext.MarketCycles.Add(cycle);
+                await dbContext.SaveChangesAsync();
+                cycleNumber = cycle.CycleNumber;
+
+                var individual = new Participant
+                {
+                    Name = "Live Trader",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    InitialBalance = 100_000m,
+                    CurrentBalance = 100_000m,
+                    IsActive = true,
+                };
+                var activeFund = new Participant
+                {
+                    Name = "Active Fund",
+                    Type = ParticipantType.CollectiveFund,
+                    Temperament = Temperament.Aggressive,
+                    RiskProfile = RiskProfile.High,
+                    CurrentBalance = 500_000m,
+                    IsActive = true,
+                };
+                var closedFund = new Participant
+                {
+                    Name = "Closed Fund",
+                    Type = ParticipantType.CollectiveFund,
+                    Temperament = Temperament.Conservative,
+                    RiskProfile = RiskProfile.Low,
+                    CurrentBalance = 0m,
+                    IsActive = false,
+                };
+                dbContext.Participants.AddRange(individual, activeFund, closedFund);
+                await dbContext.SaveChangesAsync();
+                individualId = individual.Id;
+                activeFundId = activeFund.Id;
+                closedFundId = closedFund.Id;
+
+                dbContext.CollectiveFunds.AddRange(
+                    new CollectiveFund
+                    {
+                        ParticipantId = activeFund.Id,
+                        FoundedByParticipantId = individual.Id,
+                        Status = CollectiveFundStatus.Active,
+                        CreatedInCycleId = cycle.Id,
+                        CreatedAt = now,
+                    },
+                    new CollectiveFund
+                    {
+                        ParticipantId = closedFund.Id,
+                        FoundedByParticipantId = individual.Id,
+                        Status = CollectiveFundStatus.Closed,
+                        CreatedInCycleId = cycle.Id,
+                        CreatedAt = now,
+                        ClosedAt = now,
+                        PeakNetWorth = 750_000m,
+                    });
+                await dbContext.SaveChangesAsync();
+            }
+
+            var participants = await client.GetFromJsonAsync<ParticipantDto[]>("/participants");
+            var ids = participants!.Select(participant => participant.Id).ToHashSet();
+            Assert.Contains(individualId, ids);
+            Assert.Contains(activeFundId, ids);
+            Assert.DoesNotContain(closedFundId, ids);
+
+            var closed = await client.GetFromJsonAsync<PagedClosedFundsDto>("/collective-funds/closed");
+            Assert.Equal(1, closed!.Total);
+            var fund = Assert.Single(closed.Items);
+            Assert.Equal(closedFundId, fund.ParticipantId);
+            Assert.Equal("Closed Fund", fund.Name);
+            Assert.Equal("Conservative", fund.Temperament);
+            Assert.Equal("Low", fund.RiskProfile);
+            Assert.Equal(750_000m, fund.PeakNetWorth);
+            Assert.Equal(cycleNumber, fund.CreatedInCycleNumber);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task BankruptciesResolveDepartedTraderNameViaFallback()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -1023,6 +1126,49 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
+    [Fact]
+    public async Task NewsEndpointReportsThePublishedCycleNumber()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int cycleNumber;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var cycleId = (await dbContext.Markets.FirstAsync()).CurrentCycleId!.Value;
+                cycleNumber = await dbContext.MarketCycles
+                    .Where(cycle => cycle.Id == cycleId)
+                    .Select(cycle => cycle.CycleNumber)
+                    .FirstAsync();
+                dbContext.NewsPosts.Add(new NewsPost
+                {
+                    Title = "Test headline",
+                    Content = "Body",
+                    PublishedInCycleId = cycleId,
+                    PublishedAt = DateTime.UtcNow,
+                    Scope = NewsImpactScope.None,
+                });
+                await dbContext.SaveChangesAsync();
+            }
+
+            var news = await client.GetFromJsonAsync<NewsDto[]>("/news");
+            var post = news!.Single(item => item.Title == "Test headline");
+            Assert.Equal(cycleNumber, post.PublishedInCycleNumber);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
@@ -1070,6 +1216,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
     private sealed record ShareEmissionDto(int Id, int SharesEmitted, int RecipientCount, int CyclesAgo);
 
+    private sealed record NewsDto(int Id, string Title, int PublishedInCycleId, int PublishedInCycleNumber);
+
     private sealed record ShareholderDto(
         int OwnerId,
         string OwnerName,
@@ -1094,6 +1242,18 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         DateTime LeftAt);
 
     private sealed record BankruptcyDto(int Id, int ParticipantId, string ParticipantName);
+
+    private sealed record ClosedFundDto(
+        int Id,
+        int ParticipantId,
+        string Name,
+        string? Temperament,
+        string? RiskProfile,
+        decimal PeakNetWorth,
+        int CreatedInCycleNumber,
+        DateTime? ClosedAt);
+
+    private sealed record PagedClosedFundsDto(ClosedFundDto[] Items, int Total, int Page, int PageSize);
 
     private sealed record CycleTickDto(bool Ran, int? CompletedCycleNumber, int OrdersPlaced, int FillCount);
 

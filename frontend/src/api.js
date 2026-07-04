@@ -67,6 +67,7 @@ export const api = {
   getScienceInvestigations: (take = 30) => get(`/science-investigations?take=${take}`),
   getBankruptcies: (take = 30) => get(`/bankruptcies?take=${take}`),
   getMarketExits: (take = 50) => get(`/market-exits?take=${take}`),
+  getClosedFunds: (page = 1, pageSize = 20) => get(`/collective-funds/closed?page=${page}&pageSize=${pageSize}`),
   getNewsThemes: () => get('/news/themes'),
   getIndustries: () => get('/industries'),
   createNews: (payload) => post('/news', payload),

@@ -217,6 +217,28 @@ public sealed class ShareEmissionServiceTests : IDisposable
         Assert.Equal(5, holderHolding.Quantity);
     }
 
+    [Fact]
+    public async Task ParticipantWithASoldOutZeroQuantityHoldingIsExcluded()
+    {
+        var cycle = await AddCycleAsync(60);
+        await SetupMarketAsync(cycle);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 500_000m, cycle);
+        var soldOut = await AddTraderAsync();
+        var newcomer = await AddTraderAsync();
+        // A sold-out position keeps a zero-quantity row; inserting a fresh holding here would hit the unique key.
+        await AddHoldingAsync(soldOut.Id, company.Id, quantity: 0, averageCost: 100m);
+
+        await Service(enabled: true, new ScriptedRandom([0.01d, 0.0d], [0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        // The newcomer receives the emission; the sold-out holder still has just its single zero-quantity row.
+        Assert.Equal(10, (await context.Holdings.AsNoTracking().SingleAsync(h => h.ParticipantId == newcomer.Id)).Quantity);
+        var soldOutHoldings = await context.Holdings.AsNoTracking().Where(h => h.ParticipantId == soldOut.Id).ToListAsync();
+        Assert.Equal(0, Assert.Single(soldOutHoldings).Quantity);
+    }
+
     private async Task<MarketCycle> AddCycleAsync(int number)
     {
         var cycle = new MarketCycle { CycleNumber = number, Status = CycleStatus.Running, StartedAt = DateTime.UtcNow };

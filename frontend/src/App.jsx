@@ -187,6 +187,7 @@ function App() {
                     participants={participants}
                     lastDividendTotal={market.lastDividendTotal}
                     currentCycleNumber={market.currentCycleNumber}
+                    latestNews={news[0] ?? null}
                     onSelectCompany={setMapModalCompanyId}
                   />
 
@@ -1498,7 +1499,44 @@ function squarify(items, width, height) {
 
 // Treemap of the largest companies by capitalisation: tile area tracks market cap, colour tracks the change
 // in capitalisation (green up, red down, grey flat) with a glyph and signed percent so it is never colour-only.
-function MarketMapPanel({ companies, participants, lastDividendTotal, currentCycleNumber, onSelectCompany }) {
+// The latest market headline, pinned above the treemap. It stays put until a newer post arrives (the feed is
+// newest-first, so this is always news[0]) and ages by cycle. Impact direction reads as a glyph plus the signed
+// percent, never colour alone; with no news yet it still renders with a hint.
+function LatestNewsStrip({ news, currentCycleNumber }) {
+  if (!news) {
+    return (
+      <div className="map-news map-news-empty">
+        <span className="map-news-label">Latest news</span>
+        <span className="map-news-hint">No market news yet.</span>
+      </div>
+    )
+  }
+
+  const cyclesAgo = Math.max(0, currentCycleNumber - news.publishedInCycleNumber)
+  const ageLabel = cyclesAgo === 0 ? 'this cycle' : `${cyclesAgo} cycle${cyclesAgo === 1 ? '' : 's'} ago`
+  const tone = news.direction === 'Increase' ? 'up' : news.direction === 'Decrease' ? 'down' : null
+  const hasImpact = tone && typeof news.impactPercent === 'number'
+
+  return (
+    <div className="map-news">
+      <div className="map-news-head">
+        <span className="map-news-label">Latest news</span>
+        {hasImpact ? (
+          <span className={`map-news-impact num tone-${tone}`}>
+            <span aria-hidden="true">{tone === 'up' ? '▲' : '▼'} </span>
+            {tone === 'up' ? '+' : '−'}
+            {Math.abs(news.impactPercent).toFixed(0)}%
+          </span>
+        ) : null}
+        <span className="map-news-age num">{ageLabel}</span>
+      </div>
+      <p className="map-news-title">{news.title}</p>
+      <p className="map-news-body">{news.content}</p>
+    </div>
+  )
+}
+
+function MarketMapPanel({ companies, participants, lastDividendTotal, currentCycleNumber, latestNews, onSelectCompany }) {
   // Tile colour tracks the change in a company's total capitalisation, not its per-share price, so a stock
   // split (shares up, price down, capitalisation unchanged) reads as flat rather than a market-wide crash.
   // Anchored to the cycle number, not the poll: the move is measured against the previous cycle's caps and the
@@ -1548,6 +1586,7 @@ function MarketMapPanel({ companies, participants, lastDividendTotal, currentCyc
       count={mappedCompanies.length ? `${mappedCompanies.length} companies · ${formatInt(totalShares)} shares` : undefined}
       className="panel-map"
     >
+      <LatestNewsStrip news={latestNews} currentCycleNumber={currentCycleNumber} />
       {mappedCompanies.length === 0 ? (
         <p className="note">Seed the market to see company prices.</p>
       ) : (

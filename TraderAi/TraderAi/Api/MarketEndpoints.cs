@@ -290,6 +290,9 @@ public static class MarketEndpoints
 
             var response = participants
                 .Where(participant => !memberParticipantIds.Contains(participant.Id))
+                // A closed fund lives on as an inactive, zeroed-out row; keep it off the live roster and surface it
+                // on the Closed Funds page instead. Only funds are dropped here — bankrupt traders stay listed.
+                .Where(participant => participant.Type != ParticipantType.CollectiveFund || participant.IsActive)
                 .Select(participant => new ParticipantResponse(
                     participant.Id,
                     participant.Name,
@@ -590,9 +593,10 @@ public static class MarketEndpoints
             var companyNameById = await dbContext.Companies
                 .ToDictionaryAsync(company => company.Id, company => company.Name);
             var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
 
             var response = posts
-                .Select(post => ToNewsResponse(post, companyNameById, industryNameById))
+                .Select(post => ToNewsResponse(post, companyNameById, industryNameById, cycleNumbersById))
                 .ToArray();
 
             return Results.Ok(response);
@@ -609,8 +613,9 @@ public static class MarketEndpoints
             var companyNameById = await dbContext.Companies
                 .ToDictionaryAsync(company => company.Id, company => company.Name);
             var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
 
-            return Results.Ok(ToNewsResponse(result.Post!, companyNameById, industryNameById));
+            return Results.Ok(ToNewsResponse(result.Post!, companyNameById, industryNameById, cycleNumbersById));
         });
 
         app.MapGet("/news/themes", () =>
@@ -723,6 +728,48 @@ public static class MarketEndpoints
 
             return Results.Ok(response);
         });
+
+        app.MapGet("/collective-funds/closed", async (int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+
+            var query = dbContext.CollectiveFunds.Where(fund => fund.Status == CollectiveFundStatus.Closed);
+            var total = await query.CountAsync();
+
+            var funds = await query
+                .OrderByDescending(fund => fund.ClosedAt)
+                .ThenByDescending(fund => fund.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            // The fund's Participant row is kept (never deleted) on close, so its name and personality still resolve.
+            var participantIds = funds.Select(fund => fund.ParticipantId).ToList();
+            var participantById = await dbContext.Participants
+                .Where(participant => participantIds.Contains(participant.Id))
+                .ToDictionaryAsync(participant => participant.Id);
+            var cycleNumberById = await dbContext.MarketCycles
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+            var items = funds
+                .Select(fund =>
+                {
+                    participantById.TryGetValue(fund.ParticipantId, out var participant);
+                    return new ClosedFundResponse(
+                        fund.Id,
+                        fund.ParticipantId,
+                        participant?.Name ?? $"#{fund.ParticipantId}",
+                        participant?.Temperament.ToString(),
+                        participant?.RiskProfile.ToString(),
+                        fund.PeakNetWorth,
+                        cycleNumberById.GetValueOrDefault(fund.CreatedInCycleId),
+                        fund.ClosedAt);
+                })
+                .ToArray();
+
+            return Results.Ok(new PagedClosedFundsResponse(items, total, pageIndex, size));
+        });
     }
 
     private static async Task<Dictionary<int, string>> IndustryNameByIdAsync(AppDbContext dbContext) =>
@@ -731,12 +778,14 @@ public static class MarketEndpoints
     private static NewsPostResponse ToNewsResponse(
         NewsPost post,
         IReadOnlyDictionary<int, string> companyNameById,
-        IReadOnlyDictionary<int, string> industryNameById) =>
+        IReadOnlyDictionary<int, string> industryNameById,
+        IReadOnlyDictionary<int, int> cycleNumbersById) =>
         new(
             post.Id,
             post.Title,
             post.Content,
             post.PublishedInCycleId,
+            cycleNumbersById.GetValueOrDefault(post.PublishedInCycleId),
             post.PublishedAt,
             post.Scope.ToString(),
             post.Direction?.ToString(),
@@ -1180,6 +1229,18 @@ public sealed record AuditRowResponse(
 
 public sealed record PagedAuditsResponse(AuditRowResponse[] Items, int Total, int Page, int PageSize);
 
+public sealed record ClosedFundResponse(
+    int Id,
+    int ParticipantId,
+    string Name,
+    string? Temperament,
+    string? RiskProfile,
+    decimal PeakNetWorth,
+    int CreatedInCycleNumber,
+    DateTime? ClosedAt);
+
+public sealed record PagedClosedFundsResponse(ClosedFundResponse[] Items, int Total, int Page, int PageSize);
+
 public sealed record CompanyRatingResponse(
     int Id,
     string Rating,
@@ -1328,6 +1389,7 @@ public sealed record NewsPostResponse(
     string Title,
     string Content,
     int PublishedInCycleId,
+    int PublishedInCycleNumber,
     DateTime PublishedAt,
     string Scope,
     string? Direction,
