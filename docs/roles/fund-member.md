@@ -1,0 +1,22 @@
+# Fund Member
+
+A Fund Member is an Individual or AI Agent while it belongs to a Collective Fund. Membership changes how the trader participates without changing its underlying role.
+
+## Rules
+
+- Only an active, non-bankrupt Individual or AI Agent can become a member.
+- A trader cannot belong to more than one fund at a time.
+- A trader can join only after the fund-opening window, unless it is completing a fund switch.
+- Low-balance traders are eligible to join or open funds, and a long inability to buy raises those chances.
+- Joining cancels the trader's open buy orders first.
+- The trader contributes most of its cash as a fund deposit.
+- While membership lasts, the trader stops bidding for itself. The fund handles buying with pooled capital.
+- A member may still sell shares it already personally owns.
+- A member receives its share of the fund's dividend pass-through, divided by deposit size.
+- A member also receives ordinary dividends on any shares it still personally holds.
+- A wealthy member must leave the fund once its own cash balance crosses the leave threshold. Its chance to leave rises the longer it stays above that line.
+- On ordinary leave, the fund returns the member's full deposit. If needed, the fund sells holdings to raise the cash.
+- A non-founder member can switch to a stronger fund after the minimum tenure. Aggressive members switch more readily, conservative members less readily.
+- A founder does not switch away from the fund it opened.
+- A switching member joins the best available fund once its old membership is settled, even if its returned cash would normally put it over the join limit.
+- If a closing fund returns only a small fraction of a member's deposit, that member gets one later chance to leave the market after it is shareless and out of any fund.
