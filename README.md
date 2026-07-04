@@ -46,6 +46,8 @@ No authentication is required between the frontend and backend for local develop
 | [Company](docs/roles/company.md) | Rules for issuers and listed assets. |
 | [Collective Fund](docs/roles/collective-fund.md) | Rules for pooled fund traders. |
 | [Fund Member](docs/roles/fund-member.md) | Rules for traders while they belong to a fund. |
+| [Auditors](docs/roles/auditors.md) | Rules for the rating agencies that review companies. |
+| [Free-share emission](docs/logic/free-share-emission.md) | How large companies issue free shares to dilute price. |
 
 ## Tech stack
 

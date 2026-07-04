@@ -854,11 +854,184 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
+    [Fact]
+    public async Task AuditorsEndpointReturnsSeededAgenciesAndDetail()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            var auditors = await client.GetFromJsonAsync<AuditorDto[]>("/auditors");
+            // Five percent of the hundred seeded companies.
+            Assert.Equal(5, auditors!.Length);
+            Assert.All(auditors, auditor => Assert.False(string.IsNullOrWhiteSpace(auditor.Description)));
+            Assert.All(auditors, auditor => Assert.Equal(0, auditor.AuditCount));
+
+            var one = await client.GetFromJsonAsync<AuditorDto>($"/auditors/{auditors[0].Id}");
+            Assert.Equal(auditors[0].Id, one!.Id);
+
+            using var missing = await client.GetAsync("/auditors/999999");
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AuditorAuditsEndpointPaginatesNewestFirst()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int auditorId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                auditorId = await dbContext.Auditors.Select(auditor => auditor.Id).FirstAsync();
+                var companyId = await dbContext.Companies.Select(company => company.Id).FirstAsync();
+                var cycleId = (await dbContext.Markets.FirstAsync()).CurrentCycleId!.Value;
+                for (var index = 0; index < 25; index++)
+                {
+                    dbContext.CompanyRatings.Add(new CompanyRating
+                    {
+                        CompanyId = companyId,
+                        AuditorId = auditorId,
+                        Rating = CompanyRiskRating.Low,
+                        CreatedInCycleId = cycleId,
+                        CreatedAt = DateTime.UtcNow,
+                    });
+                }
+
+                await dbContext.SaveChangesAsync();
+            }
+
+            var page1 = await client.GetFromJsonAsync<PagedAuditsDto>($"/auditors/{auditorId}/audits?page=1&pageSize=20");
+            Assert.Equal(25, page1!.Total);
+            Assert.Equal(20, page1.Items.Length);
+            // Newest first.
+            Assert.True(page1.Items[0].Id > page1.Items[^1].Id);
+            Assert.All(page1.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.CompanyName)));
+
+            var page2 = await client.GetFromJsonAsync<PagedAuditsDto>($"/auditors/{auditorId}/audits?page=2&pageSize=20");
+            Assert.Equal(5, page2!.Items.Length);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CompanyDetailAndRatingsReflectTheLatestVerdicts()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int companyId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                companyId = await dbContext.Companies.Select(company => company.Id).FirstAsync();
+                var auditorId = await dbContext.Auditors.Select(auditor => auditor.Id).FirstAsync();
+                var cycleId = (await dbContext.Markets.FirstAsync()).CurrentCycleId!.Value;
+
+                dbContext.CompanyRatings.Add(new CompanyRating
+                {
+                    CompanyId = companyId, AuditorId = auditorId, Rating = CompanyRiskRating.High,
+                    CreatedInCycleId = cycleId, CreatedAt = DateTime.UtcNow,
+                });
+                dbContext.CompanyRatings.Add(new CompanyRating
+                {
+                    CompanyId = companyId, AuditorId = auditorId, Rating = CompanyRiskRating.Extra, ImpactPercent = 25m,
+                    CreatedInCycleId = cycleId, CreatedAt = DateTime.UtcNow,
+                });
+                await dbContext.SaveChangesAsync();
+            }
+
+            var detail = await client.GetFromJsonAsync<CompanyDetailDto>($"/companies/{companyId}");
+            Assert.Equal("Extra", detail!.CurrentRating);
+            Assert.Equal("High", detail.PreviousRating);
+
+            var ratings = await client.GetFromJsonAsync<CompanyRatingDto[]>($"/companies/{companyId}/ratings");
+            Assert.Equal(2, ratings!.Length);
+            Assert.Equal("Extra", ratings[0].Rating);
+            Assert.Equal(25m, ratings[0].ImpactPercent);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CompanyEmissionsEndpointReturnsRecords()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int companyId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                companyId = await dbContext.Companies.Select(company => company.Id).FirstAsync();
+                var cycleId = (await dbContext.Markets.FirstAsync()).CurrentCycleId!.Value;
+                dbContext.ShareEmissions.Add(new ShareEmission
+                {
+                    CompanyId = companyId, SharesEmitted = 100, RecipientCount = 2,
+                    CreatedInCycleId = cycleId, CreatedAt = DateTime.UtcNow,
+                });
+                await dbContext.SaveChangesAsync();
+            }
+
+            var emissions = await client.GetFromJsonAsync<ShareEmissionDto[]>($"/companies/{companyId}/emissions");
+            var emission = Assert.Single(emissions!);
+            Assert.Equal(100, emission.SharesEmitted);
+            Assert.Equal(2, emission.RecipientCount);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:DefaultConnection", $"Data Source={databasePath}");
+
+            // Auditors fire every cycle under the shared Random and would perturb the exact-count assertions
+            // below; they are exercised directly against seeded rating rows instead.
+            builder.UseSetting("Auditor:Enabled", "false");
 
             // A manual tick decides then matches; the no-op engine removes generated trades so these
             // tests settle only the order they place by hand and can assert exact counts.
@@ -883,7 +1056,19 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal MarketCap,
         int SharesHeldByIssuer,
         int SharesOutstanding,
-        int ShareholderCount);
+        int ShareholderCount,
+        string? CurrentRating,
+        string? PreviousRating);
+
+    private sealed record AuditorDto(int Id, string Name, string Description, int AuditCount);
+
+    private sealed record AuditRowDto(int Id, int CompanyId, string CompanyName, string Rating, decimal? ImpactPercent, int CyclesAgo);
+
+    private sealed record PagedAuditsDto(AuditRowDto[] Items, int Total, int Page, int PageSize);
+
+    private sealed record CompanyRatingDto(int Id, string Rating, decimal? ImpactPercent, string AuditorName, int CyclesAgo);
+
+    private sealed record ShareEmissionDto(int Id, int SharesEmitted, int RecipientCount, int CyclesAgo);
 
     private sealed record ShareholderDto(
         int OwnerId,

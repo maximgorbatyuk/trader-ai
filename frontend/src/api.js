@@ -50,6 +50,12 @@ export const api = {
   getCompanyOrders: (companyId, take = 10) => get(`/companies/${companyId}/orders?take=${take}`),
   getCompanyShareTransactions: (companyId, take = 10) =>
     get(`/companies/${companyId}/share-transactions?take=${take}`),
+  getCompanyRatings: (companyId, take = 20) => get(`/companies/${companyId}/ratings?take=${take}`),
+  getCompanyEmissions: (companyId, take = 20) => get(`/companies/${companyId}/emissions?take=${take}`),
+  getAuditors: () => get('/auditors'),
+  getAuditor: (auditorId) => get(`/auditors/${auditorId}`),
+  getAuditorAudits: (auditorId, page = 1, pageSize = 20) =>
+    get(`/auditors/${auditorId}/audits?page=${page}&pageSize=${pageSize}`),
   getParticipants: () => get('/participants'),
   getOrders: (status) => get(status ? `/orders?status=${status}` : '/orders'),
   getCycles: () => get('/cycles'),

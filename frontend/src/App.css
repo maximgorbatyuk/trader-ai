@@ -1191,6 +1191,49 @@
   color: oklch(0.45 0.13 255);
 }
 
+/* Risk ratings escalate through non-market hues (calm blue → amber → magenta) so market green/red stay reserved. */
+.tag-rating-low {
+  background: oklch(0.93 0.04 220);
+  color: oklch(0.44 0.11 235);
+}
+
+.tag-rating-high {
+  background: oklch(0.93 0.07 75);
+  color: oklch(0.47 0.13 65);
+}
+
+.tag-rating-extra {
+  background: oklch(0.92 0.07 350);
+  color: oklch(0.47 0.19 350);
+}
+
+.rating-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.rating-trend {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+
+.pager-status {
+  color: var(--muted);
+  font-size: var(--t-xs);
+}
+
 .trader-stats {
   margin: 0 0 var(--s-3);
   color: var(--muted);

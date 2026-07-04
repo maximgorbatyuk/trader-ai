@@ -7,6 +7,7 @@ import TradersPage from './TradersPage.jsx'
 import CompaniesPage from './CompaniesPage.jsx'
 import { AppShell } from './AppShell.jsx'
 import DepartedTradersPage from './DepartedTradersPage.jsx'
+import AuditorsPage from './AuditorsPage.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -16,6 +17,7 @@ createRoot(document.getElementById('root')).render(
           <Route path="/" element={<App />} />
           <Route path="/traders" element={<TradersPage />} />
           <Route path="/companies" element={<CompaniesPage />} />
+          <Route path="/auditors" element={<AuditorsPage />} />
           <Route path="/departed-traders" element={<DepartedTradersPage />} />
         </Route>
       </Routes>

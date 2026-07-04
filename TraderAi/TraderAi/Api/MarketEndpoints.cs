@@ -92,6 +92,117 @@ public static class MarketEndpoints
             return Results.Ok(transactions.Select(ToShareTransactionResponse).ToArray());
         });
 
+        app.MapGet("/companies/{companyId:int}/ratings", async (int companyId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 20, 1, 100);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+            var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+            var auditorNameById = await dbContext.Auditors.ToDictionaryAsync(auditor => auditor.Id, auditor => auditor.Name);
+
+            var ratings = await dbContext.CompanyRatings
+                .Where(rating => rating.CompanyId == companyId)
+                .OrderByDescending(rating => rating.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            var response = ratings
+                .Select(rating => new CompanyRatingResponse(
+                    rating.Id,
+                    rating.Rating.ToString(),
+                    rating.ImpactPercent,
+                    auditorNameById.GetValueOrDefault(rating.AuditorId, $"#{rating.AuditorId}"),
+                    Math.Max(0, currentCycleNumber - cycleNumbersById.GetValueOrDefault(rating.CreatedInCycleId)),
+                    rating.CreatedAt))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/companies/{companyId:int}/emissions", async (int companyId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 20, 1, 100);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+            var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+
+            var emissions = await dbContext.ShareEmissions
+                .Where(emission => emission.CompanyId == companyId)
+                .OrderByDescending(emission => emission.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            var response = emissions
+                .Select(emission => new ShareEmissionResponse(
+                    emission.Id,
+                    emission.SharesEmitted,
+                    emission.RecipientCount,
+                    Math.Max(0, currentCycleNumber - cycleNumbersById.GetValueOrDefault(emission.CreatedInCycleId)),
+                    emission.CreatedAt))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/auditors", async (AppDbContext dbContext) =>
+        {
+            var auditors = await dbContext.Auditors.OrderBy(auditor => auditor.Id).ToListAsync();
+            var countByAuditor = (await dbContext.CompanyRatings
+                    .GroupBy(rating => rating.AuditorId)
+                    .Select(group => new { AuditorId = group.Key, Count = group.Count() })
+                    .ToListAsync())
+                .ToDictionary(row => row.AuditorId, row => row.Count);
+
+            var response = auditors
+                .Select(auditor => new AuditorResponse(
+                    auditor.Id, auditor.Name, auditor.Description, countByAuditor.GetValueOrDefault(auditor.Id)))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/auditors/{auditorId:int}", async (int auditorId, AppDbContext dbContext) =>
+        {
+            var auditor = await dbContext.Auditors.FirstOrDefaultAsync(candidate => candidate.Id == auditorId);
+            if (auditor is null)
+            {
+                return Results.NotFound(new { error = "Auditor not found." });
+            }
+
+            var count = await dbContext.CompanyRatings.CountAsync(rating => rating.AuditorId == auditorId);
+            return Results.Ok(new AuditorResponse(auditor.Id, auditor.Name, auditor.Description, count));
+        });
+
+        app.MapGet("/auditors/{auditorId:int}/audits", async (int auditorId, int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+
+            var query = dbContext.CompanyRatings.Where(rating => rating.AuditorId == auditorId);
+            var total = await query.CountAsync();
+
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+            var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+            var companyNameById = await dbContext.Companies.ToDictionaryAsync(company => company.Id, company => company.Name);
+
+            var rows = await query
+                .OrderByDescending(rating => rating.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            var items = rows
+                .Select(rating => new AuditRowResponse(
+                    rating.Id,
+                    rating.CompanyId,
+                    companyNameById.GetValueOrDefault(rating.CompanyId, $"#{rating.CompanyId}"),
+                    rating.Rating.ToString(),
+                    rating.ImpactPercent,
+                    Math.Max(0, currentCycleNumber - cycleNumbersById.GetValueOrDefault(rating.CreatedInCycleId)),
+                    rating.CreatedAt))
+                .ToArray();
+
+            return Results.Ok(new PagedAuditsResponse(items, total, pageIndex, size));
+        });
+
         app.MapGet("/market", async (MarketService marketService, AppDbContext dbContext) =>
         {
             var market = await marketService.GetMarketAsync();
@@ -762,6 +873,24 @@ public static class MarketEndpoints
             .SumAsync(transaction => transaction.Amount);
     }
 
+    private static Task<Dictionary<int, int>> CycleNumbersByIdAsync(AppDbContext dbContext) =>
+        dbContext.MarketCycles.ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+    // The number of the market's active cycle, or zero when no market or cycle is set.
+    private static async Task<int> CurrentCycleNumberAsync(AppDbContext dbContext)
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market?.CurrentCycleId is not int cycleId)
+        {
+            return 0;
+        }
+
+        return await dbContext.MarketCycles
+            .Where(cycle => cycle.Id == cycleId)
+            .Select(cycle => cycle.CycleNumber)
+            .FirstOrDefaultAsync();
+    }
+
     private static async Task<CompanyDetailResponse?> BuildCompanyDetailAsync(AppDbContext dbContext, int companyId)
     {
         var company = await dbContext.Companies.FirstOrDefaultAsync(candidate => candidate.Id == companyId);
@@ -786,6 +915,14 @@ public static class MarketEndpoints
             .Select(industry => industry.Name)
             .FirstOrDefaultAsync();
 
+        // The two most recent verdicts give the current risk rating and the direction of its change.
+        var recentRatings = await dbContext.CompanyRatings
+            .Where(rating => rating.CompanyId == companyId)
+            .OrderByDescending(rating => rating.Id)
+            .Take(2)
+            .Select(rating => rating.Rating)
+            .ToListAsync();
+
         return new CompanyDetailResponse(
             company.Id,
             company.Name,
@@ -798,7 +935,9 @@ public static class MarketEndpoints
             sharesHeldByIssuer,
             sharesOutstanding,
             shareholderCount,
-            company.CreatedAt);
+            company.CreatedAt,
+            recentRatings.Count > 0 ? recentRatings[0].ToString() : null,
+            recentRatings.Count > 1 ? recentRatings[1].ToString() : null);
     }
 
     private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(AppDbContext dbContext, int participantId)
@@ -1016,7 +1155,9 @@ public sealed record CompanyDetailResponse(
     int SharesHeldByIssuer,
     int SharesOutstanding,
     int ShareholderCount,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    string? CurrentRating,
+    string? PreviousRating);
 
 public sealed record ShareholderResponse(
     int OwnerId,
@@ -1025,6 +1166,34 @@ public sealed record ShareholderResponse(
     decimal MarketValue,
     decimal CostBasis,
     decimal PctOfIssued);
+
+public sealed record AuditorResponse(int Id, string Name, string Description, int AuditCount);
+
+public sealed record AuditRowResponse(
+    int Id,
+    int CompanyId,
+    string CompanyName,
+    string Rating,
+    decimal? ImpactPercent,
+    int CyclesAgo,
+    DateTime CreatedAt);
+
+public sealed record PagedAuditsResponse(AuditRowResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record CompanyRatingResponse(
+    int Id,
+    string Rating,
+    decimal? ImpactPercent,
+    string AuditorName,
+    int CyclesAgo,
+    DateTime CreatedAt);
+
+public sealed record ShareEmissionResponse(
+    int Id,
+    int SharesEmitted,
+    int RecipientCount,
+    int CyclesAgo,
+    DateTime CreatedAt);
 
 public sealed record MarketResponse(
     int Id,

@@ -60,7 +60,9 @@ public sealed class MarketService(
     BankruptcyService? bankruptcyService = null,
     CollectiveFundService? collectiveFundService = null,
     MarketExitService? marketExitService = null,
-    StockSplitService? stockSplitService = null)
+    StockSplitService? stockSplitService = null,
+    AuditorService? auditorService = null,
+    ShareEmissionService? shareEmissionService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -268,6 +270,14 @@ public sealed class MarketService(
             await dbContext.SaveChangesAsync();
         }
 
+        // Another supply-side corporate action right after splits: very large companies may issue free shares,
+        // diluting price before the worth-reading services and this cycle's matching run.
+        if (shareEmissionService is not null)
+        {
+            await shareEmissionService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
         await LiquidateStarvedHoldersAsync(participantsById);
 
         // Runs before this cycle's matching so a wealthy trader's collapse, and a bankrupt trader's cheaper
@@ -293,6 +303,14 @@ public sealed class MarketService(
         if (marketExitService is not null)
         {
             await marketExitService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
+        // Auditors run last so bankruptcy, funds, and exits read pre-audit prices; this cycle's decisions and
+        // matching then react to the fresh ratings, any price correction, and the bids that were pulled.
+        if (auditorService is not null)
+        {
+            await auditorService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
             await dbContext.SaveChangesAsync();
         }
     }
@@ -1235,6 +1253,13 @@ public sealed class MarketService(
         finally
         {
             dbContext.ChangeTracker.AutoDetectChangesEnabled = true;
+        }
+
+        // Rating agencies that review companies once the market runs; added with no random draw so the generated
+        // demo data above is unaffected.
+        foreach (var (name, description) in DemoAuditorProfiles.Take(AuditorService.AuditorCountFor(companyCount)))
+        {
+            dbContext.Auditors.Add(new Auditor { Name = name, Description = description, CreatedAt = now });
         }
 
         // Drawn last so adding the dividend schedule does not shift the generated demo data above.

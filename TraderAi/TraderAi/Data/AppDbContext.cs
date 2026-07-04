@@ -49,6 +49,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<MarketExit> MarketExits => Set<MarketExit>();
 
+    public DbSet<Auditor> Auditors => Set<Auditor>();
+
+    public DbSet<CompanyRating> CompanyRatings => Set<CompanyRating>();
+
+    public DbSet<ShareEmission> ShareEmissions => Set<ShareEmission>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<NewsPost>()
@@ -86,6 +92,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         // Worth snapshots are read back per trader in cycle order to chart total worth over time.
         modelBuilder.Entity<ParticipantWorthSnapshot>()
             .HasIndex(snapshot => new { snapshot.ParticipantId, snapshot.CreatedInCycleId });
+
+        // Ratings are read back per company to find the current verdict and its history.
+        modelBuilder.Entity<CompanyRating>()
+            .HasIndex(rating => new { rating.CompanyId, rating.CreatedInCycleId });
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
