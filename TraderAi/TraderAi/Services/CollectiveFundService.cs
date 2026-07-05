@@ -858,13 +858,8 @@ public sealed class CollectiveFundService(
     private static double OpenChance(int cannotBuyCycles) =>
         BaseOpenChance + cannotBuyCycles switch { >= 20 => 0.20, >= 10 => 0.10, _ => 0.0 };
 
-    private async Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync()
-    {
-        var snapshots = await dbContext.PriceSnapshots.ToListAsync();
-        return snapshots
-            .GroupBy(snapshot => snapshot.CompanyId)
-            .ToDictionary(group => group.Key, group => group.OrderByDescending(snapshot => snapshot.Id).First().Price);
-    }
+    private Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync() =>
+        PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
 
     private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 

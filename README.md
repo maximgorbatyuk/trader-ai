@@ -47,6 +47,7 @@ No authentication is required between the frontend and backend for local develop
 | [Collective Fund](docs/roles/collective-fund.md) | Rules for pooled fund traders. |
 | [Fund Member](docs/roles/fund-member.md) | Rules for traders while they belong to a fund. |
 | [Auditors](docs/roles/auditors.md) | Rules for the rating agencies that review companies. |
+| [Share price formation](docs/rules/share-price-formation.md) | How company share prices form during each market cycle. |
 | [Free-share emission](docs/logic/free-share-emission.md) | How large companies issue free shares to dilute price. |
 
 ## Tech stack

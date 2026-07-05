@@ -9,6 +9,7 @@ import { AppShell } from './AppShell.jsx'
 import DepartedTradersPage from './DepartedTradersPage.jsx'
 import ClosedFundsPage from './ClosedFundsPage.jsx'
 import AuditorsPage from './AuditorsPage.jsx'
+import NewsPage from './NewsPage.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -18,6 +19,7 @@ createRoot(document.getElementById('root')).render(
           <Route path="/" element={<App />} />
           <Route path="/traders" element={<TradersPage />} />
           <Route path="/companies" element={<CompaniesPage />} />
+          <Route path="/news" element={<NewsPage />} />
           <Route path="/auditors" element={<AuditorsPage />} />
           <Route path="/departed-traders" element={<DepartedTradersPage />} />
           <Route path="/closed-funds" element={<ClosedFundsPage />} />

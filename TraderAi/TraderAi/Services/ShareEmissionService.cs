@@ -178,11 +178,6 @@ public sealed class ShareEmissionService(
         }
     }
 
-    private async Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync()
-    {
-        var snapshots = await dbContext.PriceSnapshots.ToListAsync();
-        return snapshots
-            .GroupBy(snapshot => snapshot.CompanyId)
-            .ToDictionary(group => group.Key, group => group.OrderByDescending(snapshot => snapshot.Id).First().Price);
-    }
+    private Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync() =>
+        PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
 }

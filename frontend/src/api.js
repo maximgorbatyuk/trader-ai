@@ -41,11 +41,25 @@ function put(path, body) {
   })
 }
 
+// Drops null/undefined/empty values so optional filters never reach the API as blank query params.
+function toQuery(params) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && value !== '') {
+      query.set(key, value)
+    }
+  }
+  const text = query.toString()
+  return text ? `?${text}` : ''
+}
+
 export const api = {
   getHealth: () => get('/health'),
   getMarket: () => get('/market'),
   getCompanies: () => get('/companies'),
+  getCompaniesPaged: (params = {}) => get(`/companies/paged${toQuery(params)}`),
   getCompany: (companyId) => get(`/companies/${companyId}`),
+  getCompanyNews: (companyId, take = 20) => get(`/companies/${companyId}/news?take=${take}`),
   getCompanyShareholders: (companyId) => get(`/companies/${companyId}/shareholders`),
   getCompanyOrders: (companyId, take = 10) => get(`/companies/${companyId}/orders?take=${take}`),
   getCompanyShareTransactions: (companyId, take = 10) =>
@@ -57,12 +71,14 @@ export const api = {
   getAuditorAudits: (auditorId, page = 1, pageSize = 20) =>
     get(`/auditors/${auditorId}/audits?page=${page}&pageSize=${pageSize}`),
   getParticipants: () => get('/participants'),
+  getParticipantsPaged: (params = {}) => get(`/participants/paged${toQuery(params)}`),
   getOrders: (status) => get(status ? `/orders?status=${status}` : '/orders'),
   getCycles: () => get('/cycles'),
   getCycleActivity: () => get('/cycles/activity'),
   getShareTransactions: (take) => get(take ? `/transactions/shares?take=${take}` : '/transactions/shares'),
   getPrices: (companyId) => get(`/prices/${companyId}`),
   getNews: (take = 30) => get(`/news?take=${take}`),
+  getNewsPaged: (page = 1, pageSize = 20) => get(`/news/paged?page=${page}&pageSize=${pageSize}`),
   getCrises: (take = 30) => get(`/crises?take=${take}`),
   getScienceInvestigations: (take = 30) => get(`/science-investigations?take=${take}`),
   getBankruptcies: (take = 30) => get(`/bankruptcies?take=${take}`),

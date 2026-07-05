@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { LineChart } from './LineChart'
+import { NewsImpact } from './NewsImpact'
 
 const POLL_INTERVAL_MS = 1000
 
@@ -107,6 +108,7 @@ export function CompanyModal({ company, participantNameById, onClose }) {
   const [latestDeal, setLatestDeal] = useState(null)
   const [player, setPlayer] = useState(null)
   const [ownedShares, setOwnedShares] = useState(0)
+  const [companyNews, setCompanyNews] = useState([])
   const [activeForm, setActiveForm] = useState('none')
   const dialogRef = useRef(null)
   const closeRef = useRef(null)
@@ -117,15 +119,17 @@ export function CompanyModal({ company, participantNameById, onClose }) {
     let active = true
     async function load() {
       try {
-        const [priceData, dealData, playerData] = await Promise.all([
+        const [priceData, dealData, playerData, newsData] = await Promise.all([
           api.getPrices(companyId),
           api.getCompanyShareTransactions(companyId, 1),
           api.getPlayer(),
+          api.getCompanyNews(companyId, 5),
         ])
         if (!active) return
         setPrices(priceData)
         setLatestDeal(dealData[0] ?? null)
         setPlayer(playerData)
+        setCompanyNews(newsData ?? [])
 
         if (playerData) {
           const holdings = await api.getHoldings(playerData.id)
@@ -303,6 +307,22 @@ export function CompanyModal({ company, participantNameById, onClose }) {
               </p>
             ) : (
               <p className="note">No trades for this company yet.</p>
+            )}
+          </div>
+
+          <div className="modal-section">
+            <span className="map-stat-label">Related news</span>
+            {companyNews.length === 0 ? (
+              <p className="note note-sm">No related news yet.</p>
+            ) : (
+              <ul className="news-mini">
+                {companyNews.map((post) => (
+                  <li key={post.id} className="news-mini-item">
+                    <span className="news-mini-title cell-ellipsis">{post.title}</span>
+                    <NewsImpact post={post} />
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
 

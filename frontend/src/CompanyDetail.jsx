@@ -6,6 +6,8 @@ import { formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
 import { RatingBadge } from './RatingBadge'
+import { NewsImpact } from './NewsImpact'
+import { NewsModal } from './NewsModal'
 
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
@@ -38,10 +40,12 @@ export function CompanyDetail({ companyId }) {
   const [prices, setPrices] = useState([])
   const [ratings, setRatings] = useState([])
   const [emissions, setEmissions] = useState([])
+  const [news, setNews] = useState([])
+  const [selectedNews, setSelectedNews] = useState(null)
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, shareholderData, orderData, tradeData, priceData, ratingData, emissionData] =
+      const [detailData, shareholderData, orderData, tradeData, priceData, ratingData, emissionData, newsData] =
         await Promise.all([
           api.getCompany(companyId),
           api.getCompanyShareholders(companyId),
@@ -50,6 +54,7 @@ export function CompanyDetail({ companyId }) {
           api.getPrices(companyId),
           api.getCompanyRatings(companyId),
           api.getCompanyEmissions(companyId),
+          api.getCompanyNews(companyId),
         ])
 
       setDetail(detailData)
@@ -59,6 +64,7 @@ export function CompanyDetail({ companyId }) {
       setPrices(priceData)
       setRatings(ratingData ?? [])
       setEmissions(emissionData ?? [])
+      setNews(newsData ?? [])
       setLoadError(null)
     } catch (error) {
       setLoadError(error.message)
@@ -171,7 +177,53 @@ export function CompanyDetail({ companyId }) {
         <RatingHistoryPanel ratings={ratings} />
         <EmissionsPanel emissions={emissions} />
       </div>
+
+      <RelatedNewsPanel news={news} onSelect={setSelectedNews} />
+
+      {selectedNews ? <NewsModal post={selectedNews} onClose={() => setSelectedNews(null)} /> : null}
     </section>
+  )
+}
+
+function RelatedNewsPanel({ news, onSelect }) {
+  return (
+    <Panel title="Related news" count={`${news.length}`} className="panel-orders-list">
+      {news.length === 0 ? (
+        <p className="note">No news for this company or its industry yet.</p>
+      ) : (
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col" className="ta-r">
+                  Impact
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {news.map((post) => (
+                <tr key={post.id}>
+                  <th scope="row">
+                    <button
+                      type="button"
+                      className="cell-name-btn"
+                      onClick={() => onSelect(post)}
+                      title={`Open ${post.title}`}
+                    >
+                      {post.title}
+                    </button>
+                  </th>
+                  <td className="ta-r">
+                    <NewsImpact post={post} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
   )
 }
 
