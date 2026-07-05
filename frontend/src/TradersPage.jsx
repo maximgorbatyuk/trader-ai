@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt } from './format'
@@ -77,93 +77,76 @@ function TradersPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <Link className="brand" to="/" aria-label="Back to the Trader AI dashboard">
-          <span className="brand-mark" aria-hidden="true">
-            TA
-          </span>
-          <span className="brand-name">Trader&nbsp;AI</span>
-          <span className="brand-tag" aria-hidden="true">
-            Traders
-          </span>
-        </Link>
-        <Link className="btn" to="/">
-          ← Dashboard
-        </Link>
-      </header>
+    <main className="main">
+      {!ready ? (
+        <section className="placeholder" aria-busy="true">
+          <span className="spinner" aria-hidden="true" />
+          <p>Loading traders…</p>
+        </section>
+      ) : (
+        <>
+          {loadError ? (
+            <div className="banner" role="alert">
+              <strong>Showing last known state.</strong>
+              <span>{loadError}</span>
+            </div>
+          ) : null}
 
-      <main className="main">
-        {!ready ? (
-          <section className="placeholder" aria-busy="true">
-            <span className="spinner" aria-hidden="true" />
-            <p>Loading traders…</p>
-          </section>
-        ) : (
-          <>
-            {loadError ? (
-              <div className="banner" role="alert">
-                <strong>Showing last known state.</strong>
-                <span>{loadError}</span>
+          <Panel title="Traders" count={`${formatInt(total)}`} className="panel-holdings">
+            <div className="roster-toolbar">
+              <input
+                className="select select-sm roster-search"
+                type="search"
+                placeholder="Search by name"
+                aria-label="Search traders by name"
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value)
+                  setPage(1)
+                }}
+              />
+              <select
+                className="select select-sm"
+                aria-label="Filter traders by type"
+                value={typeFilter}
+                onChange={(event) => {
+                  setTypeFilter(event.target.value)
+                  setPage(1)
+                }}
+              >
+                {TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <TradersTable
+              participants={items}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onToggleSort={toggleSort}
+              onSelectTrader={selectTrader}
+            />
+
+            {pageCount > 1 ? (
+              <div className="pager">
+                <button type="button" className="btn" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>
+                  ← Prev
+                </button>
+                <span className="pager-status num">
+                  Page {page} / {pageCount}
+                </span>
+                <button type="button" className="btn" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>
+                  Next →
+                </button>
               </div>
             ) : null}
-
-            <Panel title="Traders" count={`${formatInt(total)}`} className="panel-holdings">
-              <div className="roster-toolbar">
-                <input
-                  className="select select-sm roster-search"
-                  type="search"
-                  placeholder="Search by name"
-                  aria-label="Search traders by name"
-                  value={search}
-                  onChange={(event) => {
-                    setSearch(event.target.value)
-                    setPage(1)
-                  }}
-                />
-                <select
-                  className="select select-sm"
-                  aria-label="Filter traders by type"
-                  value={typeFilter}
-                  onChange={(event) => {
-                    setTypeFilter(event.target.value)
-                    setPage(1)
-                  }}
-                >
-                  {TYPE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <TradersTable
-                participants={items}
-                sortKey={sortKey}
-                sortDir={sortDir}
-                onToggleSort={toggleSort}
-                onSelectTrader={selectTrader}
-              />
-
-              {pageCount > 1 ? (
-                <div className="pager">
-                  <button type="button" className="btn" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>
-                    ← Prev
-                  </button>
-                  <span className="pager-status num">
-                    Page {page} / {pageCount}
-                  </span>
-                  <button type="button" className="btn" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>
-                    Next →
-                  </button>
-                </div>
-              ) : null}
-            </Panel>
-          </>
-        )}
-      </main>
-    </div>
+          </Panel>
+        </>
+      )}
+    </main>
   )
 }
 

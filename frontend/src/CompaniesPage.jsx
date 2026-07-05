@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt } from './format'
@@ -86,94 +86,77 @@ function CompaniesPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <Link className="brand" to="/" aria-label="Back to the Trader AI dashboard">
-          <span className="brand-mark" aria-hidden="true">
-            TA
-          </span>
-          <span className="brand-name">Trader&nbsp;AI</span>
-          <span className="brand-tag" aria-hidden="true">
-            Companies
-          </span>
-        </Link>
-        <Link className="btn" to="/">
-          ← Dashboard
-        </Link>
-      </header>
+    <main className="main">
+      {!ready ? (
+        <section className="placeholder" aria-busy="true">
+          <span className="spinner" aria-hidden="true" />
+          <p>Loading companies…</p>
+        </section>
+      ) : (
+        <>
+          {loadError ? (
+            <div className="banner" role="alert">
+              <strong>Showing last known state.</strong>
+              <span>{loadError}</span>
+            </div>
+          ) : null}
 
-      <main className="main">
-        {!ready ? (
-          <section className="placeholder" aria-busy="true">
-            <span className="spinner" aria-hidden="true" />
-            <p>Loading companies…</p>
-          </section>
-        ) : (
-          <>
-            {loadError ? (
-              <div className="banner" role="alert">
-                <strong>Showing last known state.</strong>
-                <span>{loadError}</span>
+          <Panel title="Companies" count={`${formatInt(total)}`} className="panel-holdings">
+            <div className="roster-toolbar">
+              <input
+                className="select select-sm roster-search"
+                type="search"
+                placeholder="Search by name"
+                aria-label="Search companies by name"
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value)
+                  setPage(1)
+                }}
+              />
+              <select
+                className="select select-sm"
+                aria-label="Filter companies by industry"
+                value={industryFilter}
+                onChange={(event) => {
+                  setIndustryFilter(event.target.value)
+                  setPage(1)
+                }}
+              >
+                <option value="">All industries</option>
+                {industries.map((industry) => (
+                  <option key={industry.id} value={industry.id}>
+                    {industry.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <CompaniesTable
+              companies={items}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onToggleSort={toggleSort}
+              onSelectCompany={selectCompany}
+            />
+
+            {pageCount > 1 ? (
+              <div className="pager">
+                <button type="button" className="btn" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>
+                  ← Prev
+                </button>
+                <span className="pager-status num">
+                  Page {page} / {pageCount}
+                </span>
+                <button type="button" className="btn" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>
+                  Next →
+                </button>
               </div>
             ) : null}
-
-            <Panel title="Companies" count={`${formatInt(total)}`} className="panel-holdings">
-              <div className="roster-toolbar">
-                <input
-                  className="select select-sm roster-search"
-                  type="search"
-                  placeholder="Search by name"
-                  aria-label="Search companies by name"
-                  value={search}
-                  onChange={(event) => {
-                    setSearch(event.target.value)
-                    setPage(1)
-                  }}
-                />
-                <select
-                  className="select select-sm"
-                  aria-label="Filter companies by industry"
-                  value={industryFilter}
-                  onChange={(event) => {
-                    setIndustryFilter(event.target.value)
-                    setPage(1)
-                  }}
-                >
-                  <option value="">All industries</option>
-                  {industries.map((industry) => (
-                    <option key={industry.id} value={industry.id}>
-                      {industry.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <CompaniesTable
-                companies={items}
-                sortKey={sortKey}
-                sortDir={sortDir}
-                onToggleSort={toggleSort}
-                onSelectCompany={selectCompany}
-              />
-
-              {pageCount > 1 ? (
-                <div className="pager">
-                  <button type="button" className="btn" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>
-                    ← Prev
-                  </button>
-                  <span className="pager-status num">
-                    Page {page} / {pageCount}
-                  </span>
-                  <button type="button" className="btn" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>
-                    Next →
-                  </button>
-                </div>
-              ) : null}
-            </Panel>
-          </>
-        )}
-      </main>
-    </div>
+          </Panel>
+        </>
+      )}
+    </main>
   )
 }
 

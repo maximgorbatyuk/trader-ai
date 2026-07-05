@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { Panel } from './Panel'
@@ -45,50 +45,33 @@ function AuditorsPage() {
   }
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <Link className="brand" to="/" aria-label="Back to the Trader AI dashboard">
-          <span className="brand-mark" aria-hidden="true">
-            TA
-          </span>
-          <span className="brand-name">Trader&nbsp;AI</span>
-          <span className="brand-tag" aria-hidden="true">
-            Auditors
-          </span>
-        </Link>
-        <Link className="btn" to="/">
-          ← Dashboard
-        </Link>
-      </header>
+    <main className="main">
+      {!ready ? (
+        <section className="placeholder" aria-busy="true">
+          <span className="spinner" aria-hidden="true" />
+          <p>Loading auditors…</p>
+        </section>
+      ) : (
+        <>
+          {loadError ? (
+            <div className="banner" role="alert">
+              <strong>Showing last known state.</strong>
+              <span>{loadError}</span>
+            </div>
+          ) : null}
 
-      <main className="main">
-        {!ready ? (
-          <section className="placeholder" aria-busy="true">
-            <span className="spinner" aria-hidden="true" />
-            <p>Loading auditors…</p>
-          </section>
-        ) : (
-          <>
-            {loadError ? (
-              <div className="banner" role="alert">
-                <strong>Showing last known state.</strong>
-                <span>{loadError}</span>
-              </div>
-            ) : null}
+          <Panel title="Auditors" count={`${auditors.length}`} className="panel-holdings">
+            <AuditorsTable auditors={auditors} selectedId={selectedId} onSelectAuditor={selectAuditor} />
+          </Panel>
 
-            <Panel title="Auditors" count={`${auditors.length}`} className="panel-holdings">
-              <AuditorsTable auditors={auditors} selectedId={selectedId} onSelectAuditor={selectAuditor} />
-            </Panel>
-
-            {selectedId ? (
-              <AuditorDetail key={selectedId} auditorId={selectedId} />
-            ) : (
-              <p className="note traders-hint">Select an auditor above to see its details and audit history.</p>
-            )}
-          </>
-        )}
-      </main>
-    </div>
+          {selectedId ? (
+            <AuditorDetail key={selectedId} auditorId={selectedId} />
+          ) : (
+            <p className="note traders-hint">Select an auditor above to see its details and audit history.</p>
+          )}
+        </>
+      )}
+    </main>
   )
 }
 

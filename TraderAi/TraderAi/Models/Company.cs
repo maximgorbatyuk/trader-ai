@@ -18,6 +18,10 @@ public sealed class Company
     // cycle they were minted in. Null on rows that predate the column.
     public int? CreatedInCycleId { get; set; }
 
+    // Cycle of the company's most recent reverse merge, so recency can be tested without string-matching the
+    // merge news post. Null until the company has ever merged.
+    public int? LastMergedInCycleId { get; set; }
+
     // A closed company is delisted: its orders are cancelled and holdings zeroed, and it is filtered out of the
     // live roster, the map, and every per-cycle service. The row is kept (not deleted) so history and deep-links
     // still resolve. Null while the company is live.

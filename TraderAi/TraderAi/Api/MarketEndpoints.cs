@@ -408,6 +408,149 @@ public static class MarketEndpoints
             return Results.Ok(response);
         });
 
+        // Companies the participant holds that show a warning signal, so they can be watched at a glance: a recent
+        // price slide, a bad news or crisis hit, a standing High/Extra risk verdict, or a recent reverse merge.
+        app.MapGet("/participants/{participantId:int}/companies-attention", async (int participantId, AppDbContext dbContext) =>
+        {
+            const int RecentWindowCycles = 20;
+            const int PriceTrendWindowCycles = 10;
+            const int PriceDeclineThreshold = 3;
+
+            var heldQuantityByCompany = await dbContext.Holdings
+                .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
+                .ToDictionaryAsync(holding => holding.CompanyId, holding => holding.Quantity);
+            if (heldQuantityByCompany.Count == 0)
+            {
+                return Results.Ok(Array.Empty<CompanyAttentionResponse>());
+            }
+
+            var heldCompanyIds = heldQuantityByCompany.Keys.ToList();
+            var companies = await dbContext.Companies
+                .Where(company => heldCompanyIds.Contains(company.Id) && company.ClosedInCycleId == null)
+                .ToListAsync();
+
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+            var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+            var recentCycleIds = cycleNumbersById
+                .Where(entry => entry.Value > 0 && currentCycleNumber - entry.Value < RecentWindowCycles)
+                .Select(entry => entry.Key)
+                .ToHashSet();
+
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+            var changeByCompany = await PriceChangePctByCompanyAsync(dbContext);
+            var latestRatingByCompany = await LatestRatingByCompanyAsync(dbContext);
+            var heldIndustryIds = companies.Select(company => company.IndustryId).Distinct().ToList();
+
+            // (a) Price slide: reduce each company's snapshots to one close per cycle, then count cycle-over-cycle
+            // declines across the last few cycles.
+            var priceRows = await dbContext.PriceSnapshots
+                .Where(snapshot => heldCompanyIds.Contains(snapshot.CompanyId)
+                    && recentCycleIds.Contains(snapshot.CreatedInCycleId))
+                .Select(snapshot => new { snapshot.CompanyId, snapshot.Id, snapshot.Price, snapshot.CreatedInCycleId })
+                .ToListAsync();
+            var decliningCompanyIds = new HashSet<int>();
+            foreach (var group in priceRows.GroupBy(row => row.CompanyId))
+            {
+                var closes = group
+                    .GroupBy(row => row.CreatedInCycleId)
+                    .Select(cycleGroup => cycleGroup.OrderByDescending(row => row.Id).First())
+                    .Select(row => new { CycleNumber = cycleNumbersById.GetValueOrDefault(row.CreatedInCycleId), row.Price })
+                    .OrderBy(entry => entry.CycleNumber)
+                    .TakeLast(PriceTrendWindowCycles + 1)
+                    .ToList();
+                var declines = 0;
+                for (var index = 1; index < closes.Count; index++)
+                {
+                    if (closes[index].Price < closes[index - 1].Price)
+                    {
+                        declines++;
+                    }
+                }
+                if (declines >= PriceDeclineThreshold)
+                {
+                    decliningCompanyIds.Add(group.Key);
+                }
+            }
+
+            // (b) Bad impact: a company-targeted price-down post, an industry-down post on a held industry, or a
+            // crisis on a held industry — all always negative — within the recent window.
+            var badNewsCompanyIds = new HashSet<int>();
+            var companyDownNews = await dbContext.NewsPosts
+                .Where(post => post.Direction == NewsImpactDirection.Decrease
+                    && post.Scope == NewsImpactScope.Company
+                    && post.TargetCompanyId != null
+                    && heldCompanyIds.Contains(post.TargetCompanyId.Value)
+                    && recentCycleIds.Contains(post.PublishedInCycleId))
+                .Select(post => post.TargetCompanyId!.Value)
+                .ToListAsync();
+            foreach (var companyId in companyDownNews)
+            {
+                badNewsCompanyIds.Add(companyId);
+            }
+
+            var industryDownNews = await dbContext.NewsPosts
+                .Where(post => post.Direction == NewsImpactDirection.Decrease
+                    && post.Scope == NewsImpactScope.Industries
+                    && recentCycleIds.Contains(post.PublishedInCycleId)
+                    && post.Industries.Any(link => heldIndustryIds.Contains(link.IndustryId)))
+                .Include(post => post.Industries)
+                .ToListAsync();
+            var crises = await dbContext.Crises
+                .Where(crisis => recentCycleIds.Contains(crisis.TriggeredInCycleId)
+                    && crisis.Industries.Any(link => heldIndustryIds.Contains(link.IndustryId)))
+                .Include(crisis => crisis.Industries)
+                .ToListAsync();
+            var hitIndustryIds = industryDownNews
+                .SelectMany(post => post.Industries.Select(link => link.IndustryId))
+                .Concat(crises.SelectMany(crisis => crisis.Industries.Select(link => link.IndustryId)))
+                .ToHashSet();
+            foreach (var company in companies)
+            {
+                if (hitIndustryIds.Contains(company.IndustryId))
+                {
+                    badNewsCompanyIds.Add(company.Id);
+                }
+            }
+
+            // (c) Standing High/Extra risk: the most recent verdict inside the window is High or Extra (a later Low
+            // would be the newest and clear it).
+            var highRiskCompanyIds = (await dbContext.CompanyRatings
+                    .Where(rating => heldCompanyIds.Contains(rating.CompanyId)
+                        && recentCycleIds.Contains(rating.CreatedInCycleId))
+                    .Select(rating => new { rating.CompanyId, rating.Id, rating.Rating })
+                    .ToListAsync())
+                .GroupBy(rating => rating.CompanyId)
+                .Where(group => group.OrderByDescending(rating => rating.Id).First().Rating != CompanyRiskRating.Low)
+                .Select(group => group.Key)
+                .ToHashSet();
+
+            var response = companies
+                .Select(company =>
+                {
+                    var price = latestPriceByCompany.GetValueOrDefault(company.Id);
+                    var shares = heldQuantityByCompany.GetValueOrDefault(company.Id);
+                    return new CompanyAttentionResponse(
+                        company.Id,
+                        company.Name,
+                        industryNameById.GetValueOrDefault(company.IndustryId),
+                        price,
+                        changeByCompany.GetValueOrDefault(company.Id),
+                        latestRatingByCompany.TryGetValue(company.Id, out var rating) ? rating.ToString() : null,
+                        shares,
+                        shares * price,
+                        decliningCompanyIds.Contains(company.Id),
+                        badNewsCompanyIds.Contains(company.Id),
+                        highRiskCompanyIds.Contains(company.Id),
+                        company.LastMergedInCycleId is int mergedCycleId && recentCycleIds.Contains(mergedCycleId));
+                })
+                .Where(row => row.PriceDeclining || row.BadNewsImpact || row.HighRisk || row.RecentMerge)
+                .OrderByDescending(row => row.MarketValue)
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
         app.MapGet("/participants/{participantId:int}/orders", async (int participantId, int? take, AppDbContext dbContext) =>
         {
             var limit = Math.Clamp(take ?? 10, 1, 100);
@@ -1404,6 +1547,20 @@ public sealed record CompanyResponse(
     decimal? CurrentPrice,
     decimal PriceChangePct,
     string? CurrentRating);
+
+public sealed record CompanyAttentionResponse(
+    int CompanyId,
+    string Name,
+    string? IndustryName,
+    decimal? CurrentPrice,
+    decimal PriceChangePct,
+    string? CurrentRating,
+    int Shares,
+    decimal MarketValue,
+    bool PriceDeclining,
+    bool BadNewsImpact,
+    bool HighRisk,
+    bool RecentMerge);
 
 public sealed record PagedCompaniesResponse(CompanyResponse[] Items, int Total, int Page, int PageSize);
 

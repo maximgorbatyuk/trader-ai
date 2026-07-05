@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt, formatMoney } from './format'
@@ -43,111 +42,94 @@ function ClosedFundsPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <Link className="brand" to="/" aria-label="Back to the Trader AI dashboard">
-          <span className="brand-mark" aria-hidden="true">
-            TA
-          </span>
-          <span className="brand-name">Trader&nbsp;AI</span>
-          <span className="brand-tag" aria-hidden="true">
-            Closed funds
-          </span>
-        </Link>
-        <Link className="btn" to="/">
-          ← Dashboard
-        </Link>
-      </header>
+    <main className="main">
+      {!ready ? (
+        <section className="placeholder" aria-busy="true">
+          <span className="spinner" aria-hidden="true" />
+          <p>Loading closed funds…</p>
+        </section>
+      ) : (
+        <>
+          {loadError ? (
+            <div className="banner" role="alert">
+              <strong>Showing last known state.</strong>
+              <span>{loadError}</span>
+            </div>
+          ) : null}
 
-      <main className="main">
-        {!ready ? (
-          <section className="placeholder" aria-busy="true">
-            <span className="spinner" aria-hidden="true" />
-            <p>Loading closed funds…</p>
-          </section>
-        ) : (
-          <>
-            {loadError ? (
-              <div className="banner" role="alert">
-                <strong>Showing last known state.</strong>
-                <span>{loadError}</span>
-              </div>
-            ) : null}
-
-            <Panel title="Closed funds" count={`${formatInt(total)}`} className="panel-holdings">
-              {items.length === 0 ? (
-                <p className="note">No funds have closed yet.</p>
-              ) : (
-                <>
-                  <div className="tbl-scroll">
-                    <table className="tbl">
-                      <thead>
-                        <tr>
-                          <th scope="col">Name</th>
-                          <th scope="col">Personality</th>
-                          <th scope="col" className="ta-r">
-                            Peak worth
+          <Panel title="Closed funds" count={`${formatInt(total)}`} className="panel-holdings">
+            {items.length === 0 ? (
+              <p className="note">No funds have closed yet.</p>
+            ) : (
+              <>
+                <div className="tbl-scroll">
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th scope="col">Name</th>
+                        <th scope="col">Personality</th>
+                        <th scope="col" className="ta-r">
+                          Peak worth
+                        </th>
+                        <th scope="col" className="ta-r">
+                          Opened
+                        </th>
+                        <th scope="col" className="ta-r">
+                          Closed
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((fund) => (
+                        <tr key={fund.id}>
+                          <th scope="row" className="cell-ellipsis">
+                            {fund.name}
                           </th>
-                          <th scope="col" className="ta-r">
-                            Opened
-                          </th>
-                          <th scope="col" className="ta-r">
-                            Closed
-                          </th>
+                          <td>
+                            <span className="cell-trader">
+                              <TemperamentTag temperament={fund.temperament} type="CollectiveFund" />
+                              {fund.riskProfile ? <span className="tag">{fund.riskProfile} risk</span> : null}
+                            </span>
+                          </td>
+                          <td className="num ta-r">{formatMoney(fund.peakNetWorth)}</td>
+                          <td className="num ta-r">cycle {formatInt(fund.createdInCycleNumber)}</td>
+                          <td className="num ta-r">
+                            {fund.closedAt ? new Date(fund.closedAt).toLocaleDateString() : '—'}
+                          </td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {items.map((fund) => (
-                          <tr key={fund.id}>
-                            <th scope="row" className="cell-ellipsis">
-                              {fund.name}
-                            </th>
-                            <td>
-                              <span className="cell-trader">
-                                <TemperamentTag temperament={fund.temperament} type="CollectiveFund" />
-                                {fund.riskProfile ? <span className="tag">{fund.riskProfile} risk</span> : null}
-                              </span>
-                            </td>
-                            <td className="num ta-r">{formatMoney(fund.peakNetWorth)}</td>
-                            <td className="num ta-r">cycle {formatInt(fund.createdInCycleNumber)}</td>
-                            <td className="num ta-r">
-                              {fund.closedAt ? new Date(fund.closedAt).toLocaleDateString() : '—'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {pageCount > 1 ? (
+                  <div className="pager">
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={page <= 1}
+                      onClick={() => setPage((value) => value - 1)}
+                    >
+                      ← Prev
+                    </button>
+                    <span className="pager-status num">
+                      Page {page} / {pageCount}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={page >= pageCount}
+                      onClick={() => setPage((value) => value + 1)}
+                    >
+                      Next →
+                    </button>
                   </div>
-                  {pageCount > 1 ? (
-                    <div className="pager">
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={page <= 1}
-                        onClick={() => setPage((value) => value - 1)}
-                      >
-                        ← Prev
-                      </button>
-                      <span className="pager-status num">
-                        Page {page} / {pageCount}
-                      </span>
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={page >= pageCount}
-                        onClick={() => setPage((value) => value + 1)}
-                      >
-                        Next →
-                      </button>
-                    </div>
-                  ) : null}
-                </>
-              )}
-            </Panel>
-          </>
-        )}
-      </main>
-    </div>
+                ) : null}
+              </>
+            )}
+          </Panel>
+        </>
+      )}
+    </main>
   )
 }
 

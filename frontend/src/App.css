@@ -910,6 +910,24 @@
   font-size: var(--t-xs);
 }
 
+/* The two latest posts sit in a row under the treemap, collapsing to a single column when space is tight. */
+.map-news-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+
+.map-news-list .map-news {
+  margin-bottom: 0;
+}
+
+@media (max-width: 720px) {
+  .map-news-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .map-layout {
   display: flex;
   gap: var(--s-3);
@@ -1195,6 +1213,13 @@
   color: var(--ink);
 }
 
+/* The buy book's owned/all filter sits between the tabs and the table. */
+.book-filter {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--s-2);
+}
+
 .tbl-book td {
   font-size: var(--t-sm);
 }
@@ -1269,6 +1294,18 @@
   color: oklch(0.47 0.19 350);
 }
 
+/* Attention signals use the amber warning hue (off market green/red); the label text carries the meaning. */
+.tag-flag {
+  background: oklch(0.93 0.07 75);
+  color: oklch(0.47 0.13 65);
+}
+
+.attention-flags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+}
+
 .rating-stat {
   display: inline-flex;
   align-items: center;
@@ -1339,6 +1376,13 @@
   display: inline-flex;
   flex-wrap: wrap;
   gap: var(--s-4);
+}
+
+/* A standalone tab strip (not inside a panel head) that carries its own divider, so panel tab bodies can sit
+   directly under it without nesting one card inside another. */
+.tabbar {
+  margin-bottom: var(--s-3);
+  border-bottom: 1px solid var(--border);
 }
 
 .tab {

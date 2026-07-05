@@ -1,29 +1,32 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt } from './format'
 import { Panel } from './Panel'
 import { NewsImpact } from './NewsImpact'
 import { NewsModal } from './NewsModal'
+import { AddNewsModal } from './AddNewsModal'
 
 const POLL_INTERVAL_MS = 2500
 const PAGE_SIZE = 20
 
 // Full newswire archive in a paginated table. Each headline opens a modal with the post's body, impact, and
-// the industries it moved; the dashboard newswire only ever shows the most recent handful, so this is where
-// the complete history stays browsable. News grows without bound, so paging happens on the server.
+// the industries it moved, and the composer for a manual post lives here too. News grows without bound, so
+// paging happens on the server.
 function NewsPage() {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [data, setData] = useState(null)
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState(null)
+  const [companies, setCompanies] = useState([])
+  const [adding, setAdding] = useState(false)
 
   const loadAll = useCallback(async () => {
     try {
-      const result = await api.getNewsPaged(page, PAGE_SIZE)
+      const [result, companyData] = await Promise.all([api.getNewsPaged(page, PAGE_SIZE), api.getCompanies()])
       setData(result)
+      setCompanies(companyData)
       setLoadError(null)
     } catch (error) {
       setLoadError(error.message)
@@ -46,22 +49,7 @@ function NewsPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <Link className="brand" to="/" aria-label="Back to the Trader AI dashboard">
-          <span className="brand-mark" aria-hidden="true">
-            TA
-          </span>
-          <span className="brand-name">Trader&nbsp;AI</span>
-          <span className="brand-tag" aria-hidden="true">
-            News
-          </span>
-        </Link>
-        <Link className="btn" to="/">
-          ← Dashboard
-        </Link>
-      </header>
-
+    <>
       <main className="main">
         {!ready ? (
           <section className="placeholder" aria-busy="true">
@@ -77,7 +65,16 @@ function NewsPage() {
               </div>
             ) : null}
 
-            <Panel title="News" count={`${formatInt(total)}`} className="panel-holdings">
+            <Panel
+              title="News"
+              count={`${formatInt(total)}`}
+              className="panel-holdings"
+              headerExtra={
+                <button type="button" className="btn select-sm" onClick={() => setAdding(true)}>
+                  + Add news
+                </button>
+              }
+            >
               {items.length === 0 ? (
                 <p className="note">No news has been published yet.</p>
               ) : (
@@ -144,7 +141,10 @@ function NewsPage() {
       </main>
 
       {selected ? <NewsModal post={selected} onClose={() => setSelected(null)} /> : null}
-    </div>
+      {adding ? (
+        <AddNewsModal companies={companies} onClose={() => setAdding(false)} onPublished={loadAll} />
+      ) : null}
+    </>
   )
 }
 

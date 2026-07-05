@@ -14,6 +14,7 @@ import NewsPage from './NewsPage.jsx'
 import TraderDetailPage from './TraderDetailPage.jsx'
 import CompanyDetailPage from './CompanyDetailPage.jsx'
 import IndustriesPage from './IndustriesPage.jsx'
+import TradeMarketPage from './TradeMarketPage.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -21,6 +22,7 @@ createRoot(document.getElementById('root')).render(
       <Routes>
         <Route element={<AppShell />}>
           <Route path="/" element={<App />} />
+          <Route path="/trade-market" element={<TradeMarketPage />} />
           <Route path="/traders" element={<TradersPage />} />
           <Route path="/traders/:id" element={<TraderDetailPage />} />
           <Route path="/companies" element={<CompaniesPage />} />

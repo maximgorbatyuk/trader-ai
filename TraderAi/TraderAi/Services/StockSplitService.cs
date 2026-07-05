@@ -155,6 +155,7 @@ public sealed class StockSplitService(
         // IssuedSharesCount − Σ Holdings stays exact after the remainders are dropped.
         var floatBefore = company.IssuedSharesCount - ownedBefore;
         company.IssuedSharesCount = ownedAfter + floatBefore / SplitRatio;
+        company.LastMergedInCycleId = currentCycleId;
         company.UpdatedAt = now;
 
         var openOrders = await dbContext.Orders

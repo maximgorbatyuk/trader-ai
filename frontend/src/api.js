@@ -89,6 +89,7 @@ export const api = {
   getIndustries: () => get('/industries'),
   createNews: (payload) => post('/news', payload),
   getHoldings: (participantId) => get(`/participants/${participantId}/holdings`),
+  getCompaniesAttention: (participantId) => get(`/participants/${participantId}/companies-attention`),
   getParticipant: (participantId) => get(`/participants/${participantId}`),
   getParticipantOrders: (participantId, take = 10) => get(`/participants/${participantId}/orders?take=${take}`),
   getParticipantShareTransactions: (participantId, take = 10) =>

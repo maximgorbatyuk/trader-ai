@@ -42,108 +42,91 @@ function ClosedCompaniesPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <Link className="brand" to="/" aria-label="Back to the Trader AI dashboard">
-          <span className="brand-mark" aria-hidden="true">
-            TA
-          </span>
-          <span className="brand-name">Trader&nbsp;AI</span>
-          <span className="brand-tag" aria-hidden="true">
-            Closed companies
-          </span>
-        </Link>
-        <Link className="btn" to="/">
-          ← Dashboard
-        </Link>
-      </header>
+    <main className="main">
+      {!ready ? (
+        <section className="placeholder" aria-busy="true">
+          <span className="spinner" aria-hidden="true" />
+          <p>Loading closed companies…</p>
+        </section>
+      ) : (
+        <>
+          {loadError ? (
+            <div className="banner" role="alert">
+              <strong>Showing last known state.</strong>
+              <span>{loadError}</span>
+            </div>
+          ) : null}
 
-      <main className="main">
-        {!ready ? (
-          <section className="placeholder" aria-busy="true">
-            <span className="spinner" aria-hidden="true" />
-            <p>Loading closed companies…</p>
-          </section>
-        ) : (
-          <>
-            {loadError ? (
-              <div className="banner" role="alert">
-                <strong>Showing last known state.</strong>
-                <span>{loadError}</span>
-              </div>
-            ) : null}
-
-            <Panel title="Closed companies" count={`${formatInt(total)}`} className="panel-holdings">
-              {items.length === 0 ? (
-                <p className="note">No companies have been delisted yet.</p>
-              ) : (
-                <>
-                  <div className="tbl-scroll">
-                    <table className="tbl">
-                      <thead>
-                        <tr>
-                          <th scope="col">Name</th>
-                          <th scope="col">Industry</th>
-                          <th scope="col" className="ta-r">
-                            Issued shares
+          <Panel title="Closed companies" count={`${formatInt(total)}`} className="panel-holdings">
+            {items.length === 0 ? (
+              <p className="note">No companies have been delisted yet.</p>
+            ) : (
+              <>
+                <div className="tbl-scroll">
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th scope="col">Name</th>
+                        <th scope="col">Industry</th>
+                        <th scope="col" className="ta-r">
+                          Issued shares
+                        </th>
+                        <th scope="col" className="ta-r">
+                          Final price
+                        </th>
+                        <th scope="col" className="ta-r">
+                          Listed
+                        </th>
+                        <th scope="col" className="ta-r">
+                          Delisted
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((company) => (
+                        <tr key={company.id}>
+                          <th scope="row" className="cell-ellipsis">
+                            <Link to={`/companies/${company.id}`}>{company.name}</Link>
                           </th>
-                          <th scope="col" className="ta-r">
-                            Final price
-                          </th>
-                          <th scope="col" className="ta-r">
-                            Listed
-                          </th>
-                          <th scope="col" className="ta-r">
-                            Delisted
-                          </th>
+                          <td className="cell-ellipsis">{company.industryName ?? '—'}</td>
+                          <td className="num ta-r">{formatInt(company.issuedSharesCount)}</td>
+                          <td className="num ta-r">{formatMoney(company.finalPrice)}</td>
+                          <td className="num ta-r">cycle {formatInt(company.createdInCycleNumber)}</td>
+                          <td className="num ta-r">cycle {formatInt(company.closedInCycleNumber)}</td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {items.map((company) => (
-                          <tr key={company.id}>
-                            <th scope="row" className="cell-ellipsis">
-                              <Link to={`/companies/${company.id}`}>{company.name}</Link>
-                            </th>
-                            <td className="cell-ellipsis">{company.industryName ?? '—'}</td>
-                            <td className="num ta-r">{formatInt(company.issuedSharesCount)}</td>
-                            <td className="num ta-r">{formatMoney(company.finalPrice)}</td>
-                            <td className="num ta-r">cycle {formatInt(company.createdInCycleNumber)}</td>
-                            <td className="num ta-r">cycle {formatInt(company.closedInCycleNumber)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {pageCount > 1 ? (
+                  <div className="pager">
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={page <= 1}
+                      onClick={() => setPage((value) => value - 1)}
+                    >
+                      ← Prev
+                    </button>
+                    <span className="pager-status num">
+                      Page {page} / {pageCount}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={page >= pageCount}
+                      onClick={() => setPage((value) => value + 1)}
+                    >
+                      Next →
+                    </button>
                   </div>
-                  {pageCount > 1 ? (
-                    <div className="pager">
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={page <= 1}
-                        onClick={() => setPage((value) => value - 1)}
-                      >
-                        ← Prev
-                      </button>
-                      <span className="pager-status num">
-                        Page {page} / {pageCount}
-                      </span>
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={page >= pageCount}
-                        onClick={() => setPage((value) => value + 1)}
-                      >
-                        Next →
-                      </button>
-                    </div>
-                  ) : null}
-                </>
-              )}
-            </Panel>
-          </>
-        )}
-      </main>
-    </div>
+                ) : null}
+              </>
+            )}
+          </Panel>
+        </>
+      )}
+    </main>
   )
 }
 
