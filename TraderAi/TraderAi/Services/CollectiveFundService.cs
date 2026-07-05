@@ -87,17 +87,25 @@ public sealed class CollectiveFundService(
     private List<int> payoutCycleIdsDesc = null!;
     private Dictionary<int, Dictionary<int, decimal>> fundDividendByCycleId = null!;
 
+    // The crisis active this cycle (if any) and its cycle number, stashed per-cycle so a fund that closes deep in
+    // the call chain can record itself on the crisis timeline without threading them through every method.
+    private Crisis? activeCrisis;
+    private int crisisCycleNumber;
+
     // Draw discipline for a scripted Random in tests: no draws while closing funds, returning deposits, ratcheting
     // peak worth, running the founder close, or dropping a stale membership. In the member pass (fund id, then participant id order) each
     // member draws at most once — the forced-leave roll if it sits at or above the leave line, otherwise the
     // switch roll if it is a non-founder past the minimum tenure, otherwise nothing. In the join pass (independent
     // traders, id order) a switch-flagged member draws nothing, and every other eligible trader draws once.
-    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now)
+    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
     {
         if (!options.Value.Enabled)
         {
             return;
         }
+
+        this.activeCrisis = activeCrisis;
+        crisisCycleNumber = currentCycleNumber;
 
         await LoadStateAsync();
 
@@ -587,6 +595,20 @@ public sealed class CollectiveFundService(
         fundParticipant.IsActive = false;
         fund.Status = CollectiveFundStatus.Closed;
         fund.ClosedAt = now;
+
+        // A fund that winds down while a crisis is active joins that crisis's timeline.
+        if (activeCrisis is not null)
+        {
+            dbContext.CrisisEvents.Add(new CrisisEvent
+            {
+                CrisisId = activeCrisis.Id,
+                Type = CrisisEventType.FundClosed,
+                Description = $"{fundParticipant.Name} fund closed",
+                CreatedInCycleId = currentCycleId,
+                CreatedInCycleNumber = crisisCycleNumber,
+                CreatedAt = now,
+            });
+        }
     }
 
     private async Task MaybeJoinOrOpenAsync(Participant participant, int currentCycleId, int currentCycleNumber, DateTime now)

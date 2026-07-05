@@ -11,6 +11,8 @@ const EVENT_TYPE_LABEL = {
   IndustryShock: 'Sector shock',
   AuditorRating: 'Audit',
   Bankruptcy: 'Bankruptcy',
+  FundClosed: 'Fund closed',
+  CompanyClosed: 'Company closed',
 }
 
 function isActive(crisis, currentCycleNumber) {

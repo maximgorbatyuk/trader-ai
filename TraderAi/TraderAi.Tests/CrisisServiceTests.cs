@@ -68,14 +68,15 @@ public sealed class CrisisServiceTests : IDisposable
         var buyer = await AddBuyerWithOpenBuyOrderAsync(company.Id, cycle.Id);
 
         // doubles: global gate (chance 0 at cycle 150 → no fire), local gate (chance 1.0 → fire), one impact
-        // draw → 5%. ints: industry count, one pick, three content picks.
-        var random = new ScriptedRandom([0.5d, 0.0d, 0.0d], [1, 0, 0, 0, 0]);
+        // draw → 5%. ints: industry count, one pick, three content picks, then the duration draw → 10.
+        var random = new ScriptedRandom([0.5d, 0.0d, 0.0d], [1, 0, 0, 0, 0, 10]);
         var result = await Service(enabled: true, random).MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         Assert.True(result.Triggered);
         var crisis = Assert.Single(result.Crises);
         Assert.Equal(CrisisScope.Local, crisis.Scope);
+        Assert.Equal(10, crisis.DurationCycles);
         var link = Assert.Single(crisis.Industries);
         Assert.Equal(5m, link.ImpactPercent);
 
@@ -103,15 +104,16 @@ public sealed class CrisisServiceTests : IDisposable
         var (market, cycle) = await MarketAndCycleAsync();
 
         // doubles: global gate (chance 1.0 → fire), affected-share draw (0 → the 30% floor → 3 of 10), then
-        // three impact draws. ints: three picks, three content picks. The local gate is never drawn because
-        // the global crisis already fired this cycle.
-        var random = new ScriptedRandom([0.0d, 0.0d, 0.0d, 0.0d, 0.0d], [0, 0, 0, 0, 0, 0]);
+        // three impact draws. ints: three picks, three content picks, then the duration draw → 20. The local
+        // gate is never drawn because the global crisis already fired this cycle.
+        var random = new ScriptedRandom([0.0d, 0.0d, 0.0d, 0.0d, 0.0d], [0, 0, 0, 0, 0, 0, 20]);
         var result = await Service(enabled: true, random).MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         Assert.True(result.Triggered);
         var crisis = Assert.Single(result.Crises);
         Assert.Equal(CrisisScope.Global, crisis.Scope);
+        Assert.Equal(20, crisis.DurationCycles);
         Assert.Equal(3, crisis.Industries.Count);
         Assert.All(crisis.Industries, link => Assert.Equal(5m, link.ImpactPercent));
 
@@ -125,8 +127,9 @@ public sealed class CrisisServiceTests : IDisposable
         await SeedAsync(industryCount: 10, cycleNumber: 350);
         var (market, cycle) = await MarketAndCycleAsync();
 
-        // Same forced draws as the share-of-industries case: global fires, the 30% floor picks 3 of 10.
-        var random = new ScriptedRandom([0.0d, 0.0d, 0.0d, 0.0d, 0.0d], [0, 0, 0, 0, 0, 0]);
+        // Same forced draws as the share-of-industries case (global fires, the 30% floor picks 3 of 10), then
+        // the duration draw → 20.
+        var random = new ScriptedRandom([0.0d, 0.0d, 0.0d, 0.0d, 0.0d], [0, 0, 0, 0, 0, 0, 20]);
         var result = await Service(enabled: true, random).MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
         await context.SaveChangesAsync();
 

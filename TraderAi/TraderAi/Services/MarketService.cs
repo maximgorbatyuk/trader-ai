@@ -292,7 +292,7 @@ public sealed class MarketService(
         // worth-reading services and this cycle's matching.
         if (companyLifecycleService is not null)
         {
-            await companyLifecycleService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await companyLifecycleService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
             await dbContext.SaveChangesAsync();
         }
 
@@ -309,7 +309,7 @@ public sealed class MarketService(
         // the order book in time to cross this cycle.
         if (collectiveFundService is not null)
         {
-            await collectiveFundService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await collectiveFundService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
         }
 
         // Saved before exit processing so a fund that closed this cycle has persisted its payouts, membership

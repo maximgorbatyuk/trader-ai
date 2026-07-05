@@ -26,14 +26,16 @@ public sealed class CrisisService(
     private const double LocalStepPerCycle = 0.03;
     private const int LocalMinIndustries = 1;
     private const int LocalMaxIndustries = 3;
-    private const int LocalDurationCycles = 10;
+    private const int LocalMinDurationCycles = 5;
+    private const int LocalMaxDurationCycles = 15;
 
     // Global: no chance for the first 250 cycles since the last one, then the chance climbs 1 point a cycle.
     private const int GlobalQuietCycles = 250;
     private const double GlobalStepPerCycle = 0.01;
     private const double GlobalMinIndustryShare = 0.30;
     private const double GlobalMaxIndustryShare = 0.70;
-    private const int GlobalDurationCycles = 20;
+    private const int GlobalMinDurationCycles = 15;
+    private const int GlobalMaxDurationCycles = 25;
 
     // Every affected industry drops by its own draw in this band.
     private const decimal MinImpactPercent = 5m;
@@ -107,6 +109,12 @@ public sealed class CrisisService(
         }
 
         var (title, content) = DemoCrisisContent.Generate(scope, random);
+
+        // One draw for the active-window length, right after the content draws: Local 5–15 cycles, Global 15–25.
+        var durationCycles = scope == CrisisScope.Global
+            ? random.Next(GlobalMinDurationCycles, GlobalMaxDurationCycles + 1)
+            : random.Next(LocalMinDurationCycles, LocalMaxDurationCycles + 1);
+
         var crisis = new Crisis
         {
             Title = title,
@@ -114,7 +122,7 @@ public sealed class CrisisService(
             Scope = scope,
             TriggeredInCycleId = currentCycle.Id,
             TriggeredInCycleNumber = currentCycle.CycleNumber,
-            DurationCycles = scope == CrisisScope.Global ? GlobalDurationCycles : LocalDurationCycles,
+            DurationCycles = durationCycles,
             TriggeredAt = now,
         };
 

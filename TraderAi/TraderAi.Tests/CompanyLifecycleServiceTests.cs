@@ -242,6 +242,46 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         Assert.Equal(current.Id, refreshedDoomed.ClosedInCycleId);
     }
 
+    [Fact]
+    public async Task DelistingDuringACrisisIsLoggedToTheTimeline()
+    {
+        var cycles = await AddCyclesAsync(21);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var company = await AddCompanyAsync();
+        await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+        var crisis = await AddCrisisAsync(current);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow, crisis);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync();
+        Assert.Equal(current.Id, refreshed.ClosedInCycleId);
+
+        var timelineEvent = await context.CrisisEvents.AsNoTracking()
+            .SingleAsync(row => row.Type == CrisisEventType.CompanyClosed);
+        Assert.Equal(crisis.Id, timelineEvent.CrisisId);
+        Assert.Equal(company.Id, timelineEvent.CompanyId);
+    }
+
+    private async Task<Crisis> AddCrisisAsync(MarketCycle cycle)
+    {
+        var crisis = new Crisis
+        {
+            Title = "Shock",
+            Content = "Body",
+            Scope = CrisisScope.Global,
+            TriggeredInCycleId = cycle.Id,
+            TriggeredInCycleNumber = cycle.CycleNumber,
+            DurationCycles = 20,
+            TriggeredAt = DateTime.UtcNow,
+        };
+        context.Crises.Add(crisis);
+        await context.SaveChangesAsync();
+        return crisis;
+    }
+
     private async Task<MarketCycle> AddCycleAsync(int number)
     {
         var cycle = new MarketCycle { CycleNumber = number, Status = CycleStatus.Running, StartedAt = DateTime.UtcNow };

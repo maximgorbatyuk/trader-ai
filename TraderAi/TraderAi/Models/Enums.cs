@@ -109,4 +109,6 @@ public enum CrisisEventType
     IndustryShock,
     AuditorRating,
     Bankruptcy,
+    FundClosed,
+    CompanyClosed,
 }

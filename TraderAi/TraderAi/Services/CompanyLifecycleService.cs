@@ -46,7 +46,7 @@ public sealed class CompanyLifecycleService(
     private const int MinPrice = 20;
     private const int MaxPrice = 300;
 
-    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now)
+    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
     {
         if (!options.Value.Enabled)
         {
@@ -66,7 +66,7 @@ public sealed class CompanyLifecycleService(
 
         var closesByCompany = await PerCycleClosesByCompanyAsync();
 
-        var closed = await MaybeCloseOneAsync(liveCompanies, closesByCompany, currentCycleId, now);
+        var closed = await MaybeCloseOneAsync(liveCompanies, closesByCompany, currentCycleId, currentCycleNumber, now, activeCrisis);
 
         // The just-closed company frees a slot, so a full market can list a replacement the same cycle.
         var liveCount = liveCompanies.Count - (closed ? 1 : 0);
@@ -77,7 +77,9 @@ public sealed class CompanyLifecycleService(
         List<Company> liveCompanies,
         IReadOnlyDictionary<int, List<decimal>> closesByCompany,
         int currentCycleId,
-        DateTime now)
+        int currentCycleNumber,
+        DateTime now,
+        Crisis? activeCrisis)
     {
         if (liveCompanies.Count == 0)
         {
@@ -107,7 +109,7 @@ public sealed class CompanyLifecycleService(
             return false;
         }
 
-        await CloseCompanyAsync(target, currentCycleId, now);
+        await CloseCompanyAsync(target, currentCycleId, currentCycleNumber, now, activeCrisis);
         return true;
     }
 
@@ -120,7 +122,8 @@ public sealed class CompanyLifecycleService(
             .ThenBy(company => company.Id)
             .First();
 
-    private async Task CloseCompanyAsync(Company company, int currentCycleId, DateTime now)
+    private async Task CloseCompanyAsync(
+        Company company, int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis)
     {
         var openOrders = await dbContext.Orders
             .Where(order => order.CompanyId == company.Id
@@ -180,6 +183,21 @@ public sealed class CompanyLifecycleService(
             PublishedAt = now,
             Scope = NewsImpactScope.None,
         });
+
+        // A delisting that lands while a crisis is active joins that crisis's timeline.
+        if (activeCrisis is not null)
+        {
+            dbContext.CrisisEvents.Add(new CrisisEvent
+            {
+                CrisisId = activeCrisis.Id,
+                Type = CrisisEventType.CompanyClosed,
+                Description = $"{company.Name} was delisted",
+                CompanyId = company.Id,
+                CreatedInCycleId = currentCycleId,
+                CreatedInCycleNumber = currentCycleNumber,
+                CreatedAt = now,
+            });
+        }
     }
 
     private async Task MaybeListNewCompanyAsync(

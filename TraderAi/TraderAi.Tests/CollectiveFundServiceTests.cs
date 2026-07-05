@@ -473,6 +473,28 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task FundClosingDuringACrisisIsLoggedToTheTimeline()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(status: CollectiveFundStatus.GoingToBeClosed, balance: 0m);
+        var member = await AddTraderAsync(currentBalance: 600_000m);
+        await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
+        var crisis = await AddCrisisAsync(cycle);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(CollectiveFundStatus.Closed, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+
+        var timelineEvent = await context.CrisisEvents.AsNoTracking()
+            .SingleAsync(row => row.Type == CrisisEventType.FundClosed);
+        Assert.Equal(crisis.Id, timelineEvent.CrisisId);
+        Assert.Contains(fundParticipant.Name, timelineEvent.Description);
+        Assert.Null(timelineEvent.CompanyId); // a fund is a participant, not a company
+    }
+
+    [Fact]
     public async Task JoinerPrefersTheBetterScoringFund()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);
@@ -739,6 +761,23 @@ public sealed class CollectiveFundServiceTests : IDisposable
         Assert.Equal(2, await context.CollectiveFundParticipants.CountAsync(member => member.CollectiveFundId == fund.Id));
         var refreshed = await context.CollectiveFunds.AsNoTracking().SingleAsync();
         Assert.Equal(CollectiveFundStatus.Active, refreshed.Status);
+    }
+
+    private async Task<Crisis> AddCrisisAsync(MarketCycle cycle)
+    {
+        var crisis = new Crisis
+        {
+            Title = "Shock",
+            Content = "Body",
+            Scope = CrisisScope.Global,
+            TriggeredInCycleId = cycle.Id,
+            TriggeredInCycleNumber = cycle.CycleNumber,
+            DurationCycles = 20,
+            TriggeredAt = DateTime.UtcNow,
+        };
+        context.Crises.Add(crisis);
+        await context.SaveChangesAsync();
+        return crisis;
     }
 
     private async Task<(Market Market, MarketCycle Cycle, Company Company)> SeedAsync(decimal price, int cycleNumber = 600)
