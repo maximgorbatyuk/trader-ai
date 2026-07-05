@@ -17,6 +17,28 @@ namespace TraderAi.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
 
+            modelBuilder.Entity("TraderAi.Models.Auditor", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Auditors");
+                });
+
             modelBuilder.Entity("TraderAi.Models.Bankruptcy", b =>
                 {
                     b.Property<int>("Id")
@@ -134,8 +156,17 @@ namespace TraderAi.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<DateTime?>("ClosedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ClosedInCycleId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("CreatedInCycleId")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("IndustryId")
                         .HasColumnType("INTEGER");
@@ -147,6 +178,9 @@ namespace TraderAi.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("LastMergedInCycleId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -157,6 +191,39 @@ namespace TraderAi.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Companies");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.CompanyRating", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AuditorId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("CompanyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal?>("ImpactPercent")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Rating")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CreatedInCycleId");
+
+                    b.ToTable("CompanyRatings");
                 });
 
             modelBuilder.Entity("TraderAi.Models.Crisis", b =>
@@ -265,6 +332,9 @@ namespace TraderAi.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("CurrentCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("LastCompanyAppearanceCycleNumber")
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("LastGlobalCrisisCycleNumber")
@@ -399,11 +469,47 @@ namespace TraderAi.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CreatedInCycleId");
+
                     b.HasIndex("RelatedOrderId");
 
                     b.HasIndex("RelatedShareTransactionId");
 
                     b.ToTable("MoneyTransactions");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.MoneyTransactionArchive", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ParticipantId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("RelatedOrderId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("RelatedShareTransactionId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("MoneyTransactionArchives");
                 });
 
             modelBuilder.Entity("TraderAi.Models.NewsPost", b =>
@@ -508,6 +614,10 @@ namespace TraderAi.Migrations
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("ParticipantId", "CompanyId", "Type", "Status");
 
                     b.ToTable("Orders");
                 });
@@ -645,9 +755,39 @@ namespace TraderAi.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CreatedInCycleId");
+
                     b.HasIndex("ParticipantId", "CreatedInCycleId");
 
                     b.ToTable("ParticipantWorthSnapshots");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.ParticipantWorthSnapshotArchive", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("Balance")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("HoldingsValue")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("ParticipantId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ParticipantWorthSnapshotArchives");
                 });
 
             modelBuilder.Entity("TraderAi.Models.PriceSnapshot", b =>
@@ -678,9 +818,44 @@ namespace TraderAi.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CreatedInCycleId");
+
                     b.HasIndex("SourceShareTransactionId");
 
+                    b.HasIndex("CompanyId", "Id");
+
                     b.ToTable("PriceSnapshots");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.PriceSnapshotArchive", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal?>("Capitalization")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CompanyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("Price")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("SourceShareTransactionId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("PriceSnapshotArchives");
                 });
 
             modelBuilder.Entity("TraderAi.Models.ScienceInvestigation", b =>
@@ -729,6 +904,32 @@ namespace TraderAi.Migrations
                     b.HasIndex("ScienceInvestigationId");
 
                     b.ToTable("ScienceInvestigationIndustries");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.ShareEmission", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("CompanyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("RecipientCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("SharesEmitted")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ShareEmissions");
                 });
 
             modelBuilder.Entity("TraderAi.Models.ShareTransaction", b =>

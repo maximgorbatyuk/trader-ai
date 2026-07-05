@@ -848,6 +848,86 @@
 }
 
 /* ---- Market map (treemap of top companies by issued shares) ---- */
+/* Latest-news strip pinned above the treemap inside the Market map panel. */
+.map-news {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--ink);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.map-news-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+
+.map-news-label {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.map-news-impact {
+  font-size: var(--t-2xs);
+  font-weight: 700;
+}
+
+.map-news-age {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--t-2xs);
+}
+
+.map-news-title {
+  margin: 0;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.map-news-body {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-xs);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.map-news-hint {
+  color: var(--muted);
+  font-size: var(--t-xs);
+}
+
+/* The two latest posts sit in a row under the treemap, collapsing to a single column when space is tight. */
+.map-news-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+
+.map-news-list .map-news {
+  margin-bottom: 0;
+}
+
+@media (max-width: 720px) {
+  .map-news-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .map-layout {
   display: flex;
   gap: var(--s-3);
@@ -1133,6 +1213,13 @@
   color: var(--ink);
 }
 
+/* The buy book's owned/all filter sits between the tabs and the table. */
+.book-filter {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--s-2);
+}
+
 .tbl-book td {
   font-size: var(--t-sm);
 }
@@ -1191,6 +1278,61 @@
   color: oklch(0.45 0.13 255);
 }
 
+/* Risk ratings escalate through non-market hues (calm blue → amber → magenta) so market green/red stay reserved. */
+.tag-rating-low {
+  background: oklch(0.93 0.04 220);
+  color: oklch(0.44 0.11 235);
+}
+
+.tag-rating-high {
+  background: oklch(0.93 0.07 75);
+  color: oklch(0.47 0.13 65);
+}
+
+.tag-rating-extra {
+  background: oklch(0.92 0.07 350);
+  color: oklch(0.47 0.19 350);
+}
+
+/* Attention signals use the amber warning hue (off market green/red); the label text carries the meaning. */
+.tag-flag {
+  background: oklch(0.93 0.07 75);
+  color: oklch(0.47 0.13 65);
+}
+
+.attention-flags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+}
+
+.rating-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.rating-trend {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+
+.pager-status {
+  color: var(--muted);
+  font-size: var(--t-xs);
+}
+
 .trader-stats {
   margin: 0 0 var(--s-3);
   color: var(--muted);
@@ -1234,6 +1376,13 @@
   display: inline-flex;
   flex-wrap: wrap;
   gap: var(--s-4);
+}
+
+/* A standalone tab strip (not inside a panel head) that carries its own divider, so panel tab bodies can sit
+   directly under it without nesting one card inside another. */
+.tabbar {
+  margin-bottom: var(--s-3);
+  border-bottom: 1px solid var(--border);
 }
 
 .tab {
@@ -1995,4 +2144,162 @@
 /* Short summary dialog opened from the dashboard Traders table. */
 .modal-compact {
   width: min(460px, 100%);
+}
+
+/* Inline text button that opens a modal (newswire company/trader names). Underlined by default so it reads
+   as a link without relying on colour alone. */
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  color: var(--ink);
+}
+
+/* ---- Roster search + filter toolbar (Traders / Companies pages) ---- */
+.roster-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+}
+
+.roster-search {
+  flex: 1 1 220px;
+  min-width: 160px;
+  max-width: 320px;
+}
+
+/* ---- Market map filter bar ---- */
+.map-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s-2) var(--s-3);
+  margin-bottom: var(--s-3);
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.filter-label {
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+}
+
+.filter-multi {
+  position: relative;
+}
+
+.filter-multi > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 5px 8px;
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+}
+
+.filter-multi > summary::-webkit-details-marker {
+  display: none;
+}
+
+.filter-multi-value {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.filter-multi-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 220px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: var(--s-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 10px 24px oklch(0.2 0.012 255 / 0.18);
+}
+
+.filter-multi-clear {
+  align-self: flex-start;
+  margin-bottom: var(--s-1);
+}
+
+/* ---- Industry chips (news modal) ---- */
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  margin: var(--s-1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ---- Related-news mini list (company modal) ---- */
+.news-mini {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.news-mini-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.news-mini-title {
+  color: var(--ink);
+  font-size: var(--t-sm);
+  font-weight: 500;
+}
+
+/* Roster tables that show a full page of rows without an inner scrollbar; the page scrolls instead. Only the
+   horizontal axis can scroll, as a fallback on very narrow viewports. */
+.tbl-wrap {
+  overflow-x: auto;
+}
+
+/* ---- Order-form preset chips (quantity % / price ±) ---- */
+.pct-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pct-btn {
+  min-height: 0;
+  padding: 3px 8px;
+  font-size: var(--t-2xs);
+  font-weight: 600;
 }

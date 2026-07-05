@@ -147,7 +147,7 @@ export function ParticipantDetail({ participantId }) {
           {detail.memberOfCollectiveFundId ? (
             <p className="command-member">
               Member of{' '}
-              <Link className="cell-link" to={`/traders?trader=${detail.memberOfCollectiveFundId}`}>
+              <Link className="cell-link" to={`/traders/${detail.memberOfCollectiveFundId}`}>
                 {detail.memberOfCollectiveFundName ?? 'a collective fund'}
               </Link>
             </p>
@@ -329,7 +329,7 @@ function MembersPanel({ members }) {
               {members.map((member) => (
                 <tr key={member.participantId}>
                   <th scope="row" className="cell-ellipsis">
-                    <Link className="cell-link" to={`/traders?trader=${member.participantId}`}>
+                    <Link className="cell-link" to={`/traders/${member.participantId}`}>
                       {member.name}
                     </Link>
                   </th>

@@ -162,6 +162,41 @@ internal static class DemoMarketNames
         }
     }
 
+    // Returns one company name not already in takenNames, using exactly one random draw so a scripted Random stays
+    // predictable (the PickOnePerson analogue for a company that appears mid-simulation). From a random starting
+    // combo it probes the root×suffix space in order; if every combo is taken it falls back to a numeric suffix.
+    public static string PickOneCompany(Random random, IReadOnlySet<string> takenNames)
+    {
+        var combos = new List<string>(CompanyRoots.Length * CompanySuffixes.Length);
+        foreach (var root in CompanyRoots)
+        {
+            foreach (var suffix in CompanySuffixes)
+            {
+                combos.Add($"{root} {suffix}");
+            }
+        }
+
+        var start = random.Next(combos.Count);
+        for (var offset = 0; offset < combos.Count; offset++)
+        {
+            var name = combos[(start + offset) % combos.Count];
+            if (!takenNames.Contains(name))
+            {
+                return name;
+            }
+        }
+
+        var baseName = combos[start];
+        for (var wrap = 2; ; wrap++)
+        {
+            var name = $"{baseName} {wrap}";
+            if (!takenNames.Contains(name))
+            {
+                return name;
+            }
+        }
+    }
+
     // Returns count distinct names in a shuffled order. If more names are requested than the
     // pool can produce, the surplus repeats the pool with a numeric suffix to stay unique.
     private static string[] PickUnique(List<string> candidates, int count, Random random)

@@ -362,13 +362,8 @@ public sealed class BankruptcyService(
         return (double)debtPercent * DebtBankruptcyChancePerPercent;
     }
 
-    private async Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync()
-    {
-        var snapshots = await dbContext.PriceSnapshots.ToListAsync();
-        return snapshots
-            .GroupBy(snapshot => snapshot.CompanyId)
-            .ToDictionary(group => group.Key, group => group.OrderByDescending(snapshot => snapshot.Id).First().Price);
-    }
+    private Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync() =>
+        PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
 
     private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 }

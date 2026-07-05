@@ -49,6 +49,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<MarketExit> MarketExits => Set<MarketExit>();
 
+    public DbSet<Auditor> Auditors => Set<Auditor>();
+
+    public DbSet<CompanyRating> CompanyRatings => Set<CompanyRating>();
+
+    public DbSet<ShareEmission> ShareEmissions => Set<ShareEmission>();
+
+    public DbSet<PriceSnapshotArchive> PriceSnapshotArchives => Set<PriceSnapshotArchive>();
+
+    public DbSet<MoneyTransactionArchive> MoneyTransactionArchives => Set<MoneyTransactionArchive>();
+
+    public DbSet<ParticipantWorthSnapshotArchive> ParticipantWorthSnapshotArchives => Set<ParticipantWorthSnapshotArchive>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<NewsPost>()
@@ -86,6 +98,32 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         // Worth snapshots are read back per trader in cycle order to chart total worth over time.
         modelBuilder.Entity<ParticipantWorthSnapshot>()
             .HasIndex(snapshot => new { snapshot.ParticipantId, snapshot.CreatedInCycleId });
+
+        // Ratings are read back per company to find the current verdict and its history.
+        modelBuilder.Entity<CompanyRating>()
+            .HasIndex(rating => new { rating.CompanyId, rating.CreatedInCycleId });
+
+        // The order book is read either as "all open orders" or per (participant, company) when validating a
+        // new order, so both a status-only index and the composite covering that lookup are needed.
+        modelBuilder.Entity<Order>()
+            .HasIndex(order => order.Status);
+
+        modelBuilder.Entity<Order>()
+            .HasIndex(order => new { order.ParticipantId, order.CompanyId, order.Type, order.Status });
+
+        // Latest-price-per-company and per-company price history both seek on (company, id).
+        modelBuilder.Entity<PriceSnapshot>()
+            .HasIndex(snapshot => new { snapshot.CompanyId, snapshot.Id });
+
+        // Archiving selects rows by the cycle they were created in, so each archived-source table indexes it.
+        modelBuilder.Entity<PriceSnapshot>()
+            .HasIndex(snapshot => snapshot.CreatedInCycleId);
+
+        modelBuilder.Entity<MoneyTransaction>()
+            .HasIndex(transaction => transaction.CreatedInCycleId);
+
+        modelBuilder.Entity<ParticipantWorthSnapshot>()
+            .HasIndex(snapshot => snapshot.CreatedInCycleId);
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { formatInt, formatMoney, formatSigned, toneOf } from './format'
-import { CompanyCombobox } from './CompanyCombobox'
+import { Pager, SortHeader } from './TableControls'
+import { useClientTable } from './useClientTable'
 
 const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
@@ -22,13 +23,14 @@ function ChangeAmount({ value }) {
   )
 }
 
-// The player's live control surface: worth headline, balances, performance, holdings, the order form, and
-// open orders. Owns its own polling so it can be dropped into either the dashboard tab or the modal.
+// The player's live control surface: worth headline, balances, performance, active assets, the companies that
+// need attention, and open orders. Owns its own polling so it can be dropped straight into the dashboard.
 export function PlayerPanel({ companies, onSelectCompany }) {
   const [loading, setLoading] = useState(true)
   const [player, setPlayer] = useState(null)
   const [holdings, setHoldings] = useState([])
   const [orders, setOrders] = useState([])
+  const [attention, setAttention] = useState([])
   const mountedRef = useRef(true)
 
   const refresh = useCallback(async () => {
@@ -36,16 +38,19 @@ export function PlayerPanel({ companies, onSelectCompany }) {
       const playerData = await api.getPlayer()
       if (!mountedRef.current) return
       if (playerData) {
-        const [holdingsData, orderData] = await Promise.all([
+        const [holdingsData, orderData, attentionData] = await Promise.all([
           api.getHoldings(playerData.id),
           api.getParticipantOrders(playerData.id, 20),
+          api.getCompaniesAttention(playerData.id),
         ])
         if (!mountedRef.current) return
         setHoldings(holdingsData)
         setOrders(orderData)
+        setAttention(attentionData)
       } else {
         setHoldings([])
         setOrders([])
+        setAttention([])
       }
       setPlayer(playerData)
     } catch {
@@ -101,92 +106,16 @@ export function PlayerPanel({ companies, onSelectCompany }) {
       ) : player === null ? (
         <JoinPanel onJoined={refresh} />
       ) : (
-        <PlayerStats player={player} holdings={holdings} orders={orders} companies={companies} onSelectCompany={onSelectCompany} onRefresh={refresh} />
+        <PlayerStats
+          player={player}
+          holdings={holdings}
+          orders={orders}
+          attention={attention}
+          companies={companies}
+          onSelectCompany={onSelectCompany}
+          onRefresh={refresh}
+        />
       )}
-    </div>
-  )
-}
-
-// The player's control panel as a modal opened from the top bar. It contributes only the dialog chrome
-// (backdrop/Escape close, focus trap, scroll lock) and delegates all live content to PlayerPanel.
-export function PlayerModal({ companies, onClose }) {
-  const dialogRef = useRef(null)
-  const closeRef = useRef(null)
-
-  // Close on Escape and lock background scroll while the dialog is open.
-  useEffect(() => {
-    function onKeyDown(event) {
-      if (event.key === 'Escape') onClose()
-    }
-
-    document.addEventListener('keydown', onKeyDown)
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => {
-      document.removeEventListener('keydown', onKeyDown)
-      document.body.style.overflow = previousOverflow
-    }
-  }, [onClose])
-
-  // Move focus into the dialog on open and restore it to the trigger on close.
-  useEffect(() => {
-    const previouslyFocused = document.activeElement
-    closeRef.current?.focus()
-    return () => {
-      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus()
-    }
-  }, [])
-
-  function onBackdropClick(event) {
-    if (event.target === event.currentTarget) {
-      onClose()
-    }
-  }
-
-  // Keep Tab focus inside the dialog by wrapping it at the first and last focusable controls.
-  function onDialogKeyDown(event) {
-    if (event.key !== 'Tab') {
-      return
-    }
-
-    const focusable = dialogRef.current?.querySelectorAll(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    )
-    if (!focusable || focusable.length === 0) {
-      return
-    }
-
-    const first = focusable[0]
-    const lastFocusable = focusable[focusable.length - 1]
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      lastFocusable.focus()
-    } else if (!event.shiftKey && document.activeElement === lastFocusable) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-
-  return (
-    <div className="modal-backdrop" onClick={onBackdropClick}>
-      <div
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Player"
-        ref={dialogRef}
-        onKeyDown={onDialogKeyDown}
-      >
-        <div className="modal-body">
-          <PlayerPanel companies={companies} />
-        </div>
-
-        <footer className="modal-foot">
-          <button type="button" className="btn" ref={closeRef} onClick={onClose}>
-            Close
-          </button>
-        </footer>
-      </div>
     </div>
   )
 }
@@ -238,7 +167,7 @@ function JoinPanel({ onJoined }) {
   )
 }
 
-function PlayerStats({ player, holdings, orders, companies, onSelectCompany, onRefresh }) {
+function PlayerStats({ player, holdings, orders, attention, companies, onSelectCompany, onRefresh }) {
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
   const lastCycleMissing = player.lastCycleMoneyChange == null || player.lastCycleWorthChange == null
 
@@ -312,7 +241,7 @@ function PlayerStats({ player, holdings, orders, companies, onSelectCompany, onR
 
       <HoldingsSection holdings={holdings} onSelectCompany={onSelectCompany} />
 
-      <PlaceOrderForm player={player} companies={companies} onPlaced={onRefresh} />
+      <AttentionSection attention={attention} onSelectCompany={onSelectCompany} />
 
       <OpenOrdersSection orders={openOrders} companies={companies} onCancelled={onRefresh} />
     </>
@@ -320,35 +249,31 @@ function PlayerStats({ player, holdings, orders, companies, onSelectCompany, onR
 }
 
 function HoldingsSection({ holdings, onSelectCompany }) {
+  const rows = holdings.map((holding) => ({ ...holding, pnl: holding.marketValue - holding.costBasis }))
+  const { pageRows, sortKey, sortDir, toggleSort, page, pageCount, setPage } = useClientTable(rows, {
+    initialSortKey: 'marketValue',
+  })
+
   return (
     <div className="modal-section player-section">
       <span className="map-stat-label">Active assets</span>
-      {holdings.length === 0 ? (
+      {rows.length === 0 ? (
         <p className="note note-sm">No shares held yet.</p>
       ) : (
-        <div className="tbl-scroll">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Company</th>
-                <th scope="col" className="ta-r">
-                  Shares
-                </th>
-                <th scope="col" className="ta-r">
-                  Cost paid
-                </th>
-                <th scope="col" className="ta-r">
-                  Value
-                </th>
-                <th scope="col" className="ta-r">
-                  P/L
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {holdings.map((holding) => {
-                const pnl = holding.marketValue - holding.costBasis
-                return (
+        <>
+          <div className="tbl-scroll">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Company</th>
+                  <SortHeader label="Shares" columnKey="shares" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Cost paid" columnKey="costBasis" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Value" columnKey="marketValue" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="P/L" columnKey="pnl" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                </tr>
+              </thead>
+              <tbody>
+                {pageRows.map((holding) => (
                   <tr key={holding.companyId}>
                     <th scope="row">
                       {onSelectCompany ? (
@@ -367,118 +292,102 @@ function HoldingsSection({ holdings, onSelectCompany }) {
                     <td className="num ta-r">{formatInt(holding.shares)}</td>
                     <td className="num ta-r">{formatMoney(holding.costBasis)}</td>
                     <td className="num ta-r">{formatMoney(holding.marketValue)}</td>
-                    <td className={`num ta-r tone-${toneOf(pnl)}`}>{formatSigned(pnl)}</td>
+                    <td className={`num ta-r tone-${toneOf(holding.pnl)}`}>{formatSigned(holding.pnl)}</td>
                   </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
       )}
     </div>
   )
 }
 
-function PlaceOrderForm({ player, companies, onPlaced }) {
-  const [side, setSide] = useState('Buy')
-  const [companyId, setCompanyId] = useState('')
-  const [quantity, setQuantity] = useState('')
-  const [limitPrice, setLimitPrice] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState(null)
+const ATTENTION_FLAGS = [
+  { key: 'priceDeclining', label: 'Price ↓', title: 'Price fell in at least 3 of the last 10 cycles' },
+  { key: 'badNewsImpact', label: 'Bad news', title: 'Hit by a negative news post or a crisis in the last 20 cycles' },
+  { key: 'highRisk', label: 'Risk', title: 'Standing High or Extra risk verdict in the last 20 cycles' },
+  { key: 'recentMerge', label: 'Merge', title: 'Completed a reverse merge in the last 20 cycles' },
+]
 
-  const resolvedCompanyId = companyId || companies[0]?.id || ''
-
-  // Selecting a company seeds the limit price with its current share price, so the trader starts from the
-  // live market quote instead of a blank field.
-  function handleCompanyChange(id) {
-    setCompanyId(String(id))
-    const picked = companies.find((company) => String(company.id) === String(id))
-    if (picked?.currentPrice != null) {
-      setLimitPrice(picked.currentPrice.toFixed(2))
-    }
-  }
-
-  async function handleSubmit(event) {
-    event.preventDefault()
-    setError(null)
-    setSubmitting(true)
-    try {
-      await api.placeOrder({
-        participantId: player.id,
-        companyId: Number(resolvedCompanyId),
-        type: side,
-        quantity: Number(quantity),
-        limitPrice: Number(limitPrice),
-      })
-      setQuantity('')
-      setLimitPrice('')
-      await onPlaced()
-    } catch (submitError) {
-      setError(submitError.message)
-    } finally {
-      setSubmitting(false)
-    }
-  }
+function AttentionSection({ attention, onSelectCompany }) {
+  const { pageRows, sortKey, sortDir, toggleSort, page, pageCount, setPage } = useClientTable(attention, {
+    initialSortKey: 'marketValue',
+  })
 
   return (
-    <form className="modal-section player-section" onSubmit={handleSubmit}>
-      <span className="map-stat-label">Place order</span>
-      <div className="field-pair">
-        <label className="field">
-          <span>Side</span>
-          <select className="select" value={side} onChange={(event) => setSide(event.target.value)}>
-            <option value="Buy">Buy ▲</option>
-            <option value="Sell">Sell ▼</option>
-          </select>
-        </label>
-        <div className="field">
-          <span>Company</span>
-          <CompanyCombobox companies={companies} value={resolvedCompanyId} onChange={handleCompanyChange} />
-        </div>
-      </div>
-      <div className="field-pair">
-        <label className="field">
-          <span>Quantity</span>
-          <input
-            className="select num"
-            type="number"
-            min="1"
-            step="1"
-            placeholder="0"
-            value={quantity}
-            onChange={(event) => setQuantity(event.target.value)}
-          />
-        </label>
-        <label className="field">
-          <span>Limit price</span>
-          <input
-            className="select num"
-            type="number"
-            min="0.01"
-            step="0.01"
-            placeholder="0.00"
-            value={limitPrice}
-            onChange={(event) => setLimitPrice(event.target.value)}
-          />
-        </label>
-      </div>
-      {error ? (
-        <p className="command-error" role="alert">
-          {error}
-        </p>
-      ) : null}
-      <button type="submit" className="btn btn-primary" disabled={submitting}>
-        {submitting ? 'Placing…' : `Place ${side.toLowerCase()} order`}
-      </button>
-    </form>
+    <div className="modal-section player-section">
+      <span className="map-stat-label">Companies needing attention</span>
+      {attention.length === 0 ? (
+        <p className="note note-sm">None of your holdings are flagged right now.</p>
+      ) : (
+        <>
+          <div className="tbl-scroll">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Company</th>
+                  <SortHeader label="Price" columnKey="currentPrice" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Change" columnKey="priceChangePct" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Shares" columnKey="shares" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Value" columnKey="marketValue" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <th scope="col">Signals</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageRows.map((row) => {
+                  const changeTone = toneOf(row.priceChangePct)
+                  return (
+                    <tr key={row.companyId}>
+                      <th scope="row">
+                        {onSelectCompany ? (
+                          <button
+                            type="button"
+                            className="cell-name-btn cell-ellipsis"
+                            onClick={() => onSelectCompany(row.companyId)}
+                            title={`Open ${row.name} details`}
+                          >
+                            {row.name}
+                          </button>
+                        ) : (
+                          <span className="cell-ellipsis">{row.name}</span>
+                        )}
+                      </th>
+                      <td className="num ta-r">{formatMoney(row.currentPrice)}</td>
+                      <td className={`num ta-r tone-${changeTone}`}>
+                        {row.priceChangePct > 0 ? '+' : row.priceChangePct < 0 ? '−' : ''}
+                        {Math.abs(row.priceChangePct * 100).toFixed(1)}%
+                      </td>
+                      <td className="num ta-r">{formatInt(row.shares)}</td>
+                      <td className="num ta-r">{formatMoney(row.marketValue)}</td>
+                      <td>
+                        <span className="attention-flags">
+                          {ATTENTION_FLAGS.filter((flag) => row[flag.key]).map((flag) => (
+                            <span key={flag.key} className="tag tag-flag" title={flag.title}>
+                              {flag.label}
+                            </span>
+                          ))}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
+      )}
+    </div>
   )
 }
 
 function OpenOrdersSection({ orders, companies, onCancelled }) {
   const [cancelingId, setCancelingId] = useState(null)
   const [error, setError] = useState(null)
-  const companyById = new Map(companies.map((company) => [company.id, company]))
+  const companyById = new Map((companies ?? []).map((company) => [company.id, company]))
 
   async function handleCancel(orderId) {
     setError(null)

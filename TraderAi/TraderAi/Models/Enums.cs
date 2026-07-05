@@ -96,3 +96,10 @@ public enum MarketExitReason
     FundLoss,
     Starvation,
 }
+
+public enum CompanyRiskRating
+{
+    Low,
+    High,
+    Extra,
+}

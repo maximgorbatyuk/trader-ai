@@ -5,14 +5,26 @@ import { api } from './api'
 import { formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
+import { RatingBadge } from './RatingBadge'
+import { NewsImpact } from './NewsImpact'
+import { NewsModal } from './NewsModal'
 
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
+const RISK_ORDER = { Low: 0, High: 1, Extra: 2 }
 
 function formatPct(fraction) {
   if (typeof fraction !== 'number') return '—'
   const sign = fraction > 0 ? '+' : fraction < 0 ? '−' : ''
   return `${sign}${(Math.abs(fraction) * 100).toFixed(2)}%`
+}
+
+// The direction of the latest rating change, comparing the current verdict's severity to the one before it.
+function ratingTrend(current, previous) {
+  if (!current || !previous || !(current in RISK_ORDER) || !(previous in RISK_ORDER)) return null
+  if (RISK_ORDER[current] > RISK_ORDER[previous]) return 'worsened'
+  if (RISK_ORDER[current] < RISK_ORDER[previous]) return 'improved'
+  return null
 }
 
 // The company detail block: identity, a price-history chart, ownership and shareholders, and recent orders
@@ -26,22 +38,33 @@ export function CompanyDetail({ companyId }) {
   const [orders, setOrders] = useState([])
   const [trades, setTrades] = useState([])
   const [prices, setPrices] = useState([])
+  const [ratings, setRatings] = useState([])
+  const [emissions, setEmissions] = useState([])
+  const [news, setNews] = useState([])
+  const [selectedNews, setSelectedNews] = useState(null)
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, shareholderData, orderData, tradeData, priceData] = await Promise.all([
-        api.getCompany(companyId),
-        api.getCompanyShareholders(companyId),
-        api.getCompanyOrders(companyId),
-        api.getCompanyShareTransactions(companyId),
-        api.getPrices(companyId),
-      ])
+      const [detailData, shareholderData, orderData, tradeData, priceData, ratingData, emissionData, newsData] =
+        await Promise.all([
+          api.getCompany(companyId),
+          api.getCompanyShareholders(companyId),
+          api.getCompanyOrders(companyId),
+          api.getCompanyShareTransactions(companyId),
+          api.getPrices(companyId),
+          api.getCompanyRatings(companyId),
+          api.getCompanyEmissions(companyId),
+          api.getCompanyNews(companyId),
+        ])
 
       setDetail(detailData)
       setShareholders(shareholderData)
       setOrders(orderData)
       setTrades(tradeData)
       setPrices(priceData)
+      setRatings(ratingData ?? [])
+      setEmissions(emissionData ?? [])
+      setNews(newsData ?? [])
       setLoadError(null)
     } catch (error) {
       setLoadError(error.message)
@@ -78,6 +101,7 @@ export function CompanyDetail({ companyId }) {
   }
 
   const changeTone = toneOf(detail.priceChangePct)
+  const riskTrend = ratingTrend(detail.currentRating, detail.previousRating)
 
   return (
     <section className="detail-stack" aria-label={`${detail.name} details`}>
@@ -85,6 +109,17 @@ export function CompanyDetail({ companyId }) {
         <div className="banner" role="alert">
           <strong>Showing last known state.</strong>
           <span>{loadError}</span>
+        </div>
+      ) : null}
+
+      {detail.isClosed ? (
+        <div className="banner" role="status">
+          <strong>Delisted.</strong>
+          <span>
+            This company was delisted
+            {typeof detail.closedInCycleNumber === 'number' ? ` in cycle ${detail.closedInCycleNumber}` : ''}. Its
+            orders were cancelled and its shares wiped out.
+          </span>
         </div>
       ) : null}
 
@@ -117,6 +152,23 @@ export function CompanyDetail({ companyId }) {
             <dt>Market cap</dt>
             <dd className="num">{formatMoney(detail.marketCap)}</dd>
           </div>
+          <div className="stat">
+            <dt>Risk rating</dt>
+            <dd>
+              {detail.currentRating ? (
+                <span className="rating-stat">
+                  <RatingBadge rating={detail.currentRating} />
+                  {riskTrend ? (
+                    <span className="rating-trend">
+                      {riskTrend === 'worsened' ? '▲' : '▼'} {riskTrend}
+                    </span>
+                  ) : null}
+                </span>
+              ) : (
+                '—'
+              )}
+            </dd>
+          </div>
         </dl>
       </section>
 
@@ -131,7 +183,130 @@ export function CompanyDetail({ companyId }) {
         <OrdersPanel orders={orders} />
         <TradesPanel trades={trades} />
       </div>
+
+      <div className="grid-detail">
+        <RatingHistoryPanel ratings={ratings} />
+        <EmissionsPanel emissions={emissions} />
+      </div>
+
+      <RelatedNewsPanel news={news} onSelect={setSelectedNews} />
+
+      {selectedNews ? <NewsModal post={selectedNews} onClose={() => setSelectedNews(null)} /> : null}
     </section>
+  )
+}
+
+function RelatedNewsPanel({ news, onSelect }) {
+  return (
+    <Panel title="Related news" count={`${news.length}`} className="panel-orders-list">
+      {news.length === 0 ? (
+        <p className="note">No news for this company or its industry yet.</p>
+      ) : (
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col" className="ta-r">
+                  Impact
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {news.map((post) => (
+                <tr key={post.id}>
+                  <th scope="row">
+                    <button
+                      type="button"
+                      className="cell-name-btn"
+                      onClick={() => onSelect(post)}
+                      title={`Open ${post.title}`}
+                    >
+                      {post.title}
+                    </button>
+                  </th>
+                  <td className="ta-r">
+                    <NewsImpact post={post} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+function RatingHistoryPanel({ ratings }) {
+  return (
+    <Panel title="Risk ratings" count={`last ${ratings.length}`} className="panel-orders-list">
+      {ratings.length === 0 ? (
+        <p className="note">No auditor has reviewed this company yet.</p>
+      ) : (
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">Result</th>
+                <th scope="col">Auditor</th>
+                <th scope="col" className="ta-r">
+                  Cycles ago
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {ratings.map((rating) => (
+                <tr key={rating.id}>
+                  <td>
+                    <RatingBadge rating={rating.rating} impactPercent={rating.impactPercent} />
+                  </td>
+                  <td className="cell-ellipsis">{rating.auditorName}</td>
+                  <td className="num ta-r">{formatInt(rating.cyclesAgo)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+function EmissionsPanel({ emissions }) {
+  return (
+    <Panel title="Share emissions" count={`${emissions.length}`} className="panel-trades">
+      {emissions.length === 0 ? (
+        <p className="note">No free-share emissions yet.</p>
+      ) : (
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col" className="ta-r">
+                  Shares
+                </th>
+                <th scope="col" className="ta-r">
+                  Recipients
+                </th>
+                <th scope="col" className="ta-r">
+                  Cycles ago
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {emissions.map((emission) => (
+                <tr key={emission.id}>
+                  <td className="num ta-r">{formatInt(emission.sharesEmitted)}</td>
+                  <td className="num ta-r">{formatInt(emission.recipientCount)}</td>
+                  <td className="num ta-r">{formatInt(emission.cyclesAgo)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
   )
 }
 
@@ -242,8 +417,8 @@ function ShareholdersPanel({ shareholders }) {
                   <th scope="row" className="cell-ellipsis">
                     <Link
                       className="cell-link"
-                      to={`/traders?trader=${holder.ownerId}`}
-                      title={`Open ${holder.ownerName} in the Traders page`}
+                      to={`/traders/${holder.ownerId}`}
+                      title={`Open ${holder.ownerName} trader page`}
                     >
                       {holder.ownerName}
                     </Link>

@@ -12,11 +12,11 @@ The script will ensure the .NET SDK is installed, Node.js and npm, and then rest
 
 The frontend runs at `http://localhost:5173`. The backend runs at `http://localhost:5100`.
 
-Each participant has its own detail page at `/participants/<id>` — temperament and risk profile (editable), bank balances, holdings valued against current prices, and recent orders, trades, and cash movements. Open it in a separate tab from the Traders table on the dashboard.
+Each trader has a detail block on the Traders page at `/traders?trader=<id>` — temperament and risk profile (editable), bank balances, holdings valued against current prices, and recent orders, trades, and cash movements. Open it from the Traders table on the dashboard.
 
 ![A participant's detail page: cash balances, editable temperament and risk, holdings valued at current prices, and recent orders, trades, and cash movements.](docs/images/participant-page.png)
 
-The dashboard lists every company with its industry, and a Newswire panel shows the news events the running market publishes on a cycle schedule — some of which nudge a company's or an industry's share price. You can also add a news event by hand from that panel, choosing the target company or industries, a theme, and the impact direction and size.
+The dashboard's market map is sized by company capitalisation, with the two most recent headlines beneath it. The News page collects the full feed of events the running market publishes on a cycle schedule — some of which nudge a company's or an industry's share price — and is where you can add a news event by hand, choosing the target company or industries, a theme, and the impact direction and size. A separate Trade market page pairs the same market map with an orders-per-cycle activity chart.
 
 ![The dashboard: the market map sized by company capitalisation, the market-activity chart, and the Traders table.](docs/images/dashboard.png)
 
@@ -30,7 +30,7 @@ Cash-strapped traders may instead pool into a collective fund, which trades as i
 
 Traders that run out of road eventually leave the market for good, keeping it churning rather than filling up with stuck, broke participants. A fund that sits unable to trade for long enough unwinds on its own; a trader left with no shares and no cash to buy any may quit after a long drought, its odds climbing the longer it stays stuck; and a fund member handed back only a fraction of what it put in gets one chance to walk away. Every departure is filled by a fresh replacement with a new random balance, so the market holds its size. A left sidebar switches between the dashboard and a Departed traders page at `/departed-traders`, which archives everyone who has left with their reason for leaving, the cycles they joined and left, how many orders they placed, and how their final balance ended up against where they started.
 
-You can also step into the market yourself. Join as a human player and you are handed a random starting balance, then trade by hand under the same rules as everyone else — your buy and sell orders reserve cash and match just like theirs, and you collect dividends on the shares you hold. The difference is that the market never touches your orders: they are never re-priced, never cancelled for resting too long, and never swept away by a crisis or a news event, so you cancel the ones you no longer want yourself. A player never goes bankrupt and never joins a collective fund, and a market holds at most one player at a time. A Player panel opens from the dashboard and shows your holdings and balances alongside how your cash and total worth have changed over the last cycle and overall, and it is where you place and cancel your orders.
+You can also step into the market yourself. Join as a human player and you are handed a random starting balance, then trade by hand under the same rules as everyone else — your buy and sell orders reserve cash and match just like theirs, and you collect dividends on the shares you hold. The difference is that the market does not manage your orders day to day: they are never re-priced, never cancelled for resting too long, and never swept away by a crisis or a news event, so you cancel the ones you no longer want yourself. Stock splits and reverse merges still cancel participant orders so the book can reform at the adjusted price. A player never goes bankrupt and never joins a collective fund, and a market holds at most one player at a time. A player panel on the dashboard shows your holdings and balances alongside how your cash and total worth have changed over the last cycle and overall, the companies you hold that need attention, and your open orders to cancel. You place orders from a company's own view.
 
 No authentication is required between the frontend and backend for local development.
 
@@ -39,7 +39,16 @@ No authentication is required between the frontend and backend for local develop
 | Page | What it covers |
 | --- | --- |
 | [Domain](docs/domain.md) | The simulation's data model and the core market rules. |
-| [Participant rules](docs/participant-rules.md) | A trader's-eye view: what a participant starts with, what it may and may not do, its states, how it joins a collective fund, and how its orders work. |
+| [Participant rules](docs/participant-rules.md) | Shared participant rules and links to each role page. |
+| [Individual](docs/roles/individual.md) | Rules for the default automated trader. |
+| [AI Agent](docs/roles/ai-agent.md) | Rules for agent-style automated traders. |
+| [Player](docs/roles/player.md) | Rules for the human-controlled trader. |
+| [Company](docs/roles/company.md) | Rules for issuers and listed assets. |
+| [Collective Fund](docs/roles/collective-fund.md) | Rules for pooled fund traders. |
+| [Fund Member](docs/roles/fund-member.md) | Rules for traders while they belong to a fund. |
+| [Auditors](docs/roles/auditors.md) | Rules for the rating agencies that review companies. |
+| [Share price formation](docs/rules/share-price-formation.md) | How company share prices form during each market cycle. |
+| [Free-share emission](docs/logic/free-share-emission.md) | How large companies issue free shares to dilute price. |
 
 ## Tech stack
 

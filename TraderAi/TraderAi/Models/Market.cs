@@ -23,6 +23,10 @@ public sealed class Market
     // none has happened yet. Independent of the crisis clocks, so both may fire the same cycle.
     public int LastScienceInvestigationCycleNumber { get; set; }
 
+    // Cycle number of the last new-company listing, the clock the next-appearance chance ramps up from after its
+    // safe period. Seeded to the first cycle so the same safe period applies from the market's start.
+    public int LastCompanyAppearanceCycleNumber { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

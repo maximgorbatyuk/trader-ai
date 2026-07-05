@@ -10,24 +10,45 @@ public static class MarketEndpoints
     public static void MapMarketEndpoints(this WebApplication app)
     {
         app.MapGet("/companies", async (AppDbContext dbContext) =>
+            Results.Ok(await BuildCompanyResponsesAsync(dbContext)));
+
+        // Server-paged companies for the roster page: name search, industry filter, and sortable numeric
+        // columns. The array endpoint above still feeds the dashboard map, which needs the whole set.
+        app.MapGet("/companies/paged", async (
+            int? page, int? pageSize, string? search, string? sort, string? sortDir, int? industryId,
+            AppDbContext dbContext) =>
         {
-            var companies = await dbContext.Companies.OrderBy(company => company.Id).ToListAsync();
-            var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
-            var changeByCompany = await PriceChangePctByCompanyAsync(dbContext);
-            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var descending = !string.Equals(sortDir, "asc", StringComparison.OrdinalIgnoreCase);
 
-            var response = companies
-                .Select(company => new CompanyResponse(
-                    company.Id,
-                    company.Name,
-                    company.IndustryId,
-                    industryNameById.GetValueOrDefault(company.IndustryId),
-                    company.IssuedSharesCount,
-                    latestPriceByCompany.GetValueOrDefault(company.Id),
-                    changeByCompany.GetValueOrDefault(company.Id)))
-                .ToArray();
+            IEnumerable<CompanyResponse> companies = await BuildCompanyResponsesAsync(dbContext);
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var term = search.Trim().ToLowerInvariant();
+                companies = companies.Where(company => company.Name.ToLowerInvariant().Contains(term));
+            }
+            if (industryId is int industry)
+            {
+                companies = companies.Where(company => company.IndustryId == industry);
+            }
 
-            return Results.Ok(response);
+            var filtered = companies.ToList();
+            IEnumerable<CompanyResponse> ordered = sort switch
+            {
+                "name" => descending
+                    ? filtered.OrderByDescending(company => company.Name, StringComparer.OrdinalIgnoreCase)
+                    : filtered.OrderBy(company => company.Name, StringComparer.OrdinalIgnoreCase),
+                "shares" => Order(filtered, company => company.IssuedSharesCount, descending),
+                "price" => Order(filtered, company => company.CurrentPrice ?? 0m, descending),
+                _ => Order(filtered, company => company.IssuedSharesCount * (company.CurrentPrice ?? 0m), descending),
+            };
+
+            var items = ordered.Skip((pageIndex - 1) * size).Take(size).ToArray();
+            return Results.Ok(new PagedCompaniesResponse(items, filtered.Count, pageIndex, size));
+
+            static IEnumerable<CompanyResponse> Order(IEnumerable<CompanyResponse> source, Func<CompanyResponse, decimal> key, bool desc) =>
+                desc ? source.OrderByDescending(key) : source.OrderBy(key);
         });
 
         app.MapGet("/companies/{companyId:int}", async (int companyId, AppDbContext dbContext) =>
@@ -92,6 +113,152 @@ public static class MarketEndpoints
             return Results.Ok(transactions.Select(ToShareTransactionResponse).ToArray());
         });
 
+        app.MapGet("/companies/{companyId:int}/ratings", async (int companyId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 20, 1, 100);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+            var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+            var auditorNameById = await dbContext.Auditors.ToDictionaryAsync(auditor => auditor.Id, auditor => auditor.Name);
+
+            var ratings = await dbContext.CompanyRatings
+                .Where(rating => rating.CompanyId == companyId)
+                .OrderByDescending(rating => rating.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            var response = ratings
+                .Select(rating => new CompanyRatingResponse(
+                    rating.Id,
+                    rating.Rating.ToString(),
+                    rating.ImpactPercent,
+                    auditorNameById.GetValueOrDefault(rating.AuditorId, $"#{rating.AuditorId}"),
+                    Math.Max(0, currentCycleNumber - cycleNumbersById.GetValueOrDefault(rating.CreatedInCycleId)),
+                    rating.CreatedAt))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/companies/{companyId:int}/emissions", async (int companyId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 20, 1, 100);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+            var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+
+            var emissions = await dbContext.ShareEmissions
+                .Where(emission => emission.CompanyId == companyId)
+                .OrderByDescending(emission => emission.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            var response = emissions
+                .Select(emission => new ShareEmissionResponse(
+                    emission.Id,
+                    emission.SharesEmitted,
+                    emission.RecipientCount,
+                    Math.Max(0, currentCycleNumber - cycleNumbersById.GetValueOrDefault(emission.CreatedInCycleId)),
+                    emission.CreatedAt))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        // News related to one company: posts that target it directly plus industry-scoped posts that hit the
+        // company's industry, newest first.
+        app.MapGet("/companies/{companyId:int}/news", async (int companyId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 20, 1, 100);
+            var industryId = await dbContext.Companies
+                .Where(company => company.Id == companyId)
+                .Select(company => (int?)company.IndustryId)
+                .FirstOrDefaultAsync();
+            if (industryId is null)
+            {
+                return Results.NotFound(new { error = "Company not found." });
+            }
+
+            var posts = await dbContext.NewsPosts
+                .Where(post => post.TargetCompanyId == companyId
+                    || (post.Scope == NewsImpactScope.Industries
+                        && post.Industries.Any(link => link.IndustryId == industryId)))
+                .OrderByDescending(post => post.Id)
+                .Take(limit)
+                .Include(post => post.Industries)
+                .ToListAsync();
+
+            var companyNameById = await dbContext.Companies
+                .ToDictionaryAsync(company => company.Id, company => company.Name);
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+
+            var response = posts
+                .Select(post => ToNewsResponse(post, companyNameById, industryNameById, cycleNumbersById))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/auditors", async (AppDbContext dbContext) =>
+        {
+            var auditors = await dbContext.Auditors.OrderBy(auditor => auditor.Id).ToListAsync();
+            var countByAuditor = (await dbContext.CompanyRatings
+                    .GroupBy(rating => rating.AuditorId)
+                    .Select(group => new { AuditorId = group.Key, Count = group.Count() })
+                    .ToListAsync())
+                .ToDictionary(row => row.AuditorId, row => row.Count);
+
+            var response = auditors
+                .Select(auditor => new AuditorResponse(
+                    auditor.Id, auditor.Name, auditor.Description, countByAuditor.GetValueOrDefault(auditor.Id)))
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/auditors/{auditorId:int}", async (int auditorId, AppDbContext dbContext) =>
+        {
+            var auditor = await dbContext.Auditors.FirstOrDefaultAsync(candidate => candidate.Id == auditorId);
+            if (auditor is null)
+            {
+                return Results.NotFound(new { error = "Auditor not found." });
+            }
+
+            var count = await dbContext.CompanyRatings.CountAsync(rating => rating.AuditorId == auditorId);
+            return Results.Ok(new AuditorResponse(auditor.Id, auditor.Name, auditor.Description, count));
+        });
+
+        app.MapGet("/auditors/{auditorId:int}/audits", async (int auditorId, int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+
+            var query = dbContext.CompanyRatings.Where(rating => rating.AuditorId == auditorId);
+            var total = await query.CountAsync();
+
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+            var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+            var companyNameById = await dbContext.Companies.ToDictionaryAsync(company => company.Id, company => company.Name);
+
+            var rows = await query
+                .OrderByDescending(rating => rating.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            var items = rows
+                .Select(rating => new AuditRowResponse(
+                    rating.Id,
+                    rating.CompanyId,
+                    companyNameById.GetValueOrDefault(rating.CompanyId, $"#{rating.CompanyId}"),
+                    rating.Rating.ToString(),
+                    rating.ImpactPercent,
+                    Math.Max(0, currentCycleNumber - cycleNumbersById.GetValueOrDefault(rating.CreatedInCycleId)),
+                    rating.CreatedAt))
+                .ToArray();
+
+            return Results.Ok(new PagedAuditsResponse(items, total, pageIndex, size));
+        });
+
         app.MapGet("/market", async (MarketService marketService, AppDbContext dbContext) =>
         {
             var market = await marketService.GetMarketAsync();
@@ -144,58 +311,46 @@ public static class MarketEndpoints
         });
 
         app.MapGet("/participants", async (AppDbContext dbContext) =>
+            Results.Ok(await BuildParticipantResponsesAsync(dbContext)));
+
+        // Server-paged traders for the roster page: name search, type filter, and sortable numeric columns.
+        // The array endpoint above still feeds the dashboard, which sums trader cash across the whole set.
+        app.MapGet("/participants/paged", async (
+            int? page, int? pageSize, string? search, string? sort, string? sortDir, string? type,
+            AppDbContext dbContext) =>
         {
-            var participants = await dbContext.Participants.OrderBy(participant => participant.Id).ToListAsync();
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var descending = !string.Equals(sortDir, "asc", StringComparison.OrdinalIgnoreCase);
 
-            // A trader that has pooled into a fund hands its trading to that fund, so it is dropped from the
-            // traders list while the membership lasts; it returns once it leaves or the fund closes.
-            var memberParticipantIds = (await dbContext.CollectiveFundParticipants
-                    .Select(member => member.ParticipantId)
-                    .ToListAsync())
-                .ToHashSet();
+            IEnumerable<ParticipantResponse> participants = await BuildParticipantResponsesAsync(dbContext);
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var term = search.Trim().ToLowerInvariant();
+                participants = participants.Where(participant => participant.Name.ToLowerInvariant().Contains(term));
+            }
+            if (!string.IsNullOrWhiteSpace(type) && !string.Equals(type, "all", StringComparison.OrdinalIgnoreCase))
+            {
+                participants = participants.Where(participant => participant.Type == type);
+            }
 
-            var holdingsByOwner = (await dbContext.Holdings
-                    .Where(holding => holding.Quantity > 0)
-                    .Select(holding => new { OwnerId = holding.ParticipantId, holding.CompanyId, Count = holding.Quantity })
-                    .ToListAsync())
-                .GroupBy(entry => entry.OwnerId)
-                .ToList();
+            var filtered = participants.ToList();
+            IEnumerable<ParticipantResponse> ordered = sort switch
+            {
+                "name" => descending
+                    ? filtered.OrderByDescending(participant => participant.Name, StringComparer.OrdinalIgnoreCase)
+                    : filtered.OrderBy(participant => participant.Name, StringComparer.OrdinalIgnoreCase),
+                "shares" => Order(filtered, participant => participant.SharesOwned, descending),
+                "balance" => Order(filtered, participant => participant.CurrentBalance, descending),
+                "holdings" => Order(filtered, participant => participant.HoldingsValue, descending),
+                _ => Order(filtered, participant => participant.CurrentBalance + participant.HoldingsValue, descending),
+            };
 
-            var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+            var items = ordered.Skip((pageIndex - 1) * size).Take(size).ToArray();
+            return Results.Ok(new PagedParticipantsResponse(items, filtered.Count, pageIndex, size));
 
-            var sharesOwnedByParticipant = holdingsByOwner.ToDictionary(
-                group => group.Key,
-                group => group.Sum(holding => holding.Count));
-
-            // Distinct companies a trader holds shares in — one group per company after the owner+company grouping.
-            var companiesOwnedByParticipant = holdingsByOwner.ToDictionary(
-                group => group.Key,
-                group => group.Count());
-
-            // Estimated market value of a trader's shares: each holding valued at its company's latest price.
-            var holdingsValueByParticipant = holdingsByOwner.ToDictionary(
-                group => group.Key,
-                group => group.Sum(holding => holding.Count * latestPriceByCompany.GetValueOrDefault(holding.CompanyId)));
-
-            var response = participants
-                .Where(participant => !memberParticipantIds.Contains(participant.Id))
-                .Select(participant => new ParticipantResponse(
-                    participant.Id,
-                    participant.Name,
-                    participant.Type.ToString(),
-                    participant.Temperament.ToString(),
-                    participant.RiskProfile.ToString(),
-                    participant.CurrentBalance,
-                    participant.ReservedBalance,
-                    participant.AvailableBalance,
-                    sharesOwnedByParticipant.GetValueOrDefault(participant.Id),
-                    companiesOwnedByParticipant.GetValueOrDefault(participant.Id),
-                    holdingsValueByParticipant.GetValueOrDefault(participant.Id),
-                    participant.IsActive,
-                    participant.IsBankrupt))
-                .ToArray();
-
-            return Results.Ok(response);
+            static IEnumerable<ParticipantResponse> Order(IEnumerable<ParticipantResponse> source, Func<ParticipantResponse, decimal> key, bool desc) =>
+                desc ? source.OrderByDescending(key) : source.OrderBy(key);
         });
 
         app.MapGet("/participants/{participantId:int}", async (int participantId, AppDbContext dbContext) =>
@@ -248,6 +403,149 @@ public static class MarketEndpoints
                         currentPrice * holding.Shares,
                         holding.CostBasis);
                 })
+                .ToArray();
+
+            return Results.Ok(response);
+        });
+
+        // Companies the participant holds that show a warning signal, so they can be watched at a glance: a recent
+        // price slide, a bad news or crisis hit, a standing High/Extra risk verdict, or a recent reverse merge.
+        app.MapGet("/participants/{participantId:int}/companies-attention", async (int participantId, AppDbContext dbContext) =>
+        {
+            const int RecentWindowCycles = 20;
+            const int PriceTrendWindowCycles = 10;
+            const int PriceDeclineThreshold = 3;
+
+            var heldQuantityByCompany = await dbContext.Holdings
+                .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
+                .ToDictionaryAsync(holding => holding.CompanyId, holding => holding.Quantity);
+            if (heldQuantityByCompany.Count == 0)
+            {
+                return Results.Ok(Array.Empty<CompanyAttentionResponse>());
+            }
+
+            var heldCompanyIds = heldQuantityByCompany.Keys.ToList();
+            var companies = await dbContext.Companies
+                .Where(company => heldCompanyIds.Contains(company.Id) && company.ClosedInCycleId == null)
+                .ToListAsync();
+
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+            var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+            var recentCycleIds = cycleNumbersById
+                .Where(entry => entry.Value > 0 && currentCycleNumber - entry.Value < RecentWindowCycles)
+                .Select(entry => entry.Key)
+                .ToHashSet();
+
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+            var changeByCompany = await PriceChangePctByCompanyAsync(dbContext);
+            var latestRatingByCompany = await LatestRatingByCompanyAsync(dbContext);
+            var heldIndustryIds = companies.Select(company => company.IndustryId).Distinct().ToList();
+
+            // (a) Price slide: reduce each company's snapshots to one close per cycle, then count cycle-over-cycle
+            // declines across the last few cycles.
+            var priceRows = await dbContext.PriceSnapshots
+                .Where(snapshot => heldCompanyIds.Contains(snapshot.CompanyId)
+                    && recentCycleIds.Contains(snapshot.CreatedInCycleId))
+                .Select(snapshot => new { snapshot.CompanyId, snapshot.Id, snapshot.Price, snapshot.CreatedInCycleId })
+                .ToListAsync();
+            var decliningCompanyIds = new HashSet<int>();
+            foreach (var group in priceRows.GroupBy(row => row.CompanyId))
+            {
+                var closes = group
+                    .GroupBy(row => row.CreatedInCycleId)
+                    .Select(cycleGroup => cycleGroup.OrderByDescending(row => row.Id).First())
+                    .Select(row => new { CycleNumber = cycleNumbersById.GetValueOrDefault(row.CreatedInCycleId), row.Price })
+                    .OrderBy(entry => entry.CycleNumber)
+                    .TakeLast(PriceTrendWindowCycles + 1)
+                    .ToList();
+                var declines = 0;
+                for (var index = 1; index < closes.Count; index++)
+                {
+                    if (closes[index].Price < closes[index - 1].Price)
+                    {
+                        declines++;
+                    }
+                }
+                if (declines >= PriceDeclineThreshold)
+                {
+                    decliningCompanyIds.Add(group.Key);
+                }
+            }
+
+            // (b) Bad impact: a company-targeted price-down post, an industry-down post on a held industry, or a
+            // crisis on a held industry — all always negative — within the recent window.
+            var badNewsCompanyIds = new HashSet<int>();
+            var companyDownNews = await dbContext.NewsPosts
+                .Where(post => post.Direction == NewsImpactDirection.Decrease
+                    && post.Scope == NewsImpactScope.Company
+                    && post.TargetCompanyId != null
+                    && heldCompanyIds.Contains(post.TargetCompanyId.Value)
+                    && recentCycleIds.Contains(post.PublishedInCycleId))
+                .Select(post => post.TargetCompanyId!.Value)
+                .ToListAsync();
+            foreach (var companyId in companyDownNews)
+            {
+                badNewsCompanyIds.Add(companyId);
+            }
+
+            var industryDownNews = await dbContext.NewsPosts
+                .Where(post => post.Direction == NewsImpactDirection.Decrease
+                    && post.Scope == NewsImpactScope.Industries
+                    && recentCycleIds.Contains(post.PublishedInCycleId)
+                    && post.Industries.Any(link => heldIndustryIds.Contains(link.IndustryId)))
+                .Include(post => post.Industries)
+                .ToListAsync();
+            var crises = await dbContext.Crises
+                .Where(crisis => recentCycleIds.Contains(crisis.TriggeredInCycleId)
+                    && crisis.Industries.Any(link => heldIndustryIds.Contains(link.IndustryId)))
+                .Include(crisis => crisis.Industries)
+                .ToListAsync();
+            var hitIndustryIds = industryDownNews
+                .SelectMany(post => post.Industries.Select(link => link.IndustryId))
+                .Concat(crises.SelectMany(crisis => crisis.Industries.Select(link => link.IndustryId)))
+                .ToHashSet();
+            foreach (var company in companies)
+            {
+                if (hitIndustryIds.Contains(company.IndustryId))
+                {
+                    badNewsCompanyIds.Add(company.Id);
+                }
+            }
+
+            // (c) Standing High/Extra risk: the most recent verdict inside the window is High or Extra (a later Low
+            // would be the newest and clear it).
+            var highRiskCompanyIds = (await dbContext.CompanyRatings
+                    .Where(rating => heldCompanyIds.Contains(rating.CompanyId)
+                        && recentCycleIds.Contains(rating.CreatedInCycleId))
+                    .Select(rating => new { rating.CompanyId, rating.Id, rating.Rating })
+                    .ToListAsync())
+                .GroupBy(rating => rating.CompanyId)
+                .Where(group => group.OrderByDescending(rating => rating.Id).First().Rating != CompanyRiskRating.Low)
+                .Select(group => group.Key)
+                .ToHashSet();
+
+            var response = companies
+                .Select(company =>
+                {
+                    var price = latestPriceByCompany.GetValueOrDefault(company.Id);
+                    var shares = heldQuantityByCompany.GetValueOrDefault(company.Id);
+                    return new CompanyAttentionResponse(
+                        company.Id,
+                        company.Name,
+                        industryNameById.GetValueOrDefault(company.IndustryId),
+                        price,
+                        changeByCompany.GetValueOrDefault(company.Id),
+                        latestRatingByCompany.TryGetValue(company.Id, out var rating) ? rating.ToString() : null,
+                        shares,
+                        shares * price,
+                        decliningCompanyIds.Contains(company.Id),
+                        badNewsCompanyIds.Contains(company.Id),
+                        highRiskCompanyIds.Contains(company.Id),
+                        company.LastMergedInCycleId is int mergedCycleId && recentCycleIds.Contains(mergedCycleId));
+                })
+                .Where(row => row.PriceDeclining || row.BadNewsImpact || row.HighRisk || row.RecentMerge)
+                .OrderByDescending(row => row.MarketValue)
                 .ToArray();
 
             return Results.Ok(response);
@@ -479,12 +777,40 @@ public static class MarketEndpoints
             var companyNameById = await dbContext.Companies
                 .ToDictionaryAsync(company => company.Id, company => company.Name);
             var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
 
             var response = posts
-                .Select(post => ToNewsResponse(post, companyNameById, industryNameById))
+                .Select(post => ToNewsResponse(post, companyNameById, industryNameById, cycleNumbersById))
                 .ToArray();
 
             return Results.Ok(response);
+        });
+
+        // Server-paged news for the News page. News grows unbounded across cycles, so this pages in the
+        // database rather than trimming a client-loaded list like the dashboard newswire does.
+        app.MapGet("/news/paged", async (int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+
+            var total = await dbContext.NewsPosts.CountAsync();
+            var posts = await dbContext.NewsPosts
+                .OrderByDescending(post => post.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .Include(post => post.Industries)
+                .ToListAsync();
+
+            var companyNameById = await dbContext.Companies
+                .ToDictionaryAsync(company => company.Id, company => company.Name);
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+
+            var items = posts
+                .Select(post => ToNewsResponse(post, companyNameById, industryNameById, cycleNumbersById))
+                .ToArray();
+
+            return Results.Ok(new PagedNewsResponse(items, total, pageIndex, size));
         });
 
         app.MapPost("/news", async (ManualNewsRequest request, NewsService newsService, AppDbContext dbContext) =>
@@ -498,8 +824,9 @@ public static class MarketEndpoints
             var companyNameById = await dbContext.Companies
                 .ToDictionaryAsync(company => company.Id, company => company.Name);
             var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
 
-            return Results.Ok(ToNewsResponse(result.Post!, companyNameById, industryNameById));
+            return Results.Ok(ToNewsResponse(result.Post!, companyNameById, industryNameById, cycleNumbersById));
         });
 
         app.MapGet("/news/themes", () =>
@@ -612,20 +939,199 @@ public static class MarketEndpoints
 
             return Results.Ok(response);
         });
+
+        app.MapGet("/collective-funds/closed", async (int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+
+            var query = dbContext.CollectiveFunds.Where(fund => fund.Status == CollectiveFundStatus.Closed);
+            var total = await query.CountAsync();
+
+            var funds = await query
+                .OrderByDescending(fund => fund.ClosedAt)
+                .ThenByDescending(fund => fund.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            // The fund's Participant row is kept (never deleted) on close, so its name and personality still resolve.
+            var participantIds = funds.Select(fund => fund.ParticipantId).ToList();
+            var participantById = await dbContext.Participants
+                .Where(participant => participantIds.Contains(participant.Id))
+                .ToDictionaryAsync(participant => participant.Id);
+            var cycleNumberById = await dbContext.MarketCycles
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+            var items = funds
+                .Select(fund =>
+                {
+                    participantById.TryGetValue(fund.ParticipantId, out var participant);
+                    return new ClosedFundResponse(
+                        fund.Id,
+                        fund.ParticipantId,
+                        participant?.Name ?? $"#{fund.ParticipantId}",
+                        participant?.Temperament.ToString(),
+                        participant?.RiskProfile.ToString(),
+                        fund.PeakNetWorth,
+                        cycleNumberById.GetValueOrDefault(fund.CreatedInCycleId),
+                        fund.ClosedAt);
+                })
+                .ToArray();
+
+            return Results.Ok(new PagedClosedFundsResponse(items, total, pageIndex, size));
+        });
+
+        app.MapGet("/companies/closed", async (int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+
+            var query = dbContext.Companies.Where(company => company.ClosedInCycleId != null);
+            var total = await query.CountAsync();
+
+            var companies = await query
+                .OrderByDescending(company => company.ClosedAt)
+                .ThenByDescending(company => company.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumberById = await dbContext.MarketCycles
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+            // A delisted company's last snapshot is the price it closed at.
+            var finalPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+
+            var items = companies
+                .Select(company => new ClosedCompanyResponse(
+                    company.Id,
+                    company.Name,
+                    company.IndustryId,
+                    industryNameById.GetValueOrDefault(company.IndustryId),
+                    company.IssuedSharesCount,
+                    finalPriceByCompany.GetValueOrDefault(company.Id),
+                    company.CreatedInCycleId is int createdCycleId ? cycleNumberById.GetValueOrDefault(createdCycleId) : 0,
+                    company.ClosedInCycleId is int closedCycleId ? cycleNumberById.GetValueOrDefault(closedCycleId) : 0,
+                    company.ClosedAt))
+                .ToArray();
+
+            return Results.Ok(new PagedClosedCompaniesResponse(items, total, pageIndex, size));
+        });
     }
 
     private static async Task<Dictionary<int, string>> IndustryNameByIdAsync(AppDbContext dbContext) =>
         await dbContext.Industries.ToDictionaryAsync(industry => industry.Id, industry => industry.Name);
 
+    private static async Task<List<CompanyResponse>> BuildCompanyResponsesAsync(AppDbContext dbContext)
+    {
+        // Delisted companies drop off the live roster and the dashboard map; they surface on the closed-companies
+        // page and still resolve on their own detail route.
+        var companies = await dbContext.Companies
+            .Where(company => company.ClosedInCycleId == null)
+            .OrderBy(company => company.Id)
+            .ToListAsync();
+        var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+        var changeByCompany = await PriceChangePctByCompanyAsync(dbContext);
+        var industryNameById = await IndustryNameByIdAsync(dbContext);
+        var latestRatingByCompany = await LatestRatingByCompanyAsync(dbContext);
+
+        return companies
+            .Select(company => new CompanyResponse(
+                company.Id,
+                company.Name,
+                company.IndustryId,
+                industryNameById.GetValueOrDefault(company.IndustryId),
+                company.IssuedSharesCount,
+                latestPriceByCompany.GetValueOrDefault(company.Id),
+                changeByCompany.GetValueOrDefault(company.Id),
+                latestRatingByCompany.TryGetValue(company.Id, out var rating) ? rating.ToString() : null))
+            .ToList();
+    }
+
+    private static async Task<List<ParticipantResponse>> BuildParticipantResponsesAsync(AppDbContext dbContext)
+    {
+        var participants = await dbContext.Participants.OrderBy(participant => participant.Id).ToListAsync();
+
+        // A trader that has pooled into a fund hands its trading to that fund, so it is dropped from the
+        // traders list while the membership lasts; it returns once it leaves or the fund closes.
+        var memberParticipantIds = (await dbContext.CollectiveFundParticipants
+                .Select(member => member.ParticipantId)
+                .ToListAsync())
+            .ToHashSet();
+
+        var holdingsByOwner = (await dbContext.Holdings
+                .Where(holding => holding.Quantity > 0)
+                .Select(holding => new { OwnerId = holding.ParticipantId, holding.CompanyId, Count = holding.Quantity })
+                .ToListAsync())
+            .GroupBy(entry => entry.OwnerId)
+            .ToList();
+
+        var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+
+        var sharesOwnedByParticipant = holdingsByOwner.ToDictionary(
+            group => group.Key,
+            group => group.Sum(holding => holding.Count));
+
+        // Distinct companies a trader holds shares in — one group per company after the owner+company grouping.
+        var companiesOwnedByParticipant = holdingsByOwner.ToDictionary(
+            group => group.Key,
+            group => group.Count());
+
+        // Estimated market value of a trader's shares: each holding valued at its company's latest price.
+        var holdingsValueByParticipant = holdingsByOwner.ToDictionary(
+            group => group.Key,
+            group => group.Sum(holding => holding.Count * latestPriceByCompany.GetValueOrDefault(holding.CompanyId)));
+
+        return participants
+            .Where(participant => !memberParticipantIds.Contains(participant.Id))
+            // A closed fund lives on as an inactive, zeroed-out row; keep it off the live roster and surface it
+            // on the Closed Funds page instead. Only funds are dropped here — bankrupt traders stay listed.
+            .Where(participant => participant.Type != ParticipantType.CollectiveFund || participant.IsActive)
+            .Select(participant => new ParticipantResponse(
+                participant.Id,
+                participant.Name,
+                participant.Type.ToString(),
+                participant.Temperament.ToString(),
+                participant.RiskProfile.ToString(),
+                participant.CurrentBalance,
+                participant.ReservedBalance,
+                participant.AvailableBalance,
+                sharesOwnedByParticipant.GetValueOrDefault(participant.Id),
+                companiesOwnedByParticipant.GetValueOrDefault(participant.Id),
+                holdingsValueByParticipant.GetValueOrDefault(participant.Id),
+                participant.IsActive,
+                participant.IsBankrupt))
+            .ToList();
+    }
+
+    // The current risk rating per company is its most recent verdict, found by max rating Id so the whole
+    // rating history never has to be loaded.
+    private static async Task<Dictionary<int, CompanyRiskRating>> LatestRatingByCompanyAsync(AppDbContext dbContext)
+    {
+        var latestRatingIds = await dbContext.CompanyRatings
+            .GroupBy(rating => rating.CompanyId)
+            .Select(group => group.Max(rating => rating.Id))
+            .ToListAsync();
+
+        return (await dbContext.CompanyRatings
+                .Where(rating => latestRatingIds.Contains(rating.Id))
+                .Select(rating => new { rating.CompanyId, rating.Rating })
+                .ToListAsync())
+            .ToDictionary(row => row.CompanyId, row => row.Rating);
+    }
+
     private static NewsPostResponse ToNewsResponse(
         NewsPost post,
         IReadOnlyDictionary<int, string> companyNameById,
-        IReadOnlyDictionary<int, string> industryNameById) =>
+        IReadOnlyDictionary<int, string> industryNameById,
+        IReadOnlyDictionary<int, int> cycleNumbersById) =>
         new(
             post.Id,
             post.Title,
             post.Content,
             post.PublishedInCycleId,
+            cycleNumbersById.GetValueOrDefault(post.PublishedInCycleId),
             post.PublishedAt,
             post.Scope.ToString(),
             post.Direction?.ToString(),
@@ -762,6 +1268,24 @@ public static class MarketEndpoints
             .SumAsync(transaction => transaction.Amount);
     }
 
+    private static Task<Dictionary<int, int>> CycleNumbersByIdAsync(AppDbContext dbContext) =>
+        dbContext.MarketCycles.ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+    // The number of the market's active cycle, or zero when no market or cycle is set.
+    private static async Task<int> CurrentCycleNumberAsync(AppDbContext dbContext)
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market?.CurrentCycleId is not int cycleId)
+        {
+            return 0;
+        }
+
+        return await dbContext.MarketCycles
+            .Where(cycle => cycle.Id == cycleId)
+            .Select(cycle => cycle.CycleNumber)
+            .FirstOrDefaultAsync();
+    }
+
     private static async Task<CompanyDetailResponse?> BuildCompanyDetailAsync(AppDbContext dbContext, int companyId)
     {
         var company = await dbContext.Companies.FirstOrDefaultAsync(candidate => candidate.Id == companyId);
@@ -786,6 +1310,21 @@ public static class MarketEndpoints
             .Select(industry => industry.Name)
             .FirstOrDefaultAsync();
 
+        // The two most recent verdicts give the current risk rating and the direction of its change.
+        var recentRatings = await dbContext.CompanyRatings
+            .Where(rating => rating.CompanyId == companyId)
+            .OrderByDescending(rating => rating.Id)
+            .Take(2)
+            .Select(rating => rating.Rating)
+            .ToListAsync();
+
+        int? closedInCycleNumber = company.ClosedInCycleId is int closedCycleId
+            ? await dbContext.MarketCycles
+                .Where(cycle => cycle.Id == closedCycleId)
+                .Select(cycle => (int?)cycle.CycleNumber)
+                .FirstOrDefaultAsync()
+            : null;
+
         return new CompanyDetailResponse(
             company.Id,
             company.Name,
@@ -798,7 +1337,11 @@ public static class MarketEndpoints
             sharesHeldByIssuer,
             sharesOutstanding,
             shareholderCount,
-            company.CreatedAt);
+            company.CreatedAt,
+            recentRatings.Count > 0 ? recentRatings[0].ToString() : null,
+            recentRatings.Count > 1 ? recentRatings[1].ToString() : null,
+            company.ClosedInCycleId != null,
+            closedInCycleNumber);
     }
 
     private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(AppDbContext dbContext, int participantId)
@@ -1002,7 +1545,28 @@ public sealed record CompanyResponse(
     string? IndustryName,
     int IssuedSharesCount,
     decimal? CurrentPrice,
-    decimal PriceChangePct);
+    decimal PriceChangePct,
+    string? CurrentRating);
+
+public sealed record CompanyAttentionResponse(
+    int CompanyId,
+    string Name,
+    string? IndustryName,
+    decimal? CurrentPrice,
+    decimal PriceChangePct,
+    string? CurrentRating,
+    int Shares,
+    decimal MarketValue,
+    bool PriceDeclining,
+    bool BadNewsImpact,
+    bool HighRisk,
+    bool RecentMerge);
+
+public sealed record PagedCompaniesResponse(CompanyResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record PagedParticipantsResponse(ParticipantResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record PagedNewsResponse(NewsPostResponse[] Items, int Total, int Page, int PageSize);
 
 public sealed record CompanyDetailResponse(
     int Id,
@@ -1016,7 +1580,11 @@ public sealed record CompanyDetailResponse(
     int SharesHeldByIssuer,
     int SharesOutstanding,
     int ShareholderCount,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    string? CurrentRating,
+    string? PreviousRating,
+    bool IsClosed,
+    int? ClosedInCycleNumber);
 
 public sealed record ShareholderResponse(
     int OwnerId,
@@ -1025,6 +1593,59 @@ public sealed record ShareholderResponse(
     decimal MarketValue,
     decimal CostBasis,
     decimal PctOfIssued);
+
+public sealed record AuditorResponse(int Id, string Name, string Description, int AuditCount);
+
+public sealed record AuditRowResponse(
+    int Id,
+    int CompanyId,
+    string CompanyName,
+    string Rating,
+    decimal? ImpactPercent,
+    int CyclesAgo,
+    DateTime CreatedAt);
+
+public sealed record PagedAuditsResponse(AuditRowResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record ClosedFundResponse(
+    int Id,
+    int ParticipantId,
+    string Name,
+    string? Temperament,
+    string? RiskProfile,
+    decimal PeakNetWorth,
+    int CreatedInCycleNumber,
+    DateTime? ClosedAt);
+
+public sealed record PagedClosedFundsResponse(ClosedFundResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record ClosedCompanyResponse(
+    int Id,
+    string Name,
+    int IndustryId,
+    string? IndustryName,
+    int IssuedSharesCount,
+    decimal? FinalPrice,
+    int CreatedInCycleNumber,
+    int ClosedInCycleNumber,
+    DateTime? ClosedAt);
+
+public sealed record PagedClosedCompaniesResponse(ClosedCompanyResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record CompanyRatingResponse(
+    int Id,
+    string Rating,
+    decimal? ImpactPercent,
+    string AuditorName,
+    int CyclesAgo,
+    DateTime CreatedAt);
+
+public sealed record ShareEmissionResponse(
+    int Id,
+    int SharesEmitted,
+    int RecipientCount,
+    int CyclesAgo,
+    DateTime CreatedAt);
 
 public sealed record MarketResponse(
     int Id,
@@ -1159,6 +1780,7 @@ public sealed record NewsPostResponse(
     string Title,
     string Content,
     int PublishedInCycleId,
+    int PublishedInCycleNumber,
     DateTime PublishedAt,
     string Scope,
     string? Direction,

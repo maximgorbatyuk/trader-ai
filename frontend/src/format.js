@@ -53,3 +53,17 @@ export const TEMPERAMENT_TAG_CLASS = {
   Balanced: 'tag-temperament-balanced',
   Conservative: 'tag-temperament-conservative',
 }
+
+// Risk-rating labels and tag classes. Severity escalates through non-market hues (calm blue → amber → magenta)
+// so the market's reserved green/red are untouched; the text label carries the meaning without relying on hue.
+export const RATING_LABEL = {
+  Low: 'Low risk',
+  High: 'High risk',
+  Extra: 'Extra risk',
+}
+
+export const RATING_TAG_CLASS = {
+  Low: 'tag-rating-low',
+  High: 'tag-rating-high',
+  Extra: 'tag-rating-extra',
+}

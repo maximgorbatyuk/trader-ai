@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
 
@@ -60,7 +61,11 @@ public sealed class MarketService(
     BankruptcyService? bankruptcyService = null,
     CollectiveFundService? collectiveFundService = null,
     MarketExitService? marketExitService = null,
-    StockSplitService? stockSplitService = null)
+    StockSplitService? stockSplitService = null,
+    AuditorService? auditorService = null,
+    ShareEmissionService? shareEmissionService = null,
+    CompanyLifecycleService? companyLifecycleService = null,
+    IOptions<ArchiveOptions>? archiveOptions = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -268,6 +273,23 @@ public sealed class MarketService(
             await dbContext.SaveChangesAsync();
         }
 
+        // Another supply-side corporate action right after splits: very large companies may issue free shares,
+        // diluting price before the worth-reading services and this cycle's matching run.
+        if (shareEmissionService is not null)
+        {
+            await shareEmissionService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
+        // Closes at most one failing company and may list a new one. Runs in the same pre-match window so a
+        // delisted company's cancelled orders and wiped holdings, and a new listing's float, all reach the
+        // worth-reading services and this cycle's matching.
+        if (companyLifecycleService is not null)
+        {
+            await companyLifecycleService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
         await LiquidateStarvedHoldersAsync(participantsById);
 
         // Runs before this cycle's matching so a wealthy trader's collapse, and a bankrupt trader's cheaper
@@ -293,6 +315,14 @@ public sealed class MarketService(
         if (marketExitService is not null)
         {
             await marketExitService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
+        // Auditors run last so bankruptcy, funds, and exits read pre-audit prices; this cycle's decisions and
+        // matching then react to the fresh ratings, any price correction, and the bids that were pulled.
+        if (auditorService is not null)
+        {
+            await auditorService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
             await dbContext.SaveChangesAsync();
         }
     }
@@ -477,7 +507,7 @@ public sealed class MarketService(
 
         var pricedCompanyIds = latestPriceByCompany.Keys.ToList();
         var companies = await dbContext.Companies
-            .Where(company => pricedCompanyIds.Contains(company.Id))
+            .Where(company => company.ClosedInCycleId == null && pricedCompanyIds.Contains(company.Id))
             .OrderBy(company => company.Id)
             .ToListAsync();
 
@@ -557,19 +587,15 @@ public sealed class MarketService(
         }
     }
 
-    private async Task<IReadOnlyDictionary<int, decimal>> LatestPriceByCompanyAsync()
-    {
-        var snapshots = await dbContext.PriceSnapshots.ToListAsync();
-        return snapshots
-            .GroupBy(snapshot => snapshot.CompanyId)
-            .ToDictionary(group => group.Key, group => group.OrderByDescending(snapshot => snapshot.Id).First().Price);
-    }
+    private async Task<IReadOnlyDictionary<int, decimal>> LatestPriceByCompanyAsync() =>
+        await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
 
     // How much a participant may reserve on top of its available cash: a share of total worth (cash plus
-    // holdings at the latest price), never negative so a trader already underwater cannot borrow further.
-    private async Task<decimal> DebtAllowanceAsync(Participant participant)
+    // holdings at the latest price), never negative so a trader already underwater cannot borrow further. The
+    // caller may hand in an already-computed price map to avoid re-reading it once per order.
+    private async Task<decimal> DebtAllowanceAsync(Participant participant, IReadOnlyDictionary<int, decimal>? priceByCompany = null)
     {
-        var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        var latestPriceByCompany = priceByCompany ?? await LatestPriceByCompanyAsync();
         var holdingsValue = (await dbContext.Holdings
                 .Where(holding => holding.ParticipantId == participant.Id && holding.Quantity > 0)
                 .Select(holding => new { holding.CompanyId, holding.Quantity })
@@ -616,7 +642,9 @@ public sealed class MarketService(
         int companyId,
         OrderType type,
         int quantity,
-        decimal limitPrice)
+        decimal limitPrice,
+        IReadOnlyDictionary<int, decimal>? priceByCompany = null,
+        bool deferSave = false)
     {
         if (quantity <= 0)
         {
@@ -670,7 +698,7 @@ public sealed class MarketService(
         {
             var reserved = limitPrice * quantity;
             if (participant.AvailableBalance < reserved
-                && participant.AvailableBalance + await DebtAllowanceAsync(participant) < reserved)
+                && participant.AvailableBalance + await DebtAllowanceAsync(participant, priceByCompany) < reserved)
             {
                 return PlaceOrderResult.Fail("Insufficient available cash to reserve for the buy order, even on the debt allowance.");
             }
@@ -715,7 +743,12 @@ public sealed class MarketService(
             dbContext.Orders.Add(order);
         }
 
-        await dbContext.SaveChangesAsync();
+        // The decision pass stages many orders behind one save; a single-order caller saves immediately.
+        if (!deferSave)
+        {
+            await dbContext.SaveChangesAsync();
+        }
+
         return PlaceOrderResult.Ok(order);
     }
 
@@ -785,9 +818,59 @@ public sealed class MarketService(
         market.UpdatedAt = now;
         await dbContext.SaveChangesAsync();
 
+        // Move rows the running simulation no longer reads out of the live tables so the working set stays
+        // small; runs in the advance transaction so a cycle either fully completes and archives or neither.
+        await ArchiveAgedRowsAsync(currentCycle.CycleNumber);
+
         await transaction.CommitAsync();
 
         return AdvanceCycleResult.Ok(currentCycle.CycleNumber, fillCount);
+    }
+
+    // Bulk-moves price snapshots, money transactions, and worth snapshots older than the retention window from
+    // their live tables to the matching archive tables. Nothing in the market references these rows once they
+    // age past the window, so the move is a plain INSERT ... SELECT then DELETE keyed on the created-in cycle.
+    private async Task ArchiveAgedRowsAsync(int currentCycleNumber)
+    {
+        var options = archiveOptions?.Value ?? new ArchiveOptions();
+        if (!options.Enabled)
+        {
+            return;
+        }
+
+        var cutoffCycleNumber = currentCycleNumber - options.RetentionCycles;
+        if (cutoffCycleNumber <= 0)
+        {
+            return;
+        }
+
+        // Cycle ids grow with cycle number, so the highest id at or before the cutoff number bounds the rows
+        // to archive by their CreatedInCycleId without a join.
+        var cutoffCycleId = await dbContext.MarketCycles
+            .Where(cycle => cycle.CycleNumber <= cutoffCycleNumber)
+            .MaxAsync(cycle => (int?)cycle.Id) ?? 0;
+        if (cutoffCycleId <= 0)
+        {
+            return;
+        }
+
+        await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
+            INSERT INTO PriceSnapshotArchives (Id, CompanyId, Price, Capitalization, SourceShareTransactionId, CreatedInCycleId, CreatedAt)
+            SELECT Id, CompanyId, Price, Capitalization, SourceShareTransactionId, CreatedInCycleId, CreatedAt
+            FROM PriceSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
+        await dbContext.PriceSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
+
+        await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
+            INSERT INTO MoneyTransactionArchives (Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, CreatedInCycleId, CreatedAt)
+            SELECT Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, CreatedInCycleId, CreatedAt
+            FROM MoneyTransactions WHERE CreatedInCycleId <= {cutoffCycleId}");
+        await dbContext.MoneyTransactions.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
+
+        await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
+            INSERT INTO ParticipantWorthSnapshotArchives (Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, CreatedAt)
+            SELECT Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, CreatedAt
+            FROM ParticipantWorthSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
+        await dbContext.ParticipantWorthSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
     }
 
     // Records each trader's cash and holdings value for the just-completed cycle so per-cycle change figures
@@ -922,9 +1005,18 @@ public sealed class MarketService(
             .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
         var baselineCycleNumber = cycleNumbersById.GetValueOrDefault(market.CurrentCycleId.Value) - LongRangeWindowCycles;
 
-        var snapshots = await dbContext.PriceSnapshots.ToListAsync();
+        // Delisted companies keep their price history for the detail page but must not be offered to the engine,
+        // which would otherwise rest ghost bids on a stock that has no float to fill them.
+        var closedCompanyIds = (await dbContext.Companies
+                .Where(company => company.ClosedInCycleId != null)
+                .Select(company => company.Id)
+                .ToListAsync())
+            .ToHashSet();
+
+        var snapshots = await dbContext.PriceSnapshots.AsNoTracking().ToListAsync();
         var quotes = snapshots
             .GroupBy(snapshot => snapshot.CompanyId)
+            .Where(group => !closedCompanyIds.Contains(group.Key))
             .Select(group =>
             {
                 var ordered = group.OrderByDescending(snapshot => snapshot.Id).ToList();
@@ -1012,12 +1104,16 @@ public sealed class MarketService(
 
             foreach (var intent in decisionEngine.Decide(context))
             {
+                // The engine emits at most one order per trader and skips companies the trader already has an
+                // open order in, so staged orders never race the per-order validation — one save covers the pass.
                 var result = await PlaceOrderCoreAsync(
                     trader.Id,
                     intent.CompanyId,
                     intent.Type,
                     intent.Quantity,
-                    intent.LimitPrice);
+                    intent.LimitPrice,
+                    priceByCompany,
+                    deferSave: true);
 
                 if (result.Success)
                 {
@@ -1026,6 +1122,7 @@ public sealed class MarketService(
             }
         }
 
+        await dbContext.SaveChangesAsync();
         return RunDecisionsResult.Ok(ordersPlaced);
     }
 
@@ -1079,6 +1176,9 @@ public sealed class MarketService(
         await dbContext.Orders.ExecuteDeleteAsync();
         await dbContext.MarketCycles.ExecuteDeleteAsync();
         await dbContext.ParticipantWorthSnapshots.ExecuteDeleteAsync();
+        await dbContext.PriceSnapshotArchives.ExecuteDeleteAsync();
+        await dbContext.MoneyTransactionArchives.ExecuteDeleteAsync();
+        await dbContext.ParticipantWorthSnapshotArchives.ExecuteDeleteAsync();
         await dbContext.Participants.ExecuteDeleteAsync();
         await dbContext.Companies.ExecuteDeleteAsync();
         await dbContext.Industries.ExecuteDeleteAsync();
@@ -1091,7 +1191,8 @@ public sealed class MarketService(
             "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', " +
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
-            "'CollectiveFunds', 'CollectiveFundParticipants', 'ParticipantWorthSnapshots')");
+            "'CollectiveFunds', 'CollectiveFundParticipants', 'ParticipantWorthSnapshots', " +
+            "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives')");
 
         var market = await SeedDemoMarketCoreAsync();
         await transaction.CommitAsync();
@@ -1183,6 +1284,7 @@ public sealed class MarketService(
                 // across industries so most sectors have at least one listing for news to move.
                 IndustryId = industryIds[index % industryIds.Length],
                 IssuedSharesCount = shareCount,
+                CreatedInCycleId = firstCycle.Id,
                 CreatedAt = now,
                 UpdatedAt = now,
             };
@@ -1237,8 +1339,17 @@ public sealed class MarketService(
             dbContext.ChangeTracker.AutoDetectChangesEnabled = true;
         }
 
+        // Rating agencies that review companies once the market runs; added with no random draw so the generated
+        // demo data above is unaffected.
+        foreach (var (name, description) in DemoAuditorProfiles.Take(AuditorService.AuditorCountFor(companyCount)))
+        {
+            dbContext.Auditors.Add(new Auditor { Name = name, Description = description, CreatedAt = now });
+        }
+
         // Drawn last so adding the dividend schedule does not shift the generated demo data above.
         market.NextDividendCycleNumber = firstCycle.CycleNumber + RandomDividendInterval(random);
+        // The appearance clock starts at the first cycle so the same 100-cycle safe period applies from launch.
+        market.LastCompanyAppearanceCycleNumber = firstCycle.CycleNumber;
         market.CurrentCycleId = firstCycle.Id;
         await dbContext.SaveChangesAsync();
 

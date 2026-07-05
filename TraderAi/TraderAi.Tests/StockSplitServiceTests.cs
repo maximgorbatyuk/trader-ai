@@ -7,11 +7,13 @@ using TraderAi.Services;
 
 namespace TraderAi.Tests;
 
-// Splits are deterministic (no random draws): a company at or above the price threshold splits 4-for-1,
-// leaving market cap and every holder's worth unchanged while dividing the per-share price.
+// Splits and merges are deterministic (no random draws): a company at or above the high threshold splits
+// 4-for-1 (cap and worth unchanged), and one below the low threshold merges 4-to-1, flooring fractional
+// holdings while lifting the per-share price.
 public sealed class StockSplitServiceTests : IDisposable
 {
     private const decimal Threshold = 1000m;
+    private const decimal MergeThreshold = 5m;
     private const int Ratio = 4;
 
     private readonly SqliteConnection connection;
@@ -169,6 +171,150 @@ public sealed class StockSplitServiceTests : IDisposable
 
         var refreshed = await context.Companies.AsNoTracking().SingleAsync();
         Assert.Equal(300_000_000, refreshed.IssuedSharesCount);
+        Assert.Equal(1, await context.PriceSnapshots.CountAsync(snapshot => snapshot.CompanyId == company.Id));
+    }
+
+    [Fact]
+    public async Task AtMergeThresholdDoesNotMerge()
+    {
+        var (cycle, company) = await SeedAsync(price: MergeThreshold);
+
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync();
+        Assert.Equal(1000, refreshed.IssuedSharesCount);
+        Assert.Equal(1, await context.PriceSnapshots.CountAsync(snapshot => snapshot.CompanyId == company.Id));
+    }
+
+    [Fact]
+    public async Task MergePreservesHolderWorthAndMarketCapWhenDivisible()
+    {
+        var (cycle, company) = await SeedAsync(price: 4m);
+        var holder = await AddParticipantAsync(balance: 10_000m);
+        await AddHoldingAsync(holder.Id, company.Id, quantity: 100, averageCost: 200m);
+
+        var worthBefore = 100 * 4m;
+        var capBefore = company.IssuedSharesCount * 4m;
+
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshedCompany = await context.Companies.AsNoTracking().SingleAsync();
+        var newPrice = await LatestPriceAsync(company.Id);
+        var refreshedHolding = await context.Holdings.AsNoTracking().SingleAsync(holding => holding.ParticipantId == holder.Id);
+
+        // 100 held + 900 implicit float, both divide cleanly: 25 held + 225 float = 250 issued.
+        Assert.Equal(250, refreshedCompany.IssuedSharesCount);
+        Assert.Equal(16m, newPrice);
+        Assert.Equal(25, refreshedHolding.Quantity);
+        Assert.Equal(800m, refreshedHolding.AverageCost);
+        Assert.Equal(capBefore, refreshedCompany.IssuedSharesCount * newPrice);
+        Assert.Equal(worthBefore, refreshedHolding.Quantity * newPrice);
+    }
+
+    [Fact]
+    public async Task MergeFloorsFractionalHoldingsAndDropsTheRemainder()
+    {
+        var (cycle, company) = await SeedAsync(price: 4m);
+        var holder = await AddParticipantAsync(balance: 10_000m);
+        await AddHoldingAsync(holder.Id, company.Id, quantity: 10, averageCost: 200m);
+
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var newPrice = await LatestPriceAsync(company.Id);
+        var refreshedHolding = await context.Holdings.AsNoTracking().SingleAsync(holding => holding.ParticipantId == holder.Id);
+        var refreshedCompany = await context.Companies.AsNoTracking().SingleAsync();
+
+        // 10 floors to 2 (the half-share is dropped, not paid out), so worth ticks down from 40 to 32.
+        Assert.Equal(2, refreshedHolding.Quantity);
+        Assert.Equal(800m, refreshedHolding.AverageCost);
+        Assert.Equal(16m, newPrice);
+        Assert.True(refreshedHolding.Quantity * newPrice < 10 * 4m);
+        // 2 held + floor(990 / 4) = 2 + 247 = 249 issued, so the implicit float stays consistent.
+        Assert.Equal(249, refreshedCompany.IssuedSharesCount);
+    }
+
+    [Fact]
+    public async Task MergeCancelsParticipantOrdersAndRedenominatesTheFloat()
+    {
+        var (cycle, company) = await SeedAsync(price: 4m);
+
+        AddOrder(company.Id, participantId: null, OrderType.Sell, quantity: 860, filled: 0, limit: 4m, reserved: 0m, cycle.Id);
+        var seller = await AddParticipantAsync(balance: 10_000m);
+        await AddHoldingAsync(seller.Id, company.Id, quantity: 100, averageCost: 4m);
+        AddOrder(company.Id, seller.Id, OrderType.Sell, quantity: 40, filled: 0, limit: 4.4m, reserved: 0m, cycle.Id);
+        var buyer = await AddParticipantAsync(balance: 100_000m, reserved: 45m);
+        AddOrder(company.Id, buyer.Id, OrderType.Buy, quantity: 10, filled: 0, limit: 4.5m, reserved: 45m, cycle.Id);
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        // The float keeps standing, only re-denominated: quantity divided, limit multiplied.
+        var floatOrder = await context.Orders.AsNoTracking().SingleAsync(order => order.ParticipantId == null);
+        Assert.Equal(OrderStatus.Open, floatOrder.Status);
+        Assert.Equal(215, floatOrder.Quantity);
+        Assert.Equal(16m, floatOrder.LimitPrice);
+
+        var sell = await context.Orders.AsNoTracking().SingleAsync(order => order.ParticipantId == seller.Id);
+        Assert.Equal(OrderStatus.Cancelled, sell.Status);
+
+        var buy = await context.Orders.AsNoTracking().SingleAsync(order => order.ParticipantId == buyer.Id);
+        Assert.Equal(OrderStatus.Cancelled, buy.Status);
+        Assert.Equal(0m, buy.ReservedCashAmount);
+        var refreshedBuyer = await context.Participants.AsNoTracking().SingleAsync(participant => participant.Id == buyer.Id);
+        Assert.Equal(0m, refreshedBuyer.ReservedBalance);
+        Assert.True(await context.MoneyTransactions.AnyAsync(money =>
+            money.ParticipantId == buyer.Id && money.Type == MoneyTransactionType.Release && money.Amount == 45m));
+    }
+
+    [Fact]
+    public async Task MergeCancelsThePlayersOrders()
+    {
+        var (cycle, company) = await SeedAsync(price: 4m);
+        var player = await AddParticipantAsync(balance: 100_000m, reserved: 45m, type: ParticipantType.Player);
+        AddOrder(company.Id, player.Id, OrderType.Buy, quantity: 10, filled: 0, limit: 4.5m, reserved: 45m, cycle.Id);
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var buy = await context.Orders.AsNoTracking().SingleAsync(order => order.ParticipantId == player.Id);
+        Assert.Equal(OrderStatus.Cancelled, buy.Status);
+        Assert.Equal(0m, buy.ReservedCashAmount);
+        var refreshedPlayer = await context.Participants.AsNoTracking().SingleAsync(participant => participant.Id == player.Id);
+        Assert.Equal(0m, refreshedPlayer.ReservedBalance);
+    }
+
+    [Fact]
+    public async Task MergePostsAnImpactFreeNews()
+    {
+        var (cycle, company) = await SeedAsync(price: 4m);
+
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var news = await context.NewsPosts.AsNoTracking().SingleAsync();
+        Assert.Equal(NewsImpactScope.None, news.Scope);
+        Assert.Null(news.Direction);
+        Assert.Null(news.ImpactPercent);
+        Assert.Null(news.TargetCompanyId);
+        Assert.Contains(company.Name, news.Title);
+        Assert.Equal(0, await context.NewsPostIndustries.CountAsync());
+    }
+
+    [Fact]
+    public async Task FloorGuardSkipsMergeAtTheShareFloor()
+    {
+        var (cycle, company) = await SeedAsync(price: 4m, issuedShares: 60);
+
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync();
+        Assert.Equal(60, refreshed.IssuedSharesCount);
         Assert.Equal(1, await context.PriceSnapshots.CountAsync(snapshot => snapshot.CompanyId == company.Id));
     }
 

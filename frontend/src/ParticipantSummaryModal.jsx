@@ -118,8 +118,8 @@ export function ParticipantSummaryModal({ participant, onClose }) {
           <button type="button" className="btn" ref={closeRef} onClick={onClose}>
             Close
           </button>
-          <Link className="btn btn-primary" to={`/traders?trader=${participant.id}`} onClick={onClose}>
-            Open in Traders page
+          <Link className="btn btn-primary" to={`/traders/${participant.id}`} onClick={onClose}>
+            Open trader page
           </Link>
         </footer>
       </div>

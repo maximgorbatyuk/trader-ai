@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt, formatMoney } from './format'
+import { Footer, TopBar } from './Chrome'
 
-const PLAYER_POLL_INTERVAL_MS = 2500
+const SHELL_POLL_INTERVAL_MS = 1500
 const WORTH_GLYPH = { up: '▲', down: '▼' }
 
 // Total worth is coloured by the last completed cycle's change — green up, red down — and left ink-dark when
@@ -14,26 +15,57 @@ function worthToneOf(change) {
   return change > 0 ? 'up' : 'down'
 }
 
-// Layout route: the persistent left sidebar plus the routed page. Every page nests under it so the sidebar
-// stays put while the content area swaps; each page still owns its own topbar and polling.
+// Layout route: the persistent left sidebar, the shared top navbar and footer, and the routed page between
+// them. The shell owns the market poll and the Step/Start/Pause/Reset actions so the navbar can drive them on
+// every page; pages read the market state and actions through the outlet context.
 export function AppShell() {
   const [player, setPlayer] = useState(null)
+  const [market, setMarket] = useState(null)
+  const [connected, setConnected] = useState(false)
+  const [ready, setReady] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [actionError, setActionError] = useState(null)
+
+  const load = useCallback(async () => {
+    try {
+      const [marketData, playerData] = await Promise.all([api.getMarket(), api.getPlayer()])
+      setMarket(marketData)
+      setPlayer(playerData)
+      setConnected(true)
+    } catch {
+      setConnected(false)
+    } finally {
+      setReady(true)
+    }
+  }, [])
 
   useEffect(() => {
-    async function load() {
-      try {
-        setPlayer(await api.getPlayer())
-      } catch {
-        // Keep the last known stats when a refresh fails.
-      }
-    }
-
     const initialId = setTimeout(load, 0)
-    const intervalId = setInterval(load, PLAYER_POLL_INTERVAL_MS)
+    const intervalId = setInterval(load, SHELL_POLL_INTERVAL_MS)
     return () => {
       clearTimeout(initialId)
       clearInterval(intervalId)
     }
+  }, [load])
+
+  const runAction = useCallback(
+    async (action) => {
+      setPending(true)
+      setActionError(null)
+      try {
+        await action()
+        await load()
+      } catch (error) {
+        setActionError(error.message)
+      } finally {
+        setPending(false)
+      }
+    },
+    [load],
+  )
+
+  const resetMarket = useCallback(async () => {
+    await api.resetMarket()
   }, [])
 
   const worthTone = player ? worthToneOf(player.lastCycleWorthChange) : null
@@ -45,14 +77,32 @@ export function AppShell() {
           <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/" end>
             Dashboard
           </NavLink>
+          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/trade-market">
+            Trade market
+          </NavLink>
           <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/traders">
             Traders
           </NavLink>
           <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/companies">
             Companies
           </NavLink>
+          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/closed-companies">
+            Closed companies
+          </NavLink>
+          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/industries">
+            Industries
+          </NavLink>
+          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/news">
+            News
+          </NavLink>
+          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/auditors">
+            Auditors
+          </NavLink>
           <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/departed-traders">
             Departed traders
+          </NavLink>
+          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/closed-funds">
+            Closed funds
           </NavLink>
         </nav>
         {player ? (
@@ -76,7 +126,18 @@ export function AppShell() {
           </div>
         ) : null}
       </aside>
-      <Outlet />
+      <div className="app">
+        <TopBar
+          connected={connected}
+          ready={ready}
+          market={market}
+          pending={pending}
+          runAction={runAction}
+          resetMarket={resetMarket}
+        />
+        <Outlet context={{ market, connected, ready, pending, actionError, runAction }} />
+        <Footer />
+      </div>
     </div>
   )
 }

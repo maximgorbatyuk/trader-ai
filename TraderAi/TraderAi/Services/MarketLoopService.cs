@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Options;
 
 namespace TraderAi.Services;
@@ -30,13 +31,17 @@ public sealed class MarketLoopService(
                 {
                     using var scope = scopeFactory.CreateScope();
                     var marketService = scope.ServiceProvider.GetRequiredService<MarketService>();
+
+                    var stopwatch = Stopwatch.StartNew();
                     var result = await marketService.RunCycleTickAsync();
+                    stopwatch.Stop();
 
                     if (result.Ran)
                     {
                         logger.LogInformation(
-                            "Auto cycle {Cycle} completed with {Orders} orders placed and {Fills} fills.",
+                            "Auto cycle {Cycle} completed in {ElapsedSeconds:0.00}s with {Orders} orders placed and {Fills} fills.",
                             result.CompletedCycleNumber,
+                            stopwatch.Elapsed.TotalSeconds,
                             result.OrdersPlaced,
                             result.FillCount);
                     }
