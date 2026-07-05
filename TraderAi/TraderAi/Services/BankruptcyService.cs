@@ -34,6 +34,9 @@ public sealed class BankruptcyService(
     private const double DebtBankruptcyChancePerPercent = 0.0025;
     private const decimal MaxDebtPercent = 20m;
 
+    // While a crisis is active every trader's bankruptcy chance is doubled (clamped to 1).
+    private const double CrisisBankruptcyMultiplier = 2.0;
+
     // A bankrupt trader must sell down this fraction of the shares it held when bankruptcy struck.
     private const decimal SellDownFraction = 0.65m;
 
@@ -43,7 +46,7 @@ public sealed class BankruptcyService(
     private const decimal DiscountStepSize = 0.05m;
     private const decimal MaxDiscount = 0.95m;
 
-    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now)
+    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
     {
         if (!options.Value.Enabled)
         {
@@ -110,7 +113,7 @@ public sealed class BankruptcyService(
                 continue;
             }
 
-            MaybeTrigger(participant, owned, openForParticipant, latestPriceByCompany, available, currentCycleId, now);
+            MaybeTrigger(participant, owned, openForParticipant, latestPriceByCompany, available, currentCycleId, currentCycleNumber, now, activeCrisis);
         }
     }
 
@@ -121,7 +124,9 @@ public sealed class BankruptcyService(
         IReadOnlyDictionary<int, decimal> latestPriceByCompany,
         Dictionary<(int ParticipantId, int CompanyId), int> available,
         int currentCycleId,
-        DateTime now)
+        int currentCycleNumber,
+        DateTime now,
+        Crisis? activeCrisis)
     {
         // Only working traders carry bankruptcy risk; issuer-company participants are left out.
         if (!participant.IsActive
@@ -145,6 +150,11 @@ public sealed class BankruptcyService(
         }
 
         var probability = wealthyProbability + DebtBankruptcyProbability(participant, shareWorth);
+        if (activeCrisis is not null)
+        {
+            probability = Math.Min(1.0, probability * CrisisBankruptcyMultiplier);
+        }
+
         if (probability <= 0.0 || random.NextDouble() >= probability)
         {
             return;
@@ -198,6 +208,20 @@ public sealed class BankruptcyService(
             TriggeredInCycleId = currentCycleId,
             TriggeredAt = now,
         });
+
+        // A collapse that struck while a crisis is active joins that crisis's timeline.
+        if (activeCrisis is not null)
+        {
+            dbContext.CrisisEvents.Add(new CrisisEvent
+            {
+                CrisisId = activeCrisis.Id,
+                Type = CrisisEventType.Bankruptcy,
+                Description = $"{participant.Name} went bankrupt",
+                CreatedInCycleId = currentCycleId,
+                CreatedInCycleNumber = currentCycleNumber,
+                CreatedAt = now,
+            });
+        }
 
         ListForcedSells(participant, SellDownTarget(participant), owned, latestPriceByCompany, available, currentCycleId, now);
     }

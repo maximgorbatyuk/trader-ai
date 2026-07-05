@@ -280,6 +280,30 @@ public sealed class NewsServiceTests : IDisposable
         Assert.Equal(1, await context.NewsPosts.CountAsync());
     }
 
+    [Fact]
+    public async Task DuringACrisisAPriceLiftingAutomatedPostIsSuppressed()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var cycle = await context.MarketCycles.FirstAsync();
+        cycle.CycleNumber = 25;
+        await context.SaveChangesAsync();
+        var company = await context.Companies.FirstAsync();
+        var priceBefore = await LatestPriceAsync(company.Id);
+
+        var settings = new NewsOptions { Enabled = true, CyclesBetweenPosts = 25, ImpactProbability = 1.0 };
+        // ints: 4 for content, then 0 → Increase direction. doubles: impact gate passes (0.0), then the crisis
+        // suppression roll hits (0.0 < 0.5) so the lift is dropped to an impact-free post.
+        var random = new ScriptedRandom([0d, 0d], [0, 0, 0, 0, 0]);
+        var result = await Service(settings, random)
+            .MaybeAddAutomatedNewsForCycleAsync(cycle, DateTime.UtcNow, duringCrisis: true);
+        await context.SaveChangesAsync();
+
+        Assert.True(result.Published);
+        Assert.Equal(0, result.CompaniesMoved);
+        Assert.Equal(NewsImpactScope.None, result.Post!.Scope);
+        Assert.Equal(priceBefore, await LatestPriceAsync(company.Id));
+    }
+
     public void Dispose()
     {
         context.Dispose();

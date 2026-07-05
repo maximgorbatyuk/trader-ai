@@ -94,6 +94,21 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
         Assert.Equal(100, savedMarket.LastScienceInvestigationCycleNumber);
     }
 
+    [Fact]
+    public async Task ActiveCrisisHalvesTheInvestigationChance()
+    {
+        await SeedAsync(industryCount: 1, cycleNumber: 100);
+        var (market, cycle) = await MarketAndCycleAsync();
+
+        // At cycle 100 the calm chance is 1.0, so a 0.6 draw would fire; a crisis halves it to 0.5 and the
+        // same draw no longer clears the bar.
+        var result = await Service(enabled: true, new ScriptedRandom([0.6d], []))
+            .MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow, duringCrisis: true);
+
+        Assert.False(result.Triggered);
+        Assert.Equal(0, await context.ScienceInvestigations.CountAsync());
+    }
+
     private async Task<(Market Market, MarketCycle Cycle)> MarketAndCycleAsync()
     {
         var market = await context.Markets.FirstAsync();

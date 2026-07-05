@@ -103,3 +103,10 @@ public enum CompanyRiskRating
     High,
     Extra,
 }
+
+public enum CrisisEventType
+{
+    IndustryShock,
+    AuditorRating,
+    Bankruptcy,
+}

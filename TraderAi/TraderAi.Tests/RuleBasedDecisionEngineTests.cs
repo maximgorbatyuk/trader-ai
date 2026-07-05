@@ -40,6 +40,49 @@ public sealed class RuleBasedDecisionEngineTests
     }
 
     [Fact]
+    public void ActiveCrisisPullsConservativeLowRiskTradersBackFromBuying()
+    {
+        var calm = CountBuysUnderCrisis(Temperament.Conservative, RiskProfile.Low, crisisActive: false);
+        var stressed = CountBuysUnderCrisis(Temperament.Conservative, RiskProfile.Low, crisisActive: true);
+
+        Assert.True(
+            stressed < calm,
+            $"a crisis should suppress a conservative low-risk trader's buys (calm {calm}, stressed {stressed})");
+    }
+
+    [Fact]
+    public void ActiveCrisisLeavesBalancedMediumTradersBuyingUnchanged()
+    {
+        // No matching trait means no suppression and no extra draw, so the outcome is bit-for-bit identical.
+        var calm = CountBuysUnderCrisis(Temperament.Balanced, RiskProfile.Medium, crisisActive: false);
+        var stressed = CountBuysUnderCrisis(Temperament.Balanced, RiskProfile.Medium, crisisActive: true);
+
+        Assert.Equal(calm, stressed);
+    }
+
+    // A strong-buy, no-shares market so every action is a buy or a skip; a fresh, equally seeded engine keeps
+    // the only difference the crisis flag and personality.
+    private static int CountBuysUnderCrisis(Temperament temperament, RiskProfile riskProfile, bool crisisActive)
+    {
+        var engine = new RuleBasedDecisionEngine(new MaxTradeSizer(), new Random(20260705));
+        var context = new DecisionContext(
+            NewParticipant(availableCash: 50_000m, temperament, riskProfile),
+            AvailableCash: 50_000m,
+            [new CompanyQuote(1, Price: 100m, PriceChangePct: 0.10m, NetShareDemand: 1000)],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            crisisActive);
+
+        var buys = 0;
+        for (var iteration = 0; iteration < 2000; iteration++)
+        {
+            buys += engine.Decide(context).Count(intent => intent.Type == OrderType.Buy);
+        }
+
+        return buys;
+    }
+
+    [Fact]
     public void NeverActsOnACompanyThatAlreadyHasAnOpenOrder()
     {
         var context = ContextFor(

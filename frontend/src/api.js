@@ -80,6 +80,7 @@ export const api = {
   getNews: (take = 30) => get(`/news?take=${take}`),
   getNewsPaged: (page = 1, pageSize = 20) => get(`/news/paged?page=${page}&pageSize=${pageSize}`),
   getCrises: (take = 30) => get(`/crises?take=${take}`),
+  getCrisis: (crisisId) => get(`/crises/${crisisId}`),
   getScienceInvestigations: (take = 30) => get(`/science-investigations?take=${take}`),
   getBankruptcies: (take = 30) => get(`/bankruptcies?take=${take}`),
   getMarketExits: (take = 50) => get(`/market-exits?take=${take}`),

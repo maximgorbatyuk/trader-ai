@@ -172,6 +172,50 @@ public sealed class AuditorServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ActiveCrisisTriplesIssueDiscoveryAndLogsToTimeline()
+    {
+        var cycle = await AddCycleAsync(20);
+        await SetupMarketAsync(cycle);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 100m, cycle);
+        await AddAuditorAsync();
+        var crisis = await AddCrisisAsync(cycle);
+
+        // A stable company's issue chance is 0.02, tripled to 0.06 by the crisis; a 0.05 roll now hits.
+        // pick 0.5, issue 0.05 (hit), drop size 0.5 → 25%; one int for the headline.
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.05d, 0.5d], [0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
+        await context.SaveChangesAsync();
+
+        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
+        Assert.Equal(CompanyRiskRating.Extra, rating.Rating);
+
+        var timelineEvent = await context.CrisisEvents.AsNoTracking()
+            .SingleAsync(row => row.Type == CrisisEventType.AuditorRating);
+        Assert.Equal(crisis.Id, timelineEvent.CrisisId);
+        Assert.Equal(company.Id, timelineEvent.CompanyId);
+    }
+
+    [Fact]
+    public async Task WithoutACrisisTheSameRollLeavesAStableCompanyLowAndLogsNothing()
+    {
+        var cycle = await AddCycleAsync(20);
+        await SetupMarketAsync(cycle);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 100m, cycle);
+        await AddAuditorAsync();
+
+        // No crisis: the base 0.02 chance is not cleared by a 0.05 roll, so the verdict stays Low.
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.05d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
+        Assert.Equal(CompanyRiskRating.Low, rating.Rating);
+        Assert.Equal(0, await context.CrisisEvents.CountAsync());
+    }
+
+    [Fact]
     public async Task RatedCompanyIsNotReviewedAgainWithinTheSafePeriod()
     {
         var ratedAt = await AddCycleAsync(10);
@@ -332,6 +376,23 @@ public sealed class AuditorServiceTests : IDisposable
         context.Orders.Add(order);
         await context.SaveChangesAsync();
         return order;
+    }
+
+    private async Task<Crisis> AddCrisisAsync(MarketCycle cycle)
+    {
+        var crisis = new Crisis
+        {
+            Title = "Shock",
+            Content = "Body",
+            Scope = CrisisScope.Global,
+            TriggeredInCycleId = cycle.Id,
+            TriggeredInCycleNumber = cycle.CycleNumber,
+            DurationCycles = 20,
+            TriggeredAt = DateTime.UtcNow,
+        };
+        context.Crises.Add(crisis);
+        await context.SaveChangesAsync();
+        return crisis;
     }
 
     private async Task AddRatingAsync(int companyId, int auditorId, CompanyRiskRating rating, MarketCycle cycle)

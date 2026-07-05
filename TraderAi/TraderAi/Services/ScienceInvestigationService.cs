@@ -27,18 +27,22 @@ public sealed class ScienceInvestigationService(
     private const int MinIndustries = 1;
     private const int MaxIndustries = 5;
 
+    // A breakthrough lifts prices, so during a crisis it fires half as often.
+    private const double CrisisChanceFactor = 0.5;
+
     // Every lifted industry rises by its own draw in this band.
     private const decimal MinImpactPercent = 0.5m;
     private const decimal MaxImpactPercent = 5m;
 
-    public async Task<TriggerScienceResult> MaybeTriggerForCycleAsync(Market market, MarketCycle currentCycle, DateTime now)
+    public async Task<TriggerScienceResult> MaybeTriggerForCycleAsync(
+        Market market, MarketCycle currentCycle, DateTime now, bool duringCrisis = false)
     {
         if (!options.Value.Enabled)
         {
             return TriggerScienceResult.None();
         }
 
-        if (!ShouldTrigger(currentCycle.CycleNumber, market.LastScienceInvestigationCycleNumber))
+        if (!ShouldTrigger(currentCycle.CycleNumber, market.LastScienceInvestigationCycleNumber, duringCrisis))
         {
             return TriggerScienceResult.None();
         }
@@ -53,10 +57,15 @@ public sealed class ScienceInvestigationService(
         return new TriggerScienceResult(true, investigation);
     }
 
-    private bool ShouldTrigger(int currentCycleNumber, int lastCycleNumber)
+    private bool ShouldTrigger(int currentCycleNumber, int lastCycleNumber, bool duringCrisis)
     {
         var cyclesSince = currentCycleNumber - lastCycleNumber;
         var probability = Math.Clamp((cyclesSince - QuietCycles) * StepPerCycle, 0d, 1d);
+        if (duringCrisis)
+        {
+            probability *= CrisisChanceFactor;
+        }
+
         // A draw is always consumed, even at zero chance, so a scripted Random in tests stays in lockstep.
         return random.NextDouble() < probability;
     }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useOutletContext } from 'react-router-dom'
+import { Link, useOutletContext } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatMoney } from './format'
@@ -247,7 +247,9 @@ function CrisisBanner({ crises, currentCycleNumber }) {
       <div className="crisis-banner-body">
         <p className="crisis-banner-head">
           <span className="crisis-scope">{latest.scope} crisis</span>
-          <span className="crisis-banner-title">{latest.title}</span>
+          <Link className="crisis-banner-title" to={`/crises/${latest.id}`}>
+            {latest.title}
+          </Link>
         </p>
         <p className="crisis-banner-meta num">
           {sectorCount} {sectorLabel(sectorCount)} · {formatDropRange(latest)} · cycle{' '}

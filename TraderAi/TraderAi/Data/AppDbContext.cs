@@ -35,6 +35,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<CrisisIndustry> CrisisIndustries => Set<CrisisIndustry>();
 
+    public DbSet<CrisisEvent> CrisisEvents => Set<CrisisEvent>();
+
     public DbSet<ScienceInvestigation> ScienceInvestigations => Set<ScienceInvestigation>();
 
     public DbSet<ScienceInvestigationIndustry> ScienceInvestigationIndustries => Set<ScienceInvestigationIndustry>();
@@ -72,6 +74,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasMany(crisis => crisis.Industries)
             .WithOne()
             .HasForeignKey(link => link.CrisisId);
+
+        modelBuilder.Entity<Crisis>()
+            .HasMany(crisis => crisis.Events)
+            .WithOne()
+            .HasForeignKey(crisisEvent => crisisEvent.CrisisId);
 
         modelBuilder.Entity<ScienceInvestigation>()
             .HasMany(investigation => investigation.Industries)

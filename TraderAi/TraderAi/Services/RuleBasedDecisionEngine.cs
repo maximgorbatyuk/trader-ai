@@ -40,6 +40,10 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
     private const double HighRiskDebtSellPerPercent = 0.0025;
     private const decimal MaxDebtPercent = 20m;
 
+    // While a crisis window is open, a buy is dropped this often per matching trait: conservative temperament
+    // and low-risk profile each apply it, and a trader with both has them stack (≈28% fewer buys).
+    private const double CrisisBuySuppression = 0.15;
+
     private const decimal MinPriceOffset = 0.01m;
     private const decimal MaxPriceOffset = 0.05m;
 
@@ -89,14 +93,14 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
         {
             if (BuildBuy(context, buyTarget) is { } pulledBuy)
             {
-                return [pulledBuy];
+                return Gate(pulledBuy, context);
             }
         }
         else if (sellTarget is not null && roll < buyPull + sellPull)
         {
             if (BuildSell(context, sellTarget) is { } pulledSell)
             {
-                return [pulledSell];
+                return Gate(pulledSell, context);
             }
         }
 
@@ -135,7 +139,47 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
             _ => null,
         };
 
-        return intent is null ? [] : [intent];
+        return intent is null ? [] : Gate(intent, context);
+    }
+
+    // During a crisis, a conservative or low-risk trader's buy is dropped to nothing with the suppression
+    // chance (traits stack); a suppressed buy becomes inaction rather than falling through to another order.
+    // The draw is taken only when a suppression actually applies, so calm-market decisions are unchanged.
+    private IReadOnlyList<OrderIntent> Gate(OrderIntent intent, DecisionContext context)
+    {
+        if (intent.Type != OrderType.Buy)
+        {
+            return [intent];
+        }
+
+        var keep = CrisisBuyKeepProbability(context.Participant, context.CrisisActive);
+        if (keep < 1.0 && random.NextDouble() >= keep)
+        {
+            return [];
+        }
+
+        return [intent];
+    }
+
+    private static double CrisisBuyKeepProbability(Participant participant, bool crisisActive)
+    {
+        if (!crisisActive)
+        {
+            return 1.0;
+        }
+
+        var keep = 1.0;
+        if (participant.Temperament == Temperament.Conservative)
+        {
+            keep *= 1.0 - CrisisBuySuppression;
+        }
+
+        if (participant.RiskProfile == RiskProfile.Low)
+        {
+            keep *= 1.0 - CrisisBuySuppression;
+        }
+
+        return keep;
     }
 
     private static (CompanyQuote? Target, double Pull) StrongestBuy(

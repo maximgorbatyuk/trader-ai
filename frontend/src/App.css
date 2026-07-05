@@ -1431,6 +1431,15 @@
   font-weight: 500;
 }
 
+/* The player block is a standalone dashboard card now (no tab wrapper), so it carries the panel surface itself. */
+.player-panel {
+  min-width: 0;
+  padding: var(--s-3) var(--s-4) var(--s-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
 .player-panel-head {
   display: flex;
   align-items: flex-start;

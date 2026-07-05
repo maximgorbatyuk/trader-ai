@@ -119,6 +119,47 @@ public sealed class CrisisServiceTests : IDisposable
         Assert.Equal(350, savedMarket.LastGlobalCrisisCycleNumber);
     }
 
+    [Fact]
+    public async Task GlobalCrisisStampsItsWindowAndOpensTheTimeline()
+    {
+        await SeedAsync(industryCount: 10, cycleNumber: 350);
+        var (market, cycle) = await MarketAndCycleAsync();
+
+        // Same forced draws as the share-of-industries case: global fires, the 30% floor picks 3 of 10.
+        var random = new ScriptedRandom([0.0d, 0.0d, 0.0d, 0.0d, 0.0d], [0, 0, 0, 0, 0, 0]);
+        var result = await Service(enabled: true, random).MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var crisis = Assert.Single(result.Crises);
+        Assert.Equal(350, crisis.TriggeredInCycleNumber);
+        Assert.Equal(20, crisis.DurationCycles);
+        Assert.Equal(3, await context.CrisisEvents.CountAsync(row => row.Type == CrisisEventType.IndustryShock));
+    }
+
+    [Fact]
+    public async Task GetActiveCrisisTracksItsDurationWindow()
+    {
+        await SeedAsync(industryCount: 1, cycleNumber: 200);
+        context.Crises.Add(new Crisis
+        {
+            Title = "Shock",
+            Content = "Body",
+            Scope = CrisisScope.Global,
+            TriggeredInCycleId = 1,
+            TriggeredInCycleNumber = 100,
+            DurationCycles = 20,
+            TriggeredAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+
+        var service = Service(enabled: true, new ScriptedRandom([], []));
+
+        Assert.Null(await service.GetActiveCrisisAsync(100));    // the trigger cycle is not yet inside the window
+        Assert.NotNull(await service.GetActiveCrisisAsync(101));  // first active cycle
+        Assert.NotNull(await service.GetActiveCrisisAsync(120));  // last active cycle
+        Assert.Null(await service.GetActiveCrisisAsync(121));    // window has closed
+    }
+
     private async Task<(Market Market, MarketCycle Cycle)> MarketAndCycleAsync()
     {
         var market = await context.Markets.FirstAsync();

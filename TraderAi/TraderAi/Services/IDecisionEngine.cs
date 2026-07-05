@@ -13,13 +13,15 @@ public sealed record CompanyQuote(
     decimal LongRangeChangePct = 0m);
 
 // Everything a decision engine needs for one participant, supplied by the caller so the engine
-// stays a pure function with no database access.
+// stays a pure function with no database access. CrisisActive is set while a market crisis window is open,
+// which pulls conservative and low-risk traders back from buying.
 public sealed record DecisionContext(
     Participant Participant,
     decimal AvailableCash,
     IReadOnlyList<CompanyQuote> Companies,
     IReadOnlyDictionary<int, int> SharesOwnedByCompany,
-    IReadOnlySet<int> CompaniesWithOpenOrders);
+    IReadOnlySet<int> CompaniesWithOpenOrders,
+    bool CrisisActive = false);
 
 public sealed record OrderIntent(OrderType Type, int CompanyId, int Quantity, decimal LimitPrice);
 

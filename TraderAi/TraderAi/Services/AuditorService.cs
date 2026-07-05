@@ -35,6 +35,9 @@ public sealed class AuditorService(
     private const double IssueChanceOnBigMove = 0.10;
     private const double IssueChanceOnStable = 0.02;
 
+    // While a crisis is active, auditors dig deeper: the issue-discovery chance is tripled (clamped to 1).
+    private const double CrisisIssueChanceMultiplier = 3.0;
+
     // An uncovered issue drops the price by a random amount in this range.
     private const decimal MinIssueDropPercent = 15m;
     private const decimal MaxIssueDropPercent = 35m;
@@ -47,7 +50,7 @@ public sealed class AuditorService(
     private const double HighRiskCancelDelta = -0.15;
     private const double ConservativeCancelDelta = 0.15;
 
-    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now)
+    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
     {
         if (!options.Value.Enabled)
         {
@@ -109,6 +112,11 @@ public sealed class AuditorService(
 
             var stable = IsStable(snapshotsByCompany.GetValueOrDefault(company.Id), currentCycleNumber);
             var issueChance = stable ? IssueChanceOnStable : IssueChanceOnBigMove;
+            if (activeCrisis is not null)
+            {
+                issueChance = Math.Min(1.0, issueChance * CrisisIssueChanceMultiplier);
+            }
+
             var issueFound = random.NextDouble() < issueChance;
 
             CompanyRiskRating rating;
@@ -169,6 +177,22 @@ public sealed class AuditorService(
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
+
+            // A risky verdict uncovered while a crisis is active joins that crisis's timeline.
+            if (activeCrisis is not null && rating is CompanyRiskRating.High or CompanyRiskRating.Extra)
+            {
+                dbContext.CrisisEvents.Add(new CrisisEvent
+                {
+                    CrisisId = activeCrisis.Id,
+                    Type = CrisisEventType.AuditorRating,
+                    Description = $"{company.Name} rated {rating} risk",
+                    CompanyId = company.Id,
+                    ImpactPercent = impactPercent,
+                    CreatedInCycleId = currentCycleId,
+                    CreatedInCycleNumber = currentCycleNumber,
+                    CreatedAt = now,
+                });
+            }
         }
     }
 

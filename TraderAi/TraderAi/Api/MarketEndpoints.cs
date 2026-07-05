@@ -854,14 +854,45 @@ public static class MarketEndpoints
                 .ToListAsync();
 
             var industryNameById = await IndustryNameByIdAsync(dbContext);
-            var cycleNumberById = await dbContext.MarketCycles
-                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+            var crisisIds = crises.Select(crisis => crisis.Id).ToList();
+            var eventCountByCrisis = (await dbContext.CrisisEvents
+                    .Where(crisisEvent => crisisIds.Contains(crisisEvent.CrisisId))
+                    .GroupBy(crisisEvent => crisisEvent.CrisisId)
+                    .Select(group => new { CrisisId = group.Key, Count = group.Count() })
+                    .ToListAsync())
+                .ToDictionary(entry => entry.CrisisId, entry => entry.Count);
 
             var response = crises
-                .Select(crisis => ToCrisisResponse(crisis, industryNameById, cycleNumberById))
+                .Select(crisis => ToCrisisResponse(crisis, industryNameById, eventCountByCrisis))
                 .ToArray();
 
             return Results.Ok(response);
+        });
+
+        app.MapGet("/crises/{id:int}", async (int id, AppDbContext dbContext) =>
+        {
+            var crisis = await dbContext.Crises
+                .Where(crisis => crisis.Id == id)
+                .Include(crisis => crisis.Industries)
+                .Include(crisis => crisis.Events)
+                .FirstOrDefaultAsync();
+
+            if (crisis is null)
+            {
+                return Results.NotFound(new { error = "Crisis not found." });
+            }
+
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var companyIds = crisis.Events
+                .Where(crisisEvent => crisisEvent.CompanyId != null)
+                .Select(crisisEvent => crisisEvent.CompanyId!.Value)
+                .Distinct()
+                .ToList();
+            var companyNameById = await dbContext.Companies
+                .Where(company => companyIds.Contains(company.Id))
+                .ToDictionaryAsync(company => company.Id, company => company.Name);
+
+            return Results.Ok(ToCrisisDetailResponse(crisis, industryNameById, companyNameById));
         });
 
         app.MapGet("/science-investigations", async (int? take, AppDbContext dbContext) =>
@@ -1145,20 +1176,61 @@ public static class MarketEndpoints
     private static CrisisResponse ToCrisisResponse(
         Crisis crisis,
         IReadOnlyDictionary<int, string> industryNameById,
-        IReadOnlyDictionary<int, int> cycleNumberById) =>
+        IReadOnlyDictionary<int, int> eventCountByCrisis) =>
         new(
             crisis.Id,
             crisis.Title,
             crisis.Content,
             crisis.Scope.ToString(),
             crisis.TriggeredInCycleId,
-            cycleNumberById.GetValueOrDefault(crisis.TriggeredInCycleId),
+            crisis.TriggeredInCycleNumber,
+            crisis.DurationCycles,
             crisis.TriggeredAt,
-            crisis.Industries
-                .Select(link => new CrisisIndustryResponse(
-                    link.IndustryId,
-                    industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}",
-                    link.ImpactPercent))
+            eventCountByCrisis.GetValueOrDefault(crisis.Id),
+            ToCrisisIndustryResponses(crisis, industryNameById));
+
+    private static CrisisIndustryResponse[] ToCrisisIndustryResponses(
+        Crisis crisis,
+        IReadOnlyDictionary<int, string> industryNameById) =>
+        crisis.Industries
+            .Select(link => new CrisisIndustryResponse(
+                link.IndustryId,
+                industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}",
+                link.ImpactPercent))
+            .ToArray();
+
+    private static CrisisDetailResponse ToCrisisDetailResponse(
+        Crisis crisis,
+        IReadOnlyDictionary<int, string> industryNameById,
+        IReadOnlyDictionary<int, string> companyNameById) =>
+        new(
+            crisis.Id,
+            crisis.Title,
+            crisis.Content,
+            crisis.Scope.ToString(),
+            crisis.TriggeredInCycleId,
+            crisis.TriggeredInCycleNumber,
+            crisis.DurationCycles,
+            crisis.TriggeredAt,
+            ToCrisisIndustryResponses(crisis, industryNameById),
+            crisis.Events
+                .OrderBy(crisisEvent => crisisEvent.CreatedInCycleNumber)
+                .ThenBy(crisisEvent => crisisEvent.Id)
+                .Select(crisisEvent => new CrisisEventResponse(
+                    crisisEvent.Id,
+                    crisisEvent.Type.ToString(),
+                    crisisEvent.Description,
+                    crisisEvent.CompanyId,
+                    crisisEvent.CompanyId is int companyId
+                        ? companyNameById.GetValueOrDefault(companyId)
+                        : null,
+                    crisisEvent.IndustryId,
+                    crisisEvent.IndustryId is int industryId
+                        ? industryNameById.GetValueOrDefault(industryId)
+                        : null,
+                    crisisEvent.ImpactPercent,
+                    crisisEvent.CreatedInCycleNumber,
+                    crisisEvent.CreatedAt))
                 .ToArray());
 
     private static ScienceInvestigationResponse ToScienceInvestigationResponse(
@@ -1800,10 +1872,36 @@ public sealed record CrisisResponse(
     string Scope,
     int TriggeredInCycleId,
     int TriggeredInCycleNumber,
+    int DurationCycles,
     DateTime TriggeredAt,
+    int EventCount,
     CrisisIndustryResponse[] Industries);
 
 public sealed record CrisisIndustryResponse(int IndustryId, string IndustryName, decimal ImpactPercent);
+
+public sealed record CrisisDetailResponse(
+    int Id,
+    string Title,
+    string Content,
+    string Scope,
+    int TriggeredInCycleId,
+    int TriggeredInCycleNumber,
+    int DurationCycles,
+    DateTime TriggeredAt,
+    CrisisIndustryResponse[] Industries,
+    CrisisEventResponse[] Events);
+
+public sealed record CrisisEventResponse(
+    int Id,
+    string Type,
+    string Description,
+    int? CompanyId,
+    string? CompanyName,
+    int? IndustryId,
+    string? IndustryName,
+    decimal? ImpactPercent,
+    int CreatedInCycleNumber,
+    DateTime CreatedAt);
 
 public sealed record ScienceInvestigationResponse(
     int Id,

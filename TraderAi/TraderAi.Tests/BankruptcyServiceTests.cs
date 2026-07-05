@@ -222,6 +222,58 @@ public sealed class BankruptcyServiceTests : IDisposable
         Assert.Equal(-30m, refreshedShallow.CurrentBalance);
     }
 
+    [Fact]
+    public async Task ActiveCrisisDoublesBankruptcyChanceAndLogsToTimeline()
+    {
+        var (_, cycle, company) = await SeedAsync(price: 100m);
+        var trader = await AddTraderAsync(currentBalance: -180m);
+        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+        var crisis = await AddCrisisAsync(cycle);
+
+        // The debt chance is ~5%; the crisis doubles it to ~10%, so a 0.07 roll now fires.
+        await Service(enabled: true, new ScriptedRandom([0.07d], [0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1, await context.Bankruptcies.CountAsync());
+        var timelineEvent = await context.CrisisEvents.AsNoTracking()
+            .SingleAsync(row => row.Type == CrisisEventType.Bankruptcy);
+        Assert.Equal(crisis.Id, timelineEvent.CrisisId);
+    }
+
+    [Fact]
+    public async Task WithoutACrisisTheSameRollLeavesAnIndebtedTraderSolvent()
+    {
+        var (_, cycle, company) = await SeedAsync(price: 100m);
+        var trader = await AddTraderAsync(currentBalance: -180m);
+        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+
+        // No crisis: the ~5% debt chance is not cleared by a 0.07 roll, so the trader survives.
+        await Service(enabled: true, new ScriptedRandom([0.07d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, await context.Bankruptcies.CountAsync());
+        Assert.Equal(0, await context.CrisisEvents.CountAsync());
+    }
+
+    private async Task<Crisis> AddCrisisAsync(MarketCycle cycle)
+    {
+        var crisis = new Crisis
+        {
+            Title = "Shock",
+            Content = "Body",
+            Scope = CrisisScope.Global,
+            TriggeredInCycleId = cycle.Id,
+            TriggeredInCycleNumber = cycle.CycleNumber,
+            DurationCycles = 20,
+            TriggeredAt = DateTime.UtcNow,
+        };
+        context.Crises.Add(crisis);
+        await context.SaveChangesAsync();
+        return crisis;
+    }
+
     // Default cycle is past the 500-cycle opening protection so a trigger test can actually fire; tests of the
     // protection itself pass a low cycle number explicitly.
     private async Task<(Market Market, MarketCycle Cycle, Company Company)> SeedAsync(decimal price, int cycleNumber = 600)

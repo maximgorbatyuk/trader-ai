@@ -226,6 +226,12 @@ public sealed class MarketService(
             .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
         var currentCycleNumber = cycleNumbersById.GetValueOrDefault(currentCycleId);
 
+        // Resolved once here so bankruptcy and auditors both read the same window; a crisis triggered a prior
+        // cycle is what governs this cycle's harsher behaviour and the timeline its events attach to.
+        var activeCrisis = crisisService is not null
+            ? await crisisService.GetActiveCrisisAsync(currentCycleNumber)
+            : null;
+
         var openOrders = await dbContext.Orders
             .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
                 && order.ParticipantId != null)
@@ -296,7 +302,7 @@ public sealed class MarketService(
         // re-listing, both reach the order book in time to cross the same cycle.
         if (bankruptcyService is not null)
         {
-            await bankruptcyService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await bankruptcyService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
         }
 
         // Runs in the same pre-match window so a fund's forced sales, and a new member's freed-up cash, reach
@@ -322,7 +328,7 @@ public sealed class MarketService(
         // matching then react to the fresh ratings, any price correction, and the bids that were pulled.
         if (auditorService is not null)
         {
-            await auditorService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await auditorService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
             await dbContext.SaveChangesAsync();
         }
     }
@@ -783,10 +789,15 @@ public sealed class MarketService(
 
         await PayDividendsIfDueAsync(market, currentCycle, now);
 
+        // Read before this cycle's crisis roll so it reflects any crisis already running; while one is active,
+        // price-lifting news and science land half as often.
+        var duringCrisis = crisisService is not null
+            && await crisisService.GetActiveCrisisAsync(currentCycle.CycleNumber) is not null;
+
         // Automated news is published on its cycle schedule and shares this transaction's save below.
         if (newsService is not null)
         {
-            await newsService.MaybeAddAutomatedNewsForCycleAsync(currentCycle, now);
+            await newsService.MaybeAddAutomatedNewsForCycleAsync(currentCycle, now, duringCrisis);
         }
 
         // A crisis may also strike this cycle, driving its hit sectors down and cancelling their stale bids.
@@ -798,7 +809,7 @@ public sealed class MarketService(
         // A science investigation runs on its own clock and may lift a few sectors the same cycle a crisis hits.
         if (scienceService is not null)
         {
-            await scienceService.MaybeTriggerForCycleAsync(market, currentCycle, now);
+            await scienceService.MaybeTriggerForCycleAsync(market, currentCycle, now, duringCrisis);
         }
 
         var nextCycle = new MarketCycle
@@ -1003,7 +1014,12 @@ public sealed class MarketService(
 
         var cycleNumbersById = await dbContext.MarketCycles
             .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
-        var baselineCycleNumber = cycleNumbersById.GetValueOrDefault(market.CurrentCycleId.Value) - LongRangeWindowCycles;
+        var currentCycleNumber = cycleNumbersById.GetValueOrDefault(market.CurrentCycleId.Value);
+        var baselineCycleNumber = currentCycleNumber - LongRangeWindowCycles;
+
+        // A live crisis makes conservative and low-risk traders hold back on buying.
+        var crisisActive = crisisService is not null
+            && await crisisService.GetActiveCrisisAsync(currentCycleNumber) is not null;
 
         // Delisted companies keep their price history for the detail page but must not be offered to the engine,
         // which would otherwise rest ghost bids on a stock that has no float to fill them.
@@ -1100,7 +1116,8 @@ public sealed class MarketService(
                 AvailableCashForDecisions(trader, memberParticipantIds, holdingsByOwner, priceByCompany),
                 quotes,
                 holdingsByOwner.GetValueOrDefault(trader.Id, NoHoldings),
-                openOrdersByParticipant.GetValueOrDefault(trader.Id, NoOpenOrders));
+                openOrdersByParticipant.GetValueOrDefault(trader.Id, NoOpenOrders),
+                crisisActive);
 
             foreach (var intent in decisionEngine.Decide(context))
             {
@@ -1158,6 +1175,7 @@ public sealed class MarketService(
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync();
 
+        await dbContext.CrisisEvents.ExecuteDeleteAsync();
         await dbContext.CrisisIndustries.ExecuteDeleteAsync();
         await dbContext.Crises.ExecuteDeleteAsync();
         await dbContext.ScienceInvestigationIndustries.ExecuteDeleteAsync();
@@ -1189,7 +1207,7 @@ public sealed class MarketService(
             "DELETE FROM sqlite_sequence WHERE name IN (" +
             "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
             "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
-            "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', " +
+            "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', 'CrisisEvents', " +
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
             "'CollectiveFunds', 'CollectiveFundParticipants', 'ParticipantWorthSnapshots', " +
             "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives')");

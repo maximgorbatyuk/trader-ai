@@ -26,16 +26,28 @@ public sealed class CrisisService(
     private const double LocalStepPerCycle = 0.03;
     private const int LocalMinIndustries = 1;
     private const int LocalMaxIndustries = 3;
+    private const int LocalDurationCycles = 10;
 
     // Global: no chance for the first 250 cycles since the last one, then the chance climbs 1 point a cycle.
     private const int GlobalQuietCycles = 250;
     private const double GlobalStepPerCycle = 0.01;
     private const double GlobalMinIndustryShare = 0.30;
     private const double GlobalMaxIndustryShare = 0.70;
+    private const int GlobalDurationCycles = 20;
 
     // Every affected industry drops by its own draw in this band.
     private const decimal MinImpactPercent = 5m;
     private const decimal MaxImpactPercent = 15m;
+
+    // The crisis whose window covers the current cycle, or null when the market is calm. While one is active,
+    // auditors and bankruptcies bite harder and price-lifting events land less often. When two windows overlap
+    // (independent scope clocks), the most recently triggered one wins so new events attach to it.
+    public Task<Crisis?> GetActiveCrisisAsync(int currentCycleNumber) =>
+        dbContext.Crises
+            .Where(crisis => currentCycleNumber > crisis.TriggeredInCycleNumber
+                && currentCycleNumber <= crisis.TriggeredInCycleNumber + crisis.DurationCycles)
+            .OrderByDescending(crisis => crisis.TriggeredInCycleNumber)
+            .FirstOrDefaultAsync();
 
     public async Task<TriggerCrisisResult> MaybeTriggerForCycleAsync(Market market, MarketCycle currentCycle, DateTime now)
     {
@@ -101,13 +113,31 @@ public sealed class CrisisService(
             Content = content,
             Scope = scope,
             TriggeredInCycleId = currentCycle.Id,
+            TriggeredInCycleNumber = currentCycle.CycleNumber,
+            DurationCycles = scope == CrisisScope.Global ? GlobalDurationCycles : LocalDurationCycles,
             TriggeredAt = now,
         };
+
+        var industryNameById = await dbContext.Industries
+            .Where(industry => chosen.Contains(industry.Id))
+            .ToDictionaryAsync(industry => industry.Id, industry => industry.Name);
 
         foreach (var industryId in chosen)
         {
             var percent = RandomImpactPercent();
             crisis.Industries.Add(new CrisisIndustry { IndustryId = industryId, ImpactPercent = percent });
+
+            // The trigger shock opens the crisis timeline; auditor and bankruptcy events append to it later.
+            crisis.Events.Add(new CrisisEvent
+            {
+                Type = CrisisEventType.IndustryShock,
+                Description = $"{industryNameById.GetValueOrDefault(industryId) ?? $"Industry #{industryId}"} shocked",
+                IndustryId = industryId,
+                ImpactPercent = percent,
+                CreatedInCycleId = currentCycle.Id,
+                CreatedInCycleNumber = currentCycle.CycleNumber,
+                CreatedAt = now,
+            });
 
             var companyIds = await dbContext.Companies
                 .Where(company => company.IndustryId == industryId)

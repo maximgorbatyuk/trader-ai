@@ -42,13 +42,18 @@ public sealed class NewsService(
     private const decimal MaxAutomatedImpactPercent = 10m;
     private const decimal MaxManualImpactPercent = 95m;
 
+    // During a crisis an automated post that would lift prices is suppressed this often, so good news lands
+    // half as much while the market is under stress.
+    private const double CrisisIncreaseSuppressionChance = 0.5;
+
     // Company news ripples to the rest of the target's industry at a fraction of the headline move — a
     // sympathy move for its peers, in the same direction.
     private const decimal IndustrySpilloverFraction = 0.25m;
 
     // Called from the cycle advance, which already holds the lock and owns the surrounding save; this only
     // adds entities to the shared context when an automated post is due.
-    public async Task<PublishNewsResult> MaybeAddAutomatedNewsForCycleAsync(MarketCycle currentCycle, DateTime now)
+    public async Task<PublishNewsResult> MaybeAddAutomatedNewsForCycleAsync(
+        MarketCycle currentCycle, DateTime now, bool duringCrisis = false)
     {
         var settings = options.Value;
         if (!settings.Enabled || settings.CyclesBetweenPosts <= 0)
@@ -74,7 +79,7 @@ public sealed class NewsService(
         var companiesMoved = 0;
         if (random.NextDouble() < settings.ImpactProbability)
         {
-            companiesMoved = await ApplyRandomImpactAsync(post, settings, currentCycle.Id, now);
+            companiesMoved = await ApplyRandomImpactAsync(post, settings, currentCycle.Id, now, duringCrisis);
         }
 
         dbContext.NewsPosts.Add(post);
@@ -176,9 +181,21 @@ public sealed class NewsService(
         return ManualNewsResult.Ok(post);
     }
 
-    private async Task<int> ApplyRandomImpactAsync(NewsPost post, NewsOptions settings, int cycleId, DateTime now)
+    private async Task<int> ApplyRandomImpactAsync(
+        NewsPost post, NewsOptions settings, int cycleId, DateTime now, bool duringCrisis)
     {
         var direction = random.Next(2) == 0 ? NewsImpactDirection.Increase : NewsImpactDirection.Decrease;
+
+        // During a crisis, half of would-be price-lifting posts become impact-free; the extra draw is taken
+        // only on that branch, so the calm-market path keeps its original draw sequence.
+        if (duringCrisis
+            && direction == NewsImpactDirection.Increase
+            && random.NextDouble() < CrisisIncreaseSuppressionChance)
+        {
+            ClearImpact(post);
+            return 0;
+        }
+
         var percent = RandomImpactPercent();
         post.Direction = direction;
         post.ImpactPercent = percent;
