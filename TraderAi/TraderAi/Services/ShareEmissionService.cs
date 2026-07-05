@@ -72,7 +72,10 @@ public sealed class ShareEmissionService(
             .Select(participant => participant.Id)
             .ToListAsync();
 
-        var companies = await dbContext.Companies.OrderBy(company => company.Id).ToListAsync();
+        var companies = await dbContext.Companies
+            .Where(company => company.ClosedInCycleId == null)
+            .OrderBy(company => company.Id)
+            .ToListAsync();
 
         foreach (var company in companies)
         {

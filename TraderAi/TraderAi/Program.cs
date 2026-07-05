@@ -37,6 +37,7 @@ builder.Services.AddScoped<MarketExitService>();
 builder.Services.AddScoped<StockSplitService>();
 builder.Services.AddScoped<AuditorService>();
 builder.Services.AddScoped<ShareEmissionService>();
+builder.Services.AddScoped<CompanyLifecycleService>();
 builder.Services.AddSingleton<MarketCycleLock>();
 builder.Services.Configure<MarketLoopOptions>(builder.Configuration.GetSection(MarketLoopOptions.SectionName));
 builder.Services.Configure<NewsOptions>(builder.Configuration.GetSection(NewsOptions.SectionName));
@@ -48,6 +49,7 @@ builder.Services.Configure<MarketExitOptions>(builder.Configuration.GetSection(M
 builder.Services.Configure<StockSplitOptions>(builder.Configuration.GetSection(StockSplitOptions.SectionName));
 builder.Services.Configure<AuditorOptions>(builder.Configuration.GetSection(AuditorOptions.SectionName));
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
+builder.Services.Configure<CompanyLifecycleOptions>(builder.Configuration.GetSection(CompanyLifecycleOptions.SectionName));
 builder.Services.Configure<ArchiveOptions>(builder.Configuration.GetSection(ArchiveOptions.SectionName));
 builder.Services.AddHostedService<MarketLoopService>();
 

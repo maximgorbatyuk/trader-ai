@@ -64,6 +64,7 @@ public sealed class MarketService(
     StockSplitService? stockSplitService = null,
     AuditorService? auditorService = null,
     ShareEmissionService? shareEmissionService = null,
+    CompanyLifecycleService? companyLifecycleService = null,
     IOptions<ArchiveOptions>? archiveOptions = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
@@ -277,6 +278,15 @@ public sealed class MarketService(
         if (shareEmissionService is not null)
         {
             await shareEmissionService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
+        // Closes at most one failing company and may list a new one. Runs in the same pre-match window so a
+        // delisted company's cancelled orders and wiped holdings, and a new listing's float, all reach the
+        // worth-reading services and this cycle's matching.
+        if (companyLifecycleService is not null)
+        {
+            await companyLifecycleService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
             await dbContext.SaveChangesAsync();
         }
 
@@ -497,7 +507,7 @@ public sealed class MarketService(
 
         var pricedCompanyIds = latestPriceByCompany.Keys.ToList();
         var companies = await dbContext.Companies
-            .Where(company => pricedCompanyIds.Contains(company.Id))
+            .Where(company => company.ClosedInCycleId == null && pricedCompanyIds.Contains(company.Id))
             .OrderBy(company => company.Id)
             .ToListAsync();
 
@@ -995,9 +1005,18 @@ public sealed class MarketService(
             .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
         var baselineCycleNumber = cycleNumbersById.GetValueOrDefault(market.CurrentCycleId.Value) - LongRangeWindowCycles;
 
+        // Delisted companies keep their price history for the detail page but must not be offered to the engine,
+        // which would otherwise rest ghost bids on a stock that has no float to fill them.
+        var closedCompanyIds = (await dbContext.Companies
+                .Where(company => company.ClosedInCycleId != null)
+                .Select(company => company.Id)
+                .ToListAsync())
+            .ToHashSet();
+
         var snapshots = await dbContext.PriceSnapshots.AsNoTracking().ToListAsync();
         var quotes = snapshots
             .GroupBy(snapshot => snapshot.CompanyId)
+            .Where(group => !closedCompanyIds.Contains(group.Key))
             .Select(group =>
             {
                 var ordered = group.OrderByDescending(snapshot => snapshot.Id).ToList();
@@ -1265,6 +1284,7 @@ public sealed class MarketService(
                 // across industries so most sectors have at least one listing for news to move.
                 IndustryId = industryIds[index % industryIds.Length],
                 IssuedSharesCount = shareCount,
+                CreatedInCycleId = firstCycle.Id,
                 CreatedAt = now,
                 UpdatedAt = now,
             };
@@ -1328,6 +1348,8 @@ public sealed class MarketService(
 
         // Drawn last so adding the dividend schedule does not shift the generated demo data above.
         market.NextDividendCycleNumber = firstCycle.CycleNumber + RandomDividendInterval(random);
+        // The appearance clock starts at the first cycle so the same 100-cycle safe period applies from launch.
+        market.LastCompanyAppearanceCycleNumber = firstCycle.CycleNumber;
         market.CurrentCycleId = firstCycle.Id;
         await dbContext.SaveChangesAsync();
 

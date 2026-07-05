@@ -57,7 +57,9 @@ public sealed class AuditorService(
         await EnsureAuditorsExistAsync(now);
 
         var auditors = await dbContext.Auditors.OrderBy(auditor => auditor.Id).ToListAsync();
-        var companies = await dbContext.Companies.ToDictionaryAsync(company => company.Id);
+        var companies = await dbContext.Companies
+            .Where(company => company.ClosedInCycleId == null)
+            .ToDictionaryAsync(company => company.Id);
         if (auditors.Count == 0 || companies.Count == 0)
         {
             return;
@@ -177,7 +179,7 @@ public sealed class AuditorService(
             return;
         }
 
-        var companyCount = await dbContext.Companies.CountAsync();
+        var companyCount = await dbContext.Companies.CountAsync(company => company.ClosedInCycleId == null);
         if (companyCount == 0)
         {
             return;

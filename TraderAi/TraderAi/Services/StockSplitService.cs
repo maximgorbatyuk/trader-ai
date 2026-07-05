@@ -41,7 +41,10 @@ public sealed class StockSplitService(
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
 
-        var companies = await dbContext.Companies.OrderBy(company => company.Id).ToListAsync();
+        var companies = await dbContext.Companies
+            .Where(company => company.ClosedInCycleId == null)
+            .OrderBy(company => company.Id)
+            .ToListAsync();
         foreach (var company in companies)
         {
             if (!latestPriceByCompany.TryGetValue(company.Id, out var price))

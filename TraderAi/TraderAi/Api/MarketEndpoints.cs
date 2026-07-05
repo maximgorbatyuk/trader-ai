@@ -838,6 +838,43 @@ public static class MarketEndpoints
 
             return Results.Ok(new PagedClosedFundsResponse(items, total, pageIndex, size));
         });
+
+        app.MapGet("/companies/closed", async (int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+
+            var query = dbContext.Companies.Where(company => company.ClosedInCycleId != null);
+            var total = await query.CountAsync();
+
+            var companies = await query
+                .OrderByDescending(company => company.ClosedAt)
+                .ThenByDescending(company => company.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumberById = await dbContext.MarketCycles
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+            // A delisted company's last snapshot is the price it closed at.
+            var finalPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+
+            var items = companies
+                .Select(company => new ClosedCompanyResponse(
+                    company.Id,
+                    company.Name,
+                    company.IndustryId,
+                    industryNameById.GetValueOrDefault(company.IndustryId),
+                    company.IssuedSharesCount,
+                    finalPriceByCompany.GetValueOrDefault(company.Id),
+                    company.CreatedInCycleId is int createdCycleId ? cycleNumberById.GetValueOrDefault(createdCycleId) : 0,
+                    company.ClosedInCycleId is int closedCycleId ? cycleNumberById.GetValueOrDefault(closedCycleId) : 0,
+                    company.ClosedAt))
+                .ToArray();
+
+            return Results.Ok(new PagedClosedCompaniesResponse(items, total, pageIndex, size));
+        });
     }
 
     private static async Task<Dictionary<int, string>> IndustryNameByIdAsync(AppDbContext dbContext) =>
@@ -845,7 +882,12 @@ public static class MarketEndpoints
 
     private static async Task<List<CompanyResponse>> BuildCompanyResponsesAsync(AppDbContext dbContext)
     {
-        var companies = await dbContext.Companies.OrderBy(company => company.Id).ToListAsync();
+        // Delisted companies drop off the live roster and the dashboard map; they surface on the closed-companies
+        // page and still resolve on their own detail route.
+        var companies = await dbContext.Companies
+            .Where(company => company.ClosedInCycleId == null)
+            .OrderBy(company => company.Id)
+            .ToListAsync();
         var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
         var changeByCompany = await PriceChangePctByCompanyAsync(dbContext);
         var industryNameById = await IndustryNameByIdAsync(dbContext);
@@ -1133,6 +1175,13 @@ public static class MarketEndpoints
             .Select(rating => rating.Rating)
             .ToListAsync();
 
+        int? closedInCycleNumber = company.ClosedInCycleId is int closedCycleId
+            ? await dbContext.MarketCycles
+                .Where(cycle => cycle.Id == closedCycleId)
+                .Select(cycle => (int?)cycle.CycleNumber)
+                .FirstOrDefaultAsync()
+            : null;
+
         return new CompanyDetailResponse(
             company.Id,
             company.Name,
@@ -1147,7 +1196,9 @@ public static class MarketEndpoints
             shareholderCount,
             company.CreatedAt,
             recentRatings.Count > 0 ? recentRatings[0].ToString() : null,
-            recentRatings.Count > 1 ? recentRatings[1].ToString() : null);
+            recentRatings.Count > 1 ? recentRatings[1].ToString() : null,
+            company.ClosedInCycleId != null,
+            closedInCycleNumber);
     }
 
     private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(AppDbContext dbContext, int participantId)
@@ -1374,7 +1425,9 @@ public sealed record CompanyDetailResponse(
     int ShareholderCount,
     DateTime CreatedAt,
     string? CurrentRating,
-    string? PreviousRating);
+    string? PreviousRating,
+    bool IsClosed,
+    int? ClosedInCycleNumber);
 
 public sealed record ShareholderResponse(
     int OwnerId,
@@ -1408,6 +1461,19 @@ public sealed record ClosedFundResponse(
     DateTime? ClosedAt);
 
 public sealed record PagedClosedFundsResponse(ClosedFundResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record ClosedCompanyResponse(
+    int Id,
+    string Name,
+    int IndustryId,
+    string? IndustryName,
+    int IssuedSharesCount,
+    decimal? FinalPrice,
+    int CreatedInCycleNumber,
+    int ClosedInCycleNumber,
+    DateTime? ClosedAt);
+
+public sealed record PagedClosedCompaniesResponse(ClosedCompanyResponse[] Items, int Total, int Page, int PageSize);
 
 public sealed record CompanyRatingResponse(
     int Id,

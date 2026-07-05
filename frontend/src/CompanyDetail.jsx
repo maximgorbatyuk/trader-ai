@@ -112,6 +112,17 @@ export function CompanyDetail({ companyId }) {
         </div>
       ) : null}
 
+      {detail.isClosed ? (
+        <div className="banner" role="status">
+          <strong>Delisted.</strong>
+          <span>
+            This company was delisted
+            {typeof detail.closedInCycleNumber === 'number' ? ` in cycle ${detail.closedInCycleNumber}` : ''}. Its
+            orders were cancelled and its shares wiped out.
+          </span>
+        </div>
+      ) : null}
+
       <section className="command" aria-label="Company identity">
         <div className="command-id">
           <span className="command-label">Company</span>

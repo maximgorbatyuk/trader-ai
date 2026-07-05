@@ -84,6 +84,7 @@ export const api = {
   getBankruptcies: (take = 30) => get(`/bankruptcies?take=${take}`),
   getMarketExits: (take = 50) => get(`/market-exits?take=${take}`),
   getClosedFunds: (page = 1, pageSize = 20) => get(`/collective-funds/closed?page=${page}&pageSize=${pageSize}`),
+  getClosedCompanies: (page = 1, pageSize = 20) => get(`/companies/closed?page=${page}&pageSize=${pageSize}`),
   getNewsThemes: () => get('/news/themes'),
   getIndustries: () => get('/industries'),
   createNews: (payload) => post('/news', payload),
