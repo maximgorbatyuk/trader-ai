@@ -29,7 +29,7 @@ export function TradersTable({ participants, sortKey, sortDir, onToggleSort, onS
   }
 
   return (
-    <div className="tbl-scroll">
+    <div className="tbl-wrap">
       <table className="tbl">
         <thead>
           <tr>

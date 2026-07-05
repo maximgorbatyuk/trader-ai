@@ -72,6 +72,12 @@ new price = current price * (1 - impact percent)
 
 A downward shock can cancel ordinary standing buy orders for the affected companies. An upward shock can cancel ordinary standing sell orders. This lets the order book reform around the new price instead of immediately filling stale orders priced against the old level.
 
+News aimed at a single company also ripples to the rest of that company's industry as a sympathy move: every other company in the same industry moves in the same direction by a quarter of the headline percentage.
+
+```text
+peer impact percent = company impact percent * 0.25
+```
+
 ### Science Investigations
 
 A science investigation is a positive sector event. It raises affected companies by a percentage of the current price, but does not clear the order book.

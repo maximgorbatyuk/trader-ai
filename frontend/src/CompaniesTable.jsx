@@ -29,7 +29,7 @@ export function CompaniesTable({ companies, sortKey, sortDir, onToggleSort, onSe
   }
 
   return (
-    <div className="tbl-scroll">
+    <div className="tbl-wrap">
       <table className="tbl">
         <thead>
           <tr>

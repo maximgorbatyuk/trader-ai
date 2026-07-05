@@ -31,6 +31,13 @@ public sealed class NewsServiceTests : IDisposable
     private NewsService Service(NewsOptions settings, Random random) =>
         new(context, new MarketCycleLock(), Options.Create(settings), new MarketImpactService(context), random);
 
+    private async Task<decimal> LatestPriceAsync(int companyId) =>
+        await context.PriceSnapshots
+            .Where(snapshot => snapshot.CompanyId == companyId)
+            .OrderByDescending(snapshot => snapshot.Id)
+            .Select(snapshot => snapshot.Price)
+            .FirstAsync();
+
     [Fact]
     public async Task ManualCompanyImpactSnapshotsTheTargetAtTheMovedPrice()
     {
@@ -53,6 +60,36 @@ public sealed class NewsServiceTests : IDisposable
             .OrderByDescending(snapshot => snapshot.Id)
             .FirstAsync();
         Assert.Equal(105m, latest.Price);
+    }
+
+    [Fact]
+    public async Task CompanyImpactRipplesToIndustryPeersAtAQuarterStrength()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var target = await context.Companies.FirstAsync();
+        var cycle = await context.MarketCycles.FirstAsync();
+        var now = DateTime.UtcNow;
+
+        // A peer in the target's industry (should move a quarter as much) and a company in another industry
+        // (should not move at all).
+        var otherIndustry = new Industry { Name = "Healthcare" };
+        context.Industries.Add(otherIndustry);
+        await context.SaveChangesAsync();
+        var peer = new Company { Name = "Beta Corp", IndustryId = target.IndustryId, IssuedSharesCount = 10, CreatedAt = now, UpdatedAt = now };
+        var outsider = new Company { Name = "Gamma Corp", IndustryId = otherIndustry.Id, IssuedSharesCount = 10, CreatedAt = now, UpdatedAt = now };
+        context.Companies.AddRange(peer, outsider);
+        await context.SaveChangesAsync();
+        context.PriceSnapshots.Add(new PriceSnapshot { CompanyId = peer.Id, Price = 200m, CreatedInCycleId = cycle.Id, CreatedAt = now });
+        context.PriceSnapshots.Add(new PriceSnapshot { CompanyId = outsider.Id, Price = 300m, CreatedInCycleId = cycle.Id, CreatedAt = now });
+        await context.SaveChangesAsync();
+
+        var request = new ManualNewsRequest(NewsImpactScope.Company, "ufo", NewsImpactDirection.Increase, 8m, target.Id, null);
+        var result = await Service(new NewsOptions(), new Random(1)).PublishManualNewsAsync(request);
+
+        Assert.True(result.Success);
+        Assert.Equal(108m, await LatestPriceAsync(target.Id)); // full 8%
+        Assert.Equal(204m, await LatestPriceAsync(peer.Id)); // 8% * 0.25 = 2%
+        Assert.Equal(300m, await LatestPriceAsync(outsider.Id)); // different industry, untouched
     }
 
     [Fact]

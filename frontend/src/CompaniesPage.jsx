@@ -1,19 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt } from './format'
 import { Panel } from './Panel'
 import { CompaniesTable } from './CompaniesTable'
-import { CompanyDetail } from './CompanyDetail'
 
 const POLL_INTERVAL_MS = 2500
 const PAGE_SIZE = 20
 
-// Roster of companies with an in-page detail block. Search, industry filter, sort, and paging are held here
-// and sent to the server; the selected company stays in the `?company=` query param so it survives refreshes
-// and can be deep-linked from the dashboard CompanyModal.
+// Roster of companies. Search, industry filter, sort, and paging are held here and sent to the server;
+// clicking a company opens its own detail page.
 function CompaniesPage() {
+  const navigate = useNavigate()
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [data, setData] = useState(null)
@@ -23,10 +22,6 @@ function CompaniesPage() {
   const [industryFilter, setIndustryFilter] = useState('')
   const [sortKey, setSortKey] = useState('cost')
   const [sortDir, setSortDir] = useState('desc')
-  const [searchParams, setSearchParams] = useSearchParams()
-
-  const companyParam = searchParams.get('company')
-  const selectedId = companyParam ? Number(companyParam) : null
 
   // Industries seldom change, so they are fetched once to populate the filter rather than on every poll.
   useEffect(() => {
@@ -73,7 +68,7 @@ function CompaniesPage() {
   }, [loadAll])
 
   function selectCompany(companyId) {
-    setSearchParams({ company: String(companyId) })
+    navigate(`/companies/${companyId}`)
   }
 
   function toggleSort(key) {
@@ -158,7 +153,6 @@ function CompaniesPage() {
                 sortKey={sortKey}
                 sortDir={sortDir}
                 onToggleSort={toggleSort}
-                selectedId={selectedId}
                 onSelectCompany={selectCompany}
               />
 
@@ -176,12 +170,6 @@ function CompaniesPage() {
                 </div>
               ) : null}
             </Panel>
-
-            {selectedId ? (
-              <CompanyDetail key={selectedId} companyId={selectedId} />
-            ) : (
-              <p className="note traders-hint">Select a company above to see full details and its price history.</p>
-            )}
           </>
         )}
       </main>

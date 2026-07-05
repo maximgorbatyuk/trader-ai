@@ -42,6 +42,10 @@ public sealed class NewsService(
     private const decimal MaxAutomatedImpactPercent = 10m;
     private const decimal MaxManualImpactPercent = 95m;
 
+    // Company news ripples to the rest of the target's industry at a fraction of the headline move — a
+    // sympathy move for its peers, in the same direction.
+    private const decimal IndustrySpilloverFraction = 0.25m;
+
     // Called from the cycle advance, which already holds the lock and owns the surrounding save; this only
     // adds entities to the shared context when an automated post is due.
     public async Task<PublishNewsResult> MaybeAddAutomatedNewsForCycleAsync(MarketCycle currentCycle, DateTime now)
@@ -127,7 +131,6 @@ public sealed class NewsService(
             ImpactPercent = percent,
         };
 
-        List<int> affectedCompanyIds;
         if (request.Scope == NewsImpactScope.Company)
         {
             if (request.TargetCompanyId is not int targetId
@@ -137,7 +140,7 @@ public sealed class NewsService(
             }
 
             post.TargetCompanyId = targetId;
-            affectedCompanyIds = [targetId];
+            await ApplyCompanyImpactAsync(request.Direction, targetId, percent, cycleId, now);
         }
         else
         {
@@ -161,13 +164,12 @@ public sealed class NewsService(
                 post.Industries.Add(new NewsPostIndustry { IndustryId = industryId });
             }
 
-            affectedCompanyIds = await dbContext.Companies
+            var affectedCompanyIds = await dbContext.Companies
                 .Where(company => validIds.Contains(company.IndustryId))
                 .Select(company => company.Id)
                 .ToListAsync();
+            await marketImpact.ApplyImpactAsync(request.Direction, affectedCompanyIds, percent, cycleId, now);
         }
-
-        await marketImpact.ApplyImpactAsync(request.Direction, affectedCompanyIds, percent, cycleId, now);
 
         dbContext.NewsPosts.Add(post);
         await dbContext.SaveChangesAsync();
@@ -181,7 +183,6 @@ public sealed class NewsService(
         post.Direction = direction;
         post.ImpactPercent = percent;
 
-        List<int> affectedCompanyIds;
         if (random.NextDouble() < settings.CompanyScopeProbability)
         {
             var companyIds = await dbContext.Companies.Select(company => company.Id).ToListAsync();
@@ -194,32 +195,56 @@ public sealed class NewsService(
             post.Scope = NewsImpactScope.Company;
             var companyId = companyIds[random.Next(companyIds.Count)];
             post.TargetCompanyId = companyId;
-            affectedCompanyIds = [companyId];
+            return await ApplyCompanyImpactAsync(direction, companyId, percent, cycleId, now);
         }
-        else
+
+        var industryIds = await dbContext.Industries.Select(industry => industry.Id).ToListAsync();
+        if (industryIds.Count == 0)
         {
-            var industryIds = await dbContext.Industries.Select(industry => industry.Id).ToListAsync();
-            if (industryIds.Count == 0)
-            {
-                ClearImpact(post);
-                return 0;
-            }
-
-            post.Scope = NewsImpactScope.Industries;
-            var wanted = Math.Min(random.Next(1, settings.MaxIndustriesPerPost + 1), industryIds.Count);
-            var chosen = PickDistinct(industryIds, wanted);
-            foreach (var industryId in chosen)
-            {
-                post.Industries.Add(new NewsPostIndustry { IndustryId = industryId });
-            }
-
-            affectedCompanyIds = await dbContext.Companies
-                .Where(company => chosen.Contains(company.IndustryId))
-                .Select(company => company.Id)
-                .ToListAsync();
+            ClearImpact(post);
+            return 0;
         }
+
+        post.Scope = NewsImpactScope.Industries;
+        var wanted = Math.Min(random.Next(1, settings.MaxIndustriesPerPost + 1), industryIds.Count);
+        var chosen = PickDistinct(industryIds, wanted);
+        foreach (var industryId in chosen)
+        {
+            post.Industries.Add(new NewsPostIndustry { IndustryId = industryId });
+        }
+
+        var affectedCompanyIds = await dbContext.Companies
+            .Where(company => chosen.Contains(company.IndustryId))
+            .Select(company => company.Id)
+            .ToListAsync();
 
         return await marketImpact.ApplyImpactAsync(direction, affectedCompanyIds, percent, cycleId, now);
+    }
+
+    // Company-scoped impact moves the target by the full percent and every same-industry peer by a fraction
+    // of it (a sympathy move), all in the same direction. Draws no randomness, so it is safe inside the
+    // scripted-Random automated path.
+    private async Task<int> ApplyCompanyImpactAsync(
+        NewsImpactDirection direction, int targetId, decimal percent, int cycleId, DateTime now)
+    {
+        var moved = await marketImpact.ApplyImpactAsync(direction, [targetId], percent, cycleId, now);
+
+        var industryId = await dbContext.Companies
+            .Where(company => company.Id == targetId)
+            .Select(company => company.IndustryId)
+            .FirstAsync();
+        var peerIds = await dbContext.Companies
+            .Where(company => company.IndustryId == industryId && company.Id != targetId)
+            .Select(company => company.Id)
+            .ToListAsync();
+
+        var spilloverPercent = Round(percent * IndustrySpilloverFraction);
+        if (peerIds.Count > 0 && spilloverPercent > 0m)
+        {
+            moved += await marketImpact.ApplyImpactAsync(direction, peerIds, spilloverPercent, cycleId, now);
+        }
+
+        return moved;
     }
 
     private static void ClearImpact(NewsPost post)

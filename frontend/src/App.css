@@ -2239,3 +2239,23 @@
   font-size: var(--t-sm);
   font-weight: 500;
 }
+
+/* Roster tables that show a full page of rows without an inner scrollbar; the page scrolls instead. Only the
+   horizontal axis can scroll, as a fallback on very narrow viewports. */
+.tbl-wrap {
+  overflow-x: auto;
+}
+
+/* ---- Order-form preset chips (quantity % / price ±) ---- */
+.pct-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pct-btn {
+  min-height: 0;
+  padding: 3px 8px;
+  font-size: var(--t-2xs);
+  font-weight: 600;
+}

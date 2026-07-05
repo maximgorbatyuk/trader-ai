@@ -406,8 +406,8 @@ function ShareholdersPanel({ shareholders }) {
                   <th scope="row" className="cell-ellipsis">
                     <Link
                       className="cell-link"
-                      to={`/traders?trader=${holder.ownerId}`}
-                      title={`Open ${holder.ownerName} in the Traders page`}
+                      to={`/traders/${holder.ownerId}`}
+                      title={`Open ${holder.ownerName} trader page`}
                     >
                       {holder.ownerName}
                     </Link>

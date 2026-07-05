@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt } from './format'
 import { Panel } from './Panel'
 import { TradersTable } from './TradersTable'
-import { ParticipantDetail } from './ParticipantDetail'
 
 const POLL_INTERVAL_MS = 2500
 const PAGE_SIZE = 20
@@ -18,10 +17,10 @@ const TYPE_OPTIONS = [
   { value: 'CollectiveFund', label: 'Fund' },
 ]
 
-// Roster of traders with an in-page detail block. Search, type filter, sort, and paging are held here and
-// sent to the server; the selected trader stays in the `?trader=` query param so it survives refreshes and
-// can be deep-linked from the dashboard summary modal.
+// Roster of traders. Search, type filter, sort, and paging are held here and sent to the server; clicking a
+// trader opens its own detail page.
 function TradersPage() {
+  const navigate = useNavigate()
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [data, setData] = useState(null)
@@ -30,10 +29,6 @@ function TradersPage() {
   const [typeFilter, setTypeFilter] = useState('all')
   const [sortKey, setSortKey] = useState('total')
   const [sortDir, setSortDir] = useState('desc')
-  const [searchParams, setSearchParams] = useSearchParams()
-
-  const traderParam = searchParams.get('trader')
-  const selectedId = traderParam ? Number(traderParam) : null
 
   const loadAll = useCallback(async () => {
     try {
@@ -64,7 +59,7 @@ function TradersPage() {
   }, [loadAll])
 
   function selectTrader(participant) {
-    setSearchParams({ trader: String(participant.id) })
+    navigate(`/traders/${participant.id}`)
   }
 
   function toggleSort(key) {
@@ -148,7 +143,6 @@ function TradersPage() {
                 sortKey={sortKey}
                 sortDir={sortDir}
                 onToggleSort={toggleSort}
-                selectedId={selectedId}
                 onSelectTrader={selectTrader}
               />
 
@@ -166,12 +160,6 @@ function TradersPage() {
                 </div>
               ) : null}
             </Panel>
-
-            {selectedId ? (
-              <ParticipantDetail key={selectedId} participantId={selectedId} />
-            ) : (
-              <p className="note traders-hint">Select a trader above to see full details and their total-worth history.</p>
-            )}
           </>
         )}
       </main>

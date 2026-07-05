@@ -4,8 +4,24 @@ import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { LineChart } from './LineChart'
 import { NewsImpact } from './NewsImpact'
+import { PercentButtons } from './PercentButtons'
 
 const POLL_INTERVAL_MS = 1000
+
+const QUANTITY_PRESETS = [
+  { label: '10%', value: 0.1 },
+  { label: '25%', value: 0.25 },
+  { label: '50%', value: 0.5 },
+  { label: '75%', value: 0.75 },
+  { label: '100%', value: 1 },
+]
+const PRICE_PRESETS = [
+  { label: '−25%', value: -0.25 },
+  { label: '−10%', value: -0.1 },
+  { label: 'Original', value: 0 },
+  { label: '+10%', value: 0.1 },
+  { label: '+25%', value: 0.25 },
+]
 
 // A null seller is the share issuer's own offering.
 function dealParty(id, byId) {
@@ -30,6 +46,24 @@ function OrderForm({ player, company, side, maxQuantity }) {
   const [confirmation, setConfirmation] = useState(null)
 
   const isSell = side === 'Sell'
+
+  // Sells are capped at owned shares; buys at what available cash covers at the chosen limit price. Round up
+  // so a preset never leaves an odd fractional remainder.
+  function pickQuantity(fraction) {
+    const price = Number(limitPrice)
+    const max = isSell
+      ? maxQuantity ?? 0
+      : price > 0
+        ? Math.floor((player?.availableBalance ?? 0) / price)
+        : 0
+    setQuantity(String(Math.ceil(max * fraction)))
+  }
+
+  // Price presets nudge the limit off the company's current price; "Original" (value 0) snaps back to it.
+  function pickPrice(delta) {
+    if (company.currentPrice == null) return
+    setLimitPrice(String(Math.round(company.currentPrice * (1 + delta) * 100) / 100))
+  }
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -57,8 +91,9 @@ function OrderForm({ player, company, side, maxQuantity }) {
     <form className="modal-section player-section" onSubmit={handleSubmit}>
       <span className="map-stat-label">{isSell ? 'Sell shares' : 'Buy shares'}</span>
       <div className="field-pair">
-        <label className="field">
+        <div className="field">
           <span>Quantity{isSell && maxQuantity != null ? ` (max ${formatInt(maxQuantity)})` : ''}</span>
+          <PercentButtons options={QUANTITY_PRESETS} ariaLabel="Set quantity from a percentage" onPick={pickQuantity} />
           <input
             className="select num"
             type="number"
@@ -66,22 +101,27 @@ function OrderForm({ player, company, side, maxQuantity }) {
             max={isSell && maxQuantity != null ? maxQuantity : undefined}
             step="1"
             placeholder="0"
+            aria-label={isSell ? 'Sell quantity' : 'Buy quantity'}
             value={quantity}
             onChange={(event) => setQuantity(event.target.value)}
           />
-        </label>
-        <label className="field">
+        </div>
+        <div className="field">
           <span>Limit price</span>
+          {company.currentPrice != null ? (
+            <PercentButtons options={PRICE_PRESETS} ariaLabel="Adjust price from the current price" onPick={pickPrice} />
+          ) : null}
           <input
             className="select num"
             type="number"
             min="0.01"
             step="0.01"
             placeholder="0.00"
+            aria-label="Limit price"
             value={limitPrice}
             onChange={(event) => setLimitPrice(event.target.value)}
           />
-        </label>
+        </div>
       </div>
       {error ? (
         <p className="command-error" role="alert">
@@ -338,8 +378,8 @@ export function CompanyModal({ company, participantNameById, onClose }) {
           <button type="button" className="btn" ref={closeRef} onClick={onClose}>
             Close
           </button>
-          <Link className="btn" to={`/companies?company=${company.id}`}>
-            Open in Companies page
+          <Link className="btn" to={`/companies/${company.id}`}>
+            Open company page
           </Link>
           {player ? (
             <button
