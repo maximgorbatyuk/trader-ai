@@ -7,10 +7,11 @@ using TraderAi.Services;
 
 namespace TraderAi.Tests;
 
-// Drives the company life cycle with a scripted Random. Closure is deterministic and draws nothing; appearance
-// draws one NextDouble for the roll (only past the safe period) then a share count, a price, an industry index, and
-// one Next for the name. Tests that isolate closure pin the appearance clock to the current cycle so its chance is
-// zero and no draw is taken.
+// Drives the company life cycle with a scripted Random. Closure is deterministic and draws nothing; the appearance
+// pass draws one NextDouble for the roll every cycle the market is below the cap — its chance is a population tier
+// (10% under 50 companies, 5% under 100, 1% at or above) — then, only on a clearing roll, a share count, a price,
+// an industry index, and one Next for the name. A delisting adds +0.25 to the same-cycle chance, so closure tests
+// script a 0.99 roll that misses to isolate the delisting.
 public sealed class CompanyLifecycleServiceTests : IDisposable
 {
     private readonly SqliteConnection connection;
@@ -50,28 +51,13 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task WithinSafePeriodNoCompanyAppearsAndNoDrawIsTaken()
+    public async Task AppearanceListsCompanyWithFloatSnapshotAndNews()
     {
-        // 99 cycles since the last listing, one short of the 100-cycle safe period, so the chance is zero. Passing
-        // an empty scripted Random proves no roll is drawn inside the safe period.
-        var cycle = await AddCycleAsync(100);
+        // Empty market → the <50 tier at 10%; the 0.05 roll clears it. Then share count, price, industry index, name.
+        var cycle = await AddCycleAsync(201);
         await SetupMarketAsync(cycle, lastAppearanceCycleNumber: 1);
 
-        await Service(enabled: true, new ScriptedRandom([], []))
-            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        Assert.Equal(0, await context.Companies.CountAsync());
-    }
-
-    [Fact]
-    public async Task PastSafePeriodAppearanceListsCompanyWithFloatSnapshotAndNews()
-    {
-        // 101 cycles on → chance 0.1%; the roll of 0.0005 clears it. Then share count, price, industry index, name.
-        var cycle = await AddCycleAsync(201);
-        await SetupMarketAsync(cycle, lastAppearanceCycleNumber: 100);
-
-        await Service(enabled: true, new ScriptedRandom([0.0005d], [500, 100, 0, 0]))
+        await Service(enabled: true, new ScriptedRandom([0.05d], [500, 100, 0, 0]))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -101,17 +87,104 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     public async Task AppearanceRollThatMissesListsNothingAndDrawsNoParameters()
     {
         var cycle = await AddCycleAsync(201);
-        await SetupMarketAsync(cycle, lastAppearanceCycleNumber: 100);
+        await SetupMarketAsync(cycle, lastAppearanceCycleNumber: 1);
 
-        // Roll 0.5 exceeds the 0.1% chance, so nothing is listed. The empty int queue proves no parameter is drawn
-        // once the roll misses.
+        // Empty market → the 10% tier; the 0.5 roll misses it, so nothing is listed. The empty int queue proves no
+        // parameter is drawn once the roll misses.
         await Service(enabled: true, new ScriptedRandom([0.5d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         Assert.Equal(0, await context.Companies.CountAsync());
+    }
+
+    [Fact]
+    public async Task HighTierBelowFiftyCompaniesListsOnModerateRoll()
+    {
+        // 10 live companies → the <50 tier at 10%; a 0.07 roll clears it (it would miss the 5% mid tier), so a
+        // company lists. The plain companies carry no price history or ratings, so none qualifies to close.
+        var cycle = await AddCycleAsync(10);
+        await SetupMarketAsync(cycle, lastAppearanceCycleNumber: 1);
+        await AddCompaniesAsync(10);
+
+        await Service(enabled: true, new ScriptedRandom([0.07d], [500, 100, 0, 0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(11, await context.Companies.CountAsync());
+    }
+
+    [Fact]
+    public async Task MidTierUnderHundredCompaniesMissesModerateRoll()
+    {
+        // 60 live companies → the 50–99 tier at 5%; a 0.07 roll misses it (it would clear the 10% high tier), so
+        // nothing lists. The empty int queue proves no listing parameters are drawn.
+        var cycle = await AddCycleAsync(10);
+        await SetupMarketAsync(cycle, lastAppearanceCycleNumber: 1);
+        await AddCompaniesAsync(60);
+
+        await Service(enabled: true, new ScriptedRandom([0.07d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(60, await context.Companies.CountAsync());
+    }
+
+    [Fact]
+    public async Task LowTierAtHundredOrMoreCompaniesMissesModerateRoll()
+    {
+        // 120 live companies → the ≥100 tier at 1%; a 0.03 roll misses it (it would clear the 5% mid tier), so
+        // nothing lists.
+        var cycle = await AddCycleAsync(10);
+        await SetupMarketAsync(cycle, lastAppearanceCycleNumber: 1);
+        await AddCompaniesAsync(120);
+
+        await Service(enabled: true, new ScriptedRandom([0.03d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(120, await context.Companies.CountAsync());
+    }
+
+    [Fact]
+    public async Task ClosureBoostsAppearanceAndResetsCounter()
+    {
+        // The only company delists, dropping the live count to 0 (the 10% tier) and banking one closure boost
+        // (+0.25) → chance 0.35; the 0.1 roll clears it, so a replacement lists the same cycle and the counter resets.
+        var cycles = await AddCyclesAsync(21);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var company = await AddCompanyAsync();
+        await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+
+        await Service(enabled: true, new ScriptedRandom([0.1d], [500, 100, 0, 0]))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(2, await context.Companies.CountAsync());
+        Assert.Equal(1, await context.Companies.CountAsync(c => c.ClosedInCycleId == current.Id));
+        Assert.Equal(1, await context.Companies.CountAsync(c => c.ClosedInCycleId == null));
+
         var refreshedMarket = await context.Markets.AsNoTracking().SingleAsync();
-        Assert.Equal(100, refreshedMarket.LastCompanyAppearanceCycleNumber);
+        Assert.Equal(0, refreshedMarket.CompanyClosuresSinceLastAppearance);
+    }
+
+    [Fact]
+    public async Task AccumulatedClosuresRaiseAppearanceChance()
+    {
+        // 120 live companies sit in the 1% tier, but three banked closures add 0.75 → 76%. A 0.7 roll clears that,
+        // where the 1% base alone would miss, and the counter resets. The plain companies never qualify to close.
+        var cycle = await AddCycleAsync(50);
+        await SetupMarketAsync(cycle, lastAppearanceCycleNumber: cycle.CycleNumber, closuresSinceLastAppearance: 3);
+        await AddCompaniesAsync(120);
+
+        await Service(enabled: true, new ScriptedRandom([0.7d], [500, 100, 0, 0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(121, await context.Companies.CountAsync());
+        var refreshedMarket = await context.Markets.AsNoTracking().SingleAsync();
+        Assert.Equal(0, refreshedMarket.CompanyClosuresSinceLastAppearance);
     }
 
     [Fact]
@@ -121,7 +194,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync();
-        // 21 strictly decreasing closes → 20 down-moves, well past the 15-of-20 line.
+        // 21 strictly decreasing closes → 20 down-moves, well past the 16-of-20 line.
         await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
 
         var holder = await AddTraderAsync(balance: 5_000m, reserved: 0m);
@@ -130,7 +203,8 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         var buy = await AddBuyOrderAsync(buyer.Id, company.Id, quantity: 5, price: 90m, reserved: 500m, current);
         await AddFloatSellOrderAsync(company.Id, quantity: 200, price: 100m, current);
 
-        await Service(enabled: true, new ScriptedRandom([], []))
+        // The close boosts the appearance chance to 0.25; the 0.99 roll misses it, isolating the delisting.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -169,7 +243,8 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await AddRatingAsync(company.Id, CompanyRiskRating.Extra, cycles[1]);
         await AddRatingAsync(company.Id, CompanyRiskRating.High, cycles[2]);
 
-        await Service(enabled: true, new ScriptedRandom([], []))
+        // The close boosts the appearance chance to 0.25; the 0.99 roll misses it, isolating the delisting.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -188,7 +263,8 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await AddRatingAsync(company.Id, CompanyRiskRating.Low, cycles[1]);
         await AddRatingAsync(company.Id, CompanyRiskRating.High, cycles[2]);
 
-        await Service(enabled: true, new ScriptedRandom([], []))
+        // Nothing closes, but the one surviving company still sits in the 10% tier, so a roll is drawn; 0.99 misses.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -208,7 +284,8 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await AddDecliningSnapshotsAsync(worse.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
         await AddDecliningSnapshotsAsync(milder.Id, cycles, startPrice: 100m, decrementPerCycle: 0.5m);
 
-        await Service(enabled: true, new ScriptedRandom([], []))
+        // The close boosts the appearance chance to 0.25; the 0.99 roll misses it, isolating the delisting.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -233,7 +310,8 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await AddSnapshotAsync(doomed.Id, price: 100m, cycles[0]);
         await AddSnapshotAsync(doomed.Id, price: 40m, current);
 
-        await Service(enabled: true, new ScriptedRandom([], []))
+        // The force-delist boosts the appearance chance to 0.25; the 0.99 roll misses it, isolating the delisting.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -252,7 +330,8 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
         var crisis = await AddCrisisAsync(current);
 
-        await Service(enabled: true, new ScriptedRandom([], []))
+        // The close boosts the appearance chance to 0.25; the 0.99 roll misses it, isolating the delisting.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow, crisis);
         await context.SaveChangesAsync();
 
@@ -301,7 +380,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         return cycles;
     }
 
-    private async Task SetupMarketAsync(MarketCycle currentCycle, int lastAppearanceCycleNumber)
+    private async Task SetupMarketAsync(MarketCycle currentCycle, int lastAppearanceCycleNumber, int closuresSinceLastAppearance = 0)
     {
         var now = DateTime.UtcNow;
         var industry = new Industry { Name = "Tech" };
@@ -315,6 +394,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
             Status = MarketStatus.Running,
             CurrentCycleId = currentCycle.Id,
             LastCompanyAppearanceCycleNumber = lastAppearanceCycleNumber,
+            CompanyClosuresSinceLastAppearance = closuresSinceLastAppearance,
             CreatedAt = now,
             UpdatedAt = now,
         });

@@ -7,18 +7,19 @@ namespace TraderAi.Services;
 
 // Gives the company population a life cycle. Once per cycle it may delist one failing company and, separately, may
 // list one new one. Closure is deterministic and draws nothing: a company qualifies when its price fell in at
-// least 15 of the last 20 recorded per-cycle closes, or its three most recent auditor ratings are all High/Extra.
+// least 16 of the last 20 recorded per-cycle closes, or its three most recent auditor ratings are all High/Extra.
 // At most one company closes per cycle — the worst performer when several qualify — and when the market is full at
 // the 300 cap with nothing failing on its own, the single worst performer is delisted to make room. A closed
 // company's orders are cancelled (buy reservations released), its holdings zeroed with no payout, and it is
-// filtered out of the live market while its row survives for history. Appearance is the only random part: after a
-// 100-cycle safe period the chance to mint a new company climbs 0.1% per cycle to a certainty. Runs in the
-// pre-match window right after share emission so the worth-reading services see the post-change state; stages
-// changes and the caller owns the save.
+// filtered out of the live market while its row survives for history. Appearance is the only random part: the base
+// chance to mint a new company each cycle is a population tier — 10% below 50 live companies, 5% below 100, 1% at
+// or above — and each delisting since the last listing adds a fixed boost on top so a shrinking population refills
+// quickly. Runs in the pre-match window right after share emission so the worth-reading services see the
+// post-change state; stages changes and the caller owns the save.
 //
-// Draw discipline for a scripted Random: closure draws nothing. Appearance draws one NextDouble only once past the
-// safe period (inside it the chance is 0 and no roll is taken); if it fires it draws a share count, a price, an
-// industry index, then one Next for the name.
+// Draw discipline for a scripted Random: closure draws nothing. The appearance pass draws one NextDouble every
+// cycle the market is below the cap (the base chance is always positive); only a clearing roll goes on to draw a
+// share count, a price, an industry index, then one Next for the name.
 public sealed class CompanyLifecycleService(
     AppDbContext dbContext,
     IOptions<CompanyLifecycleOptions> options,
@@ -27,14 +28,21 @@ public sealed class CompanyLifecycleService(
     // The market never lists more than this many live companies.
     private const int MaxCompanies = 300;
 
-    // No company appears for this many cycles after the last listing; past it the chance climbs by a step per cycle.
-    private const int SafePeriodCycles = 100;
-    private const double ChanceStepPerCycle = 0.001;
+    // Base per-cycle appearance chance by live-company count: a sparse market spawns aggressively, a healthy one
+    // rarely. Below HighTierCompanyCount uses HighChance, below MidTierCompanyCount uses MidChance, otherwise LowChance.
+    private const int HighTierCompanyCount = 50;
+    private const int MidTierCompanyCount = 100;
+    private const double HighChance = 0.10;
+    private const double MidChance = 0.05;
+    private const double LowChance = 0.01;
+
+    // Each delisting since the last listing adds this to the base appearance chance, so replacements track closures.
+    private const double ClosureAppearanceBoost = 0.25;
 
     // A company delists when its price fell in at least DeclineThreshold of the last DeclineWindowCycles recorded
     // cycle-over-cycle moves.
     private const int DeclineWindowCycles = 20;
-    private const int DeclineThreshold = 15;
+    private const int DeclineThreshold = 16;
 
     // ...or when its RiskStreakLength most recent ratings are all High or Extra.
     private const int RiskStreakLength = 3;
@@ -67,6 +75,10 @@ public sealed class CompanyLifecycleService(
         var closesByCompany = await PerCycleClosesByCompanyAsync();
 
         var closed = await MaybeCloseOneAsync(liveCompanies, closesByCompany, currentCycleId, currentCycleNumber, now, activeCrisis);
+        if (closed)
+        {
+            market.CompanyClosuresSinceLastAppearance++;
+        }
 
         // The just-closed company frees a slot, so a full market can list a replacement the same cycle.
         var liveCount = liveCompanies.Count - (closed ? 1 : 0);
@@ -212,11 +224,14 @@ public sealed class CompanyLifecycleService(
             return;
         }
 
-        var cyclesSinceLast = currentCycleNumber - market.LastCompanyAppearanceCycleNumber;
-        var chance = Math.Min(Math.Max(0, cyclesSinceLast - SafePeriodCycles) * ChanceStepPerCycle, 1.0);
+        var baseChance = liveCount < HighTierCompanyCount ? HighChance
+            : liveCount < MidTierCompanyCount ? MidChance
+            : LowChance;
+        var chance = Math.Min(baseChance + market.CompanyClosuresSinceLastAppearance * ClosureAppearanceBoost, 1.0);
 
-        // Inside the safe period the chance is zero and no roll is drawn, keeping a scripted Random predictable.
-        if (chance <= 0.0 || random.NextDouble() >= chance)
+        // The base chance is always positive, so a roll is drawn every cycle below the cap; only a clearing roll
+        // goes on to draw listing parameters.
+        if (random.NextDouble() >= chance)
         {
             return;
         }
@@ -289,6 +304,7 @@ public sealed class CompanyLifecycleService(
         });
 
         market.LastCompanyAppearanceCycleNumber = currentCycleNumber;
+        market.CompanyClosuresSinceLastAppearance = 0;
         market.UpdatedAt = now;
     }
 

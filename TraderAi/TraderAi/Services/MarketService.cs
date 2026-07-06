@@ -320,7 +320,7 @@ public sealed class MarketService(
         // matching and a replacement can trade the same tick.
         if (marketExitService is not null)
         {
-            await marketExitService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await marketExitService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
             await dbContext.SaveChangesAsync();
         }
 
@@ -1366,7 +1366,7 @@ public sealed class MarketService(
 
         // Drawn last so adding the dividend schedule does not shift the generated demo data above.
         market.NextDividendCycleNumber = firstCycle.CycleNumber + RandomDividendInterval(random);
-        // The appearance clock starts at the first cycle so the same 100-cycle safe period applies from launch.
+        // The appearance clock starts at the first cycle so the same safe period applies from launch.
         market.LastCompanyAppearanceCycleNumber = firstCycle.CycleNumber;
         market.CurrentCycleId = firstCycle.Id;
         await dbContext.SaveChangesAsync();

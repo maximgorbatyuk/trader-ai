@@ -28,6 +28,11 @@ public sealed class MarketExitService(
     // A single flat chance that a devastated ex-fund-member quits on its first shareless cycle after the loss.
     private const double FundLossExitChance = 0.25;
 
+    // A crisis makes traders bail faster: while one is active every exit chance is scaled by this factor
+    // (clamped to 1), harder in a global crisis than a local one.
+    private const double GlobalCrisisExitMultiplier = 5.0;
+    private const double LocalCrisisExitMultiplier = 2.0;
+
     // A replacement trader starts with a whole-dollar balance drawn uniformly from this range (the player range).
     private const int ReplacementMinBalance = 10_000;
     private const int ReplacementMaxBalance = 200_000;
@@ -45,13 +50,21 @@ public sealed class MarketExitService(
 
     // Draw discipline for a scripted Random in tests: no draws in the max-worth ratchet; at most one NextDouble()
     // per exit candidate in id order (fund-loss holders before starvation); and only a confirmed departure burns
-    // its replacement's fixed run of draws — balance, type, temperament, risk, then name.
-    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now)
+    // its replacement's fixed run of draws — balance, type, temperament, risk, then name. An active crisis only
+    // scales the exit threshold, it takes no extra draw, so calm-market sequences are unchanged.
+    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
     {
         if (!options.Value.Enabled)
         {
             return;
         }
+
+        var crisisExitMultiplier = activeCrisis?.Scope switch
+        {
+            CrisisScope.Global => GlobalCrisisExitMultiplier,
+            CrisisScope.Local => LocalCrisisExitMultiplier,
+            _ => 1.0,
+        };
 
         await LoadStateAsync();
 
@@ -91,7 +104,7 @@ public sealed class MarketExitService(
                 }
 
                 participant.PendingFundLossExitRoll = false;
-                if (random.NextDouble() < FundLossExitChance)
+                if (random.NextDouble() < Math.Min(1.0, FundLossExitChance * crisisExitMultiplier))
                 {
                     await DepartAsync(participant, MarketExitReason.FundLoss, currentCycleId, now);
                 }
@@ -106,7 +119,8 @@ public sealed class MarketExitService(
 
             var chance = Math.Min(
                 1.0,
-                StarvationBaseChance + (StarvationStepPerCycle * (participant.CannotBuyCycles - StarvationDroughtCycles)));
+                (StarvationBaseChance + (StarvationStepPerCycle * (participant.CannotBuyCycles - StarvationDroughtCycles)))
+                    * crisisExitMultiplier);
             if (random.NextDouble() < chance)
             {
                 await DepartAsync(participant, MarketExitReason.Starvation, currentCycleId, now);

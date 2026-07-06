@@ -282,6 +282,75 @@ public sealed class MarketExitServiceTests : IDisposable
         Assert.Equal("Olivia Okonkwo", replacement.Name);
     }
 
+    [Fact]
+    public async Task LocalCrisisDoublesFundLossChanceSoAHigherRollDeparts()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var flagged = await AddTraderAsync(currentBalance: 8_000m, pendingFundLossExitRoll: true, name: "Wiped Out");
+        var crisis = await AddCrisisAsync(cycle, CrisisScope.Local);
+
+        // Without a crisis a 0.40 roll misses the 0.25 fund-loss chance; a local crisis doubles it to 0.50, so it
+        // now departs — and the exit leaves no crisis-timeline entry.
+        await Service(enabled: true, new ScriptedRandom([0.40d], [30_000, 0, 0, 0, 0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1, await context.MarketExits.CountAsync());
+        Assert.False(await context.Participants.AnyAsync(participant => participant.Id == flagged.Id));
+        Assert.Equal(0, await context.CrisisEvents.CountAsync());
+    }
+
+    [Fact]
+    public async Task GlobalCrisisQuintuplesFundLossChanceBeyondLocal()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var flagged = await AddTraderAsync(currentBalance: 8_000m, pendingFundLossExitRoll: true);
+        var crisis = await AddCrisisAsync(cycle, CrisisScope.Global);
+
+        // A 0.60 roll would still miss a local crisis's 0.50 chance; a global crisis quintuples the 0.25 base past
+        // 1.0 (clamped), so it departs — proving the global 5x, not the local 2x.
+        await Service(enabled: true, new ScriptedRandom([0.60d], [30_000, 0, 0, 0, 0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1, await context.MarketExits.CountAsync());
+        Assert.False(await context.Participants.AnyAsync(participant => participant.Id == flagged.Id));
+    }
+
+    [Fact]
+    public async Task LocalCrisisAlsoScalesStarvationChance()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var trader = await AddTraderAsync(currentBalance: 10_000m, cannotBuyCycles: 20);
+        var crisis = await AddCrisisAsync(cycle, CrisisScope.Local);
+
+        // At a 20-cycle drought the base starvation chance is 0.25; a local crisis doubles it to 0.50, so a 0.40
+        // roll that would otherwise miss now departs the starved trader.
+        await Service(enabled: true, new ScriptedRandom([0.40d], [20_000, 0, 0, 0, 0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1, await context.MarketExits.CountAsync());
+        Assert.False(await context.Participants.AnyAsync(participant => participant.Id == trader.Id));
+    }
+
+    private async Task<Crisis> AddCrisisAsync(MarketCycle cycle, CrisisScope scope)
+    {
+        var crisis = new Crisis
+        {
+            Title = "Shock",
+            Content = "Body",
+            Scope = scope,
+            TriggeredInCycleId = cycle.Id,
+            TriggeredInCycleNumber = cycle.CycleNumber,
+            DurationCycles = 20,
+            TriggeredAt = DateTime.UtcNow,
+        };
+        context.Crises.Add(crisis);
+        await context.SaveChangesAsync();
+        return crisis;
+    }
+
     private async Task<(Market Market, MarketCycle Cycle, Company Company)> SeedAsync(decimal price, int cycleNumber = 600)
     {
         var now = DateTime.UtcNow;
