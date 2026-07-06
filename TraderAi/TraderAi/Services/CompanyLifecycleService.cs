@@ -6,24 +6,28 @@ using TraderAi.Models;
 namespace TraderAi.Services;
 
 // Gives the company population a life cycle. Once per cycle it may delist one failing company and, separately, may
-// list one new one. Closure is deterministic and draws nothing: a company qualifies when its price fell in at
-// least 16 of the last 20 recorded per-cycle closes, or its three most recent auditor ratings are all High/Extra.
-// At most one company closes per cycle — the worst performer when several qualify — and when the market is full at
-// the 300 cap with nothing failing on its own, the single worst performer is delisted to make room. A closed
-// company's orders are cancelled (buy reservations released), its holdings zeroed with no payout, and it is
+// list one new one. Nothing closes during the market's first NoClosureBeforeCycle cycles, giving fresh listings
+// time to establish. Closure is deterministic and draws nothing: past that grace period a company qualifies when
+// its price fell in at least 16 of the last 20 recorded per-cycle closes, or its three most recent auditor ratings
+// are all High/Extra. At most one company closes per cycle — the worst performer when several qualify — and when
+// the market is full at the 300 cap with nothing failing on its own, the single worst sub-threshold performer is
+// delisted to make room. A company worth at least ClosureProtectionCapitalization is never closed: a would-be-closed
+// one instead has its price cut ProtectedCompanyPriceDropPercent% (via MarketImpactService) and stays listed. A
+// closed company's orders are cancelled (buy reservations released), its holdings zeroed with no payout, and it is
 // filtered out of the live market while its row survives for history. Appearance is the only random part: the base
 // chance to mint a new company each cycle is a population tier — 10% below 50 live companies, 5% below 100, 1% at
 // or above — and each delisting since the last listing adds a fixed boost on top so a shrinking population refills
 // quickly. Runs in the pre-match window right after share emission so the worth-reading services see the
 // post-change state; stages changes and the caller owns the save.
 //
-// Draw discipline for a scripted Random: closure draws nothing. The appearance pass draws one NextDouble every
-// cycle the market is below the cap (the base chance is always positive); only a clearing roll goes on to draw a
-// share count, a price, an industry index, then one Next for the name.
+// Draw discipline for a scripted Random: closure and the protective price cut both draw nothing. The appearance
+// pass draws one NextDouble every cycle the market is below the cap (the base chance is always positive); only a
+// clearing roll goes on to draw a share count, a price, an industry index, then one Next for the name.
 public sealed class CompanyLifecycleService(
     AppDbContext dbContext,
     IOptions<CompanyLifecycleOptions> options,
-    Random random)
+    Random random,
+    MarketImpactService marketImpact)
 {
     // The market never lists more than this many live companies.
     private const int MaxCompanies = 300;
@@ -46,6 +50,13 @@ public sealed class CompanyLifecycleService(
 
     // ...or when its RiskStreakLength most recent ratings are all High or Extra.
     private const int RiskStreakLength = 3;
+
+    // No company is closed while the market is this young.
+    private const int NoClosureBeforeCycle = 100;
+
+    // A company worth at least this much is never closed; a would-be-closed one has its price cut this percent instead.
+    private const decimal ClosureProtectionCapitalization = 50_000_000m;
+    private const decimal ProtectedCompanyPriceDropPercent = 60m;
 
     // A freshly listed company draws a share count and a price in these bands (matching the demo seed), so its
     // starting capitalisation is their product and its price sits well inside the split/merge band.
@@ -93,11 +104,13 @@ public sealed class CompanyLifecycleService(
         DateTime now,
         Crisis? activeCrisis)
     {
-        if (liveCompanies.Count == 0)
+        // Fresh listings get a grace period before any delisting can touch the market.
+        if (currentCycleNumber <= NoClosureBeforeCycle || liveCompanies.Count == 0)
         {
             return false;
         }
 
+        var capByCompany = await CapitalizationByCompanyAsync(liveCompanies);
         var riskStreakCompanyIds = await RiskStreakCompanyIdsAsync();
 
         var qualifiers = liveCompanies
@@ -105,24 +118,71 @@ public sealed class CompanyLifecycleService(
                 || riskStreakCompanyIds.Contains(company.Id))
             .ToList();
 
-        Company? target;
         if (qualifiers.Count > 0)
         {
-            target = WorstPerformer(qualifiers, closesByCompany);
-        }
-        else if (liveCompanies.Count >= MaxCompanies)
-        {
-            // Pressure valve: the market is full and nothing failed on its own, so the single worst performer is
-            // delisted to make room for fresh listings.
-            target = WorstPerformer(liveCompanies, closesByCompany);
-        }
-        else
-        {
-            return false;
+            var target = WorstPerformer(qualifiers, closesByCompany);
+
+            // A large-cap failure is punished with a price cut rather than a delisting; it is not a closure, so it
+            // frees no slot and does not feed the appearance boost.
+            if (capByCompany.GetValueOrDefault(target.Id) >= ClosureProtectionCapitalization)
+            {
+                await CrashProtectedCompanyAsync(target, currentCycleId, now);
+                return false;
+            }
+
+            await CloseCompanyAsync(target, currentCycleId, currentCycleNumber, now, activeCrisis);
+            return true;
         }
 
-        await CloseCompanyAsync(target, currentCycleId, currentCycleNumber, now, activeCrisis);
-        return true;
+        if (liveCompanies.Count >= MaxCompanies)
+        {
+            // Pressure valve: the market is full and nothing failed on its own. Only sub-threshold companies are
+            // removable, so a large-cap is never delisted just to make room; if all are protected, nothing happens.
+            var removable = liveCompanies
+                .Where(company => capByCompany.GetValueOrDefault(company.Id) < ClosureProtectionCapitalization)
+                .ToList();
+            if (removable.Count == 0)
+            {
+                return false;
+            }
+
+            await CloseCompanyAsync(
+                WorstPerformer(removable, closesByCompany), currentCycleId, currentCycleNumber, now, activeCrisis);
+            return true;
+        }
+
+        return false;
+    }
+
+    // Market cap per live company = latest price × issued shares; a company with no price snapshot counts as zero.
+    private async Task<Dictionary<int, decimal>> CapitalizationByCompanyAsync(IReadOnlyList<Company> liveCompanies)
+    {
+        var latestPriceByCompany = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
+        return liveCompanies.ToDictionary(
+            company => company.Id,
+            company => latestPriceByCompany.GetValueOrDefault(company.Id) * company.IssuedSharesCount);
+    }
+
+    // A protected large-cap that would have been delisted takes a fixed price cut and stays listed, with a
+    // company-scoped news post recording the drop. The impact is applied here, so the post carries no second one.
+    private async Task CrashProtectedCompanyAsync(Company company, int currentCycleId, DateTime now)
+    {
+        await marketImpact.ApplyImpactAsync(
+            NewsImpactDirection.Decrease, [company.Id], ProtectedCompanyPriceDropPercent, currentCycleId, now);
+
+        company.UpdatedAt = now;
+
+        dbContext.NewsPosts.Add(new NewsPost
+        {
+            Title = $"{company.Name} takes a sharp writedown",
+            Content = $"{company.Name} would have been delisted, but as a large-cap it is spared — its share price is cut {ProtectedCompanyPriceDropPercent:N0}% instead.",
+            PublishedInCycleId = currentCycleId,
+            PublishedAt = now,
+            Scope = NewsImpactScope.Company,
+            Direction = NewsImpactDirection.Decrease,
+            ImpactPercent = ProtectedCompanyPriceDropPercent,
+            TargetCompanyId = company.Id,
+        });
     }
 
     // The most-negative recent price change, id order breaking ties, so selection is deterministic.

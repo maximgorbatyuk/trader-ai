@@ -32,7 +32,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     }
 
     private CompanyLifecycleService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new CompanyLifecycleOptions { Enabled = enabled }), random);
+        new(context, Options.Create(new CompanyLifecycleOptions { Enabled = enabled }), random, new MarketImpactService(context));
 
     [Fact]
     public async Task DisabledDoesNothing()
@@ -151,7 +151,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     {
         // The only company delists, dropping the live count to 0 (the 10% tier) and banking one closure boost
         // (+0.25) → chance 0.35; the 0.1 roll clears it, so a replacement lists the same cycle and the counter resets.
-        var cycles = await AddCyclesAsync(21);
+        var cycles = await AddCyclesAsync(21, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync();
@@ -190,7 +190,8 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     [Fact]
     public async Task SustainedPriceDeclineDelistsCompanyCancellingOrdersAndWipingHoldings()
     {
-        var cycles = await AddCyclesAsync(21);
+        // Cycles past the 100-cycle grace period so closure is active; the company stays small-cap so it closes.
+        var cycles = await AddCyclesAsync(21, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync();
@@ -235,7 +236,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     [Fact]
     public async Task ThreeConsecutiveHighOrExtraRatingsDelistCompany()
     {
-        var cycles = await AddCyclesAsync(3);
+        var cycles = await AddCyclesAsync(3, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync();
@@ -255,7 +256,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     [Fact]
     public async Task ALowRatingInTheStreakSpareCompany()
     {
-        var cycles = await AddCyclesAsync(3);
+        var cycles = await AddCyclesAsync(3, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync();
@@ -275,7 +276,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     [Fact]
     public async Task OnlyTheWorstPerformerClosesWhenSeveralQualify()
     {
-        var cycles = await AddCyclesAsync(21);
+        var cycles = await AddCyclesAsync(21, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var worse = await AddCompanyAsync();
@@ -298,7 +299,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     [Fact]
     public async Task FullMarketWithNoQualifierForceClosesTheWorstPerformer()
     {
-        var cycles = await AddCyclesAsync(2);
+        var cycles = await AddCyclesAsync(2, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
 
@@ -323,7 +324,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     [Fact]
     public async Task DelistingDuringACrisisIsLoggedToTheTimeline()
     {
-        var cycles = await AddCyclesAsync(21);
+        var cycles = await AddCyclesAsync(21, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync();
@@ -342,6 +343,92 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
             .SingleAsync(row => row.Type == CrisisEventType.CompanyClosed);
         Assert.Equal(crisis.Id, timelineEvent.CrisisId);
         Assert.Equal(company.Id, timelineEvent.CompanyId);
+    }
+
+    [Fact]
+    public async Task LargeCapDecliningCompanyIsCrashedNotClosed()
+    {
+        // A declining company worth ≥ $50M (80 × 1,000,000 = $80M at the latest close) is spared: instead of a
+        // delisting it takes a 60% price cut (new price 32) and stays live. The 0.99 appearance roll misses.
+        var cycles = await AddCyclesAsync(21, firstNumber: 200);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var company = await AddCompanyAsync(issuedShares: 1_000_000);
+        await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync();
+        Assert.Null(refreshed.ClosedInCycleId);
+
+        // The 60% cut stamped a fresh snapshot at 0.4 × the $80 close.
+        var latest = await context.PriceSnapshots.AsNoTracking().OrderByDescending(s => s.Id).FirstAsync();
+        Assert.Equal(32m, latest.Price);
+        Assert.Equal(32_000_000m, latest.Capitalization);
+
+        var news = await context.NewsPosts.AsNoTracking().SingleAsync(post => post.Scope == NewsImpactScope.Company);
+        Assert.Equal(NewsImpactDirection.Decrease, news.Direction);
+        Assert.Equal(60m, news.ImpactPercent);
+        Assert.Equal(company.Id, news.TargetCompanyId);
+
+        // A crash is not a closure: it frees no slot and does not feed the appearance boost.
+        var refreshedMarket = await context.Markets.AsNoTracking().SingleAsync();
+        Assert.Equal(0, refreshedMarket.CompanyClosuresSinceLastAppearance);
+    }
+
+    [Fact]
+    public async Task NoCompanyClosesInsideTheGracePeriod()
+    {
+        // A company that fully qualifies to close (21 declining closes) is untouched while the market is still in
+        // its first 100 cycles. The 0.99 appearance roll misses so nothing lists either.
+        var cycles = await AddCyclesAsync(21);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var company = await AddCompanyAsync();
+        await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync();
+        Assert.Null(refreshed.ClosedInCycleId);
+        Assert.Equal(1, await context.Companies.CountAsync());
+    }
+
+    [Fact]
+    public async Task ForceDelistSkipsLargeCapAndRemovesTheWorstSmallerCompany()
+    {
+        var cycles = await AddCyclesAsync(2, firstNumber: 200);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+
+        // 300 live companies, none with a decline streak or ratings — the pressure valve, not a qualifier, decides.
+        var companies = await AddCompaniesAsync(300);
+
+        // The most-negative performer is a ≥ $50M large-cap (40 × 2,000,000 = $80M): protected, so the valve skips
+        // it and instead removes the worst sub-threshold company.
+        var bigCap = companies[100];
+        bigCap.IssuedSharesCount = 2_000_000;
+        await context.SaveChangesAsync();
+        await AddSnapshotAsync(bigCap.Id, price: 100m, cycles[0]);
+        await AddSnapshotAsync(bigCap.Id, price: 40m, current);
+
+        var smaller = companies[200];
+        await AddSnapshotAsync(smaller.Id, price: 100m, cycles[0]);
+        await AddSnapshotAsync(smaller.Id, price: 60m, current);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1, await context.Companies.CountAsync(c => c.ClosedInCycleId != null));
+        var refreshedBig = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == bigCap.Id);
+        var refreshedSmaller = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == smaller.Id);
+        Assert.Null(refreshedBig.ClosedInCycleId);
+        Assert.Equal(current.Id, refreshedSmaller.ClosedInCycleId);
     }
 
     private async Task<Crisis> AddCrisisAsync(MarketCycle cycle)
@@ -369,12 +456,12 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         return cycle;
     }
 
-    private async Task<List<MarketCycle>> AddCyclesAsync(int count)
+    private async Task<List<MarketCycle>> AddCyclesAsync(int count, int firstNumber = 1)
     {
         var cycles = new List<MarketCycle>(count);
-        for (var number = 1; number <= count; number++)
+        for (var offset = 0; offset < count; offset++)
         {
-            cycles.Add(await AddCycleAsync(number));
+            cycles.Add(await AddCycleAsync(firstNumber + offset));
         }
 
         return cycles;
