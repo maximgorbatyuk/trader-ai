@@ -19,6 +19,21 @@ function formatPct(fraction) {
   return `${sign}${(Math.abs(fraction) * 100).toFixed(2)}%`
 }
 
+// An order/trade quantity as a share of the whole issued float, shown unsigned; sub-0.01% quantities collapse
+// to a floor label so a tiny order does not read as exactly 0%.
+function formatSharePct(quantity, issuedShares) {
+  if (!issuedShares || issuedShares <= 0) return null
+  const pct = (quantity / issuedShares) * 100
+  if (pct > 0 && pct < 0.01) return '<0.01%'
+  return `${pct.toFixed(2)}%`
+}
+
+// A price relative to a reference (order limit vs current price, trade price vs the market it hit), signed.
+function priceVsReference(price, reference) {
+  if (typeof price !== 'number' || typeof reference !== 'number' || reference === 0) return null
+  return formatPct((price - reference) / reference)
+}
+
 // The direction of the latest rating change, comparing the current verdict's severity to the one before it.
 function ratingTrend(current, previous) {
   if (!current || !previous || !(current in RISK_ORDER) || !(previous in RISK_ORDER)) return null
@@ -179,10 +194,8 @@ export function CompanyDetail({ companyId }) {
         <ShareholdersPanel shareholders={shareholders} />
       </div>
 
-      <div className="grid-detail">
-        <OrdersPanel orders={orders} />
-        <TradesPanel trades={trades} />
-      </div>
+      <OrdersPanel orders={orders} currentPrice={detail.currentPrice} issuedShares={detail.issuedSharesCount} />
+      <TradesPanel trades={trades} />
 
       <div className="grid-detail">
         <RatingHistoryPanel ratings={ratings} />
@@ -436,7 +449,7 @@ function ShareholdersPanel({ shareholders }) {
   )
 }
 
-function OrdersPanel({ orders }) {
+function OrdersPanel({ orders, currentPrice, issuedShares }) {
   return (
     <Panel title="Recent orders" count={`last ${orders.length}`} className="panel-orders-list">
       {orders.length === 0 ? (
@@ -453,21 +466,47 @@ function OrdersPanel({ orders }) {
                 <th scope="col" className="ta-r">
                   Limit
                 </th>
+                <th scope="col" className="ta-r">
+                  Market price
+                </th>
                 <th scope="col">Status</th>
+                <th scope="col">Order owner</th>
               </tr>
             </thead>
             <tbody>
-              {orders.map((order) => (
-                <tr key={order.id}>
-                  <td className={`tone-${order.type === 'Buy' ? 'up' : 'down'}`}>{order.type}</td>
-                  <td className="num ta-r">
-                    {order.filledQuantity}
-                    <span className="muted-sub">/{order.quantity}</span>
-                  </td>
-                  <td className="num ta-r">{formatMoney(order.limitPrice)}</td>
-                  <td>{order.status}</td>
-                </tr>
-              ))}
+              {orders.map((order) => {
+                const sharePct = formatSharePct(order.quantity, issuedShares)
+                const vsMarket = priceVsReference(order.limitPrice, currentPrice)
+                return (
+                  <tr key={order.id}>
+                    <td className={`tone-${order.type === 'Buy' ? 'up' : 'down'}`}>{order.type}</td>
+                    <td className="num ta-r">
+                      {formatInt(order.filledQuantity)}
+                      <span className="muted-sub">/{formatInt(order.quantity)}</span>
+                      {sharePct ? <span className="muted-sub"> · {sharePct}</span> : null}
+                    </td>
+                    <td className="num ta-r">
+                      {formatMoney(order.limitPrice)}
+                      {vsMarket ? <span className="muted-sub"> {vsMarket}</span> : null}
+                    </td>
+                    <td className="num ta-r">{formatMoney(currentPrice)}</td>
+                    <td>{order.status}</td>
+                    <td className="cell-ellipsis">
+                      {order.participantId != null ? (
+                        <Link
+                          className="cell-link"
+                          to={`/traders/${order.participantId}`}
+                          title={`Open ${order.participantName ?? 'trader'} trader page`}
+                        >
+                          {order.participantName ?? `#${order.participantId}`}
+                        </Link>
+                      ) : (
+                        <span className="muted-sub">Issuer</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -493,22 +532,58 @@ function TradesPanel({ trades }) {
                   Price
                 </th>
                 <th scope="col" className="ta-r">
+                  Market price
+                </th>
+                <th scope="col" className="ta-r">
                   Total
                 </th>
                 <th scope="col" className="ta-r">
                   Cycle
                 </th>
+                <th scope="col">Buyer</th>
+                <th scope="col">Seller</th>
               </tr>
             </thead>
             <tbody>
-              {trades.map((trade) => (
-                <tr key={trade.id}>
-                  <td className="num ta-r">{formatInt(trade.quantity)}</td>
-                  <td className="num ta-r">{formatMoney(trade.price)}</td>
-                  <td className="num ta-r">{formatMoney(trade.totalCost)}</td>
-                  <td className="num ta-r">#{trade.createdInCycleId}</td>
-                </tr>
-              ))}
+              {trades.map((trade) => {
+                const vsMarket = priceVsReference(trade.price, trade.marketPriceBefore)
+                return (
+                  <tr key={trade.id}>
+                    <td className="num ta-r">{formatInt(trade.quantity)}</td>
+                    <td className="num ta-r">
+                      {formatMoney(trade.price)}
+                      {vsMarket ? <span className="muted-sub"> {vsMarket}</span> : null}
+                    </td>
+                    <td className="num ta-r">
+                      {trade.marketPriceBefore != null ? formatMoney(trade.marketPriceBefore) : '—'}
+                    </td>
+                    <td className="num ta-r">{formatMoney(trade.totalCost)}</td>
+                    <td className="num ta-r">#{trade.createdInCycleId}</td>
+                    <td className="cell-ellipsis">
+                      <Link
+                        className="cell-link"
+                        to={`/traders/${trade.buyerId}`}
+                        title={`Open ${trade.buyerName ?? 'buyer'} trader page`}
+                      >
+                        {trade.buyerName ?? `#${trade.buyerId}`}
+                      </Link>
+                    </td>
+                    <td className="cell-ellipsis">
+                      {trade.sellerId != null ? (
+                        <Link
+                          className="cell-link"
+                          to={`/traders/${trade.sellerId}`}
+                          title={`Open ${trade.sellerName ?? 'seller'} trader page`}
+                        >
+                          {trade.sellerName ?? `#${trade.sellerId}`}
+                        </Link>
+                      ) : (
+                        <span className="muted-sub">Issuer</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>

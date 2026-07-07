@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt, formatMoney } from './format'
@@ -83,7 +84,13 @@ function ClosedFundsPage() {
                       {items.map((fund) => (
                         <tr key={fund.id}>
                           <th scope="row" className="cell-ellipsis">
-                            {fund.name}
+                            <Link
+                              className="cell-link"
+                              to={`/traders/${fund.participantId}`}
+                              title={`Open ${fund.name} fund page`}
+                            >
+                              {fund.name}
+                            </Link>
                           </th>
                           <td>
                             <span className="cell-trader">

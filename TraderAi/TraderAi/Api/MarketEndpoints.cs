@@ -98,7 +98,15 @@ public static class MarketEndpoints
                 .Take(limit)
                 .ToListAsync();
 
-            return Results.Ok(orders.Select(ToOrderResponse).ToArray());
+            var ownerNames = await ParticipantNamesAsync(
+                dbContext, orders.Where(order => order.ParticipantId != null).Select(order => order.ParticipantId!.Value));
+
+            return Results.Ok(orders
+                .Select(order => ToOrderResponse(order) with
+                {
+                    ParticipantName = order.ParticipantId is int ownerId ? ownerNames.GetValueOrDefault(ownerId) : null,
+                })
+                .ToArray());
         });
 
         app.MapGet("/companies/{companyId:int}/share-transactions", async (int companyId, int? take, AppDbContext dbContext) =>
@@ -110,7 +118,21 @@ public static class MarketEndpoints
                 .Take(limit)
                 .ToListAsync();
 
-            return Results.Ok(transactions.Select(ToShareTransactionResponse).ToArray());
+            var partyIds = transactions
+                .SelectMany(transaction => transaction.SellerId is int sellerId
+                    ? new[] { sellerId, transaction.BuyerId }
+                    : new[] { transaction.BuyerId });
+            var partyNames = await ParticipantNamesAsync(dbContext, partyIds);
+            var priceBefore = await MarketPriceBeforeTradesAsync(dbContext, companyId, transactions);
+
+            return Results.Ok(transactions
+                .Select(transaction => ToShareTransactionResponse(transaction) with
+                {
+                    SellerName = transaction.SellerId is int sellerId ? partyNames.GetValueOrDefault(sellerId) : null,
+                    BuyerName = partyNames.GetValueOrDefault(transaction.BuyerId),
+                    MarketPriceBefore = priceBefore.TryGetValue(transaction.Id, out var price) ? price : null,
+                })
+                .ToArray());
         });
 
         app.MapGet("/companies/{companyId:int}/ratings", async (int companyId, int? take, AppDbContext dbContext) =>
@@ -1575,13 +1597,102 @@ public static class MarketEndpoints
         return (fund.Status.ToString(), members);
     }
 
+    private static async Task<Dictionary<int, string>> ParticipantNamesAsync(
+        AppDbContext dbContext, IEnumerable<int> participantIds)
+    {
+        var ids = participantIds.Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            return new Dictionary<int, string>();
+        }
+
+        return await dbContext.Participants
+            .Where(participant => ids.Contains(participant.Id))
+            .ToDictionaryAsync(participant => participant.Id, participant => participant.Name);
+    }
+
+    // The prevailing market price immediately before each trade — the latest price snapshot strictly older than
+    // the trade's own snapshot — so a fill can be shown against the market it hit rather than against its own print
+    // (a trade and the snapshot it stamps share the same price). Returns transaction id → that earlier price.
+    private static async Task<Dictionary<int, decimal>> MarketPriceBeforeTradesAsync(
+        AppDbContext dbContext, int companyId, IReadOnlyList<ShareTransaction> transactions)
+    {
+        var result = new Dictionary<int, decimal>();
+        if (transactions.Count == 0)
+        {
+            return result;
+        }
+
+        var transactionIds = transactions.Select(transaction => transaction.Id).ToList();
+        var tradeSnapshots = await dbContext.PriceSnapshots
+            .Where(snapshot => snapshot.CompanyId == companyId
+                && snapshot.SourceShareTransactionId != null
+                && transactionIds.Contains(snapshot.SourceShareTransactionId.Value))
+            .Select(snapshot => new { snapshot.Id, TransactionId = snapshot.SourceShareTransactionId!.Value })
+            .ToListAsync();
+        if (tradeSnapshots.Count == 0)
+        {
+            return result;
+        }
+
+        var minSnapshotId = tradeSnapshots.Min(snapshot => snapshot.Id);
+        var maxSnapshotId = tradeSnapshots.Max(snapshot => snapshot.Id);
+
+        // The snapshots in the id window spanning these trades, plus the one right before the oldest, are enough
+        // to resolve every trade's preceding price by scanning in ascending id order.
+        var window = (await dbContext.PriceSnapshots
+                .Where(snapshot => snapshot.CompanyId == companyId
+                    && snapshot.Id >= minSnapshotId && snapshot.Id <= maxSnapshotId)
+                .OrderBy(snapshot => snapshot.Id)
+                .Select(snapshot => new { snapshot.Id, snapshot.Price })
+                .ToListAsync())
+            .Select(snapshot => (snapshot.Id, snapshot.Price))
+            .ToList();
+
+        var beforeOldest = await dbContext.PriceSnapshots
+            .Where(snapshot => snapshot.CompanyId == companyId && snapshot.Id < minSnapshotId)
+            .OrderByDescending(snapshot => snapshot.Id)
+            .Select(snapshot => new { snapshot.Id, snapshot.Price })
+            .FirstOrDefaultAsync();
+        if (beforeOldest is not null)
+        {
+            window.Insert(0, (beforeOldest.Id, beforeOldest.Price));
+        }
+
+        foreach (var trade in tradeSnapshots)
+        {
+            decimal? before = null;
+            foreach (var (id, price) in window)
+            {
+                if (id >= trade.Id)
+                {
+                    break;
+                }
+
+                before = price;
+            }
+
+            if (before is decimal earlier)
+            {
+                result[trade.TransactionId] = earlier;
+            }
+        }
+
+        return result;
+    }
+
+    // Names and the pre-trade market price are left null here and filled by the callers that hold a lookup,
+    // so this mapper stays a single-argument method group usable by every other endpoint.
     private static ShareTransactionResponse ToShareTransactionResponse(ShareTransaction transaction) => new(
         transaction.Id,
         transaction.SellerId,
+        null,
         transaction.BuyerId,
+        null,
         transaction.CompanyId,
         transaction.Quantity,
         transaction.Price,
+        null,
         transaction.TotalCost,
         transaction.CreatedInCycleId,
         transaction.CreatedAt);
@@ -1601,6 +1712,7 @@ public static class MarketEndpoints
     private static OrderResponse ToOrderResponse(Order order) => new(
         order.Id,
         order.ParticipantId,
+        null,
         order.CompanyId,
         order.Type.ToString(),
         order.Status.ToString(),
@@ -1795,6 +1907,7 @@ public sealed record PlaceOrderRequest(int ParticipantId, int CompanyId, OrderTy
 public sealed record OrderResponse(
     int Id,
     int? ParticipantId,
+    string? ParticipantName,
     int CompanyId,
     string Type,
     string Status,
@@ -1830,10 +1943,13 @@ public sealed record CycleResponse(int Id, int CycleNumber, string Status, DateT
 public sealed record ShareTransactionResponse(
     int Id,
     int? SellerId,
+    string? SellerName,
     int BuyerId,
+    string? BuyerName,
     int CompanyId,
     int Quantity,
     decimal Price,
+    decimal? MarketPriceBefore,
     decimal TotalCost,
     int CreatedInCycleId,
     DateTime CreatedAt);
