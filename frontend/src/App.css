@@ -1270,7 +1270,7 @@
   color: var(--ink);
 }
 
-/* The buy book's owned/all filter sits between the tabs and the table. */
+/* Each book side's filter sits between the tabs and the table. */
 .book-filter {
   display: flex;
   justify-content: flex-end;
@@ -1279,6 +1279,18 @@
 
 .tbl-book td {
   font-size: var(--t-sm);
+}
+
+/* Share of the company's issued shares on offer, on its own line under the quantity. */
+.book-sharepct {
+  display: block;
+  font-size: var(--t-2xs);
+}
+
+/* The trader column carries only the name now (the company has its own column), so it can run wider than
+   the shared cell cap before it ellipsises. */
+.tbl-book .cell-trader-name {
+  max-width: 22ch;
 }
 
 /* Sits beside the order price: its gap from the live market, coloured by direction with a glyph so the cue

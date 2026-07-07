@@ -90,6 +90,7 @@ function App() {
   )
   const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
   const companyPriceById = new Map(companies.map((company) => [company.id, company.currentPrice]))
+  const companySharesById = new Map(companies.map((company) => [company.id, company.issuedSharesCount]))
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
   const mapModalCompany = companies.find((company) => company.id === mapModalCompanyId) ?? null
 
@@ -138,8 +139,10 @@ function App() {
                     bankruptParticipantIds={bankruptParticipantIds}
                     companyNameById={companyNameById}
                     companyPriceById={companyPriceById}
+                    companySharesById={companySharesById}
                     player={player}
                     playerHoldingCompanyIds={playerHoldingCompanyIds}
+                    onSelectCompany={setMapModalCompanyId}
                     onTraded={loadAll}
                   />
                 </div>
@@ -297,14 +300,24 @@ const BUY_FILTER_OPTIONS = [
   { value: 'all', label: 'All' },
 ]
 
+// Sell-book filters surface the two distress supplies: bankrupt traders dumping cheaply, and companies
+// (the null-participant issuer float) offering their own shares.
+const SELL_FILTER_OPTIONS = [
+  { value: 'all', label: 'All' },
+  { value: 'bankrupts', label: 'Bankrupts only' },
+  { value: 'companies', label: 'Companies' },
+]
+
 function OrderBookPanel({
   orders,
   participantNameById,
   bankruptParticipantIds,
   companyNameById,
   companyPriceById,
+  companySharesById,
   player,
   playerHoldingCompanyIds,
+  onSelectCompany,
   onTraded,
 }) {
   const [tradeOrder, setTradeOrder] = useState(null)
@@ -312,6 +325,7 @@ function OrderBookPanel({
   // The buy book defaults to the companies the player holds, so it opens on the demand for the player's own
   // positions; the filter widens it to the whole book on demand.
   const [buyFilter, setBuyFilter] = useState('owned')
+  const [sellFilter, setSellFilter] = useState('all')
   const tabRefs = useRef({})
 
   // Sells list highest price first. Buys surface the companies the player already holds first (so it can add
@@ -325,9 +339,15 @@ function OrderBookPanel({
       return b.limitPrice - a.limitPrice
     })
   const buys = buyFilter === 'owned' ? buysAll.filter((order) => playerHoldingCompanyIds.has(order.companyId)) : buysAll
-  const sells = orders
+  const sellsAll = orders
     .filter((order) => order.type === 'Sell')
     .sort((a, b) => b.limitPrice - a.limitPrice)
+  const sells =
+    sellFilter === 'bankrupts'
+      ? sellsAll.filter((order) => bankruptParticipantIds.has(order.participantId))
+      : sellFilter === 'companies'
+        ? sellsAll.filter((order) => order.participantId == null)
+        : sellsAll
 
   const sides = [
     { key: 'Buy', tone: 'up', orders: buys },
@@ -372,10 +392,10 @@ function OrderBookPanel({
           )
         })}
       </div>
-      {active.key === 'Buy' ? (
-        <div className="book-filter">
-          <label className="filter-field">
-            <span className="filter-label">Show</span>
+      <div className="book-filter">
+        <label className="filter-field">
+          <span className="filter-label">Show</span>
+          {active.key === 'Buy' ? (
             <select className="select select-sm" value={buyFilter} onChange={(event) => setBuyFilter(event.target.value)}>
               {BUY_FILTER_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -383,9 +403,17 @@ function OrderBookPanel({
                 </option>
               ))}
             </select>
-          </label>
-        </div>
-      ) : null}
+          ) : (
+            <select className="select select-sm" value={sellFilter} onChange={(event) => setSellFilter(event.target.value)}>
+              {SELL_FILTER_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </label>
+      </div>
       <div className="tabpanel" role="tabpanel" id={`bookpanel-${active.key}`} aria-labelledby={`booktab-${active.key}`}>
         <OrderSide
           side={active.key}
@@ -395,8 +423,10 @@ function OrderBookPanel({
           bankruptParticipantIds={bankruptParticipantIds}
           companyNameById={companyNameById}
           companyPriceById={companyPriceById}
+          companySharesById={companySharesById}
           player={player}
           playerHoldingCompanyIds={playerHoldingCompanyIds}
+          onSelectCompany={onSelectCompany}
           onTrade={setTradeOrder}
         />
       </div>
@@ -415,7 +445,7 @@ function OrderBookPanel({
   )
 }
 
-function OrderSide({ side, tone, orders, participantNameById, bankruptParticipantIds, companyNameById, companyPriceById, player, playerHoldingCompanyIds, onTrade }) {
+function OrderSide({ side, tone, orders, participantNameById, bankruptParticipantIds, companyNameById, companyPriceById, companySharesById, player, playerHoldingCompanyIds, onSelectCompany, onTrade }) {
   if (orders.length === 0) {
     return <p className="note note-sm">No {side.toLowerCase()} orders.</p>
   }
@@ -434,6 +464,7 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
             <th scope="col" className="ta-r">
               Quantity
             </th>
+            <th scope="col">Company</th>
             <th scope="col">Trader</th>
           </tr>
         </thead>
@@ -444,6 +475,15 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
             const isBankrupt = !!bankruptParticipantIds?.has(order.participantId)
             const remaining = order.quantity - order.filledQuantity
             const companyName = companyNameById.get(order.companyId) ?? `#${order.companyId}`
+            const issuedShares = companySharesById?.get(order.companyId) ?? null
+            // Share of the whole company still on offer, shown only for sells (a bid can exceed the float, so
+            // the fraction is meaningless on the buy side).
+            const sharePct =
+              side === 'Sell' && issuedShares != null && issuedShares > 0
+                ? (remaining / issuedShares) * 100
+                : null
+            const sharePctLabel =
+              sharePct == null ? null : sharePct >= 0.1 ? `${sharePct.toFixed(1)}%` : '<0.1%'
             const marketPrice = companyPriceById.get(order.companyId) ?? null
             // How far the order's limit sits from the live market price, so the gap reads at a glance.
             const percentDiff =
@@ -492,17 +532,35 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                 <td className="num ta-r">
                   {remaining}
                   <span className="muted-sub">/{order.quantity}</span>
+                  {sharePctLabel ? (
+                    <span className="book-sharepct muted-sub" title="Share of the company's issued shares on offer">
+                      {sharePctLabel} of co.
+                    </span>
+                  ) : null}
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    className="cell-name-btn cell-ellipsis"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onSelectCompany?.(order.companyId)
+                    }}
+                    onKeyDown={(event) => event.stopPropagation()}
+                    title={`Open ${companyName}`}
+                  >
+                    {companyName}
+                  </button>
                 </td>
                 <td>
                   <span className="cell-trader">
-                    <span className="cell-ellipsis">
+                    <span className="cell-ellipsis cell-trader-name">
                       {sellable ? (
                         <span className="book-hold" title="You hold shares to sell into this bid" aria-hidden="true">
                           ●{' '}
                         </span>
                       ) : null}
                       {isOwn ? 'You' : traderName(order.participantId, participantNameById)}
-                      <span className="muted-sub"> · {companyName}</span>
                     </span>
                     {side === 'Sell' && isBankrupt ? <span className="tag tag-bankrupt">Bankrupt</span> : null}
                   </span>
