@@ -30,7 +30,7 @@ public sealed class ShareEmissionServiceTests : IDisposable
     }
 
     private ShareEmissionService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new ShareEmissionOptions { Enabled = enabled }), random);
+        new(context, Options.Create(new ShareEmissionOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), random);
 
     [Fact]
     public async Task DisabledDoesNotEmit()

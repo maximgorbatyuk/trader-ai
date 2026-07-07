@@ -18,20 +18,15 @@ namespace TraderAi.Services;
 public sealed class ShareEmissionService(
     AppDbContext dbContext,
     IOptions<ShareEmissionOptions> options,
+    IOptions<RandomChanceRatesOptions> chanceRates,
     Random random)
 {
-    // A company starts to risk an emission once its capitalisation clears one band, and the chance climbs by a
-    // step for every further band, capped so an emission never becomes a certainty.
+    // A company starts to risk an emission once its capitalisation clears this band, and the chance climbs by a
+    // step for every further band.
     private const decimal CapitalizationBand = 500_000_000m;
-    private const double ChancePerBand = 0.05;
-    private const double MaxEmissionChance = 1.0;
 
     // A company that has just emitted is left alone for this many cycles.
     private const int SafePeriodCycles = 50;
-
-    // The emission size is a random fraction of the current share count, in this range.
-    private const double MinEmissionRate = 0.01;
-    private const double MaxEmissionRate = 0.10;
 
     // No single recipient may receive more than this many free shares.
     private const int MaxSharesPerRecipient = 50;
@@ -96,13 +91,15 @@ public sealed class ShareEmissionService(
                 continue;
             }
 
-            var chance = Math.Min(MaxEmissionChance, ChancePerBand * bands);
+            var triggers = chanceRates.Value.EventTriggerChances;
+            var chance = Math.Min(triggers.ShareEmissionMax, triggers.ShareEmissionPerBand * bands);
             if (random.NextDouble() >= chance)
             {
                 continue;
             }
 
-            var rate = MinEmissionRate + (random.NextDouble() * (MaxEmissionRate - MinEmissionRate));
+            var magnitudes = chanceRates.Value.RandomMagnitudeBands;
+            var rate = magnitudes.ShareEmissionRateMin + (random.NextDouble() * (magnitudes.ShareEmissionRateMax - magnitudes.ShareEmissionRateMin));
             var nominal = (int)Math.Round(company.IssuedSharesCount * rate, MidpointRounding.AwayFromZero);
             if (nominal <= 0)
             {

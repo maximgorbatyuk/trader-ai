@@ -32,7 +32,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     }
 
     private CompanyLifecycleService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new CompanyLifecycleOptions { Enabled = enabled }), random, new MarketImpactService(context));
+        new(context, Options.Create(new CompanyLifecycleOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), random, new MarketImpactService(context));
 
     [Fact]
     public async Task DisabledDoesNothing()
@@ -149,11 +149,13 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     [Fact]
     public async Task ClosureBoostsAppearanceAndResetsCounter()
     {
-        // The only company delists, dropping the live count to 0 (the 10% tier) and banking one closure boost
-        // (+0.25) → chance 0.35; the 0.1 roll clears it, so a replacement lists the same cycle and the counter resets.
+        // A small-cap delists (the $1B backdrop keeps it under the 0.5% line), leaving the live count at 1 (the 10%
+        // tier) and banking one closure boost (+0.25) → chance 0.35; the 0.1 roll clears it, so a replacement lists
+        // the same cycle and the counter resets.
         var cycles = await AddCyclesAsync(21, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(cycles[0]);
         var company = await AddCompanyAsync();
         await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
 
@@ -161,9 +163,10 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
-        Assert.Equal(2, await context.Companies.CountAsync());
+        // Backdrop + the delisted target + the fresh listing.
+        Assert.Equal(3, await context.Companies.CountAsync());
         Assert.Equal(1, await context.Companies.CountAsync(c => c.ClosedInCycleId == current.Id));
-        Assert.Equal(1, await context.Companies.CountAsync(c => c.ClosedInCycleId == null));
+        Assert.Equal(2, await context.Companies.CountAsync(c => c.ClosedInCycleId == null));
 
         var refreshedMarket = await context.Markets.AsNoTracking().SingleAsync();
         Assert.Equal(0, refreshedMarket.CompanyClosuresSinceLastAppearance);
@@ -190,10 +193,12 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     [Fact]
     public async Task SustainedPriceDeclineDelistsCompanyCancellingOrdersAndWipingHoldings()
     {
-        // Cycles past the 100-cycle grace period so closure is active; the company stays small-cap so it closes.
+        // Cycles past the 100-cycle grace period so closure is active; a $1B backdrop keeps the target well under
+        // the 0.5%-of-market protection line so it closes rather than being crashed.
         var cycles = await AddCyclesAsync(21, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(cycles[0]);
         var company = await AddCompanyAsync();
         // 21 strictly decreasing closes → 20 down-moves, well past the 16-of-20 line.
         await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
@@ -209,7 +214,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
-        var refreshed = await context.Companies.AsNoTracking().SingleAsync();
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == company.Id);
         Assert.Equal(current.Id, refreshed.ClosedInCycleId);
         Assert.NotNull(refreshed.ClosedAt);
 
@@ -279,9 +284,11 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         var cycles = await AddCyclesAsync(21, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(cycles[0]);
         var worse = await AddCompanyAsync();
         var milder = await AddCompanyAsync();
-        // Both decline every cycle (each qualifies), but 'worse' falls further, so only it is delisted.
+        // Both decline every cycle (each qualifies) and both are sub-0.5% next to the backdrop, but 'worse' falls
+        // further, so only it is delisted.
         await AddDecliningSnapshotsAsync(worse.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
         await AddDecliningSnapshotsAsync(milder.Id, cycles, startPrice: 100m, decrementPerCycle: 0.5m);
 
@@ -305,6 +312,11 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
 
         // 300 live companies with no decline streak and no ratings — none qualifies on its own.
         var companies = await AddCompaniesAsync(300);
+        // One dominant company ($1B) inflates total market cap so the doomed small-cap is far under the 0.5% line
+        // and stays removable; it is flat, so it is never the worst performer itself.
+        companies[0].IssuedSharesCount = 1_000_000;
+        await context.SaveChangesAsync();
+        await AddSnapshotAsync(companies[0].Id, price: 1_000m, cycles[0]);
         // Give one company a short two-point drop: too little history to be a decline-streak qualifier, but the
         // most-negative recent change, so the pressure valve delists exactly it.
         var doomed = companies[150];
@@ -327,6 +339,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         var cycles = await AddCyclesAsync(21, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(cycles[0]);
         var company = await AddCompanyAsync();
         await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
         var crisis = await AddCrisisAsync(current);
@@ -336,7 +349,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow, crisis);
         await context.SaveChangesAsync();
 
-        var refreshed = await context.Companies.AsNoTracking().SingleAsync();
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == company.Id);
         Assert.Equal(current.Id, refreshed.ClosedInCycleId);
 
         var timelineEvent = await context.CrisisEvents.AsNoTracking()
@@ -348,8 +361,8 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     [Fact]
     public async Task LargeCapDecliningCompanyIsCrashedNotClosed()
     {
-        // A declining company worth ≥ $50M (80 × 1,000,000 = $80M at the latest close) is spared: instead of a
-        // delisting it takes a 60% price cut (new price 32) and stays live. The 0.99 appearance roll misses.
+        // The lone declining company is 100% of total market cap (far above the 0.5% line), so it is spared:
+        // instead of a delisting it takes a 60% price cut (80 → 32) and stays live. The 0.99 appearance roll misses.
         var cycles = await AddCyclesAsync(21, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
@@ -399,6 +412,35 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task CompanyAboveHalfPercentOfMarketIsCrashedNotClosed()
+    {
+        // A declining company worth $10M is ~0.99% of a ~$1.01B market (≥ 0.5%), so it is crashed, not delisted —
+        // proving the threshold is relative to total market cap, not a lone company being 100% of it.
+        var cycles = await AddCyclesAsync(21, firstNumber: 200);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(cycles[0]);
+        var company = await AddCompanyAsync(issuedShares: 100_000);
+        // Declines 120 → 100 over 21 closes; latest cap = 100 × 100,000 = $10M.
+        await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 120m, decrementPerCycle: 1m);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == company.Id);
+        Assert.Null(refreshed.ClosedInCycleId);
+
+        // The 60% cut stamped a fresh snapshot at 0.4 × the $100 close.
+        var latest = await context.PriceSnapshots.AsNoTracking()
+            .Where(s => s.CompanyId == company.Id)
+            .OrderByDescending(s => s.Id).FirstAsync();
+        Assert.Equal(40m, latest.Price);
+
+        Assert.Equal(1, await context.NewsPosts.CountAsync(post => post.Scope == NewsImpactScope.Company));
+    }
+
+    [Fact]
     public async Task ForceDelistSkipsLargeCapAndRemovesTheWorstSmallerCompany()
     {
         var cycles = await AddCyclesAsync(2, firstNumber: 200);
@@ -408,8 +450,8 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         // 300 live companies, none with a decline streak or ratings — the pressure valve, not a qualifier, decides.
         var companies = await AddCompaniesAsync(300);
 
-        // The most-negative performer is a ≥ $50M large-cap (40 × 2,000,000 = $80M): protected, so the valve skips
-        // it and instead removes the worst sub-threshold company.
+        // The most-negative performer is a large-cap dominating the market (40 × 2,000,000 = $80M, ~99.9% of total,
+        // well above the 0.5% line): protected, so the valve skips it and instead removes the worst sub-threshold one.
         var bigCap = companies[100];
         bigCap.IssuedSharesCount = 2_000_000;
         await context.SaveChangesAsync();
@@ -502,6 +544,15 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         };
         context.Companies.Add(company);
         await context.SaveChangesAsync();
+        return company;
+    }
+
+    // A single dominant, flat-priced company ($1B cap) so a failing target under test is a tiny slice of total
+    // market cap — well under the 0.5% protection line — and closes rather than being spared.
+    private async Task<Company> AddCapBackdropAsync(MarketCycle cycle)
+    {
+        var company = await AddCompanyAsync(issuedShares: 1_000_000);
+        await AddSnapshotAsync(company.Id, price: 1_000m, cycle);
         return company;
     }
 

@@ -29,7 +29,7 @@ public sealed class BankruptcyServiceTests : IDisposable
     }
 
     private BankruptcyService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new BankruptcyOptions { Enabled = enabled }), random);
+        new(context, Options.Create(new BankruptcyOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), random);
 
     [Fact]
     public async Task DisabledDoesNotTrigger()

@@ -29,7 +29,7 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
     }
 
     private ScienceInvestigationService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new ScienceInvestigationOptions { Enabled = enabled }), new MarketImpactService(context), random);
+        new(context, Options.Create(new ScienceInvestigationOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), new MarketImpactService(context), random);
 
     [Fact]
     public async Task DisabledDoesNotTrigger()

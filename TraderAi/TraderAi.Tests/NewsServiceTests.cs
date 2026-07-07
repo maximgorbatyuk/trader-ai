@@ -28,8 +28,8 @@ public sealed class NewsServiceTests : IDisposable
         context.Database.EnsureCreated();
     }
 
-    private NewsService Service(NewsOptions settings, Random random) =>
-        new(context, new MarketCycleLock(), Options.Create(settings), new MarketImpactService(context), random);
+    private NewsService Service(NewsOptions settings, Random random, RandomChanceRatesOptions? chanceRates = null) =>
+        new(context, new MarketCycleLock(), Options.Create(settings), Options.Create(chanceRates ?? new RandomChanceRatesOptions()), new MarketImpactService(context), random);
 
     private async Task<decimal> LatestPriceAsync(int companyId) =>
         await context.PriceSnapshots
@@ -267,10 +267,11 @@ public sealed class NewsServiceTests : IDisposable
         cycle.CycleNumber = 25;
         await context.SaveChangesAsync();
 
-        var settings = new NewsOptions { Enabled = true, CyclesBetweenPosts = 25, ImpactProbability = 0.0 };
+        var settings = new NewsOptions { Enabled = true, CyclesBetweenPosts = 25 };
+        var chanceRates = new RandomChanceRatesOptions { EventTriggerChances = { NewsImpact = 0.0 } };
         // 4 ints for the content draw; one double for the impact gate (0 is not < 0.0, so no impact).
         var random = new ScriptedRandom([0d], [0, 0, 0, 0]);
-        var result = await Service(settings, random).MaybeAddAutomatedNewsForCycleAsync(cycle, DateTime.UtcNow);
+        var result = await Service(settings, random, chanceRates).MaybeAddAutomatedNewsForCycleAsync(cycle, DateTime.UtcNow);
 
         Assert.True(result.Published);
         Assert.Equal(NewsImpactScope.None, result.Post!.Scope);
@@ -290,11 +291,12 @@ public sealed class NewsServiceTests : IDisposable
         var company = await context.Companies.FirstAsync();
         var priceBefore = await LatestPriceAsync(company.Id);
 
-        var settings = new NewsOptions { Enabled = true, CyclesBetweenPosts = 25, ImpactProbability = 1.0 };
+        var settings = new NewsOptions { Enabled = true, CyclesBetweenPosts = 25 };
+        var chanceRates = new RandomChanceRatesOptions { EventTriggerChances = { NewsImpact = 1.0 } };
         // ints: 4 for content, then 0 → Increase direction. doubles: impact gate passes (0.0), then the crisis
         // suppression roll hits (0.0 < 0.5) so the lift is dropped to an impact-free post.
         var random = new ScriptedRandom([0d, 0d], [0, 0, 0, 0, 0]);
-        var result = await Service(settings, random)
+        var result = await Service(settings, random, chanceRates)
             .MaybeAddAutomatedNewsForCycleAsync(cycle, DateTime.UtcNow, duringCrisis: true);
         await context.SaveChangesAsync();
 

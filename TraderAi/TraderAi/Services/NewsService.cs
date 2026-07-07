@@ -33,6 +33,7 @@ public sealed class NewsService(
     AppDbContext dbContext,
     MarketCycleLock cycleLock,
     IOptions<NewsOptions> options,
+    IOptions<RandomChanceRatesOptions> chanceRates,
     MarketImpactService marketImpact,
     Random random)
 {
@@ -41,10 +42,6 @@ public sealed class NewsService(
     // Automated posts stay gentle; a manually created post can specify a much larger swing.
     private const decimal MaxAutomatedImpactPercent = 10m;
     private const decimal MaxManualImpactPercent = 95m;
-
-    // During a crisis an automated post that would lift prices is suppressed this often, so good news lands
-    // half as much while the market is under stress.
-    private const double CrisisIncreaseSuppressionChance = 0.5;
 
     // Company news ripples to the rest of the target's industry at a fraction of the headline move — a
     // sympathy move for its peers, in the same direction.
@@ -77,7 +74,7 @@ public sealed class NewsService(
         };
 
         var companiesMoved = 0;
-        if (random.NextDouble() < settings.ImpactProbability)
+        if (random.NextDouble() < chanceRates.Value.EventTriggerChances.NewsImpact)
         {
             companiesMoved = await ApplyRandomImpactAsync(post, settings, currentCycle.Id, now, duringCrisis);
         }
@@ -190,7 +187,7 @@ public sealed class NewsService(
         // only on that branch, so the calm-market path keeps its original draw sequence.
         if (duringCrisis
             && direction == NewsImpactDirection.Increase
-            && random.NextDouble() < CrisisIncreaseSuppressionChance)
+            && random.NextDouble() < chanceRates.Value.ChanceModifiers.CrisisNewsIncreaseSuppression)
         {
             ClearImpact(post);
             return 0;
@@ -200,7 +197,7 @@ public sealed class NewsService(
         post.Direction = direction;
         post.ImpactPercent = percent;
 
-        if (random.NextDouble() < settings.CompanyScopeProbability)
+        if (random.NextDouble() < chanceRates.Value.EventTriggerChances.NewsCompanyScope)
         {
             var companyIds = await dbContext.Companies.Select(company => company.Id).ToListAsync();
             if (companyIds.Count == 0)

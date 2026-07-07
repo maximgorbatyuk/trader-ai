@@ -18,21 +18,14 @@ public sealed record TriggerScienceResult(bool Triggered, ScienceInvestigation? 
 public sealed class ScienceInvestigationService(
     AppDbContext dbContext,
     IOptions<ScienceInvestigationOptions> options,
+    IOptions<RandomChanceRatesOptions> chanceRates,
     MarketImpactService marketImpact,
     Random random)
 {
-    // No chance for the first 50 cycles since the last one, then the chance climbs 3 points a cycle.
+    // No chance for the first 50 cycles since the last one, then the chance climbs by the configured step a cycle.
     private const int QuietCycles = 50;
-    private const double StepPerCycle = 0.03;
     private const int MinIndustries = 1;
     private const int MaxIndustries = 5;
-
-    // A breakthrough lifts prices, so during a crisis it fires half as often.
-    private const double CrisisChanceFactor = 0.5;
-
-    // Every lifted industry rises by its own draw in this band.
-    private const decimal MinImpactPercent = 0.5m;
-    private const decimal MaxImpactPercent = 5m;
 
     public async Task<TriggerScienceResult> MaybeTriggerForCycleAsync(
         Market market, MarketCycle currentCycle, DateTime now, bool duringCrisis = false)
@@ -60,10 +53,10 @@ public sealed class ScienceInvestigationService(
     private bool ShouldTrigger(int currentCycleNumber, int lastCycleNumber, bool duringCrisis)
     {
         var cyclesSince = currentCycleNumber - lastCycleNumber;
-        var probability = Math.Clamp((cyclesSince - QuietCycles) * StepPerCycle, 0d, 1d);
+        var probability = Math.Clamp((cyclesSince - QuietCycles) * chanceRates.Value.EventTriggerChances.ScienceStepPerCycle, 0d, 1d);
         if (duringCrisis)
         {
-            probability *= CrisisChanceFactor;
+            probability *= chanceRates.Value.ChanceModifiers.CrisisScienceChanceFactor;
         }
 
         // A draw is always consumed, even at zero chance, so a scripted Random in tests stays in lockstep.
@@ -127,9 +120,13 @@ public sealed class ScienceInvestigationService(
         return picked;
     }
 
-    private decimal RandomImpactPercent() =>
-        Math.Round(
-            MinImpactPercent + ((decimal)random.NextDouble() * (MaxImpactPercent - MinImpactPercent)),
+    private decimal RandomImpactPercent()
+    {
+        var bands = chanceRates.Value.RandomMagnitudeBands;
+        return Math.Round(
+            bands.ScienceIndustryLiftMinPercent
+                + ((decimal)random.NextDouble() * (bands.ScienceIndustryLiftMaxPercent - bands.ScienceIndustryLiftMinPercent)),
             2,
             MidpointRounding.AwayFromZero);
+    }
 }

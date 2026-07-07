@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using TraderAi.Models;
 
 namespace TraderAi.Services;
@@ -7,7 +8,10 @@ namespace TraderAi.Services;
 // reactions at extreme long-range moves, and otherwise the choice is a uniform pick among the open
 // actions. Order size comes from the injected sizer, buyers bid 1–5% above and sellers ask 1–5% below
 // the last price so orders cross, and an LLM-backed engine can later implement the same interface.
-public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random random) : IDecisionEngine
+public sealed class RuleBasedDecisionEngine(
+    ITradeSizer tradeSizer,
+    IOptions<RandomChanceRatesOptions> chanceRates,
+    Random random) : IDecisionEngine
 {
     // Recent (one-cycle) move maps to a buy/sell pull, ramping with the size of the move up to a cap; a
     // ~5% move alone reaches the cap.
@@ -39,10 +43,6 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
     private const double MediumRiskDebtSellPerPercent = 0.005;
     private const double HighRiskDebtSellPerPercent = 0.0025;
     private const decimal MaxDebtPercent = 20m;
-
-    // While a crisis window is open, a buy is dropped this often per matching trait: conservative temperament
-    // and low-risk profile each apply it, and a trader with both has them stack (≈28% fewer buys).
-    private const double CrisisBuySuppression = 0.15;
 
     private const decimal MinPriceOffset = 0.01m;
     private const decimal MaxPriceOffset = 0.05m;
@@ -161,22 +161,25 @@ public sealed class RuleBasedDecisionEngine(ITradeSizer tradeSizer, Random rando
         return [intent];
     }
 
-    private static double CrisisBuyKeepProbability(Participant participant, bool crisisActive)
+    // While a crisis window is open, a buy is dropped by CrisisBuySuppression per matching trait: conservative
+    // temperament and low-risk profile each apply it, and a trader with both has them stack (≈28% fewer buys).
+    private double CrisisBuyKeepProbability(Participant participant, bool crisisActive)
     {
         if (!crisisActive)
         {
             return 1.0;
         }
 
+        var suppression = chanceRates.Value.ChanceModifiers.CrisisBuySuppression;
         var keep = 1.0;
         if (participant.Temperament == Temperament.Conservative)
         {
-            keep *= 1.0 - CrisisBuySuppression;
+            keep *= 1.0 - suppression;
         }
 
         if (participant.RiskProfile == RiskProfile.Low)
         {
-            keep *= 1.0 - CrisisBuySuppression;
+            keep *= 1.0 - suppression;
         }
 
         return keep;

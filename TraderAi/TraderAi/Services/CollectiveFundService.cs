@@ -13,6 +13,7 @@ namespace TraderAi.Services;
 public sealed class CollectiveFundService(
     AppDbContext dbContext,
     IOptions<CollectiveFundOptions> options,
+    IOptions<RandomChanceRatesOptions> chanceRates,
     Random random)
 {
     // Only traders below this cash line are candidates to pool into a fund; members must leave once their own
@@ -25,15 +26,9 @@ public sealed class CollectiveFundService(
     // No fund may be created or joined during the market's opening stretch.
     private const int QuietCycles = 50;
 
-    // Base per-cycle odds an eligible trader joins an existing fund or opens a new one; a long can't-buy
-    // drought adds to both (see JoinChance/OpenChance).
-    private const double BaseJoinChance = 0.05;
-    private const double BaseOpenChance = 0.03;
-
-    // Once a member sits at or above the leave line its exit chance starts here and ramps each cycle to the cap.
-    private const double LeaveBaseChance = 0.20;
+    // Once a member sits at or above the leave line its exit chance starts at the configured base and ramps each
+    // cycle to the configured cap.
     private const double LeaveStepPerCycle = 0.02;
-    private const double LeaveMaxChance = 0.90;
 
     private const decimal ContributionFraction = 0.90m;
 
@@ -58,7 +53,6 @@ public sealed class CollectiveFundService(
     // A non-founder member may leave to chase a better fund only after this tenure; each cycle past it, it rolls
     // to switch at the base chance shifted by temperament (aggressive leaves more readily, conservative less).
     private const int MinTenureToSwitchCycles = 20;
-    private const double SwitchBaseChance = 0.25;
     private const double SwitchTemperamentDelta = 0.05;
 
     // The founder closes the fund once its net worth collapses to this fraction of its all-time peak, or once it
@@ -310,7 +304,8 @@ public sealed class CollectiveFundService(
         if (member.CurrentBalance >= LeaveBalanceThreshold)
         {
             membership.LeaveRampCycles++;
-            var rampChance = Math.Min(LeaveBaseChance + (LeaveStepPerCycle * (membership.LeaveRampCycles - 1)), LeaveMaxChance);
+            var triggers = chanceRates.Value.EventTriggerChances;
+            var rampChance = Math.Min(triggers.FundLeaveBase + (LeaveStepPerCycle * (membership.LeaveRampCycles - 1)), triggers.FundLeaveMax);
             if (random.NextDouble() >= rampChance)
             {
                 return;
@@ -339,8 +334,8 @@ public sealed class CollectiveFundService(
         AdvanceLeave(fund, membership, member, currentCycleId, now);
     }
 
-    private static double SwitchChance(Temperament temperament) =>
-        SwitchBaseChance + temperament switch
+    private double SwitchChance(Temperament temperament) =>
+        chanceRates.Value.EventTriggerChances.FundSwitchBase + temperament switch
         {
             Temperament.Aggressive => SwitchTemperamentDelta,
             Temperament.Conservative => -SwitchTemperamentDelta,
@@ -874,11 +869,11 @@ public sealed class CollectiveFundService(
             .Sum(order => order.RemainingQuantity * order.LimitPrice);
 
     // Each step lifts the bonus once a buying drought passes 10 then 20 cycles, capped at the upper tier.
-    private static double JoinChance(int cannotBuyCycles) =>
-        BaseJoinChance + cannotBuyCycles switch { >= 20 => 0.40, >= 10 => 0.20, _ => 0.0 };
+    private double JoinChance(int cannotBuyCycles) =>
+        chanceRates.Value.EventTriggerChances.FundJoin + cannotBuyCycles switch { >= 20 => 0.40, >= 10 => 0.20, _ => 0.0 };
 
-    private static double OpenChance(int cannotBuyCycles) =>
-        BaseOpenChance + cannotBuyCycles switch { >= 20 => 0.20, >= 10 => 0.10, _ => 0.0 };
+    private double OpenChance(int cannotBuyCycles) =>
+        chanceRates.Value.EventTriggerChances.FundOpen + cannotBuyCycles switch { >= 20 => 0.20, >= 10 => 0.10, _ => 0.0 };
 
     private Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync() =>
         PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);

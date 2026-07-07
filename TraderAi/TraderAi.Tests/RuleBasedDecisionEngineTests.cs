@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using TraderAi.Models;
 using TraderAi.Services;
 
@@ -6,7 +7,7 @@ namespace TraderAi.Tests;
 public sealed class RuleBasedDecisionEngineTests
 {
     // MaxTradeSizer returns the full cap, so quantity assertions probe the upper bound the engine sets.
-    private readonly RuleBasedDecisionEngine engine = new(new MaxTradeSizer(), new Random(20260619));
+    private readonly RuleBasedDecisionEngine engine = new(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), new Random(20260619));
 
     [Fact]
     public void OnlySellsSharesItOwnsAndNeverMoreThanOwned()
@@ -64,7 +65,7 @@ public sealed class RuleBasedDecisionEngineTests
     // the only difference the crisis flag and personality.
     private static int CountBuysUnderCrisis(Temperament temperament, RiskProfile riskProfile, bool crisisActive)
     {
-        var engine = new RuleBasedDecisionEngine(new MaxTradeSizer(), new Random(20260705));
+        var engine = new RuleBasedDecisionEngine(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), new Random(20260705));
         var context = new DecisionContext(
             NewParticipant(availableCash: 50_000m, temperament, riskProfile),
             AvailableCash: 50_000m,
@@ -239,7 +240,7 @@ public sealed class RuleBasedDecisionEngineTests
     // Same fixed seed per engine so the only difference between compared runs is the debt/risk under test.
     private static int CountSells(DecisionContext context)
     {
-        var engine = new RuleBasedDecisionEngine(new MaxTradeSizer(), new Random(20260619));
+        var engine = new RuleBasedDecisionEngine(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), new Random(20260619));
         var sells = 0;
         for (var iteration = 0; iteration < 2000; iteration++)
         {
@@ -277,7 +278,7 @@ public sealed class RuleBasedDecisionEngineTests
     // profile keeps the only difference the profile itself.
     private static int CountOrders(Temperament temperament, RiskProfile riskProfile)
     {
-        var engine = new RuleBasedDecisionEngine(new MaxTradeSizer(), new Random(20260619));
+        var engine = new RuleBasedDecisionEngine(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), new Random(20260619));
         var context = ContextFor(
             availableCash: 5000m,
             sharesOwned: 10,

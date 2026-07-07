@@ -18,28 +18,21 @@ public sealed record TriggerCrisisResult(bool Triggered, IReadOnlyList<Crisis> C
 public sealed class CrisisService(
     AppDbContext dbContext,
     IOptions<CrisisOptions> options,
+    IOptions<RandomChanceRatesOptions> chanceRates,
     MarketImpactService marketImpact,
     Random random)
 {
-    // Local: no chance for the first 100 cycles since the last one, then the chance climbs 3 points a cycle.
+    // Local: no chance for the first 100 cycles since the last one, then the chance climbs by the configured step.
     private const int LocalQuietCycles = 100;
-    private const double LocalStepPerCycle = 0.03;
     private const int LocalMinIndustries = 1;
     private const int LocalMaxIndustries = 3;
     private const int LocalMinDurationCycles = 5;
     private const int LocalMaxDurationCycles = 15;
 
-    // Global: no chance for the first 250 cycles since the last one, then the chance climbs 1 point a cycle.
+    // Global: no chance for the first 250 cycles since the last one, then the chance climbs by the configured step.
     private const int GlobalQuietCycles = 250;
-    private const double GlobalStepPerCycle = 0.01;
-    private const double GlobalMinIndustryShare = 0.30;
-    private const double GlobalMaxIndustryShare = 0.70;
     private const int GlobalMinDurationCycles = 15;
     private const int GlobalMaxDurationCycles = 25;
-
-    // Every affected industry drops by its own draw in this band.
-    private const decimal MinImpactPercent = 5m;
-    private const decimal MaxImpactPercent = 15m;
 
     // The crisis whose window covers the current cycle, or null when the market is calm. While one is active,
     // auditors and bankruptcies bite harder and price-lifting events land less often. When two windows overlap
@@ -62,7 +55,7 @@ public sealed class CrisisService(
 
         // Global is checked first; a global shock already sweeps most sectors, so a local one is skipped the
         // same cycle to avoid stacking two crises in one tick.
-        if (ShouldTrigger(currentCycle.CycleNumber, market.LastGlobalCrisisCycleNumber, GlobalQuietCycles, GlobalStepPerCycle))
+        if (ShouldTrigger(currentCycle.CycleNumber, market.LastGlobalCrisisCycleNumber, GlobalQuietCycles, chanceRates.Value.EventTriggerChances.GlobalCrisisStepPerCycle))
         {
             crisis = await TriggerAsync(CrisisScope.Global, currentCycle, now);
             if (crisis is not null)
@@ -70,7 +63,7 @@ public sealed class CrisisService(
                 market.LastGlobalCrisisCycleNumber = currentCycle.CycleNumber;
             }
         }
-        else if (ShouldTrigger(currentCycle.CycleNumber, market.LastLocalCrisisCycleNumber, LocalQuietCycles, LocalStepPerCycle))
+        else if (ShouldTrigger(currentCycle.CycleNumber, market.LastLocalCrisisCycleNumber, LocalQuietCycles, chanceRates.Value.EventTriggerChances.LocalCrisisStepPerCycle))
         {
             crisis = await TriggerAsync(CrisisScope.Local, currentCycle, now);
             if (crisis is not null)
@@ -161,7 +154,9 @@ public sealed class CrisisService(
 
     private int GlobalIndustryCount(int total)
     {
-        var share = GlobalMinIndustryShare + (random.NextDouble() * (GlobalMaxIndustryShare - GlobalMinIndustryShare));
+        var bands = chanceRates.Value.RandomMagnitudeBands;
+        var share = bands.GlobalCrisisIndustryShareMin
+            + (random.NextDouble() * (bands.GlobalCrisisIndustryShareMax - bands.GlobalCrisisIndustryShareMin));
         var count = (int)Math.Round(total * share, MidpointRounding.AwayFromZero);
         return Math.Clamp(count, 1, total);
     }
@@ -181,9 +176,13 @@ public sealed class CrisisService(
         return picked;
     }
 
-    private decimal RandomImpactPercent() =>
-        Math.Round(
-            MinImpactPercent + ((decimal)random.NextDouble() * (MaxImpactPercent - MinImpactPercent)),
+    private decimal RandomImpactPercent()
+    {
+        var bands = chanceRates.Value.RandomMagnitudeBands;
+        return Math.Round(
+            bands.CrisisIndustryDropMinPercent
+                + ((decimal)random.NextDouble() * (bands.CrisisIndustryDropMaxPercent - bands.CrisisIndustryDropMinPercent)),
             2,
             MidpointRounding.AwayFromZero);
+    }
 }

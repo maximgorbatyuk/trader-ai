@@ -11,8 +11,9 @@ namespace TraderAi.Services;
 // its price fell in at least 16 of the last 20 recorded per-cycle closes, or its three most recent auditor ratings
 // are all High/Extra. At most one company closes per cycle — the worst performer when several qualify — and when
 // the market is full at the 300 cap with nothing failing on its own, the single worst sub-threshold performer is
-// delisted to make room. A company worth at least ClosureProtectionCapitalization is never closed: a would-be-closed
-// one instead has its price cut ProtectedCompanyPriceDropPercent% (via MarketImpactService) and stays listed. A
+// delisted to make room. A company worth at least ProtectionCapFraction of total market capitalisation is never
+// closed: a would-be-closed one instead has its price cut ProtectedCompanyPriceDropPercent% (via MarketImpactService)
+// and stays listed. A
 // closed company's orders are cancelled (buy reservations released), its holdings zeroed with no payout, and it is
 // filtered out of the live market while its row survives for history. Appearance is the only random part: the base
 // chance to mint a new company each cycle is a population tier — 10% below 50 live companies, 5% below 100, 1% at
@@ -26,6 +27,7 @@ namespace TraderAi.Services;
 public sealed class CompanyLifecycleService(
     AppDbContext dbContext,
     IOptions<CompanyLifecycleOptions> options,
+    IOptions<RandomChanceRatesOptions> chanceRates,
     Random random,
     MarketImpactService marketImpact)
 {
@@ -33,15 +35,9 @@ public sealed class CompanyLifecycleService(
     private const int MaxCompanies = 300;
 
     // Base per-cycle appearance chance by live-company count: a sparse market spawns aggressively, a healthy one
-    // rarely. Below HighTierCompanyCount uses HighChance, below MidTierCompanyCount uses MidChance, otherwise LowChance.
+    // rarely. Below HighTierCompanyCount uses the high chance, below MidTierCompanyCount the mid chance, otherwise low.
     private const int HighTierCompanyCount = 50;
     private const int MidTierCompanyCount = 100;
-    private const double HighChance = 0.10;
-    private const double MidChance = 0.05;
-    private const double LowChance = 0.01;
-
-    // Each delisting since the last listing adds this to the base appearance chance, so replacements track closures.
-    private const double ClosureAppearanceBoost = 0.25;
 
     // A company delists when its price fell in at least DeclineThreshold of the last DeclineWindowCycles recorded
     // cycle-over-cycle moves.
@@ -54,8 +50,9 @@ public sealed class CompanyLifecycleService(
     // No company is closed while the market is this young.
     private const int NoClosureBeforeCycle = 100;
 
-    // A company worth at least this much is never closed; a would-be-closed one has its price cut this percent instead.
-    private const decimal ClosureProtectionCapitalization = 50_000_000m;
+    // A company worth at least this fraction of total market capitalisation is never closed; a would-be-closed one
+    // has its price cut ProtectedCompanyPriceDropPercent% instead.
+    private const decimal ProtectionCapFraction = 0.005m;
     private const decimal ProtectedCompanyPriceDropPercent = 60m;
 
     // A freshly listed company draws a share count and a price in these bands (matching the demo seed), so its
@@ -113,6 +110,13 @@ public sealed class CompanyLifecycleService(
         var capByCompany = await CapitalizationByCompanyAsync(liveCompanies);
         var riskStreakCompanyIds = await RiskStreakCompanyIdsAsync();
 
+        // A company is protected once it is a large enough slice of the whole market; the threshold scales with
+        // total capitalisation rather than a fixed dollar figure. A degenerate zero-cap market protects nothing.
+        var totalMarketCap = capByCompany.Values.Sum();
+        var protectionThreshold = totalMarketCap * ProtectionCapFraction;
+        bool IsProtected(int companyId) =>
+            protectionThreshold > 0m && capByCompany.GetValueOrDefault(companyId) >= protectionThreshold;
+
         var qualifiers = liveCompanies
             .Where(company => HasDeclineStreak(closesByCompany.GetValueOrDefault(company.Id))
                 || riskStreakCompanyIds.Contains(company.Id))
@@ -124,7 +128,7 @@ public sealed class CompanyLifecycleService(
 
             // A large-cap failure is punished with a price cut rather than a delisting; it is not a closure, so it
             // frees no slot and does not feed the appearance boost.
-            if (capByCompany.GetValueOrDefault(target.Id) >= ClosureProtectionCapitalization)
+            if (IsProtected(target.Id))
             {
                 await CrashProtectedCompanyAsync(target, currentCycleId, now);
                 return false;
@@ -139,7 +143,7 @@ public sealed class CompanyLifecycleService(
             // Pressure valve: the market is full and nothing failed on its own. Only sub-threshold companies are
             // removable, so a large-cap is never delisted just to make room; if all are protected, nothing happens.
             var removable = liveCompanies
-                .Where(company => capByCompany.GetValueOrDefault(company.Id) < ClosureProtectionCapitalization)
+                .Where(company => !IsProtected(company.Id))
                 .ToList();
             if (removable.Count == 0)
             {
@@ -284,10 +288,13 @@ public sealed class CompanyLifecycleService(
             return;
         }
 
-        var baseChance = liveCount < HighTierCompanyCount ? HighChance
-            : liveCount < MidTierCompanyCount ? MidChance
-            : LowChance;
-        var chance = Math.Min(baseChance + market.CompanyClosuresSinceLastAppearance * ClosureAppearanceBoost, 1.0);
+        var triggers = chanceRates.Value.EventTriggerChances;
+        var baseChance = liveCount < HighTierCompanyCount ? triggers.CompanyAppearanceHigh
+            : liveCount < MidTierCompanyCount ? triggers.CompanyAppearanceMid
+            : triggers.CompanyAppearanceLow;
+        var chance = Math.Min(
+            baseChance + market.CompanyClosuresSinceLastAppearance * chanceRates.Value.ChanceModifiers.CompanyClosureAppearanceBoost,
+            1.0);
 
         // The base chance is always positive, so a roll is drawn every cycle below the cap; only a clearing roll
         // goes on to draw listing parameters.

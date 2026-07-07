@@ -51,6 +51,7 @@ builder.Services.Configure<AuditorOptions>(builder.Configuration.GetSection(Audi
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
 builder.Services.Configure<CompanyLifecycleOptions>(builder.Configuration.GetSection(CompanyLifecycleOptions.SectionName));
 builder.Services.Configure<ArchiveOptions>(builder.Configuration.GetSection(ArchiveOptions.SectionName));
+builder.Services.Configure<RandomChanceRatesOptions>(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName));
 builder.Services.AddHostedService<MarketLoopService>();
 
 builder.Services.AddCors(options =>

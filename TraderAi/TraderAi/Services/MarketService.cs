@@ -65,10 +65,15 @@ public sealed class MarketService(
     AuditorService? auditorService = null,
     ShareEmissionService? shareEmissionService = null,
     CompanyLifecycleService? companyLifecycleService = null,
-    IOptions<ArchiveOptions>? archiveOptions = null)
+    IOptions<ArchiveOptions>? archiveOptions = null,
+    IOptions<RandomChanceRatesOptions>? chanceRates = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
+
+    // Dividend chance/rate values; falls back to the built-in defaults when the options are not injected (the
+    // reduced-argument constructor used by some tests), so the defaults match the values these once lived at.
+    private readonly RandomChanceRatesOptions chanceRateValues = chanceRates?.Value ?? new RandomChanceRatesOptions();
 
     // How far back the long-range price move is measured for the engine's extreme-move reactions.
     private const int LongRangeWindowCycles = 10;
@@ -91,18 +96,14 @@ public sealed class MarketService(
     // (cash plus holdings). The debt surfaces as a negative balance, which incoming cash then pays down first.
     private const decimal DebtLimitFraction = 0.20m;
 
-    // Dividends are paid at a random interval drawn in this range. Each paying company draws a rate in
-    // [MinDividendRate, MaxDividendRate] of its capitalisation for the whole payout pool, split evenly across
-    // its issued shares — so per share it works out to rate × price and a stock split cuts it proportionally.
+    // Dividends are paid at a random interval drawn in this range. Each paying company draws a rate from the
+    // configured dividend band of its capitalisation for the whole payout pool, split evenly across its issued
+    // shares — so per share it works out to rate × price and a stock split cuts it proportionally.
     private const int MinDividendIntervalCycles = 10;
     private const int MaxDividendIntervalCycles = 25;
-    private const decimal MinDividendRate = 0.0001m;
-    private const decimal MaxDividendRate = 0.005m;
 
     // A company pays this window only if a per-company roll passes; the chance is high while its capitalisation
     // is stable and low once it has moved sharply, so payouts thin out during volatile stretches.
-    private const decimal StableCapitalizationChance = 0.75m;
-    private const decimal VolatileCapitalizationChance = 0.25m;
     private const decimal CapitalizationStabilityThreshold = 0.05m;
 
     // Anti-inflation ceiling on the total dividend cash one company injects per payout. Above it the effective
@@ -614,8 +615,11 @@ public sealed class MarketService(
     private static int RandomDividendInterval(Random rng) =>
         rng.Next(MinDividendIntervalCycles, MaxDividendIntervalCycles + 1);
 
-    private decimal RandomDividendRate() =>
-        MinDividendRate + ((decimal)random.NextDouble() * (MaxDividendRate - MinDividendRate));
+    private decimal RandomDividendRate()
+    {
+        var bands = chanceRateValues.RandomMagnitudeBands;
+        return bands.DividendRateMin + ((decimal)random.NextDouble() * (bands.DividendRateMax - bands.DividendRateMin));
+    }
 
     // A company pays with the high chance while its capitalisation has held within the stability band since the
     // last window (and on its first window, when there is no baseline yet), and the low chance once it moved
@@ -625,7 +629,8 @@ public sealed class MarketService(
         var stable = baselineCapitalization is not decimal baseline
             || baseline <= 0m
             || Math.Abs(capitalization - baseline) / baseline <= CapitalizationStabilityThreshold;
-        var chance = stable ? StableCapitalizationChance : VolatileCapitalizationChance;
+        var triggers = chanceRateValues.EventTriggerChances;
+        var chance = stable ? triggers.DividendStableCapitalization : triggers.DividendVolatileCapitalization;
         return (decimal)random.NextDouble() < chance;
     }
 

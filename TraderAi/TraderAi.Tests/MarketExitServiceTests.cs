@@ -29,7 +29,7 @@ public sealed class MarketExitServiceTests : IDisposable
     }
 
     private MarketExitService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new MarketExitOptions { Enabled = enabled }), random);
+        new(context, Options.Create(new MarketExitOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), random);
 
     [Fact]
     public async Task DisabledDoesNothing()

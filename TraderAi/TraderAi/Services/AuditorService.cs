@@ -18,6 +18,7 @@ namespace TraderAi.Services;
 public sealed class AuditorService(
     AppDbContext dbContext,
     IOptions<AuditorOptions> options,
+    IOptions<RandomChanceRatesOptions> chanceRates,
     Random random,
     MarketImpactService marketImpact)
 {
@@ -31,21 +32,12 @@ public sealed class AuditorService(
     private const int TrendWindowCycles = 10;
     private const double BigMovePerCycleThreshold = 0.05;
 
-    // Chance the auditor uncovers a hidden issue (→ Extra rating and price drop): higher after a big move.
-    private const double IssueChanceOnBigMove = 0.10;
-    private const double IssueChanceOnStable = 0.02;
-
-    // While a crisis is active, auditors dig deeper: the issue-discovery chance is tripled (clamped to 1).
-    private const double CrisisIssueChanceMultiplier = 3.0;
-
     // An uncovered issue drops the price by a random amount in this range.
     private const decimal MinIssueDropPercent = 15m;
     private const decimal MaxIssueDropPercent = 35m;
 
-    // Buyers revise their bids when a company is flagged: a base cancel chance, higher on Extra, nudged by the
-    // owner's risk profile and temperament.
-    private const double HighRiskCancelChance = 0.50;
-    private const double ExtraRiskCancelChance = 0.70;
+    // Buyers revise their bids when a company is flagged: a base cancel chance nudged by the owner's risk profile
+    // and temperament.
     private const double LowRiskCancelDelta = 0.15;
     private const double HighRiskCancelDelta = -0.15;
     private const double ConservativeCancelDelta = 0.15;
@@ -111,10 +103,11 @@ public sealed class AuditorService(
             picked.Add(company.Id);
 
             var stable = IsStable(snapshotsByCompany.GetValueOrDefault(company.Id), currentCycleNumber);
-            var issueChance = stable ? IssueChanceOnStable : IssueChanceOnBigMove;
+            var triggers = chanceRates.Value.EventTriggerChances;
+            var issueChance = stable ? triggers.AuditorIssueOnStable : triggers.AuditorIssueOnBigMove;
             if (activeCrisis is not null)
             {
-                issueChance = Math.Min(1.0, issueChance * CrisisIssueChanceMultiplier);
+                issueChance = Math.Min(1.0, issueChance * chanceRates.Value.ChanceModifiers.CrisisAuditorIssueMultiplier);
             }
 
             var issueFound = random.NextDouble() < issueChance;
@@ -132,7 +125,7 @@ public sealed class AuditorService(
                 await marketImpact.ApplyImpactAsync(
                     NewsImpactDirection.Decrease, [company.Id], impactPercent.Value, currentCycleId, now, cancelStaleOrders: false);
 
-                await ReviseBuyOrdersAsync(company.Id, ExtraRiskCancelChance, currentCycleId, now);
+                await ReviseBuyOrdersAsync(company.Id, chanceRates.Value.EventTriggerChances.AuditorExtraRatingBuyRevision, currentCycleId, now);
 
                 var (title, content) = DemoAuditContent.Issue(company.Name, random);
                 dbContext.NewsPosts.Add(new NewsPost
@@ -151,7 +144,7 @@ public sealed class AuditorService(
             {
                 rating = CompanyRiskRating.High;
 
-                await ReviseBuyOrdersAsync(company.Id, HighRiskCancelChance, currentCycleId, now);
+                await ReviseBuyOrdersAsync(company.Id, chanceRates.Value.EventTriggerChances.AuditorHighRatingBuyRevision, currentCycleId, now);
 
                 var (title, content) = DemoAuditContent.HighRisk(company.Name, random);
                 dbContext.NewsPosts.Add(new NewsPost

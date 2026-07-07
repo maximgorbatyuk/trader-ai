@@ -14,6 +14,7 @@ namespace TraderAi.Services;
 public sealed class BankruptcyService(
     AppDbContext dbContext,
     IOptions<BankruptcyOptions> options,
+    IOptions<RandomChanceRatesOptions> chanceRates,
     Random random)
 {
     // Only the trader's share holdings, valued at the latest price, are weighed against this line; cash is
@@ -27,15 +28,9 @@ public sealed class BankruptcyService(
     // The chance ramps up each consecutive cycle above the line and holds at the cap, kept gentle so a rich
     // trader lingers at risk for a long stretch rather than collapsing within a few cycles.
     private const double StepPerCycle = 0.002;
-    private const double MaxProbability = 0.10;
 
-    // Debt carries its own bankruptcy risk, stacked on top of the wealth ramp: each percentage point of debt
-    // against total worth adds this much chance, clamped at the 20% borrow ceiling so it tops out near 5%.
-    private const double DebtBankruptcyChancePerPercent = 0.0025;
+    // Debt carries its own bankruptcy risk, clamped at the 20% borrow ceiling so it tops out near 5%.
     private const decimal MaxDebtPercent = 20m;
-
-    // While a crisis is active every trader's bankruptcy chance is doubled (clamped to 1).
-    private const double CrisisBankruptcyMultiplier = 2.0;
 
     // A bankrupt trader must sell down this fraction of the shares it held when bankruptcy struck.
     private const decimal SellDownFraction = 0.65m;
@@ -141,7 +136,7 @@ public sealed class BankruptcyService(
         if (shareWorth >= ShareWorthThreshold)
         {
             participant.WealthyCycles++;
-            wealthyProbability = Math.Min(participant.WealthyCycles * StepPerCycle, MaxProbability);
+            wealthyProbability = Math.Min(participant.WealthyCycles * StepPerCycle, chanceRates.Value.EventTriggerChances.BankruptcyMax);
         }
         else
         {
@@ -149,10 +144,11 @@ public sealed class BankruptcyService(
             wealthyProbability = 0.0;
         }
 
-        var probability = wealthyProbability + DebtBankruptcyProbability(participant, shareWorth);
+        var probability = wealthyProbability + DebtBankruptcyProbability(
+            participant, shareWorth, chanceRates.Value.EventTriggerChances.BankruptcyPerDebtPercent);
         if (activeCrisis is not null)
         {
-            probability = Math.Min(1.0, probability * CrisisBankruptcyMultiplier);
+            probability = Math.Min(1.0, probability * chanceRates.Value.ChanceModifiers.CrisisBankruptcyMultiplier);
         }
 
         if (probability <= 0.0 || random.NextDouble() >= probability)
@@ -370,7 +366,7 @@ public sealed class BankruptcyService(
 
     // Bankruptcy chance from a negative balance: debt as a percent of total worth (cash plus holdings), clamped
     // at the borrow ceiling, times the per-percent step. A trader whose debt outruns its holdings caps out.
-    private static double DebtBankruptcyProbability(Participant participant, decimal shareWorth)
+    private static double DebtBankruptcyProbability(Participant participant, decimal shareWorth, double chancePerPercent)
     {
         if (participant.CurrentBalance >= 0m)
         {
@@ -383,7 +379,7 @@ public sealed class BankruptcyService(
             ? Math.Min(debt / worth * 100m, MaxDebtPercent)
             : MaxDebtPercent;
 
-        return (double)debtPercent * DebtBankruptcyChancePerPercent;
+        return (double)debtPercent * chancePerPercent;
     }
 
     private Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync() =>

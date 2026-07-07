@@ -35,9 +35,9 @@ public sealed class MarketExitIntegrationTests : IDisposable
 
         var random = new FixedRandom();
         var fundService = new CollectiveFundService(
-            context, Options.Create(new CollectiveFundOptions { Enabled = true }), random);
+            context, Options.Create(new CollectiveFundOptions { Enabled = true }), Options.Create(new RandomChanceRatesOptions()), random);
         var exitService = new MarketExitService(
-            context, Options.Create(new MarketExitOptions { Enabled = true }), random);
+            context, Options.Create(new MarketExitOptions { Enabled = true }), Options.Create(new RandomChanceRatesOptions()), random);
         var marketService = new MarketService(
             context,
             new MatchingEngine(context),

@@ -31,7 +31,7 @@ public sealed class AuditorServiceTests : IDisposable
     }
 
     private AuditorService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new AuditorOptions { Enabled = enabled }), random, new MarketImpactService(context));
+        new(context, Options.Create(new AuditorOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), random, new MarketImpactService(context));
 
     [Theory]
     [InlineData(100, 5)]

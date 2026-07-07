@@ -29,7 +29,7 @@ public sealed class CrisisServiceTests : IDisposable
     }
 
     private CrisisService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new CrisisOptions { Enabled = enabled }), new MarketImpactService(context), random);
+        new(context, Options.Create(new CrisisOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), new MarketImpactService(context), random);
 
     [Fact]
     public async Task DisabledDoesNotTrigger()

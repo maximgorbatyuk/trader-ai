@@ -31,7 +31,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     private CollectiveFundService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new CollectiveFundOptions { Enabled = enabled }), random);
+        new(context, Options.Create(new CollectiveFundOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), random);
 
     [Fact]
     public async Task DisabledDoesNothing()
@@ -333,6 +333,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         var bankruptcy = new BankruptcyService(
             context,
             Options.Create(new BankruptcyOptions { Enabled = true }),
+            Options.Create(new RandomChanceRatesOptions()),
             new ScriptedRandom([], []));
         await bankruptcy.ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
