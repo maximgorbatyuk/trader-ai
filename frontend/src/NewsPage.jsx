@@ -4,6 +4,7 @@ import { api } from './api'
 import { formatInt } from './format'
 import { Panel } from './Panel'
 import { NewsImpact } from './NewsImpact'
+import { newsCategoryStyle } from './newsCategory'
 import { NewsModal } from './NewsModal'
 import { AddNewsModal } from './AddNewsModal'
 
@@ -79,36 +80,31 @@ function NewsPage() {
                 <p className="note">No news has been published yet.</p>
               ) : (
                 <>
-                  <div className="tbl-scroll">
-                    <table className="tbl">
-                      <thead>
-                        <tr>
-                          <th scope="col">Name</th>
-                          <th scope="col" className="ta-r">
-                            Impact
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {items.map((post) => (
-                          <tr key={post.id}>
-                            <th scope="row">
-                              <button
-                                type="button"
-                                className="cell-name-btn"
-                                onClick={() => setSelected(post)}
-                                title={`Open ${post.title}`}
-                              >
-                                {post.title}
-                              </button>
-                            </th>
-                            <td className="ta-r">
-                              <NewsImpact post={post} />
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="news-feed">
+                    {items.map((post) => {
+                      const category = newsCategoryStyle(post.category)
+                      return (
+                        <article
+                          className={category ? `map-news ${category.className}` : 'map-news'}
+                          key={post.id}
+                        >
+                          <div className="map-news-head">
+                            <span className="map-news-label">{category ? category.label : 'Newswire'}</span>
+                            <span className="map-news-age num">cycle {formatInt(post.publishedInCycleNumber)}</span>
+                          </div>
+                          <button
+                            type="button"
+                            className="news-feed-title"
+                            onClick={() => setSelected(post)}
+                            title={`Open ${post.title}`}
+                          >
+                            {post.title}
+                          </button>
+                          <p className="map-news-body">{post.content}</p>
+                          <NewsImpact post={post} />
+                        </article>
+                      )
+                    })}
                   </div>
                   {pageCount > 1 ? (
                     <div className="pager">

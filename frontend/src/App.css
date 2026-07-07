@@ -861,6 +861,27 @@
   background: var(--surface-2);
 }
 
+/* A delisting reads like a crisis: red frame and soft red wash. A stock split/merge gets the cyan info frame. */
+.map-news.news-closed {
+  border-color: var(--down);
+  border-left-color: var(--down);
+  background: var(--down-soft);
+}
+
+.map-news.news-closed .map-news-label {
+  color: var(--down-text);
+}
+
+.map-news.news-stock {
+  border-color: var(--info);
+  border-left-color: var(--info);
+  background: var(--info-soft);
+}
+
+.map-news.news-stock .map-news-label {
+  color: var(--info-text);
+}
+
 .map-news-head {
   display: flex;
   align-items: baseline;
@@ -926,6 +947,42 @@
   .map-news-list {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* The News page stacks full posts as newswire cards: single column, body shown in full, headline opens detail. */
+.news-feed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.news-feed .map-news {
+  margin-bottom: 0;
+  gap: var(--s-1);
+}
+
+.news-feed .map-news-body {
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  display: block;
+  overflow: visible;
+}
+
+.news-feed-title {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 650;
+  line-height: 1.25;
+  text-align: left;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.news-feed-title:hover {
+  text-decoration: underline;
 }
 
 .map-layout {

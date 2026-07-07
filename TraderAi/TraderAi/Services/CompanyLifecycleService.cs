@@ -258,6 +258,7 @@ public sealed class CompanyLifecycleService(
             PublishedInCycleId = currentCycleId,
             PublishedAt = now,
             Scope = NewsImpactScope.None,
+            Category = NewsCategory.CompanyClosed,
         });
 
         // A delisting that lands while a crisis is active joins that crisis's timeline.

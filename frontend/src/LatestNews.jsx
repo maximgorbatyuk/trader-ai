@@ -1,4 +1,5 @@
 import { NewsImpact } from './NewsImpact'
+import { newsCategoryStyle } from './newsCategory'
 
 // The most recent posts rendered as compact cards, newest first. Each card shows its market effect through the
 // shared NewsImpact, so a company-scoped post links straight to that company when onSelectCompany is given.
@@ -20,10 +21,11 @@ export function LatestNews({ news, currentCycleNumber, onSelectCompany, count = 
       {items.map((post) => {
         const cyclesAgo = Math.max(0, currentCycleNumber - post.publishedInCycleNumber)
         const ageLabel = cyclesAgo === 0 ? 'this cycle' : `${cyclesAgo} cycle${cyclesAgo === 1 ? '' : 's'} ago`
+        const category = newsCategoryStyle(post.category)
         return (
-          <div className="map-news" key={post.id}>
+          <div className={category ? `map-news ${category.className}` : 'map-news'} key={post.id}>
             <div className="map-news-head">
-              <span className="map-news-label">Latest news</span>
+              <span className="map-news-label">{category ? category.label : 'Latest news'}</span>
               <span className="map-news-age num">{ageLabel}</span>
             </div>
             <p className="map-news-title">{post.title}</p>

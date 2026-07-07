@@ -133,6 +133,7 @@ public sealed class StockSplitService(
             PublishedInCycleId = currentCycleId,
             PublishedAt = now,
             Scope = NewsImpactScope.None,
+            Category = NewsCategory.StockSplit,
         });
     }
 
@@ -205,6 +206,7 @@ public sealed class StockSplitService(
             PublishedInCycleId = currentCycleId,
             PublishedAt = now,
             Scope = NewsImpactScope.None,
+            Category = NewsCategory.StockMerge,
         });
     }
 

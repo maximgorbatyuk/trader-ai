@@ -17,6 +17,8 @@ public sealed class NewsPost
 
     public NewsImpactScope Scope { get; set; }
 
+    public NewsCategory Category { get; set; }
+
     // Direction and magnitude are set only when Scope is not None.
     public NewsImpactDirection? Direction { get; set; }
 

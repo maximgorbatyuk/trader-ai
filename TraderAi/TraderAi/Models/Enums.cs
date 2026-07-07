@@ -78,6 +78,16 @@ public enum NewsImpactDirection
     Decrease,
 }
 
+// Classifies a post so the newswire can flag structural corporate actions distinctly from ordinary news;
+// General covers automated and manual posts that carry no special treatment.
+public enum NewsCategory
+{
+    General,
+    CompanyClosed,
+    StockSplit,
+    StockMerge,
+}
+
 public enum CrisisScope
 {
     Local,
