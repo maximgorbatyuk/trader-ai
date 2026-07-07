@@ -62,7 +62,7 @@ function ClosedCompaniesPage() {
               <p className="note">No companies have been delisted yet.</p>
             ) : (
               <>
-                <div className="tbl-scroll">
+                <div className="tbl-wrap">
                   <table className="tbl">
                     <thead>
                       <tr>

@@ -14,14 +14,16 @@ public sealed record CompanyQuote(
 
 // Everything a decision engine needs for one participant, supplied by the caller so the engine
 // stays a pure function with no database access. CrisisActive is set while a market crisis window is open,
-// which pulls conservative and low-risk traders back from buying.
+// which pulls conservative and low-risk traders back from buying. LoanLiability is the participant's open-loan
+// debt, which leans it toward selling to deleverage.
 public sealed record DecisionContext(
     Participant Participant,
     decimal AvailableCash,
     IReadOnlyList<CompanyQuote> Companies,
     IReadOnlyDictionary<int, int> SharesOwnedByCompany,
     IReadOnlySet<int> CompaniesWithOpenOrders,
-    bool CrisisActive = false);
+    bool CrisisActive = false,
+    decimal LoanLiability = 0m);
 
 public sealed record OrderIntent(OrderType Type, int CompanyId, int Quantity, decimal LimitPrice);
 

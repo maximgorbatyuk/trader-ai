@@ -35,6 +35,47 @@
   gap: var(--s-1);
 }
 
+/* Roster links are grouped under section headers so the growing nav stays scannable. */
+.side-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  margin-top: var(--s-3);
+}
+
+/* The header toggles its group, so it is a full-width button styled to read as a quiet section label. */
+.side-group-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: var(--s-1) var(--s-3);
+  margin-bottom: var(--s-1);
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-group-title:hover {
+  color: var(--ink);
+}
+
+.side-group-caret {
+  font-size: 0.85em;
+}
+
+/* Collapsed sections hide their links but keep the toggle; the responsive strip re-shows them below. */
+.side-group.is-collapsed .side-link {
+  display: none;
+}
+
 .side-link {
   padding: var(--s-2) var(--s-3);
   border-left: 2px solid transparent;
@@ -668,6 +709,9 @@
 }
 .tone-flat {
   color: var(--muted);
+}
+.tone-attention {
+  color: var(--attention);
 }
 
 .muted-sub {
@@ -1517,6 +1561,11 @@
   margin-bottom: var(--s-3);
 }
 
+/* The tab strip follows the performance table directly, so it needs its own separation from the block above. */
+.player-tabs {
+  margin-top: var(--s-4);
+}
+
 /* Company name as an in-table trigger for the detail modal. */
 .cell-name-btn {
   display: inline-block;
@@ -1605,6 +1654,20 @@
 
   .sidebar-nav {
     flex-direction: row;
+  }
+
+  /* The horizontal strip flows every link in one row, so the group wrappers dissolve and their headers hide. */
+  .side-group {
+    display: contents;
+  }
+
+  .side-group-title {
+    display: none;
+  }
+
+  /* No toggle is visible in the strip, so a collapsed section must not keep its links hidden. */
+  .side-group.is-collapsed .side-link {
+    display: block;
   }
 
   .side-link {

@@ -88,7 +88,7 @@ export function AuditorDetail({ auditorId }) {
           <p className="note">This auditor hasn&apos;t reviewed any company yet.</p>
         ) : (
           <>
-            <div className="tbl-scroll">
+            <div className="tbl-wrap">
               <table className="tbl">
                 <thead>
                   <tr>

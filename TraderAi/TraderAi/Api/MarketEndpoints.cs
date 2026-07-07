@@ -365,7 +365,7 @@ public static class MarketEndpoints
                 "shares" => Order(filtered, participant => participant.SharesOwned, descending),
                 "balance" => Order(filtered, participant => participant.CurrentBalance, descending),
                 "holdings" => Order(filtered, participant => participant.HoldingsValue, descending),
-                _ => Order(filtered, participant => participant.CurrentBalance + participant.HoldingsValue, descending),
+                _ => Order(filtered, participant => participant.CurrentBalance + participant.HoldingsValue - participant.LoanLiability, descending),
             };
 
             var items = ordered.Skip((pageIndex - 1) * size).Take(size).ToArray();
@@ -613,6 +613,7 @@ public static class MarketEndpoints
                     transaction.Amount,
                     transaction.RelatedOrderId,
                     transaction.RelatedShareTransactionId,
+                    transaction.RelatedLoanId,
                     transaction.CreatedInCycleId,
                     transaction.CreatedAt))
                 .ToArray();
@@ -640,7 +641,8 @@ public static class MarketEndpoints
                     cycleNumberById.GetValueOrDefault(snapshot.CreatedInCycleId),
                     snapshot.Balance,
                     snapshot.HoldingsValue,
-                    snapshot.Balance + snapshot.HoldingsValue,
+                    snapshot.LoanLiability,
+                    snapshot.Balance + snapshot.HoldingsValue - snapshot.LoanLiability,
                     snapshot.CreatedAt))
                 .ToArray();
 
@@ -1071,6 +1073,169 @@ public static class MarketEndpoints
 
             return Results.Ok(new PagedClosedCompaniesResponse(items, total, pageIndex, size));
         });
+
+        app.MapGet("/banks", async (AppDbContext dbContext) =>
+        {
+            var banks = await dbContext.Banks.OrderBy(bank => bank.Id).ToListAsync();
+            var openByBank = (await dbContext.Loans
+                    .Where(loan => loan.Status == LoanStatus.Open)
+                    .Select(loan => new { loan.BankId, loan.RemainingPrincipal })
+                    .ToListAsync())
+                .GroupBy(loan => loan.BankId)
+                .ToDictionary(
+                    group => group.Key,
+                    group => new { Count = group.Count(), Outstanding = group.Sum(loan => loan.RemainingPrincipal) });
+
+            var items = banks
+                .Select(bank => new BankResponse(
+                    bank.Id,
+                    bank.Name,
+                    bank.InterestRatePerCycle,
+                    openByBank.TryGetValue(bank.Id, out var open) ? open.Count : 0,
+                    openByBank.TryGetValue(bank.Id, out var open2) ? open2.Outstanding : 0m))
+                .ToArray();
+
+            return Results.Ok(items);
+        });
+
+        app.MapGet("/loans/paged", async (
+            int? page, int? pageSize, int? bankId, string? status, string? sort, string? sortDir,
+            AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var descending = !string.Equals(sortDir, "asc", StringComparison.OrdinalIgnoreCase);
+
+            var query = dbContext.Loans.AsQueryable();
+            if (bankId is int bank)
+            {
+                query = query.Where(loan => loan.BankId == bank);
+            }
+
+            query = FilterLoansByStatus(query, status);
+            var total = await query.CountAsync();
+
+            IOrderedQueryable<Loan> ordered = sort switch
+            {
+                "principal" => descending ? query.OrderByDescending(loan => loan.RemainingPrincipal) : query.OrderBy(loan => loan.RemainingPrincipal),
+                "pastDue" => descending ? query.OrderByDescending(loan => loan.PastDueAmount) : query.OrderBy(loan => loan.PastDueAmount),
+                "term" => descending ? query.OrderByDescending(loan => loan.TermCycles) : query.OrderBy(loan => loan.TermCycles),
+                _ => descending ? query.OrderByDescending(loan => loan.Id) : query.OrderBy(loan => loan.Id),
+            };
+
+            var loans = await ordered.Skip((pageIndex - 1) * size).Take(size).ToListAsync();
+            var items = (await BuildLoanResponsesAsync(dbContext, loans)).ToArray();
+            return Results.Ok(new PagedLoansResponse(items, total, pageIndex, size));
+        });
+
+        app.MapGet("/participants/{participantId:int}/loans", async (int participantId, string? status, AppDbContext dbContext) =>
+        {
+            var query = dbContext.Loans.Where(loan => loan.ParticipantId == participantId);
+            query = string.Equals(status, "all", StringComparison.OrdinalIgnoreCase)
+                ? query
+                : query.Where(loan => loan.Status == LoanStatus.Open);
+
+            var loans = await query.OrderByDescending(loan => loan.Id).ToListAsync();
+            return Results.Ok((await BuildLoanResponsesAsync(dbContext, loans)).ToArray());
+        });
+
+        app.MapPost("/loans/{loanId:int}/repay", async (int loanId, RepayLoanRequest? request, MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.RepayLoanAsync(loanId, request?.Amount);
+            if (!result.Success || result.Loan is null)
+            {
+                return Results.BadRequest(new { error = result.Error });
+            }
+
+            var response = (await BuildLoanResponsesAsync(dbContext, [result.Loan])).Single();
+            return Results.Ok(response);
+        });
+    }
+
+    private static IQueryable<Loan> FilterLoansByStatus(IQueryable<Loan> query, string? status) =>
+        status?.ToLowerInvariant() switch
+        {
+            "closed" => query.Where(loan => loan.Status == LoanStatus.Closed),
+            "all" => query,
+            _ => query.Where(loan => loan.Status == LoanStatus.Open),
+        };
+
+    private static async Task<List<LoanResponse>> BuildLoanResponsesAsync(AppDbContext dbContext, IReadOnlyList<Loan> loans)
+    {
+        if (loans.Count == 0)
+        {
+            return [];
+        }
+
+        var bankIds = loans.Select(loan => loan.BankId).Distinct().ToList();
+        var bankNames = await dbContext.Banks
+            .Where(bank => bankIds.Contains(bank.Id))
+            .ToDictionaryAsync(bank => bank.Id, bank => bank.Name);
+
+        var participantIds = loans.Select(loan => loan.ParticipantId).Distinct().ToList();
+        var participantNames = await LoanParticipantNamesAsync(dbContext, participantIds);
+
+        var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+        var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+
+        return loans
+            .Select(loan => ToLoanResponse(loan, bankNames, participantNames, cycleNumbersById, currentCycleNumber))
+            .ToList();
+    }
+
+    private static LoanResponse ToLoanResponse(
+        Loan loan,
+        IReadOnlyDictionary<int, string> bankNames,
+        IReadOnlyDictionary<int, string> participantNames,
+        IReadOnlyDictionary<int, int> cycleNumbersById,
+        int currentCycleNumber)
+    {
+        var openedNumber = cycleNumbersById.GetValueOrDefault(loan.OpenedInCycleId);
+        var dueNumber = openedNumber + loan.TermCycles;
+        var interestPerCycle = Math.Round(loan.RemainingPrincipal * loan.InterestRatePerCycle, 2, MidpointRounding.AwayFromZero);
+
+        return new LoanResponse(
+            loan.Id,
+            loan.BankId,
+            bankNames.GetValueOrDefault(loan.BankId, $"#{loan.BankId}"),
+            loan.ParticipantId,
+            participantNames.GetValueOrDefault(loan.ParticipantId, $"#{loan.ParticipantId}"),
+            loan.Principal,
+            loan.RemainingPrincipal,
+            loan.InterestRatePerCycle,
+            interestPerCycle,
+            loan.ScheduledInstallment,
+            loan.PastDueAmount,
+            loan.RemainingPrincipal + loan.PastDueAmount,
+            loan.TermCycles,
+            openedNumber,
+            dueNumber,
+            Math.Max(0, dueNumber - currentCycleNumber),
+            loan.Status.ToString(),
+            loan.ClosedInCycleId is int closedCycleId ? cycleNumbersById.GetValueOrDefault(closedCycleId) : null,
+            loan.Status == LoanStatus.Closed,
+            loan.CloseReason?.ToString());
+    }
+
+    // Loan borrowers are live participants first, with a MarketExit fallback so a departed borrower's closed
+    // loans still carry a name.
+    private static async Task<Dictionary<int, string>> LoanParticipantNamesAsync(AppDbContext dbContext, IReadOnlyList<int> participantIds)
+    {
+        var names = await ParticipantNamesAsync(dbContext, participantIds);
+        var missing = participantIds.Where(id => !names.ContainsKey(id)).ToList();
+        if (missing.Count > 0)
+        {
+            var exitNames = await dbContext.MarketExits
+                .Where(exit => missing.Contains(exit.ParticipantId))
+                .Select(exit => new { exit.ParticipantId, exit.Name })
+                .ToListAsync();
+            foreach (var exit in exitNames)
+            {
+                names.TryAdd(exit.ParticipantId, exit.Name);
+            }
+        }
+
+        return names;
     }
 
     private static async Task<Dictionary<int, string>> IndustryNameByIdAsync(AppDbContext dbContext) =>
@@ -1136,6 +1301,8 @@ public static class MarketEndpoints
             group => group.Key,
             group => group.Sum(holding => holding.Count * latestPriceByCompany.GetValueOrDefault(holding.CompanyId)));
 
+        var loanLiabilityByParticipant = await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext);
+
         return participants
             .Where(participant => !memberParticipantIds.Contains(participant.Id))
             // A closed fund lives on as an inactive, zeroed-out row; keep it off the live roster and surface it
@@ -1153,6 +1320,7 @@ public static class MarketEndpoints
                 sharesOwnedByParticipant.GetValueOrDefault(participant.Id),
                 companiesOwnedByParticipant.GetValueOrDefault(participant.Id),
                 holdingsValueByParticipant.GetValueOrDefault(participant.Id),
+                loanLiabilityByParticipant.GetValueOrDefault(participant.Id),
                 participant.IsActive,
                 participant.IsBankrupt))
             .ToList();
@@ -1451,6 +1619,10 @@ public static class MarketEndpoints
             .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
             .SumAsync(holding => holding.Quantity);
 
+        var loanLiability = await dbContext.Loans
+            .Where(loan => loan.ParticipantId == participantId && loan.Status == LoanStatus.Open)
+            .SumAsync(loan => loan.RemainingPrincipal + loan.PastDueAmount);
+
         string? fundStatus = null;
         CollectiveFundMemberResponse[] fundMembers = [];
         if (participant.Type == ParticipantType.CollectiveFund)
@@ -1487,6 +1659,7 @@ public static class MarketEndpoints
             participant.ReservedBalance,
             participant.AvailableBalance,
             sharesOwned,
+            loanLiability,
             participant.IsActive,
             fundStatus,
             fundMembers,
@@ -1512,7 +1685,13 @@ public static class MarketEndpoints
         var sharesOwned = holdings.Sum(holding => holding.Shares);
         var holdingsValue = holdings.Sum(holding =>
             holding.Shares * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
-        var totalWorth = player.CurrentBalance + holdingsValue;
+
+        var loanLiability = await dbContext.Loans
+            .Where(loan => loan.ParticipantId == player.Id && loan.Status == LoanStatus.Open)
+            .SumAsync(loan => loan.RemainingPrincipal + loan.PastDueAmount);
+
+        // Net worth subtracts loan debt; gross holdings value is reported separately.
+        var totalWorth = player.CurrentBalance + holdingsValue - loanLiability;
 
         // The two newest snapshots are cycles N and N−1; last-cycle deltas stay null until both exist.
         var recentSnapshots = await dbContext.ParticipantWorthSnapshots
@@ -1528,7 +1707,8 @@ public static class MarketEndpoints
             var latest = recentSnapshots[0];
             var prior = recentSnapshots[1];
             lastCycleMoneyChange = latest.Balance - prior.Balance;
-            lastCycleWorthChange = latest.Balance + latest.HoldingsValue - (prior.Balance + prior.HoldingsValue);
+            lastCycleWorthChange = latest.Balance + latest.HoldingsValue - latest.LoanLiability
+                - (prior.Balance + prior.HoldingsValue - prior.LoanLiability);
         }
 
         return new PlayerResponse(
@@ -1540,6 +1720,7 @@ public static class MarketEndpoints
             player.AvailableBalance,
             sharesOwned,
             holdingsValue,
+            loanLiability,
             totalWorth,
             player.CurrentBalance - player.InitialBalance,
             totalWorth - player.InitialBalance,
@@ -1817,6 +1998,39 @@ public sealed record ClosedCompanyResponse(
 
 public sealed record PagedClosedCompaniesResponse(ClosedCompanyResponse[] Items, int Total, int Page, int PageSize);
 
+public sealed record BankResponse(
+    int Id,
+    string Name,
+    decimal InterestRatePerCycle,
+    int OpenLoanCount,
+    decimal OutstandingPrincipal);
+
+public sealed record LoanResponse(
+    int Id,
+    int BankId,
+    string BankName,
+    int ParticipantId,
+    string ParticipantName,
+    decimal Principal,
+    decimal RemainingPrincipal,
+    decimal InterestRatePerCycle,
+    decimal InterestPerCycleAmount,
+    decimal ScheduledInstallment,
+    decimal PastDueAmount,
+    decimal TotalLiability,
+    int TermCycles,
+    int OpenedInCycleNumber,
+    int DueInCycleNumber,
+    int RemainingTermCycles,
+    string Status,
+    int? ClosedInCycleNumber,
+    bool IsClosed,
+    string? CloseReason);
+
+public sealed record PagedLoansResponse(LoanResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record RepayLoanRequest(decimal? Amount);
+
 public sealed record CompanyRatingResponse(
     int Id,
     string Rating,
@@ -1852,6 +2066,7 @@ public sealed record ParticipantResponse(
     int SharesOwned,
     int CompaniesOwned,
     decimal HoldingsValue,
+    decimal LoanLiability,
     bool IsActive,
     bool IsBankrupt);
 
@@ -1866,6 +2081,7 @@ public sealed record ParticipantDetailResponse(
     decimal ReservedBalance,
     decimal AvailableBalance,
     int SharesOwned,
+    decimal LoanLiability,
     bool IsActive,
     string? CollectiveFundStatus,
     CollectiveFundMemberResponse[] CollectiveFundMembers,
@@ -1895,6 +2111,7 @@ public sealed record PlayerResponse(
     decimal AvailableBalance,
     int SharesOwned,
     decimal HoldingsValue,
+    decimal LoanLiability,
     decimal TotalWorth,
     decimal OverallMoneyChange,
     decimal OverallWorthChange,
@@ -1935,6 +2152,7 @@ public sealed record MoneyTransactionResponse(
     decimal Amount,
     int? RelatedOrderId,
     int? RelatedShareTransactionId,
+    int? RelatedLoanId,
     int CreatedInCycleId,
     DateTime CreatedAt);
 
@@ -1961,6 +2179,7 @@ public sealed record ParticipantWorthPointResponse(
     int CycleNumber,
     decimal Balance,
     decimal HoldingsValue,
+    decimal LoanLiability,
     decimal TotalWorth,
     DateTime CreatedAt);
 

@@ -37,12 +37,13 @@ public sealed class RuleBasedDecisionEngine(
     private const double HighRiskPullFactor = 1.5;
     private const double LowRiskPullFactor = 0.6;
 
-    // A trader in debt wants to sell to repay it: each percentage point of debt against total worth adds this
-    // much sell pull, clamped at the 20% borrow ceiling. Cautious traders deleverage hardest, gamblers least.
+    // A trader carrying loan debt wants to sell to repay it: each percentage point of loan liability against
+    // total worth adds this much sell pull, clamped at the 40% borrow ceiling. Cautious traders deleverage
+    // hardest, gamblers least.
     private const double LowRiskDebtSellPerPercent = 0.0075;
     private const double MediumRiskDebtSellPerPercent = 0.005;
     private const double HighRiskDebtSellPerPercent = 0.0025;
-    private const decimal MaxDebtPercent = 20m;
+    private const decimal MaxDebtPercent = 40m;
 
     private const decimal MinPriceOffset = 0.01m;
     private const decimal MaxPriceOffset = 0.05m;
@@ -266,12 +267,12 @@ public sealed class RuleBasedDecisionEngine(
 
     private static double DebtSellPull(DecisionContext context, IReadOnlyList<CompanyQuote> sellCandidates)
     {
-        if (sellCandidates.Count == 0 || context.Participant.CurrentBalance >= 0m)
+        if (sellCandidates.Count == 0 || context.LoanLiability <= 0m)
         {
             return 0.0;
         }
 
-        var debt = -context.Participant.CurrentBalance;
+        var debt = context.LoanLiability;
         var worth = context.Participant.CurrentBalance + HoldingsValue(context);
         var debtPercent = worth > 0m
             ? Math.Min(debt / worth * 100m, MaxDebtPercent)

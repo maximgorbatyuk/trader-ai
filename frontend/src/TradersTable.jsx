@@ -38,13 +38,13 @@ export function TradersTable({ participants, sortKey, sortDir, onToggleSort, onS
             {sortableHeader('shares', 'Shares')}
             {sortableHeader('balance', 'Current balance')}
             {sortableHeader('holdings', 'Holdings (est.)', 'Estimated market value of shares held')}
-            {sortableHeader('total', 'Total', 'Current balance plus holdings estimation')}
+            {sortableHeader('total', 'Total', 'Current balance plus holdings estimation, less loan debt')}
           </tr>
         </thead>
         <tbody>
           {participants.map((participant) => {
             const estimation = participant.holdingsValue ?? 0
-            const total = (participant.currentBalance ?? 0) + estimation
+            const total = (participant.currentBalance ?? 0) + estimation - (participant.loanLiability ?? 0)
             const isSelected = selectedId === participant.id
             return (
               <tr key={participant.id} className={isSelected ? 'is-selected' : undefined} aria-current={isSelected ? 'true' : undefined}>

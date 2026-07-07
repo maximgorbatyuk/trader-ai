@@ -63,6 +63,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<ParticipantWorthSnapshotArchive> ParticipantWorthSnapshotArchives => Set<ParticipantWorthSnapshotArchive>();
 
+    public DbSet<Bank> Banks => Set<Bank>();
+
+    public DbSet<Loan> Loans => Set<Loan>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<NewsPost>()
@@ -132,6 +136,25 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<ParticipantWorthSnapshot>()
             .HasIndex(snapshot => snapshot.CreatedInCycleId);
 
+        modelBuilder.Entity<Bank>()
+            .HasMany<Loan>()
+            .WithOne(loan => loan.Bank)
+            .HasForeignKey(loan => loan.BankId);
+
+        // Loans are read per borrower (its panel/detail) and per bank (the loans roster), each split by status.
+        modelBuilder.Entity<Loan>()
+            .HasIndex(loan => new { loan.ParticipantId, loan.Status });
+
+        modelBuilder.Entity<Loan>()
+            .HasIndex(loan => new { loan.BankId, loan.Status });
+
+        // Loan-distress sells and loan-linked transactions are looked up by the loan they belong to.
+        modelBuilder.Entity<Order>()
+            .HasIndex(order => new { order.RelatedLoanId, order.Status });
+
+        modelBuilder.Entity<MoneyTransaction>()
+            .HasIndex(transaction => transaction.RelatedLoanId);
+
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
             foreach (var property in entityType.GetProperties())
@@ -150,5 +173,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 }
             }
         }
+
+        // The per-cycle interest rate (e.g. 0.001) would round to 0.00 at the money scale above, so give the
+        // rate columns a finer scale after the blanket pass.
+        modelBuilder.Entity<Bank>().Property(bank => bank.InterestRatePerCycle).HasPrecision(18, 6);
+        modelBuilder.Entity<Loan>().Property(loan => loan.InterestRatePerCycle).HasPrecision(18, 6);
     }
 }

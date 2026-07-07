@@ -215,7 +215,7 @@ function RelatedNewsPanel({ news, onSelect }) {
       {news.length === 0 ? (
         <p className="note">No news for this company or its industry yet.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -257,7 +257,7 @@ function RatingHistoryPanel({ ratings }) {
       {ratings.length === 0 ? (
         <p className="note">No auditor has reviewed this company yet.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -292,7 +292,7 @@ function EmissionsPanel({ emissions }) {
       {emissions.length === 0 ? (
         <p className="note">No free-share emissions yet.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -408,7 +408,7 @@ function ShareholdersPanel({ shareholders }) {
       {shareholders.length === 0 ? (
         <p className="note">No participant owns shares yet.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -455,7 +455,7 @@ function OrdersPanel({ orders, currentPrice, issuedShares }) {
       {orders.length === 0 ? (
         <p className="note">No orders placed yet.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -521,7 +521,7 @@ function TradesPanel({ trades }) {
       {trades.length === 0 ? (
         <p className="note">No settled trades yet.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>

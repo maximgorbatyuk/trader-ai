@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -6,6 +7,16 @@ using TraderAi.Api;
 using TraderAi.Data;
 using TraderAi.Models;
 using TraderAi.Services;
+
+// EF Core's SQLite provider compares decimal values (stored as TEXT) through a collation that parses them with
+// the running thread's culture. On a machine whose locale uses a non-'.' decimal separator (e.g. en-KZ), that
+// parse throws inside the native SQLite callback and crashes the process on any decimal ORDER BY or comparison,
+// so the whole app is pinned to the invariant culture up front. This backend serialises numbers as culture-
+// independent JSON and sorts names with an explicit ordinal comparer, so nothing depends on the OS locale.
+CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
+CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
 
 const string ReactDevelopmentCorsPolicy = "ReactDevelopment";
 
@@ -38,6 +49,7 @@ builder.Services.AddScoped<StockSplitService>();
 builder.Services.AddScoped<AuditorService>();
 builder.Services.AddScoped<ShareEmissionService>();
 builder.Services.AddScoped<CompanyLifecycleService>();
+builder.Services.AddScoped<LoanService>();
 builder.Services.AddSingleton<MarketCycleLock>();
 builder.Services.Configure<MarketLoopOptions>(builder.Configuration.GetSection(MarketLoopOptions.SectionName));
 builder.Services.Configure<NewsOptions>(builder.Configuration.GetSection(NewsOptions.SectionName));
@@ -50,6 +62,7 @@ builder.Services.Configure<StockSplitOptions>(builder.Configuration.GetSection(S
 builder.Services.Configure<AuditorOptions>(builder.Configuration.GetSection(AuditorOptions.SectionName));
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
 builder.Services.Configure<CompanyLifecycleOptions>(builder.Configuration.GetSection(CompanyLifecycleOptions.SectionName));
+builder.Services.Configure<LoanOptions>(builder.Configuration.GetSection(LoanOptions.SectionName));
 builder.Services.Configure<ArchiveOptions>(builder.Configuration.GetSection(ArchiveOptions.SectionName));
 builder.Services.Configure<RandomChanceRatesOptions>(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName));
 builder.Services.AddHostedService<MarketLoopService>();

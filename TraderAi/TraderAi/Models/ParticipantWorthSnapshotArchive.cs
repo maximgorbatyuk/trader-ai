@@ -14,5 +14,7 @@ public sealed class ParticipantWorthSnapshotArchive
 
     public decimal HoldingsValue { get; set; }
 
+    public decimal LoanLiability { get; set; }
+
     public DateTime CreatedAt { get; set; }
 }

@@ -18,6 +18,10 @@ public sealed class MoneyTransaction
 
     public ShareTransaction? RelatedShareTransaction { get; set; }
 
+    // Scalar id (no FK) linking loan-driven transactions back to the loan that caused them; tolerates an
+    // orphaned id once the loan or participant is gone, like the other history-tolerant scalar ids.
+    public int? RelatedLoanId { get; set; }
+
     public int CreatedInCycleId { get; set; }
 
     public DateTime CreatedAt { get; set; }

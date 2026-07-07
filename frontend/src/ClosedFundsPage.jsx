@@ -63,7 +63,7 @@ function ClosedFundsPage() {
               <p className="note">No funds have closed yet.</p>
             ) : (
               <>
-                <div className="tbl-scroll">
+                <div className="tbl-wrap">
                   <table className="tbl">
                     <thead>
                       <tr>

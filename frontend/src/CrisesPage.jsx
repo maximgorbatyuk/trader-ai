@@ -76,7 +76,7 @@ function CrisesPage() {
             {crises.length === 0 ? (
               <p className="note">No crisis has struck the market yet.</p>
             ) : (
-              <div className="tbl-scroll">
+              <div className="tbl-wrap">
                 <table className="tbl">
                   <thead>
                     <tr>

@@ -86,6 +86,11 @@ export const api = {
   getMarketExits: (take = 50) => get(`/market-exits?take=${take}`),
   getClosedFunds: (page = 1, pageSize = 20) => get(`/collective-funds/closed?page=${page}&pageSize=${pageSize}`),
   getClosedCompanies: (page = 1, pageSize = 20) => get(`/companies/closed?page=${page}&pageSize=${pageSize}`),
+  getBanks: () => get('/banks'),
+  getLoansPaged: (params = {}) => get(`/loans/paged${toQuery(params)}`),
+  getParticipantLoans: (participantId, { status } = {}) =>
+    get(`/participants/${participantId}/loans${toQuery({ status })}`),
+  repayLoan: (loanId, amount) => post(`/loans/${loanId}/repay`, amount != null ? { amount } : undefined),
   getNewsThemes: () => get('/news/themes'),
   getIndustries: () => get('/industries'),
   createNews: (payload) => post('/news', payload),
