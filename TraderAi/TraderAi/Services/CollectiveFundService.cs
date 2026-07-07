@@ -81,6 +81,9 @@ public sealed class CollectiveFundService(
     private List<int> payoutCycleIdsDesc = null!;
     private Dictionary<int, Dictionary<int, decimal>> fundDividendByCycleId = null!;
 
+    // Open loans a fund participant carries, so a wind-down can discharge them.
+    private Dictionary<int, List<Loan>> openLoansByFundParticipant = null!;
+
     // The crisis active this cycle (if any) and its cycle number, stashed per-cycle so a fund that closes deep in
     // the call chain can record itself on the crisis timeline without threading them through every method.
     private Crisis? activeCrisis;
@@ -296,6 +299,13 @@ public sealed class CollectiveFundService(
         membershipsByFundId = funds.ToDictionary(
             fund => fund.Id,
             fund => memberships.Where(member => member.CollectiveFundId == fund.Id).ToList());
+
+        var fundParticipantIds = funds.Select(fund => fund.ParticipantId).ToList();
+        openLoansByFundParticipant = (await dbContext.Loans
+                .Where(loan => loan.Status == LoanStatus.Open && fundParticipantIds.Contains(loan.ParticipantId))
+                .ToListAsync())
+            .GroupBy(loan => loan.ParticipantId)
+            .ToDictionary(group => group.Key, group => group.ToList());
     }
 
     private void MaybeDecideLeave(CollectiveFund fund, CollectiveFundParticipant membership, Participant member, int currentCycleId, DateTime now)
@@ -590,6 +600,15 @@ public sealed class CollectiveFundService(
         fundParticipant.IsActive = false;
         fund.Status = CollectiveFundStatus.Closed;
         fund.ClosedAt = now;
+
+        // A winding-down fund's loans are discharged like any departing borrower's.
+        if (openLoansByFundParticipant.TryGetValue(fundParticipant.Id, out var fundLoans))
+        {
+            foreach (var loan in fundLoans)
+            {
+                LoanService.MarkClosed(loan, LoanCloseReason.ParticipantDeparted, currentCycleId, now);
+            }
+        }
 
         // A fund that winds down while a crisis is active joins that crisis's timeline.
         if (activeCrisis is not null)

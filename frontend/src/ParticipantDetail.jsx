@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
-import { formatInt, formatMoney, formatSigned, toneOf } from './format'
+import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
+import { CASH_LABEL, CASH_TONE } from './cashMovements'
 
 const POLL_INTERVAL_MS = 2500
 const WORTH_HISTORY_POINTS = 64
@@ -32,6 +33,8 @@ export function ParticipantDetail({ participantId }) {
   const [cashMoves, setCashMoves] = useState([])
   const [companies, setCompanies] = useState([])
   const [worthHistory, setWorthHistory] = useState([])
+  const [loans, setLoans] = useState([])
+  const [loanStatus, setLoanStatus] = useState('active')
 
   // The profile selects are editable, so polling must not overwrite an unsaved edit.
   const [form, setForm] = useState({ temperament: '', riskProfile: '' })
@@ -45,7 +48,7 @@ export function ParticipantDetail({ participantId }) {
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, holdingsData, orderData, tradeData, cashData, companyData, worthData] = await Promise.all([
+      const [detailData, holdingsData, orderData, tradeData, cashData, companyData, worthData, loanData] = await Promise.all([
         api.getParticipant(participantId),
         api.getHoldings(participantId),
         api.getParticipantOrders(participantId),
@@ -53,6 +56,7 @@ export function ParticipantDetail({ participantId }) {
         api.getParticipantMoneyTransactions(participantId),
         api.getCompanies(),
         api.getParticipantWorthHistory(participantId),
+        api.getParticipantLoans(participantId, { status: loanStatus }),
       ])
 
       setDetail(detailData)
@@ -62,6 +66,7 @@ export function ParticipantDetail({ participantId }) {
       setCashMoves(cashData)
       setCompanies(companyData)
       setWorthHistory(worthData ?? [])
+      setLoans(loanData ?? [])
       setLoadError(null)
 
       if (!dirtyRef.current && detailData) {
@@ -72,7 +77,7 @@ export function ParticipantDetail({ participantId }) {
     } finally {
       setReady(true)
     }
-  }, [participantId])
+  }, [participantId, loanStatus])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)
@@ -156,7 +161,7 @@ export function ParticipantDetail({ participantId }) {
         <dl className="statbar">
           <div className="stat">
             <dt>Total worth</dt>
-            <dd className="num">{formatMoney(detail.currentBalance + marketValue)}</dd>
+            <dd className="num">{formatMoney(detail.currentBalance + marketValue - detail.loanLiability)}</dd>
           </div>
           <div className="stat">
             <dt>Available</dt>
@@ -170,6 +175,12 @@ export function ParticipantDetail({ participantId }) {
             <dt>Holdings value</dt>
             <dd className="num">{formatMoney(marketValue)}</dd>
           </div>
+          {detail.loanLiability > 0 ? (
+            <div className="stat">
+              <dt>Loan debt</dt>
+              <dd className="num tone-down">−{formatMoney(detail.loanLiability)}</dd>
+            </div>
+          ) : null}
           <div className="stat">
             <dt>Unrealized P/L</dt>
             <dd className={`num tone-${toneOf(holdingsPnl)}`}>{formatSigned(holdingsPnl)}</dd>
@@ -205,6 +216,8 @@ export function ParticipantDetail({ participantId }) {
         <CashPanel moves={cashMoves} />
       </div>
 
+      <LoansPanel loans={loans} status={loanStatus} onStatusChange={setLoanStatus} />
+
       <TradesPanel trades={trades} participantId={participantId} companyName={companyName} />
     </section>
   )
@@ -223,7 +236,7 @@ function WorthChartPanel({ worthHistory }) {
       {values.length < 2 ? (
         <p className="note">Not enough history yet. Total worth is recorded once per completed cycle.</p>
       ) : (
-        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} />
+        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} formatValue={formatCompactMoney} label="Total worth over time" />
       )}
     </Panel>
   )
@@ -308,7 +321,7 @@ function MembersPanel({ members }) {
       {members.length === 0 ? (
         <p className="note">No members have joined yet.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -360,7 +373,7 @@ function HoldingsPanel({ holdings }) {
       {holdings.length === 0 ? (
         <p className="note">This trader holds no shares.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -408,7 +421,7 @@ function OrdersPanel({ orders, companyName }) {
       {orders.length === 0 ? (
         <p className="note">No orders placed yet.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -452,7 +465,7 @@ function TradesPanel({ trades, participantId, companyName }) {
       {trades.length === 0 ? (
         <p className="note">No settled trades yet.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -492,7 +505,80 @@ function TradesPanel({ trades, participantId, companyName }) {
   )
 }
 
-const CASH_TONE = { Credit: 'up', Debit: 'down', Reserve: 'flat', Release: 'flat' }
+function LoansPanel({ loans, status, onStatusChange }) {
+  return (
+    <Panel title="Loans" count={status === 'all' ? 'All' : 'Active'} className="panel-holdings">
+      <div className="roster-toolbar">
+        <select
+          className="select select-sm"
+          aria-label="Filter loans by status"
+          value={status}
+          onChange={(event) => onStatusChange(event.target.value)}
+        >
+          <option value="active">Active</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+      {loans.length === 0 ? (
+        <p className="note">{status === 'all' ? 'No loans.' : 'No active loans.'}</p>
+      ) : (
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">Bank</th>
+                <th scope="col" className="ta-r">
+                  Taken
+                </th>
+                <th scope="col" className="ta-r">
+                  Interest/cyc
+                </th>
+                <th scope="col" className="ta-r">
+                  Remaining
+                </th>
+                <th scope="col" className="ta-r">
+                  Past due
+                </th>
+                <th scope="col" className="ta-r">
+                  Term left
+                </th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loans.map((loan) => (
+                <tr key={loan.id}>
+                  <th scope="row" className="cell-ellipsis">
+                    {loan.bankName}
+                  </th>
+                  <td className="num ta-r">{formatMoney(loan.principal)}</td>
+                  <td className="num ta-r">
+                    {formatMoney(loan.interestPerCycleAmount)}
+                    <span className="muted-sub"> {(loan.interestRatePerCycle * 100).toFixed(3)}%</span>
+                  </td>
+                  <td className="num ta-r">{formatMoney(loan.remainingPrincipal)}</td>
+                  <td className={`num ta-r${loan.pastDueAmount > 0 ? ' tone-attention' : ''}`}>
+                    {formatMoney(loan.pastDueAmount)}
+                  </td>
+                  <td className="num ta-r">{loan.isClosed ? '—' : `${formatInt(loan.remainingTermCycles)} cyc`}</td>
+                  <td>
+                    {loan.isClosed ? (
+                      <span className="tag" title={loan.closeReason ?? undefined}>
+                        Closed
+                      </span>
+                    ) : (
+                      <span className="tag tag-flag">Open</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  )
+}
 
 function CashPanel({ moves }) {
   return (
@@ -500,7 +586,7 @@ function CashPanel({ moves }) {
       {moves.length === 0 ? (
         <p className="note">No cash movements yet.</p>
       ) : (
-        <div className="tbl-scroll">
+        <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -516,7 +602,7 @@ function CashPanel({ moves }) {
             <tbody>
               {moves.map((move) => (
                 <tr key={move.id}>
-                  <td className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{move.type}</td>
+                  <td className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</td>
                   <td className="num ta-r">{formatMoney(move.amount)}</td>
                   <td className="num ta-r">#{move.createdInCycleId}</td>
                 </tr>

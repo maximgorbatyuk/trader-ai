@@ -118,7 +118,7 @@ function CrisisDetailPage() {
           {crisis.industries.length === 0 ? (
             <p className="note">No sectors recorded.</p>
           ) : (
-            <div className="tbl-scroll">
+            <div className="tbl-wrap">
               <table className="tbl">
                 <thead>
                   <tr>
@@ -147,7 +147,7 @@ function CrisisDetailPage() {
           {crisis.events.length === 0 ? (
             <p className="note">Nothing else happened during this crisis.</p>
           ) : (
-            <div className="tbl-scroll">
+            <div className="tbl-wrap">
               <table className="tbl">
                 <thead>
                   <tr>

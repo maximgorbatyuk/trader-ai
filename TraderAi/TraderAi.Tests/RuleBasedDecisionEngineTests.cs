@@ -209,8 +209,8 @@ public sealed class RuleBasedDecisionEngineTests
     [Fact]
     public void DebtPullsAnOwnerTowardSellingMoreOften()
     {
-        var withDebt = CountSells(DebtorContext(currentBalance: -180m, sharesOwned: 10, companyPrice: 100m, RiskProfile.Low));
-        var noDebt = CountSells(DebtorContext(currentBalance: 0m, sharesOwned: 10, companyPrice: 100m, RiskProfile.Low));
+        var withDebt = CountSells(DebtorContext(loanLiability: 180m, sharesOwned: 10, companyPrice: 100m, RiskProfile.Low));
+        var noDebt = CountSells(DebtorContext(loanLiability: 0m, sharesOwned: 10, companyPrice: 100m, RiskProfile.Low));
 
         Assert.True(withDebt > noDebt, $"debt {withDebt} should raise selling above no-debt {noDebt}");
     }
@@ -219,9 +219,9 @@ public sealed class RuleBasedDecisionEngineTests
     public void LowRiskDeleveragesHarderThanHighRisk()
     {
         // Isolate the debt-driven pull from the baseline personality by comparing each profile's own increase.
-        var lowIncrease = CountSells(DebtorContext(-180m, 10, 100m, RiskProfile.Low))
+        var lowIncrease = CountSells(DebtorContext(180m, 10, 100m, RiskProfile.Low))
             - CountSells(DebtorContext(0m, 10, 100m, RiskProfile.Low));
-        var highIncrease = CountSells(DebtorContext(-180m, 10, 100m, RiskProfile.High))
+        var highIncrease = CountSells(DebtorContext(180m, 10, 100m, RiskProfile.High))
             - CountSells(DebtorContext(0m, 10, 100m, RiskProfile.High));
 
         Assert.True(lowIncrease > highIncrease,
@@ -231,8 +231,8 @@ public sealed class RuleBasedDecisionEngineTests
     [Fact]
     public void DeeperDebtSellsMoreThanShallowDebt()
     {
-        var deep = CountSells(DebtorContext(-180m, 10, 100m, RiskProfile.Medium));
-        var shallow = CountSells(DebtorContext(-5m, 10, 100m, RiskProfile.Medium));
+        var deep = CountSells(DebtorContext(180m, 10, 100m, RiskProfile.Medium));
+        var shallow = CountSells(DebtorContext(5m, 10, 100m, RiskProfile.Medium));
 
         Assert.True(deep > shallow, $"deep debt {deep} should sell more than shallow debt {shallow}");
     }
@@ -250,8 +250,8 @@ public sealed class RuleBasedDecisionEngineTests
         return sells;
     }
 
-    // A trader carrying debt (negative balance) that still owns sellable shares, with no spare buying power.
-    private static DecisionContext DebtorContext(decimal currentBalance, int sharesOwned, decimal companyPrice, RiskProfile riskProfile)
+    // A trader carrying loan debt that still owns sellable shares, with no spare buying power.
+    private static DecisionContext DebtorContext(decimal loanLiability, int sharesOwned, decimal companyPrice, RiskProfile riskProfile)
     {
         const int companyId = 1;
         var participant = new Participant
@@ -261,7 +261,7 @@ public sealed class RuleBasedDecisionEngineTests
             Temperament = Temperament.Balanced,
             RiskProfile = riskProfile,
             InitialBalance = 0m,
-            CurrentBalance = currentBalance,
+            CurrentBalance = 0m,
             IsActive = true,
         };
 
@@ -270,7 +270,8 @@ public sealed class RuleBasedDecisionEngineTests
             AvailableCash: 0m,
             [new CompanyQuote(companyId, companyPrice)],
             new Dictionary<int, int> { [companyId] = sharesOwned },
-            new HashSet<int>());
+            new HashSet<int>(),
+            LoanLiability: loanLiability);
     }
 
     // A flat, no-signal market with both cash and shares leaves every choice to the weighted fallback, so

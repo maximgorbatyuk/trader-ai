@@ -55,6 +55,22 @@ public enum MoneyTransactionType
     Bankruptcy,
     CollectiveFund,
     CollectiveFundDividend,
+    LoanDisbursement,
+    LoanInterest,
+    LoanRepayment,
+    LoanFine,
+}
+
+public enum LoanStatus
+{
+    Open,
+    Closed,
+}
+
+public enum LoanCloseReason
+{
+    PaidInFull,
+    ParticipantDeparted,
 }
 
 public enum MarketStatus

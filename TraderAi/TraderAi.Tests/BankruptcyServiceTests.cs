@@ -178,10 +178,11 @@ public sealed class BankruptcyServiceTests : IDisposable
     public async Task IndebtedTraderBelowWealthLineGoesBankruptAndDebtIsDischarged()
     {
         var (_, cycle, company) = await SeedAsync(price: 100m);
-        var trader = await AddTraderAsync(currentBalance: -180m);
+        var trader = await AddTraderAsync(currentBalance: 0m);
         await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+        var loan = await AddOpenLoanAsync(trader.Id, remainingPrincipal: 200m, cycle.Id);
 
-        // Worth is 820 (1000 in shares less 180 debt), so debt sits at the 20% ceiling → 5% chance; 0.0 fires.
+        // Worth is 1000 in shares; a 200 loan is 20% of it → 5% chance, so a 0.0 roll fires.
         await Service(enabled: true, new ScriptedRandom([0.0d], [0]))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -195,7 +196,12 @@ public sealed class BankruptcyServiceTests : IDisposable
         Assert.False(refreshed.IsActive);
         Assert.Equal(0m, refreshed.CurrentBalance);
 
-        // A debtor loses no cash on the wipe, so no bankruptcy loss is recorded in the ledger.
+        // The collapse discharges the loan.
+        var refreshedLoan = await context.Loans.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.Id);
+        Assert.Equal(LoanStatus.Closed, refreshedLoan.Status);
+        Assert.Equal(LoanCloseReason.ParticipantDeparted, refreshedLoan.CloseReason);
+
+        // The trader held no cash, so no bankruptcy loss is recorded in the ledger.
         Assert.False(await context.MoneyTransactions.AnyAsync(transaction =>
             transaction.ParticipantId == trader.Id && transaction.Type == MoneyTransactionType.Bankruptcy));
     }
@@ -204,12 +210,14 @@ public sealed class BankruptcyServiceTests : IDisposable
     public async Task DebtBankruptcyChanceScalesWithDebtDepth()
     {
         var (_, cycle, company) = await SeedAsync(price: 100m);
-        var deep = await AddTraderAsync(currentBalance: -180m);
+        var deep = await AddTraderAsync(currentBalance: 0m);
         await AddSharesAsync(deep.Id, company.Id, count: 10, price: 100m);
-        var shallow = await AddTraderAsync(currentBalance: -30m);
+        await AddOpenLoanAsync(deep.Id, remainingPrincipal: 200m, cycle.Id);
+        var shallow = await AddTraderAsync(currentBalance: 0m);
         await AddSharesAsync(shallow.Id, company.Id, count: 10, price: 100m);
+        await AddOpenLoanAsync(shallow.Id, remainingPrincipal: 30m, cycle.Id);
 
-        // One 0.04 roll each in id order: under the deep trader's ~5% chance but over the shallow trader's ~0.8%.
+        // One 0.04 roll each in id order: under the deep trader's 5% chance but over the shallow trader's ~0.75%.
         await Service(enabled: true, new ScriptedRandom([0.04d, 0.04d], [0]))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -219,18 +227,18 @@ public sealed class BankruptcyServiceTests : IDisposable
 
         Assert.True(refreshedDeep.IsBankrupt);
         Assert.False(refreshedShallow.IsBankrupt);
-        Assert.Equal(-30m, refreshedShallow.CurrentBalance);
     }
 
     [Fact]
     public async Task ActiveCrisisDoublesBankruptcyChanceAndLogsToTimeline()
     {
         var (_, cycle, company) = await SeedAsync(price: 100m);
-        var trader = await AddTraderAsync(currentBalance: -180m);
+        var trader = await AddTraderAsync(currentBalance: 0m);
         await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+        await AddOpenLoanAsync(trader.Id, remainingPrincipal: 200m, cycle.Id);
         var crisis = await AddCrisisAsync(cycle);
 
-        // The debt chance is ~5%; the crisis doubles it to ~10%, so a 0.07 roll now fires.
+        // The debt chance is 5%; the crisis doubles it to 10%, so a 0.07 roll now fires.
         await Service(enabled: true, new ScriptedRandom([0.07d], [0]))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
         await context.SaveChangesAsync();
@@ -245,10 +253,11 @@ public sealed class BankruptcyServiceTests : IDisposable
     public async Task WithoutACrisisTheSameRollLeavesAnIndebtedTraderSolvent()
     {
         var (_, cycle, company) = await SeedAsync(price: 100m);
-        var trader = await AddTraderAsync(currentBalance: -180m);
+        var trader = await AddTraderAsync(currentBalance: 0m);
         await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+        await AddOpenLoanAsync(trader.Id, remainingPrincipal: 200m, cycle.Id);
 
-        // No crisis: the ~5% debt chance is not cleared by a 0.07 roll, so the trader survives.
+        // No crisis: the 5% debt chance is not cleared by a 0.07 roll, so the trader survives.
         await Service(enabled: true, new ScriptedRandom([0.07d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -351,6 +360,34 @@ public sealed class BankruptcyServiceTests : IDisposable
         });
 
         await context.SaveChangesAsync();
+    }
+
+    private async Task<Loan> AddOpenLoanAsync(int participantId, decimal remainingPrincipal, int openedInCycleId)
+    {
+        var bank = await context.Banks.FirstOrDefaultAsync();
+        if (bank is null)
+        {
+            bank = new Bank { Name = "National bank", InterestRatePerCycle = 0.001m };
+            context.Banks.Add(bank);
+            await context.SaveChangesAsync();
+        }
+
+        var loan = new Loan
+        {
+            BankId = bank.Id,
+            ParticipantId = participantId,
+            Principal = remainingPrincipal,
+            RemainingPrincipal = remainingPrincipal,
+            InterestRatePerCycle = bank.InterestRatePerCycle,
+            TermCycles = 100,
+            ScheduledInstallment = remainingPrincipal / 100m,
+            Status = LoanStatus.Open,
+            OpenedInCycleId = openedInCycleId,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.Loans.Add(loan);
+        await context.SaveChangesAsync();
+        return loan;
     }
 
     private async Task<Order> AddOpenBuyOrderAsync(int participantId, int companyId, int quantity, decimal price, decimal reserved, int cycleId)

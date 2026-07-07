@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
 using TraderAi.Services;
@@ -23,7 +24,15 @@ public sealed class MatchingTests : IDisposable
 
         context = new AppDbContext(options);
         context.Database.EnsureCreated();
-        marketService = new MarketService(context, new MatchingEngine(context), new DeterministicDecisionEngine(), new MarketCycleLock(), new Random(1));
+        var loanOptions = Options.Create(new LoanOptions { Enabled = true });
+        marketService = new MarketService(
+            context,
+            new MatchingEngine(context),
+            new DeterministicDecisionEngine(),
+            new MarketCycleLock(),
+            new Random(1),
+            loanService: new LoanService(context, loanOptions),
+            loanOptions: loanOptions);
     }
 
     [Fact]
@@ -177,9 +186,11 @@ public sealed class MatchingTests : IDisposable
     [Fact]
     public async Task BuyOrderRejectedWhenCashIsInsufficient()
     {
+        // Worth is 400 cash, so the 40% cap is a 160 loan-principal ceiling. Buying 6 at 100 needs a 200
+        // shortfall funded by a 230 loan (200 × 1.15), which overshoots the ceiling.
         var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 400m, sellerShares: 10, sharePrice: 100m);
 
-        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 100m);
+        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 6, 100m);
 
         Assert.False(result.Success);
         Assert.Equal(0, await context.Orders.CountAsync());
@@ -211,7 +222,8 @@ public sealed class MatchingTests : IDisposable
     [Fact]
     public async Task BuyOrderAllowedIntoDebtWithinWorthFraction()
     {
-        // Worth is 1000 cash, so the 20% allowance lets the buyer reserve up to 1200 and go 200 into the red.
+        // Worth is 1000 cash, so the 40% cap is a 400 loan-principal ceiling. Reserving 1200 needs only a 230
+        // loan (200 shortfall × 1.15), well inside the cap; the reservation still shows a -200 available balance.
         var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 1000m, sellerShares: 12, sharePrice: 100m);
 
         var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 12, 100m);
@@ -226,35 +238,38 @@ public sealed class MatchingTests : IDisposable
     [Fact]
     public async Task BuyOrderRejectedBeyondDebtAllowance()
     {
-        // 1300 reservation exceeds the 1200 ceiling of available cash plus the 200 debt allowance.
-        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 1000m, sellerShares: 13, sharePrice: 100m);
+        // Worth is 1000 cash → a 400 loan-principal ceiling. Reserving 1500 needs a 575 loan (500 shortfall ×
+        // 1.15), which overshoots the ceiling.
+        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 1000m, sellerShares: 15, sharePrice: 100m);
 
-        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 13, 100m);
+        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 15, 100m);
 
         Assert.False(result.Success);
         Assert.Equal(0, await context.Orders.CountAsync());
     }
 
     [Fact]
-    public async Task IncomePaysDownNegativeBalanceFromDebt()
+    public async Task MarginFillOpensLoanAndKeepsBalanceNonNegative()
     {
         var seed = await SeedAsync(sellerCash: 100000m, buyerCash: 1000m, sellerShares: 12, sharePrice: 100m);
 
-        // Buyer spends into debt: 12 shares at 100 costs 1200 against 1000 cash, leaving a -200 balance.
+        // Buyer spends 1200 against 1000 cash: the 200 shortfall becomes a loan for 200 × 1.15 = 230, and the
+        // 30 cash buffer is left in the balance so it never goes negative.
         await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 12, 100m);
         await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 12, 100m);
         await marketService.AdvanceCycleAsync();
 
         await context.Entry(seed.Buyer).ReloadAsync();
-        Assert.Equal(-200m, seed.Buyer.CurrentBalance);
+        Assert.Equal(30m, seed.Buyer.CurrentBalance);
 
-        // Sale proceeds of 500 credit straight onto the negative balance, covering the debt before any surplus.
-        await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Sell, 5, 100m);
-        await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Buy, 5, 100m);
-        await marketService.AdvanceCycleAsync();
+        var loan = await context.Loans.SingleAsync(candidate => candidate.ParticipantId == seed.Buyer.Id);
+        Assert.Equal(LoanStatus.Open, loan.Status);
+        Assert.Equal(230m, loan.Principal);
+        Assert.Equal(230m, loan.RemainingPrincipal);
 
-        await context.Entry(seed.Buyer).ReloadAsync();
-        Assert.Equal(300m, seed.Buyer.CurrentBalance);
+        var disbursement = await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.LoanDisbursement);
+        Assert.Equal(230m, disbursement.Amount);
+        Assert.Equal(loan.Id, disbursement.RelatedLoanId);
     }
 
     private async Task<SeedResult> SeedAsync(decimal sellerCash, decimal buyerCash, int sellerShares, decimal sharePrice)

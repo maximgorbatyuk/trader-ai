@@ -8,6 +8,30 @@ import { Footer, TopBar } from './Chrome'
 const SHELL_POLL_INTERVAL_MS = 1500
 const WORTH_GLYPH = { up: '▲', down: '▼' }
 
+const sideLinkClass = ({ isActive }) => `side-link${isActive ? ' is-active' : ''}`
+
+// A collapsible sidebar section: the header toggles its links open/closed. State is in-memory and defaults to
+// open; the shell stays mounted across routes, so a collapsed section holds for the session.
+function SideGroup({ title, children }) {
+  const [open, setOpen] = useState(true)
+  return (
+    <div className={`side-group${open ? '' : ' is-collapsed'}`}>
+      <button
+        type="button"
+        className="side-group-title"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="side-group-caret" aria-hidden="true">
+          {open ? '▾' : '▸'}
+        </span>
+        {title}
+      </button>
+      {children}
+    </div>
+  )
+}
+
 // Total worth is coloured by the last completed cycle's change — green up, red down — and left ink-dark when
 // flat or before the first cycle finishes; the returned tone drives both the colour and the glyph.
 function worthToneOf(change) {
@@ -74,39 +98,54 @@ export function AppShell() {
     <div className="app-shell">
       <aside className="sidebar">
         <nav className="sidebar-nav" aria-label="Primary">
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/" end>
+          <NavLink className={sideLinkClass} to="/" end>
             Dashboard
           </NavLink>
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/trade-market">
+          <NavLink className={sideLinkClass} to="/trade-market">
             Trade market
           </NavLink>
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/traders">
-            Traders
+          <NavLink className={sideLinkClass} to="/player-stats">
+            Player stats
           </NavLink>
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/companies">
-            Companies
-          </NavLink>
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/closed-companies">
-            Closed companies
-          </NavLink>
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/industries">
-            Industries
-          </NavLink>
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/news">
-            News
-          </NavLink>
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/crises">
-            Crises
-          </NavLink>
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/auditors">
-            Auditors
-          </NavLink>
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/departed-traders">
-            Departed traders
-          </NavLink>
-          <NavLink className={({ isActive }) => `side-link${isActive ? ' is-active' : ''}`} to="/closed-funds">
-            Closed funds
-          </NavLink>
+
+          <SideGroup title="Active market">
+            <NavLink className={sideLinkClass} to="/traders">
+              Traders
+            </NavLink>
+            <NavLink className={sideLinkClass} to="/companies">
+              Companies
+            </NavLink>
+            <NavLink className={sideLinkClass} to="/industries">
+              Industries
+            </NavLink>
+            <NavLink className={sideLinkClass} to="/news">
+              News
+            </NavLink>
+            <NavLink className={sideLinkClass} to="/crises">
+              Crises
+            </NavLink>
+            <NavLink className={sideLinkClass} to="/auditors">
+              Auditors
+            </NavLink>
+            <NavLink className={sideLinkClass} to="/banks">
+              Banks
+            </NavLink>
+            <NavLink className={sideLinkClass} to="/loans">
+              Bank loans
+            </NavLink>
+          </SideGroup>
+
+          <SideGroup title="Inactive market">
+            <NavLink className={sideLinkClass} to="/closed-companies">
+              Closed companies
+            </NavLink>
+            <NavLink className={sideLinkClass} to="/departed-traders">
+              Departed traders
+            </NavLink>
+            <NavLink className={sideLinkClass} to="/closed-funds">
+              Closed funds
+            </NavLink>
+          </SideGroup>
         </nav>
         {player ? (
           <div className="sidebar-player">

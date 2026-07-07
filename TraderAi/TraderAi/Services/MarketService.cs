@@ -65,8 +65,10 @@ public sealed class MarketService(
     AuditorService? auditorService = null,
     ShareEmissionService? shareEmissionService = null,
     CompanyLifecycleService? companyLifecycleService = null,
+    LoanService? loanService = null,
     IOptions<ArchiveOptions>? archiveOptions = null,
-    IOptions<RandomChanceRatesOptions>? chanceRates = null)
+    IOptions<RandomChanceRatesOptions>? chanceRates = null,
+    IOptions<LoanOptions>? loanOptions = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -74,6 +76,9 @@ public sealed class MarketService(
     // Dividend chance/rate values; falls back to the built-in defaults when the options are not injected (the
     // reduced-argument constructor used by some tests), so the defaults match the values these once lived at.
     private readonly RandomChanceRatesOptions chanceRateValues = chanceRates?.Value ?? new RandomChanceRatesOptions();
+
+    // Loan settings, defaulted when not injected so the buffer/cap math still works in reduced-argument tests.
+    private readonly LoanOptions loanOptionValues = loanOptions?.Value ?? new LoanOptions();
 
     // How far back the long-range price move is measured for the engine's extreme-move reactions.
     private const int LongRangeWindowCycles = 10;
@@ -93,8 +98,8 @@ public sealed class MarketService(
     private const decimal CollectiveFundCashBufferFraction = 0.10m;
 
     // A trader may reserve for buys beyond its available cash, borrowing up to this share of its total worth
-    // (cash plus holdings). The debt surfaces as a negative balance, which incoming cash then pays down first.
-    private const decimal DebtLimitFraction = 0.20m;
+    // (cash plus holdings). The debt is carried as open Loan liability, kept at or under this fraction of worth.
+    private const decimal DebtLimitFraction = 0.40m;
 
     // Dividends are paid at a random interval drawn in this range. Each paying company draws a rate from the
     // configured dividend band of its capitalisation for the whole payout pool, split evenly across its issued
@@ -150,6 +155,19 @@ public sealed class MarketService(
 
     public Task<CancelOrderResult> CancelPlayerOrderAsync(int orderId) =>
         WithLockAsync(() => CancelPlayerOrderCoreAsync(orderId));
+
+    // Manual loan repayment goes through the cycle lock so it cannot race a running tick's writes.
+    public Task<RepayLoanResult> RepayLoanAsync(int loanId, decimal? amount) => WithLockAsync(async () =>
+    {
+        if (loanService is null)
+        {
+            return RepayLoanResult.Fail("Loans are not enabled.");
+        }
+
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        var currentCycleId = market?.CurrentCycleId ?? 0;
+        return await loanService.RepayLoanAsync(loanId, amount, currentCycleId, DateTime.UtcNow);
+    });
 
     public Task<Market?> SetStatusAsync(MarketStatus status) => WithLockAsync(async () =>
     {
@@ -298,6 +316,14 @@ public sealed class MarketService(
         }
 
         await LiquidateStarvedHoldersAsync(participantsById);
+
+        // Charges this cycle's loan payments (and lists distress sells) before bankruptcy so its debt-percent
+        // and this cycle's matching both read post-payment loan state.
+        if (loanService is not null)
+        {
+            await loanService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
 
         // Runs before this cycle's matching so a wealthy trader's collapse, and a bankrupt trader's cheaper
         // re-listing, both reach the order book in time to cross the same cycle.
@@ -597,8 +623,8 @@ public sealed class MarketService(
     private async Task<IReadOnlyDictionary<int, decimal>> LatestPriceByCompanyAsync() =>
         await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
 
-    // How much a participant may reserve on top of its available cash: a share of total worth (cash plus
-    // holdings at the latest price), never negative so a trader already underwater cannot borrow further. The
+    // Remaining loan-principal capacity: the debt cap (a share of total worth, cash plus holdings) less the
+    // liability already carried on open loans, never negative so a trader at the cap cannot borrow further. The
     // caller may hand in an already-computed price map to avoid re-reading it once per order.
     private async Task<decimal> DebtAllowanceAsync(Participant participant, IReadOnlyDictionary<int, decimal>? priceByCompany = null)
     {
@@ -609,7 +635,11 @@ public sealed class MarketService(
                 .ToListAsync())
             .Sum(holding => holding.Quantity * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
 
-        return Math.Max(0m, DebtLimitFraction * (participant.CurrentBalance + holdingsValue));
+        var openLoanLiability = await dbContext.Loans
+            .Where(loan => loan.ParticipantId == participant.Id && loan.Status == LoanStatus.Open)
+            .SumAsync(loan => loan.RemainingPrincipal + loan.PastDueAmount);
+
+        return Math.Max(0m, (DebtLimitFraction * (participant.CurrentBalance + holdingsValue)) - openLoanLiability);
     }
 
     private static int RandomDividendInterval(Random rng) =>
@@ -708,10 +738,16 @@ public sealed class MarketService(
         if (type == OrderType.Buy)
         {
             var reserved = limitPrice * quantity;
-            if (participant.AvailableBalance < reserved
-                && participant.AvailableBalance + await DebtAllowanceAsync(participant, priceByCompany) < reserved)
+
+            // Cash beyond the available balance must be borrowed, and a loan lends the shortfall plus the cash
+            // buffer — so the resulting loan principal, not the bare shortfall, has to fit the debt allowance.
+            if (participant.AvailableBalance < reserved)
             {
-                return PlaceOrderResult.Fail("Insufficient available cash to reserve for the buy order, even on the debt allowance.");
+                var requiredLoanPrincipal = (reserved - participant.AvailableBalance) * (1m + loanOptionValues.LoanCashBufferRate);
+                if (requiredLoanPrincipal > await DebtAllowanceAsync(participant, priceByCompany))
+                {
+                    return PlaceOrderResult.Fail("Insufficient available cash to reserve for the buy order, even on the debt allowance.");
+                }
             }
 
             participant.ReservedBalance += reserved;
@@ -817,6 +853,15 @@ public sealed class MarketService(
             await scienceService.MaybeTriggerForCycleAsync(market, currentCycle, now, duringCrisis);
         }
 
+        // Turn any negative balance this cycle's matching produced into a loan so no participant carries a
+        // negative balance across the cycle boundary. The save flushes matching and the shocks first (dividends
+        // above already read the pre-match prices), so the origination query sees the settled negative balances.
+        if (loanService is not null)
+        {
+            await dbContext.SaveChangesAsync();
+            await loanService.OriginateLoansForNegativeBalancesAsync(currentCycle.Id, currentCycle.CycleNumber, now);
+        }
+
         var nextCycle = new MarketCycle
         {
             CycleNumber = currentCycle.CycleNumber + 1,
@@ -877,14 +922,14 @@ public sealed class MarketService(
         await dbContext.PriceSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO MoneyTransactionArchives (Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, CreatedInCycleId, CreatedAt)
-            SELECT Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, CreatedInCycleId, CreatedAt
+            INSERT INTO MoneyTransactionArchives (Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, CreatedInCycleId, CreatedAt)
+            SELECT Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, CreatedInCycleId, CreatedAt
             FROM MoneyTransactions WHERE CreatedInCycleId <= {cutoffCycleId}");
         await dbContext.MoneyTransactions.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO ParticipantWorthSnapshotArchives (Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, CreatedAt)
-            SELECT Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, CreatedAt
+            INSERT INTO ParticipantWorthSnapshotArchives (Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, CreatedAt)
+            SELECT Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, CreatedAt
             FROM ParticipantWorthSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
         await dbContext.ParticipantWorthSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
     }
@@ -911,6 +956,8 @@ public sealed class MarketService(
                 ownerGroup => ownerGroup
                     .ToDictionary(holding => holding.CompanyId, holding => holding.Quantity));
 
+        var loanLiabilityByParticipant = await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext);
+
         foreach (var participant in participants)
         {
             var holdingsValue = holdingsByOwner.TryGetValue(participant.Id, out var holdings)
@@ -923,6 +970,7 @@ public sealed class MarketService(
                 CreatedInCycleId = completedCycleId,
                 Balance = participant.CurrentBalance,
                 HoldingsValue = holdingsValue,
+                LoanLiability = loanLiabilityByParticipant.GetValueOrDefault(participant.Id),
                 CreatedAt = now,
             });
         }
@@ -1098,6 +1146,7 @@ public sealed class MarketService(
                 group => (IReadOnlySet<int>)group.Select(order => order.CompanyId).ToHashSet());
 
         var priceByCompany = quotes.ToDictionary(quote => quote.CompanyId, quote => quote.Price);
+        var loanLiabilityByParticipant = await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext);
         var fundStatusByParticipantId = await dbContext.CollectiveFunds
             .ToDictionaryAsync(fund => fund.ParticipantId, fund => fund.Status);
         var memberParticipantIds = (await dbContext.CollectiveFundParticipants
@@ -1116,13 +1165,15 @@ public sealed class MarketService(
                 continue;
             }
 
+            var openLoanLiability = loanLiabilityByParticipant.GetValueOrDefault(trader.Id);
             var context = new DecisionContext(
                 trader,
-                AvailableCashForDecisions(trader, memberParticipantIds, holdingsByOwner, priceByCompany),
+                AvailableCashForDecisions(trader, memberParticipantIds, holdingsByOwner, priceByCompany, openLoanLiability),
                 quotes,
                 holdingsByOwner.GetValueOrDefault(trader.Id, NoHoldings),
                 openOrdersByParticipant.GetValueOrDefault(trader.Id, NoOpenOrders),
-                crisisActive);
+                crisisActive,
+                openLoanLiability);
 
             foreach (var intent in decisionEngine.Decide(context))
             {
@@ -1149,13 +1200,14 @@ public sealed class MarketService(
     }
 
     // A fund member hands its buying to the fund — cash is zeroed so the engine can only sell its own shares.
-    // Everyone else may size into a debt allowance on top of available cash; a fund still reserves a tenth of
-    // its worth liquid for deposit returns before that borrowing headroom applies.
-    private static decimal AvailableCashForDecisions(
+    // Everyone else may size into their remaining borrowing headroom on top of available cash; a fund still
+    // reserves a tenth of its worth liquid for deposit returns before that headroom applies.
+    private decimal AvailableCashForDecisions(
         Participant trader,
         IReadOnlySet<int> memberParticipantIds,
         IReadOnlyDictionary<int, IReadOnlyDictionary<int, int>> holdingsByOwner,
-        IReadOnlyDictionary<int, decimal> priceByCompany)
+        IReadOnlyDictionary<int, decimal> priceByCompany,
+        decimal openLoanLiability)
     {
         if (memberParticipantIds.Contains(trader.Id))
         {
@@ -1165,21 +1217,27 @@ public sealed class MarketService(
         var holdingsValue = holdingsByOwner.TryGetValue(trader.Id, out var holdings)
             ? holdings.Sum(holding => holding.Value * priceByCompany.GetValueOrDefault(holding.Key))
             : 0m;
-        var debtAllowance = Math.Max(0m, DebtLimitFraction * (trader.CurrentBalance + holdingsValue));
+        var debtAllowance = Math.Max(0m, (DebtLimitFraction * (trader.CurrentBalance + holdingsValue)) - openLoanLiability);
+
+        // Spending X of borrowed cash opens a loan of X × (1 + buffer) principal, so the spendable margin is the
+        // remaining loan-principal headroom scaled back down by the buffer.
+        var spendableMargin = debtAllowance / (1m + loanOptionValues.LoanCashBufferRate);
 
         if (trader.Type != ParticipantType.CollectiveFund)
         {
-            return trader.AvailableBalance + debtAllowance;
+            return trader.AvailableBalance + spendableMargin;
         }
 
         var totalWorth = trader.AvailableBalance + holdingsValue;
-        return Math.Max(0m, trader.AvailableBalance - (CollectiveFundCashBufferFraction * totalWorth)) + debtAllowance;
+        return Math.Max(0m, trader.AvailableBalance - (CollectiveFundCashBufferFraction * totalWorth)) + spendableMargin;
     }
 
     private async Task<Market> ResetDemoMarketCoreAsync()
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync();
 
+        await dbContext.Loans.ExecuteDeleteAsync();
+        await dbContext.Banks.ExecuteDeleteAsync();
         await dbContext.CrisisEvents.ExecuteDeleteAsync();
         await dbContext.CrisisIndustries.ExecuteDeleteAsync();
         await dbContext.Crises.ExecuteDeleteAsync();
@@ -1215,7 +1273,8 @@ public sealed class MarketService(
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', 'CrisisEvents', " +
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
             "'CollectiveFunds', 'CollectiveFundParticipants', 'ParticipantWorthSnapshots', " +
-            "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives')");
+            "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives', " +
+            "'Banks', 'Loans')");
 
         var market = await SeedDemoMarketCoreAsync();
         await transaction.CommitAsync();
@@ -1368,6 +1427,13 @@ public sealed class MarketService(
         {
             dbContext.Auditors.Add(new Auditor { Name = name, Description = description, CreatedAt = now });
         }
+
+        // The single lending bank; the loan service also resolves-or-creates it defensively on first usage.
+        dbContext.Banks.Add(new Bank
+        {
+            Name = loanOptionValues.BankName,
+            InterestRatePerCycle = loanOptionValues.InterestRatePerCycle,
+        });
 
         // Drawn last so adding the dividend schedule does not shift the generated demo data above.
         market.NextDividendCycleNumber = firstCycle.CycleNumber + RandomDividendInterval(random);

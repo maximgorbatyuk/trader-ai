@@ -157,6 +157,10 @@ public sealed class MarketExitService(
             LeftAt = now,
         });
 
+        // Close any open loan (discharging the debt) before the row goes, so no loan is left pointing at a
+        // departed borrower.
+        await LoanService.CloseOpenLoansForParticipantAsync(dbContext, participant.Id, currentCycleId, now);
+
         // Nothing FK-references the Participants table, so the row deletes cleanly, leaving only orphaned scalar
         // ids in history tables that every read path already tolerates (numeric-id fallbacks / id-keyed lookups).
         // Both exit gates exclude current fund members, so no live CollectiveFundParticipant is ever orphaned.

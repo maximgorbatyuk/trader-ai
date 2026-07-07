@@ -16,6 +16,8 @@ public sealed class MoneyTransactionArchive
 
     public int? RelatedShareTransactionId { get; set; }
 
+    public int? RelatedLoanId { get; set; }
+
     public int CreatedInCycleId { get; set; }
 
     public DateTime CreatedAt { get; set; }

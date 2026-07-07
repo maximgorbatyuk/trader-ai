@@ -8,7 +8,7 @@ export function AuditorsTable({ auditors, onSelectAuditor, selectedId }) {
   }
 
   return (
-    <div className="tbl-scroll">
+    <div className="tbl-wrap">
       <table className="tbl">
         <thead>
           <tr>

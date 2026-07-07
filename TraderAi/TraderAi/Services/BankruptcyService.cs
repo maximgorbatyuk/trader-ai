@@ -29,8 +29,8 @@ public sealed class BankruptcyService(
     // trader lingers at risk for a long stretch rather than collapsing within a few cycles.
     private const double StepPerCycle = 0.002;
 
-    // Debt carries its own bankruptcy risk, clamped at the 20% borrow ceiling so it tops out near 5%.
-    private const decimal MaxDebtPercent = 20m;
+    // Loan debt carries its own bankruptcy risk, clamped at the 40% borrow ceiling.
+    private const decimal MaxDebtPercent = 40m;
 
     // A bankrupt trader must sell down this fraction of the shares it held when bankruptcy struck.
     private const decimal SellDownFraction = 0.65m;
@@ -65,6 +65,14 @@ public sealed class BankruptcyService(
             .ToListAsync();
         var openOrdersByParticipant = openOrders
             .GroupBy(order => order.ParticipantId!.Value)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        // Open loans per trader: their liability feeds the debt-driven bankruptcy chance, and a collapse
+        // discharges them.
+        var openLoansByParticipant = (await dbContext.Loans
+                .Where(loan => loan.Status == LoanStatus.Open)
+                .ToListAsync())
+            .GroupBy(loan => loan.ParticipantId)
             .ToDictionary(group => group.Key, group => group.ToList());
 
         // Uncommitted quantity per (participant, company): owned shares minus what is already listed for sale.
@@ -108,7 +116,8 @@ public sealed class BankruptcyService(
                 continue;
             }
 
-            MaybeTrigger(participant, owned, openForParticipant, latestPriceByCompany, available, currentCycleId, currentCycleNumber, now, activeCrisis);
+            var openLoans = openLoansByParticipant.GetValueOrDefault(participant.Id) ?? [];
+            MaybeTrigger(participant, owned, openForParticipant, openLoans, latestPriceByCompany, available, currentCycleId, currentCycleNumber, now, activeCrisis);
         }
     }
 
@@ -116,6 +125,7 @@ public sealed class BankruptcyService(
         Participant participant,
         IReadOnlyDictionary<int, int> owned,
         List<Order> openOrders,
+        List<Loan> openLoans,
         IReadOnlyDictionary<int, decimal> latestPriceByCompany,
         Dictionary<(int ParticipantId, int CompanyId), int> available,
         int currentCycleId,
@@ -144,8 +154,9 @@ public sealed class BankruptcyService(
             wealthyProbability = 0.0;
         }
 
+        var loanLiability = openLoans.Sum(loan => loan.RemainingPrincipal + loan.PastDueAmount);
         var probability = wealthyProbability + DebtBankruptcyProbability(
-            participant, shareWorth, chanceRates.Value.EventTriggerChances.BankruptcyPerDebtPercent);
+            participant, shareWorth, loanLiability, chanceRates.Value.EventTriggerChances.BankruptcyPerDebtPercent);
         if (activeCrisis is not null)
         {
             probability = Math.Min(1.0, probability * chanceRates.Value.ChanceModifiers.CrisisBankruptcyMultiplier);
@@ -156,8 +167,8 @@ public sealed class BankruptcyService(
             return;
         }
 
-        // A debtor holds negative cash, so nothing is lost on the wipe; clamping keeps the ledger and story
-        // non-negative while zeroing the balance below discharges the debt.
+        // Debt now lives in open loans (discharged below), not a negative balance, so the wipe simply loses the
+        // cash on hand; clamping stays defensive.
         var cashLost = Math.Max(0m, participant.CurrentBalance);
 
         // Wipe the trader: cancel every open order (releasing reserved cash and freeing offered shares), then
@@ -192,6 +203,12 @@ public sealed class BankruptcyService(
         participant.IsBankrupt = true;
         participant.BankruptcyOwnedAtStart = TotalOwned(owned);
         participant.BankruptcyDiscountStep = 0;
+
+        // The collapse discharges the trader's loans.
+        foreach (var loan in openLoans)
+        {
+            LoanService.MarkClosed(loan, LoanCloseReason.ParticipantDeparted, currentCycleId, now);
+        }
 
         var (title, content) = DemoBankruptcyContent.Generate(participant.Name, cashLost, shareWorth, random);
         dbContext.Bankruptcies.Add(new Bankruptcy
@@ -364,19 +381,18 @@ public sealed class BankruptcyService(
     private static decimal ShareWorth(IReadOnlyDictionary<int, int> owned, IReadOnlyDictionary<int, decimal> latestPriceByCompany) =>
         owned.Sum(holding => holding.Value * latestPriceByCompany.GetValueOrDefault(holding.Key));
 
-    // Bankruptcy chance from a negative balance: debt as a percent of total worth (cash plus holdings), clamped
-    // at the borrow ceiling, times the per-percent step. A trader whose debt outruns its holdings caps out.
-    private static double DebtBankruptcyProbability(Participant participant, decimal shareWorth, double chancePerPercent)
+    // Bankruptcy chance from loan debt: liability as a percent of total worth (cash plus holdings), clamped at
+    // the borrow ceiling, times the per-percent step. A trader whose debt outruns its holdings caps out.
+    private static double DebtBankruptcyProbability(Participant participant, decimal shareWorth, decimal loanLiability, double chancePerPercent)
     {
-        if (participant.CurrentBalance >= 0m)
+        if (loanLiability <= 0m)
         {
             return 0.0;
         }
 
-        var debt = -participant.CurrentBalance;
         var worth = participant.CurrentBalance + shareWorth;
         var debtPercent = worth > 0m
-            ? Math.Min(debt / worth * 100m, MaxDebtPercent)
+            ? Math.Min(loanLiability / worth * 100m, MaxDebtPercent)
             : MaxDebtPercent;
 
         return (double)debtPercent * chancePerPercent;
