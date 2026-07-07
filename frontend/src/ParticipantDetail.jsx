@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
-import { formatInt, formatMoney, formatSigned, toneOf } from './format'
+import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
 import { CASH_LABEL, CASH_TONE } from './cashMovements'
@@ -236,7 +236,7 @@ function WorthChartPanel({ worthHistory }) {
       {values.length < 2 ? (
         <p className="note">Not enough history yet. Total worth is recorded once per completed cycle.</p>
       ) : (
-        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} />
+        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} formatValue={formatCompactMoney} label="Total worth over time" />
       )}
     </Panel>
   )

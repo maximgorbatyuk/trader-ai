@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
-import { formatInt, formatMoney, formatSigned, toneOf } from './format'
+import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { Pager, SortHeader } from './TableControls'
 import { useClientTable } from './useClientTable'
 import { LineChart } from './LineChart'
@@ -372,7 +372,7 @@ function WorthChartTab({ worthHistory }) {
       {values.length < 2 ? (
         <p className="note note-sm">Not enough history yet. Total worth is recorded once per completed cycle.</p>
       ) : (
-        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} label="Player total worth over time" />
+        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} formatValue={formatCompactMoney} label="Player total worth over time" />
       )}
     </div>
   )
