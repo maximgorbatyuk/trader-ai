@@ -272,6 +272,36 @@ public sealed class MatchingTests : IDisposable
         Assert.Equal(loan.Id, disbursement.RelatedLoanId);
     }
 
+    [Fact]
+    public async Task HaltedCompanyDoesNotMatch()
+    {
+        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
+
+        // Orders rest while the company is open, then it is frozen before matching runs.
+        await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 110m);
+        await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 5, 100m);
+        seed.Company.TradingHaltedUntilCycleNumber = 1;
+        await context.SaveChangesAsync();
+
+        var result = await marketService.AdvanceCycleAsync();
+
+        Assert.Equal(0, result.FillCount);
+        Assert.Equal(0, await context.ShareTransactions.CountAsync());
+    }
+
+    [Fact]
+    public async Task OrderRejectedForHaltedCompany()
+    {
+        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
+        seed.Company.TradingHaltedUntilCycleNumber = 1;
+        await context.SaveChangesAsync();
+
+        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 110m);
+
+        Assert.False(result.Success);
+        Assert.Equal(0, await context.Orders.CountAsync());
+    }
+
     private async Task<SeedResult> SeedAsync(decimal sellerCash, decimal buyerCash, int sellerShares, decimal sharePrice)
     {
         var now = DateTime.UtcNow;

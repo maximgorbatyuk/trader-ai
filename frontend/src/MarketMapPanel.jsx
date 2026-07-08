@@ -117,13 +117,15 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
 
   const mapItems = visibleCompanies.map((company) => {
     const tone = toneOf(company.capChangePct)
+    const haltSuffix = company.isHalted ? ' · trading halted' : ''
     return {
       id: company.id,
       label: company.name,
       value: company.capitalization,
       changePct: company.capChangePct,
-      title: `${company.name} · ${formatCompactMoney(company.capitalization)} cap · ${formatInt(company.issuedSharesCount)} shares · ${formatMoney(company.currentPrice)} · ${formatPct(company.capChangePct)}`,
-      ariaLabel: `${company.name}, ${formatCompactMoney(company.capitalization)} capitalisation, ${formatInt(company.issuedSharesCount)} issued shares, ${formatMoney(company.currentPrice)}, ${TONE_WORD[tone]} ${formatPct(company.capChangePct)}. Open details.`,
+      halted: company.isHalted,
+      title: `${company.name} · ${formatCompactMoney(company.capitalization)} cap · ${formatInt(company.issuedSharesCount)} shares · ${formatMoney(company.currentPrice)} · ${formatPct(company.capChangePct)}${haltSuffix}`,
+      ariaLabel: `${company.name}, ${formatCompactMoney(company.capitalization)} capitalisation, ${formatInt(company.issuedSharesCount)} issued shares, ${formatMoney(company.currentPrice)}, ${TONE_WORD[tone]} ${formatPct(company.capChangePct)}${haltSuffix}. Open details.`,
     }
   })
 

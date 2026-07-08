@@ -23,6 +23,14 @@ public sealed class MatchingEngine(AppDbContext dbContext)
         // during matching, so a single up-front read stays correct for the whole pass.
         var sharesByCompany = await dbContext.Companies.ToDictionaryAsync(company => company.Id, company => company.IssuedSharesCount);
 
+        // A company under a volatility halt is frozen this cycle: its resting orders neither cross nor move.
+        var haltedCompanyIds = (await dbContext.Companies
+                .Where(company => company.TradingHaltedUntilCycleNumber != null
+                    && company.TradingHaltedUntilCycleNumber >= cycle.CycleNumber)
+                .Select(company => company.Id)
+                .ToListAsync())
+            .ToHashSet();
+
         var openOrders = await dbContext.Orders
             .Where(order => order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
             .ToListAsync();
@@ -31,6 +39,11 @@ public sealed class MatchingEngine(AppDbContext dbContext)
 
         foreach (var companyOrders in openOrders.GroupBy(order => order.CompanyId))
         {
+            if (haltedCompanyIds.Contains(companyOrders.Key))
+            {
+                continue;
+            }
+
             var buys = companyOrders
                 .Where(order => order.Type == OrderType.Buy && order.RemainingQuantity > 0)
                 .OrderByDescending(order => order.LimitPrice)

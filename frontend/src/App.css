@@ -1114,6 +1114,24 @@
   line-height: 1;
 }
 
+/* Status flag on a halted tile: a light pill readable on any tile colour. A halt is chrome, not a market
+   up/down signal, so it uses ink-on-white rather than the reserved green/red. */
+.map-halt {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #fff;
+  color: oklch(0.2 0.012 255);
+  font-size: var(--t-2xs);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-shadow: none;
+}
+
+.map-tile.is-tiny .map-halt {
+  display: none;
+}
+
 .tone-bg-up {
   background: color-mix(in oklch, var(--up) var(--map-heat, 64%), oklch(0.28 0.035 155));
 }

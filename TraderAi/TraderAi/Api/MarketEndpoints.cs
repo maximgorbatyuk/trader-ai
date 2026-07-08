@@ -1253,6 +1253,7 @@ public static class MarketEndpoints
         var changeByCompany = await PriceChangePctByCompanyAsync(dbContext);
         var industryNameById = await IndustryNameByIdAsync(dbContext);
         var latestRatingByCompany = await LatestRatingByCompanyAsync(dbContext);
+        var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
 
         return companies
             .Select(company => new CompanyResponse(
@@ -1263,7 +1264,8 @@ public static class MarketEndpoints
                 company.IssuedSharesCount,
                 latestPriceByCompany.GetValueOrDefault(company.Id),
                 changeByCompany.GetValueOrDefault(company.Id),
-                latestRatingByCompany.TryGetValue(company.Id, out var rating) ? rating.ToString() : null))
+                latestRatingByCompany.TryGetValue(company.Id, out var rating) ? rating.ToString() : null,
+                company.TradingHaltedUntilCycleNumber is int haltedUntil && haltedUntil >= currentCycleNumber))
             .ToList();
     }
 
@@ -1588,6 +1590,9 @@ public static class MarketEndpoints
                 .FirstOrDefaultAsync()
             : null;
 
+        var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+        var isHalted = company.TradingHaltedUntilCycleNumber is int haltedUntil && haltedUntil >= currentCycleNumber;
+
         return new CompanyDetailResponse(
             company.Id,
             company.Name,
@@ -1604,7 +1609,9 @@ public static class MarketEndpoints
             recentRatings.Count > 0 ? recentRatings[0].ToString() : null,
             recentRatings.Count > 1 ? recentRatings[1].ToString() : null,
             company.ClosedInCycleId != null,
-            closedInCycleNumber);
+            closedInCycleNumber,
+            isHalted,
+            isHalted ? company.TradingHaltedUntilCycleNumber : null);
     }
 
     private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(AppDbContext dbContext, int participantId)
@@ -1912,7 +1919,8 @@ public sealed record CompanyResponse(
     int IssuedSharesCount,
     decimal? CurrentPrice,
     decimal PriceChangePct,
-    string? CurrentRating);
+    string? CurrentRating,
+    bool IsHalted);
 
 public sealed record CompanyAttentionResponse(
     int CompanyId,
@@ -1950,7 +1958,9 @@ public sealed record CompanyDetailResponse(
     string? CurrentRating,
     string? PreviousRating,
     bool IsClosed,
-    int? ClosedInCycleNumber);
+    int? ClosedInCycleNumber,
+    bool IsHalted,
+    int? HaltedUntilCycleNumber);
 
 public sealed record ShareholderResponse(
     int OwnerId,

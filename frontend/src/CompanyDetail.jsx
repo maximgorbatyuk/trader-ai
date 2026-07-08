@@ -138,6 +138,17 @@ export function CompanyDetail({ companyId }) {
         </div>
       ) : null}
 
+      {detail.isHalted ? (
+        <div className="banner" role="status">
+          <strong>Trading halted.</strong>
+          <span>
+            Trading in this company is frozen after a sharp price move
+            {typeof detail.haltedUntilCycleNumber === 'number' ? ` until cycle ${detail.haltedUntilCycleNumber}` : ''}.
+            Open orders were cancelled and no new orders can be placed until it resumes.
+          </span>
+        </div>
+      ) : null}
+
       <section className="command" aria-label="Company identity">
         <div className="command-id">
           <span className="command-label">Company</span>

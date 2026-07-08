@@ -66,6 +66,8 @@ public sealed class MarketService(
     ShareEmissionService? shareEmissionService = null,
     CompanyLifecycleService? companyLifecycleService = null,
     LoanService? loanService = null,
+    VolatilityHaltService? volatilityHaltService = null,
+    ConcentrationCapService? concentrationCapService = null,
     IOptions<ArchiveOptions>? archiveOptions = null,
     IOptions<RandomChanceRatesOptions>? chanceRates = null,
     IOptions<LoanOptions>? loanOptions = null)
@@ -290,6 +292,16 @@ public sealed class MarketService(
         // Persist cancellations first so freed shares and cash are visible to the liquidation pass.
         await dbContext.SaveChangesAsync();
 
+        // A volatility halt runs first, reading only prior-cycle closes — before this cycle's splits, emissions,
+        // lifecycle cut, or auditor downgrade add a snapshot, so a same-cycle deliberate price cut cannot trip
+        // the down-halt. A company that moved past its band over the recent window is frozen and its whole book
+        // cancelled, so this cycle's matching and decision pass skip it.
+        if (volatilityHaltService is not null)
+        {
+            await volatilityHaltService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
         // Splits re-denominate prices and share counts before any worth-reading service runs, so bankruptcy,
         // funds, and exits all see the post-split state; saved at once since those services query the database.
         if (stockSplitService is not null)
@@ -348,6 +360,15 @@ public sealed class MarketService(
         if (marketExitService is not null)
         {
             await marketExitService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
+            await dbContext.SaveChangesAsync();
+        }
+
+        // Runs right before the auditor, after bankruptcy/funds/exits have read pre-cut prices: any company that
+        // has grown into an outsized share of total market capitalisation has its price cut, taking effect for
+        // this cycle's decisions and matching.
+        if (concentrationCapService is not null)
+        {
+            await concentrationCapService.ProcessForCycleAsync(currentCycleId, DateTime.UtcNow);
             await dbContext.SaveChangesAsync();
         }
 
@@ -714,9 +735,25 @@ public sealed class MarketService(
             return PlaceOrderResult.Fail("Participant is not active.");
         }
 
-        if (!await dbContext.Companies.AnyAsync(company => company.Id == companyId))
+        var company = await dbContext.Companies.FirstOrDefaultAsync(candidate => candidate.Id == companyId);
+        if (company is null)
         {
             return PlaceOrderResult.Fail("Company not found.");
+        }
+
+        // A company frozen by a volatility halt takes no new orders. The engine's staged (deferred) orders never
+        // target a halted company — it is excluded from the quote universe — so this guard runs only on the
+        // direct caller paths (the human player and forced liquidation), keeping the decision pass lookup-free.
+        if (!deferSave && company.TradingHaltedUntilCycleNumber is int haltedUntil)
+        {
+            var currentCycleNumber = await dbContext.MarketCycles
+                .Where(cycle => cycle.Id == cycleId)
+                .Select(cycle => cycle.CycleNumber)
+                .FirstOrDefaultAsync();
+            if (haltedUntil >= currentCycleNumber)
+            {
+                return PlaceOrderResult.Fail("Trading in this company is halted.");
+            }
         }
 
         var now = DateTime.UtcNow;
@@ -1082,10 +1119,19 @@ public sealed class MarketService(
                 .ToListAsync())
             .ToHashSet();
 
+        // A company frozen by a volatility halt cannot trade this cycle, so like a delisted one it is kept out
+        // of the quote universe — otherwise the engine would rest bids that no float can fill.
+        var haltedCompanyIds = (await dbContext.Companies
+                .Where(company => company.TradingHaltedUntilCycleNumber != null
+                    && company.TradingHaltedUntilCycleNumber >= currentCycleNumber)
+                .Select(company => company.Id)
+                .ToListAsync())
+            .ToHashSet();
+
         var snapshots = await dbContext.PriceSnapshots.AsNoTracking().ToListAsync();
         var quotes = snapshots
             .GroupBy(snapshot => snapshot.CompanyId)
-            .Where(group => !closedCompanyIds.Contains(group.Key))
+            .Where(group => !closedCompanyIds.Contains(group.Key) && !haltedCompanyIds.Contains(group.Key))
             .Select(group =>
             {
                 var ordered = group.OrderByDescending(snapshot => snapshot.Id).ToList();

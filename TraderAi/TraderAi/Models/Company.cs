@@ -29,6 +29,11 @@ public sealed class Company
 
     public DateTime? ClosedAt { get; set; }
 
+    // Volatility halt: while the current cycle number is at or below this, the company is frozen — matching
+    // skips it and no new orders may be placed. Stores a cycle number (not an id) so the freeze can name a
+    // future cycle that has no row yet. Null when the company has never been, or is no longer, halted.
+    public int? TradingHaltedUntilCycleNumber { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

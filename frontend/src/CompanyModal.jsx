@@ -220,6 +220,7 @@ export function CompanyModal({ company, participantNameById, onClose }) {
     return null
   }
 
+  const isHalted = company.isHalted
   const capitalization = company.issuedSharesCount * (company.currentPrice ?? 0)
   const values = prices.map((snapshot) => snapshot.price)
   const open = values.at(0)
@@ -293,6 +294,13 @@ export function CompanyModal({ company, participantNameById, onClose }) {
         </header>
 
         <div className="modal-body">
+          {isHalted ? (
+            <p className="note" role="status">
+              Trading in this company is halted after a sharp price move. Open orders were cancelled and none can
+              be placed until it resumes.
+            </p>
+          ) : null}
+
           {capValues.length < 2 ? (
             <p className="note">Not enough capitalization history yet. Start the loop or step a cycle to record trades.</p>
           ) : (
@@ -366,10 +374,10 @@ export function CompanyModal({ company, participantNameById, onClose }) {
             )}
           </div>
 
-          {player && activeForm === 'buy' ? (
+          {player && !isHalted && activeForm === 'buy' ? (
             <OrderForm key={`buy-${company.id}`} player={player} company={company} side="Buy" />
           ) : null}
-          {player && activeForm === 'sell' ? (
+          {player && !isHalted && activeForm === 'sell' ? (
             <OrderForm key={`sell-${company.id}`} player={player} company={company} side="Sell" maxQuantity={ownedShares} />
           ) : null}
         </div>
@@ -381,7 +389,7 @@ export function CompanyModal({ company, participantNameById, onClose }) {
           <Link className="btn" to={`/companies/${company.id}`}>
             Open company page
           </Link>
-          {player ? (
+          {player && !isHalted ? (
             <button
               type="button"
               className="btn btn-primary"
@@ -391,7 +399,7 @@ export function CompanyModal({ company, participantNameById, onClose }) {
               Buy shares
             </button>
           ) : null}
-          {player && ownedShares > 0 ? (
+          {player && !isHalted && ownedShares > 0 ? (
             <button
               type="button"
               className="btn"

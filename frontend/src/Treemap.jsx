@@ -50,6 +50,7 @@ export function Treemap({ items, formatValue = formatCompactMoney, onSelect, ari
             title={item.title}
             aria-label={item.ariaLabel}
           >
+            {item.halted ? <span className="map-halt">Halted</span> : null}
             <span className="map-name">{item.label}</span>
             <span className="map-cap num">{formatValue(item.value)}</span>
             <span className="map-change num">
