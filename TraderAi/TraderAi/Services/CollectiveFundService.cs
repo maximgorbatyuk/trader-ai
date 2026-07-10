@@ -68,10 +68,9 @@ public sealed class CollectiveFundService(
     private const double ScoreWeightDividends = 1.0;
     private const double ScoreWeightGrowth = 1.0;
 
-    // A fund whose net worth this many cycles ago is at least FundGrowthThreshold below its latest recorded
-    // worth is "growing": it earns a willingness-to-join boost and a celebratory newswire. A fund without that
-    // much snapshot history has no signal yet.
-    private const int FundGrowthWindowCycles = 5;
+    // A fund whose net worth CollectiveFundOptions.FundGrowthWindowCycles snapshots ago is at least
+    // FundGrowthThreshold below its latest recorded worth is "growing": it earns a willingness-to-join boost and
+    // a celebratory newswire. A fund without that much snapshot history has no signal yet.
     private const decimal FundGrowthThreshold = 0.02m;
 
     // A growing fund posts a fresh "on a hot streak" headline at most once per this many cycles, so a long
@@ -348,8 +347,10 @@ public sealed class CollectiveFundService(
             return;
         }
 
+        var windowCycles = options.Value.FundGrowthWindowCycles;
+
         // A little slack beyond the window guards against any gap in recorded cycle ids.
-        var earliestCycleId = currentCycleId - (FundGrowthWindowCycles + 5);
+        var earliestCycleId = currentCycleId - (windowCycles + 5);
         var snapshotsByFund = (await dbContext.ParticipantWorthSnapshots
                 .Where(snapshot => fundParticipantIds.Contains(snapshot.ParticipantId)
                     && snapshot.CreatedInCycleId > earliestCycleId)
@@ -367,16 +368,16 @@ public sealed class CollectiveFundService(
 
         foreach (var fund in funds)
         {
-            // Need one snapshot beyond the window so index [FundGrowthWindowCycles] is the worth that many
-            // cycles back; a younger fund has no trend to read yet.
+            // Need one snapshot beyond the window so index [windowCycles] is the worth that many cycles back;
+            // a younger fund has no trend to read yet.
             if (!snapshotsByFund.TryGetValue(fund.ParticipantId, out var snapshots)
-                || snapshots.Count <= FundGrowthWindowCycles)
+                || snapshots.Count <= windowCycles)
             {
                 continue;
             }
 
             var recent = snapshots[0].NetWorth;
-            var past = snapshots[FundGrowthWindowCycles].NetWorth;
+            var past = snapshots[windowCycles].NetWorth;
             if (past <= 0m)
             {
                 continue;
@@ -395,6 +396,7 @@ public sealed class CollectiveFundService(
     // a fund on a hot streak advertises itself to would-be joiners. Draws no randomness.
     private void PostGrowthNewsForFunds(int currentCycleId, int currentCycleNumber, DateTime now)
     {
+        var windowCycles = options.Value.FundGrowthWindowCycles;
         foreach (var fund in funds.Where(fund => fund.Status == CollectiveFundStatus.Active).OrderBy(fund => fund.Id))
         {
             if (!growingFundIds.Contains(fund.Id)
@@ -407,8 +409,8 @@ public sealed class CollectiveFundService(
             var gainPercent = Math.Round(growthPercentByFundId.GetValueOrDefault(fund.Id) * 100m, 1, MidpointRounding.AwayFromZero);
             dbContext.NewsPosts.Add(new NewsPost
             {
-                Title = $"{fundParticipant.Name} is up {gainPercent}% over the last {FundGrowthWindowCycles} cycles",
-                Content = $"{fundParticipant.Name} has grown its net worth {gainPercent}% across the last {FundGrowthWindowCycles} cycles, drawing fresh interest from traders looking for a fund to join.",
+                Title = $"{fundParticipant.Name} is up {gainPercent}% over the last {windowCycles} cycles",
+                Content = $"{fundParticipant.Name} has grown its net worth {gainPercent}% across the last {windowCycles} cycles, drawing fresh interest from traders looking for a fund to join.",
                 PublishedInCycleId = currentCycleId,
                 PublishedAt = now,
                 Scope = NewsImpactScope.None,
