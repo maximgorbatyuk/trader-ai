@@ -28,8 +28,18 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
         context.Database.EnsureCreated();
     }
 
-    private ScienceInvestigationService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new ScienceInvestigationOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), new MarketImpactService(context), random);
+    private ScienceInvestigationService Service(
+        bool enabled,
+        Random random,
+        RandomChanceRatesOptions? chanceRates = null,
+        IndustrySentimentOptions? sentimentOptions = null) =>
+        new(
+            context,
+            Options.Create(new ScienceInvestigationOptions { Enabled = enabled }),
+            Options.Create(chanceRates ?? new RandomChanceRatesOptions()),
+            new MarketImpactService(context),
+            random,
+            Options.Create(sentimentOptions ?? new IndustrySentimentOptions { Enabled = true }));
 
     [Fact]
     public async Task DisabledDoesNotTrigger()
@@ -65,11 +75,15 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
         await SeedAsync(industryCount: 1, cycleNumber: 100);
         var (market, cycle) = await MarketAndCycleAsync();
         var company = await context.Companies.FirstAsync();
+        var industry = await context.Industries.FirstAsync();
+        industry.SentimentValue = 500;
+        industry.SectorBeta = 2m;
+        await context.SaveChangesAsync();
         var seller = await AddSellerWithOpenSellOrderAsync(company.Id, cycle.Id);
 
-        // doubles: gate (chance 1.0 at cycle 100 → fire), one impact draw → 0.5%. ints: industry count, one
-        // pick, three content picks.
-        var random = new ScriptedRandom([0.0d, 0.0d], [1, 0, 0, 0, 0]);
+        // doubles: gate (chance 1.0 at cycle 100 → fire), one impact draw → 0.5%, one sentiment-push draw.
+        // ints: industry count, one pick, three content picks.
+        var random = new ScriptedRandom([0.0d, 0.0d, 0.0d], [1, 0, 0, 0, 0]);
         var result = await Service(enabled: true, random).MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -82,7 +96,8 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
             .Where(snapshot => snapshot.CompanyId == company.Id)
             .OrderByDescending(snapshot => snapshot.Id)
             .FirstAsync();
-        Assert.Equal(100.5m, latest.Price);
+        Assert.Equal(101.5m, latest.Price);
+        Assert.Equal(515, industry.SentimentValue);
 
         // A science lift never touches the order book: the standing sell order stays open with its shares.
         var order = await context.Orders.AsNoTracking().FirstAsync(order => order.ParticipantId == seller.Id);
@@ -92,6 +107,105 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
 
         var savedMarket = await context.Markets.AsNoTracking().FirstAsync();
         Assert.Equal(100, savedMarket.LastScienceInvestigationCycleNumber);
+    }
+
+    [Fact]
+    public async Task InvestigationCanPushTheChosenIndustrySentiment()
+    {
+        await SeedAsync(industryCount: 1, cycleNumber: 100);
+        var (market, cycle) = await MarketAndCycleAsync();
+        var industry = await context.Industries.FirstAsync();
+
+        // Gate then price-impact draw; the additional sentiment roll belongs after the selected industry's
+        // existing work and will be added by the sentiment feature.
+        await Service(enabled: true, new ScriptedRandom([0d, 0d, 0d], [1, 0, 0, 0, 0]))
+            .MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
+
+        Assert.Equal(15, industry.SentimentValue);
+    }
+
+    [Fact]
+    public async Task DisabledSentimentUsesTheBaseScienceImpactWithoutTakingThePushDraw()
+    {
+        await SeedAsync(industryCount: 1, cycleNumber: 100);
+        var (market, cycle) = await MarketAndCycleAsync();
+        var company = await context.Companies.FirstAsync();
+        var industry = await context.Industries.FirstAsync();
+        industry.SentimentValue = 500;
+        industry.SectorBeta = 2m;
+        await context.SaveChangesAsync();
+
+        var result = await Service(
+                enabled: true,
+                new ScriptedRandom([0d, 0d], [1, 0, 0, 0, 0]),
+                sentimentOptions: new IndustrySentimentOptions { Enabled = false })
+            .MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.True(result.Triggered);
+        Assert.Equal(100.5m, await LatestPriceAsync(company.Id));
+        Assert.Equal(500, industry.SentimentValue);
+    }
+
+    [Fact]
+    public async Task InvestigationConsumesTheSentimentDrawButLeavesMoodUnchangedWhenItFails()
+    {
+        await SeedAsync(industryCount: 1, cycleNumber: 100);
+        var (market, cycle) = await MarketAndCycleAsync();
+        var industry = await context.Industries.FirstAsync();
+
+        await Service(
+                true,
+                new ScriptedRandom([0d, 0d, 0.5d], [1, 0, 0, 0, 0]),
+                new RandomChanceRatesOptions { EventTriggerChances = { ScienceSentimentPush = 0.5 } })
+            .MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
+
+        Assert.Equal(0, industry.SentimentValue);
+    }
+
+    [Fact]
+    public async Task InvestigationPushClampsTheIndustrySentimentLimit()
+    {
+        await SeedAsync(industryCount: 1, cycleNumber: 100);
+        var (market, cycle) = await MarketAndCycleAsync();
+        var industry = await context.Industries.FirstAsync();
+        industry.SentimentValue = 95;
+        await context.SaveChangesAsync();
+
+        await Service(
+                true,
+                new ScriptedRandom([0d, 0d, 0d], [1, 0, 0, 0, 0]),
+                new RandomChanceRatesOptions { EventTriggerChances = { ScienceSentimentPush = 1.0 } },
+                new IndustrySentimentOptions { Enabled = true, SentimentValueLimit = 100 })
+            .MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
+
+        Assert.Equal(100, industry.SentimentValue);
+    }
+
+    [Fact]
+    public async Task InvestigationCanPushAnIndustryWithNoCompanies()
+    {
+        await SeedAsync(industryCount: 1, cycleNumber: 100, addCompanies: false);
+        var (market, cycle) = await MarketAndCycleAsync();
+        var industry = await context.Industries.FirstAsync();
+
+        var result = await Service(enabled: true, new ScriptedRandom([0d, 0d, 0d], [1, 0, 0, 0, 0]))
+            .MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
+
+        Assert.True(result.Triggered);
+        Assert.Equal(15, industry.SentimentValue);
+    }
+
+    [Fact]
+    public async Task AFailedScienceGateDoesNotConsumeASelectedIndustrySentimentDraw()
+    {
+        await SeedAsync(industryCount: 1, cycleNumber: 20);
+        var (market, cycle) = await MarketAndCycleAsync();
+
+        var result = await Service(enabled: true, new ScriptedRandom([0d], []))
+            .MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
+
+        Assert.False(result.Triggered);
     }
 
     [Fact]
@@ -115,6 +229,13 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
         var cycle = await context.MarketCycles.FirstAsync(cycle => cycle.Id == market.CurrentCycleId);
         return (market, cycle);
     }
+
+    private async Task<decimal> LatestPriceAsync(int companyId) =>
+        await context.PriceSnapshots
+            .Where(snapshot => snapshot.CompanyId == companyId)
+            .OrderByDescending(snapshot => snapshot.Id)
+            .Select(snapshot => snapshot.Price)
+            .FirstAsync();
 
     private async Task<Participant> AddSellerWithOpenSellOrderAsync(int companyId, int cycleId)
     {
@@ -161,7 +282,7 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
         return seller;
     }
 
-    private async Task SeedAsync(int industryCount, int cycleNumber)
+    private async Task SeedAsync(int industryCount, int cycleNumber, bool addCompanies = true)
     {
         var now = DateTime.UtcNow;
 
@@ -177,6 +298,11 @@ public sealed class ScienceInvestigationServiceTests : IDisposable
             var industry = new Industry { Name = $"Industry {index}" };
             context.Industries.Add(industry);
             await context.SaveChangesAsync();
+
+            if (!addCompanies)
+            {
+                continue;
+            }
 
             var company = new Company
             {

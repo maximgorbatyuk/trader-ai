@@ -6,4 +6,10 @@ public sealed class Industry
     public int Id { get; set; }
 
     public required string Name { get; set; }
+
+    public int SentimentValue { get; set; }
+
+    public decimal SentimentVolatility { get; set; }
+
+    public decimal SectorBeta { get; set; } = 1m;
 }

@@ -20,8 +20,12 @@ public sealed class CrisisService(
     IOptions<CrisisOptions> options,
     IOptions<RandomChanceRatesOptions> chanceRates,
     MarketImpactService marketImpact,
-    Random random)
+    Random random,
+    IOptions<IndustrySentimentOptions>? industrySentimentOptions = null)
 {
+    private readonly IndustrySentimentOptions industrySentimentOptionValues =
+        industrySentimentOptions?.Value ?? new IndustrySentimentOptions();
+
     // Local: no chance for the first 100 cycles since the last one, then the chance climbs by the configured step.
     private const int LocalQuietCycles = 100;
     private const int LocalMinIndustries = 1;
@@ -145,7 +149,13 @@ public sealed class CrisisService(
                 .Select(company => company.Id)
                 .ToListAsync();
 
-            await marketImpact.ApplyImpactAsync(NewsImpactDirection.Decrease, companyIds, percent, currentCycle.Id, now);
+            await marketImpact.ApplyImpactAsync(
+                NewsImpactDirection.Decrease,
+                companyIds,
+                percent,
+                currentCycle.Id,
+                now,
+                applySectorSentiment: industrySentimentOptionValues.Enabled);
         }
 
         dbContext.Crises.Add(crisis);

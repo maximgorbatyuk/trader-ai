@@ -34,6 +34,15 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     private CompanyLifecycleService Service(bool enabled, Random random) =>
         new(context, Options.Create(new CompanyLifecycleOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), random, new MarketImpactService(context));
 
+    private NewsService DeferredNews() =>
+        new(
+            context,
+            new MarketCycleLock(),
+            Options.Create(new NewsOptions()),
+            Options.Create(new RandomChanceRatesOptions()),
+            new MarketImpactService(context),
+            new Random(1));
+
     [Fact]
     public async Task DisabledDoesNothing()
     {
@@ -385,6 +394,16 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         Assert.Equal(NewsImpactDirection.Decrease, news.Direction);
         Assert.Equal(60m, news.ImpactPercent);
         Assert.Equal(company.Id, news.TargetCompanyId);
+        Assert.Equal(current.Id, news.ImpactAppliedInCycleId);
+
+        var snapshotsBeforeApply = await context.PriceSnapshots.CountAsync(snapshot => snapshot.CompanyId == company.Id);
+        Assert.Equal(0, await DeferredNews().ApplyPendingImpactsForCycleAsync(current, DateTime.UtcNow));
+        await context.SaveChangesAsync();
+        Assert.Equal(snapshotsBeforeApply, await context.PriceSnapshots.CountAsync(snapshot => snapshot.CompanyId == company.Id));
+        Assert.Equal(32m, (await context.PriceSnapshots.AsNoTracking()
+            .Where(snapshot => snapshot.CompanyId == company.Id)
+            .OrderByDescending(snapshot => snapshot.Id)
+            .FirstAsync()).Price);
 
         // A crash is not a closure: it frees no slot and does not feed the appearance boost.
         var refreshedMarket = await context.Markets.AsNoTracking().SingleAsync();
@@ -512,7 +531,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     private async Task SetupMarketAsync(MarketCycle currentCycle, int lastAppearanceCycleNumber, int closuresSinceLastAppearance = 0)
     {
         var now = DateTime.UtcNow;
-        var industry = new Industry { Name = "Tech" };
+        var industry = new Industry { Name = "Tech", SentimentValue = 500, SectorBeta = 0.5m };
         context.Industries.Add(industry);
         await context.SaveChangesAsync();
         industryId = industry.Id;

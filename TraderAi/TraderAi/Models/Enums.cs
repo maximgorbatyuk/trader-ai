@@ -59,6 +59,7 @@ public enum MoneyTransactionType
     LoanInterest,
     LoanRepayment,
     LoanFine,
+    TradeFee,
 }
 
 public enum LoanStatus

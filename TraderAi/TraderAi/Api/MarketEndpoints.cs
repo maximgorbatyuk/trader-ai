@@ -702,6 +702,44 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
+        app.MapPost("/player/fund", async (OpenPlayerFundRequest request, MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.OpenPlayerFundAsync(request.SeedAmount, request.Name);
+            if (!result.Success)
+            {
+                // An existing managed fund is a conflict; everything else is a bad request.
+                return result.Error == "The player already manages a fund."
+                    ? Results.Conflict(new { error = result.Error })
+                    : Results.BadRequest(new { error = result.Error });
+            }
+
+            return Results.Ok(await BuildPlayerResponseAsync(dbContext));
+        });
+
+        app.MapPost("/player/fund/deposit", async (PlayerFundCashRequest request, MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.DepositToPlayerFundAsync(request.Amount);
+            return result.Success
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
+        app.MapPost("/player/fund/withdraw", async (PlayerFundCashRequest request, MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.WithdrawFromPlayerFundAsync(request.Amount);
+            return result.Success
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
+        app.MapPost("/player/fund/close", async (MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.ClosePlayerFundAsync();
+            return result.Success
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
         app.MapPost("/cycles/tick", async (MarketService marketService) =>
         {
             var result = await marketService.StepCycleAsync();
@@ -853,19 +891,95 @@ public static class MarketEndpoints
             return Results.Ok(ToNewsResponse(result.Post!, companyNameById, industryNameById, cycleNumbersById));
         });
 
-        app.MapGet("/news/themes", () =>
-            Results.Ok(DemoNewsContent.ThemeOptions
+        app.MapGet("/news/themes", (NewsImpactScope? scope) =>
+        {
+            var themes = scope is NewsImpactScope.Company or NewsImpactScope.Industries
+                ? DemoNewsContent.ScopedThemeOptions
+                : DemoNewsContent.ThemeOptions;
+            return Results.Ok(themes
                 .Select(theme => new NewsThemeResponse(theme.Key, theme.Label))
-                .ToArray()));
+                .ToArray());
+        });
 
-        app.MapGet("/industries", async (AppDbContext dbContext) =>
+        app.MapGet("/industries/sentiment-history", async (AppDbContext dbContext) =>
         {
             var industries = await dbContext.Industries
                 .OrderBy(industry => industry.Name)
-                .Select(industry => new IndustryResponse(industry.Id, industry.Name))
                 .ToArrayAsync();
+            var pointsByIndustry = (await IndustrySentimentHistoryRowsAsync(dbContext))
+                .GroupBy(row => row.IndustryId)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(ToIndustrySentimentPointResponse).ToArray());
 
-            return Results.Ok(industries);
+            return Results.Ok(industries
+                .Select(industry => new IndustrySentimentHistoryResponse(
+                    industry.Id,
+                    industry.Name,
+                    pointsByIndustry.GetValueOrDefault(industry.Id, [])))
+                .ToArray());
+        });
+
+        app.MapGet("/industries", async (AppDbContext dbContext) =>
+        {
+            var changesByIndustry = await LastSentimentChangeByIndustryAsync(dbContext);
+            var industries = await dbContext.Industries
+                .OrderBy(industry => industry.Name)
+                .ToListAsync();
+
+            return Results.Ok(industries
+                .Select(industry => new IndustryResponse(
+                    industry.Id,
+                    industry.Name,
+                    industry.SentimentValue,
+                    industry.SentimentVolatility,
+                    industry.SectorBeta,
+                    changesByIndustry.GetValueOrDefault(industry.Id)))
+                .ToArray());
+        });
+
+        app.MapGet("/industries/{industryId:int}/sentiment-history", async (int industryId, AppDbContext dbContext) =>
+        {
+            if (!await dbContext.Industries.AnyAsync(industry => industry.Id == industryId))
+            {
+                return Results.NotFound(new { error = "Industry not found." });
+            }
+
+            return Results.Ok((await IndustrySentimentHistoryRowsAsync(dbContext, industryId))
+                .Select(ToIndustrySentimentPointResponse)
+                .ToArray());
+        });
+
+        app.MapGet("/industries/{industryId:int}/news", async (int industryId, int? take, AppDbContext dbContext) =>
+        {
+            if (!await dbContext.Industries.AnyAsync(industry => industry.Id == industryId))
+            {
+                return Results.NotFound(new { error = "Industry not found." });
+            }
+
+            var limit = Math.Clamp(take ?? 20, 1, 100);
+            var posts = await dbContext.NewsPosts
+                .Where(post => post.Industries.Any(link => link.IndustryId == industryId))
+                .OrderByDescending(post => post.Id)
+                .Take(limit)
+                .Include(post => post.Industries)
+                .ToListAsync();
+            var companyNameById = await dbContext.Companies
+                .ToDictionaryAsync(company => company.Id, company => company.Name);
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+
+            return Results.Ok(posts
+                .Select(post => ToNewsResponse(post, companyNameById, industryNameById, cycleNumbersById))
+                .ToArray());
+        });
+
+        app.MapGet("/industries/{industryId:int}", async (int industryId, AppDbContext dbContext) =>
+        {
+            var detail = await BuildIndustryDetailAsync(dbContext, industryId);
+            return detail is null
+                ? Results.NotFound(new { error = "Industry not found." })
+                : Results.Ok(detail);
         });
 
         app.MapGet("/crises", async (int? take, AppDbContext dbContext) =>
@@ -1091,6 +1205,7 @@ public static class MarketEndpoints
                     bank.Id,
                     bank.Name,
                     bank.InterestRatePerCycle,
+                    bank.Balance,
                     openByBank.TryGetValue(bank.Id, out var open) ? open.Count : 0,
                     openByBank.TryGetValue(bank.Id, out var open2) ? open2.Outstanding : 0m))
                 .ToArray();
@@ -1344,6 +1459,45 @@ public static class MarketEndpoints
             .ToDictionary(row => row.CompanyId, row => row.Rating);
     }
 
+    private static async Task<Dictionary<int, int>> LastSentimentChangeByIndustryAsync(AppDbContext dbContext)
+    {
+        var snapshots = await dbContext.SectorSentimentSnapshots
+            .Select(snapshot => new { snapshot.Id, snapshot.IndustryId, snapshot.SentimentValue })
+            .ToListAsync();
+
+        return snapshots
+            .GroupBy(snapshot => snapshot.IndustryId)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var recent = group.OrderByDescending(snapshot => snapshot.Id).Take(2).ToArray();
+                    return recent.Length == 2 ? recent[0].SentimentValue - recent[1].SentimentValue : 0;
+                });
+    }
+
+    private static async Task<IndustrySentimentHistoryRow[]> IndustrySentimentHistoryRowsAsync(
+        AppDbContext dbContext,
+        int? industryId = null)
+    {
+        var query =
+            from snapshot in dbContext.SectorSentimentSnapshots
+            join cycle in dbContext.MarketCycles on snapshot.CreatedInCycleId equals cycle.Id
+            where industryId == null || snapshot.IndustryId == industryId
+            orderby cycle.CycleNumber, snapshot.Id
+            select new IndustrySentimentHistoryRow(
+                snapshot.IndustryId,
+                snapshot.CreatedInCycleId,
+                cycle.CycleNumber,
+                snapshot.SentimentValue,
+                snapshot.CreatedAt);
+
+        return await query.ToArrayAsync();
+    }
+
+    private static IndustrySentimentPointResponse ToIndustrySentimentPointResponse(IndustrySentimentHistoryRow row) =>
+        new(row.CreatedInCycleId, row.CycleNumber, row.SentimentValue, row.CreatedAt);
+
     private static NewsPostResponse ToNewsResponse(
         NewsPost post,
         IReadOnlyDictionary<int, string> companyNameById,
@@ -1490,6 +1644,32 @@ public static class MarketEndpoints
                 .Select(snapshot => new { snapshot.CompanyId, snapshot.Price })
                 .ToListAsync())
             .ToDictionary(row => row.CompanyId, row => row.Price);
+    }
+
+    private static async Task<IndustryDetailResponse?> BuildIndustryDetailAsync(AppDbContext dbContext, int industryId)
+    {
+        var industry = await dbContext.Industries.FirstOrDefaultAsync(candidate => candidate.Id == industryId);
+        if (industry is null)
+        {
+            return null;
+        }
+
+        var companies = await dbContext.Companies
+            .Where(company => company.IndustryId == industryId && company.ClosedInCycleId == null)
+            .Select(company => new { company.Id, company.IssuedSharesCount })
+            .ToListAsync();
+        var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+        var lastCycleChange = (await LastSentimentChangeByIndustryAsync(dbContext)).GetValueOrDefault(industryId);
+
+        return new IndustryDetailResponse(
+            industry.Id,
+            industry.Name,
+            industry.SentimentValue,
+            industry.SentimentVolatility,
+            industry.SectorBeta,
+            companies.Sum(company => company.IssuedSharesCount * latestPriceByCompany.GetValueOrDefault(company.Id)),
+            lastCycleChange,
+            companies.Count);
     }
 
     // Change since the prior cycle's close, matching the signal the decision engine reads: the newest
@@ -1718,6 +1898,46 @@ public static class MarketEndpoints
                 - (prior.Balance + prior.HoldingsValue - prior.LoanLiability);
         }
 
+        // The player-managed fund (if any) rides along on the player response so the UI can trade through it and
+        // manage its cash without a second round-trip.
+        var managedFund = await dbContext.CollectiveFunds
+            .FirstOrDefaultAsync(fund => fund.IsPlayerManaged
+                && fund.FoundedByParticipantId == player.Id
+                && fund.Status != CollectiveFundStatus.Closed);
+
+        int? fundParticipantId = null;
+        string? fundName = null;
+        decimal? fundCurrentBalance = null;
+        decimal? fundAvailableBalance = null;
+        decimal? fundHoldingsValue = null;
+        decimal? fundTotalWorth = null;
+        decimal? fundWithdrawable = null;
+        if (managedFund is not null)
+        {
+            var fundParticipant = await dbContext.Participants
+                .FirstOrDefaultAsync(participant => participant.Id == managedFund.ParticipantId);
+            if (fundParticipant is not null)
+            {
+                var fundHoldings = await dbContext.Holdings
+                    .Where(holding => holding.ParticipantId == fundParticipant.Id && holding.Quantity > 0)
+                    .Select(holding => new { holding.CompanyId, Shares = holding.Quantity })
+                    .ToListAsync();
+                var fundHoldingsVal = fundHoldings.Sum(holding =>
+                    holding.Shares * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
+                var memberDepositsOwed = await dbContext.CollectiveFundParticipants
+                    .Where(member => member.CollectiveFundId == managedFund.Id)
+                    .SumAsync(member => member.DepositAmount);
+
+                fundParticipantId = fundParticipant.Id;
+                fundName = fundParticipant.Name;
+                fundCurrentBalance = fundParticipant.CurrentBalance;
+                fundAvailableBalance = fundParticipant.AvailableBalance;
+                fundHoldingsValue = fundHoldingsVal;
+                fundTotalWorth = fundParticipant.CurrentBalance + fundHoldingsVal;
+                fundWithdrawable = Math.Max(0m, fundParticipant.AvailableBalance - memberDepositsOwed);
+            }
+        }
+
         return new PlayerResponse(
             player.Id,
             player.Name,
@@ -1733,7 +1953,14 @@ public static class MarketEndpoints
             totalWorth - player.InitialBalance,
             lastCycleMoneyChange,
             lastCycleWorthChange,
-            player.IsActive);
+            player.IsActive,
+            fundParticipantId,
+            fundName,
+            fundCurrentBalance,
+            fundAvailableBalance,
+            fundHoldingsValue,
+            fundTotalWorth,
+            fundWithdrawable);
     }
 
     private static async Task<(string? Status, CollectiveFundMemberResponse[] Members)> BuildCollectiveFundMembersAsync(
@@ -1909,6 +2136,13 @@ public static class MarketEndpoints
         order.LimitPrice,
         order.ReservedCashAmount,
         order.CreatedInCycleId);
+
+    private sealed record IndustrySentimentHistoryRow(
+        int IndustryId,
+        int CreatedInCycleId,
+        int CycleNumber,
+        int SentimentValue,
+        DateTime CreatedAt);
 }
 
 public sealed record CompanyResponse(
@@ -2012,6 +2246,7 @@ public sealed record BankResponse(
     int Id,
     string Name,
     decimal InterestRatePerCycle,
+    decimal Balance,
     int OpenLoanCount,
     decimal OutstandingPrincipal);
 
@@ -2112,6 +2347,10 @@ public sealed record UpdateParticipantProfileRequest(Temperament Temperament, Ri
 
 public sealed record CreatePlayerRequest(string? Name);
 
+public sealed record OpenPlayerFundRequest(decimal SeedAmount, string? Name);
+
+public sealed record PlayerFundCashRequest(decimal Amount);
+
 public sealed record PlayerResponse(
     int Id,
     string Name,
@@ -2127,7 +2366,14 @@ public sealed record PlayerResponse(
     decimal OverallWorthChange,
     decimal? LastCycleMoneyChange,
     decimal? LastCycleWorthChange,
-    bool IsActive);
+    bool IsActive,
+    int? FundParticipantId,
+    string? FundName,
+    decimal? FundCurrentBalance,
+    decimal? FundAvailableBalance,
+    decimal? FundHoldingsValue,
+    decimal? FundTotalWorth,
+    decimal? FundWithdrawable);
 
 public sealed record PlaceOrderRequest(int ParticipantId, int CompanyId, OrderType Type, int Quantity, decimal LimitPrice);
 
@@ -2208,7 +2454,34 @@ public sealed record NewsPostResponse(
     string? TargetCompanyName,
     string[] IndustryNames);
 
-public sealed record IndustryResponse(int Id, string Name);
+public sealed record IndustryResponse(
+    int Id,
+    string Name,
+    int SentimentValue,
+    decimal SentimentVolatility,
+    decimal SectorBeta,
+    int LastCycleSentimentChange);
+
+public sealed record IndustryDetailResponse(
+    int Id,
+    string Name,
+    int SentimentValue,
+    decimal SentimentVolatility,
+    decimal SectorBeta,
+    decimal TotalNetWorth,
+    int LastCycleSentimentChange,
+    int CompanyCount);
+
+public sealed record IndustrySentimentPointResponse(
+    int CreatedInCycleId,
+    int CycleNumber,
+    int SentimentValue,
+    DateTime CreatedAt);
+
+public sealed record IndustrySentimentHistoryResponse(
+    int IndustryId,
+    string IndustryName,
+    IndustrySentimentPointResponse[] Points);
 
 public sealed record NewsThemeResponse(string Key, string Label);
 

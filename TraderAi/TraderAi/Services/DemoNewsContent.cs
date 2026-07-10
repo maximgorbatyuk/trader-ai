@@ -1,3 +1,5 @@
+using TraderAi.Models;
+
 namespace TraderAi.Services;
 
 // Generates random but meaningful, themed news headlines and bodies by filling two slots ({a}, {b}) of a
@@ -10,6 +12,9 @@ internal static class DemoNewsContent
     public static IReadOnlyList<(string Key, string Label)> ThemeOptions =>
         Themes.Select(theme => (theme.Key, theme.Label)).ToArray();
 
+    public static IReadOnlyList<(string Key, string Label)> ScopedThemeOptions =>
+        FinanceThemes.Select(theme => (theme.Key, theme.Label)).ToArray();
+
     public static (string Title, string Content) Generate(Random random) =>
         Compose(Themes[random.Next(Themes.Length)], random);
 
@@ -19,6 +24,17 @@ internal static class DemoNewsContent
         var theme = Themes.FirstOrDefault(candidate => candidate.Key == key);
         return theme is null ? null : Compose(theme, random);
     }
+
+    public static (string Title, string Content)? GenerateForScopedTheme(
+        string key, NewsImpactDirection direction, Random random)
+    {
+        var theme = FinanceThemes.FirstOrDefault(candidate => candidate.Key == key);
+        return theme is null ? null : Compose(theme, direction, random);
+    }
+
+    public static (string Title, string Content) GenerateForScopedDirection(
+        NewsImpactDirection direction, Random random) =>
+        Compose(FinanceThemes[random.Next(FinanceThemes.Length)], direction, random);
 
     private static (string Title, string Content) Compose(Theme theme, Random random)
     {
@@ -31,6 +47,17 @@ internal static class DemoNewsContent
             Capitalize(Fill(template.Content, a, b)));
     }
 
+    private static (string Title, string Content) Compose(
+        FinanceTheme theme, NewsImpactDirection direction, Random random)
+    {
+        var templates = direction == NewsImpactDirection.Increase
+            ? theme.IncreaseTemplates
+            : theme.DecreaseTemplates;
+        var template = templates[random.Next(templates.Length)];
+
+        return (Capitalize(template.Title), Capitalize(template.Content));
+    }
+
     private static string Fill(string template, string a, string b) =>
         template.Replace("{a}", a).Replace("{b}", b);
 
@@ -40,6 +67,35 @@ internal static class DemoNewsContent
     private sealed record Template(string Title, string Content);
 
     private sealed record Theme(string Key, string Label, string[] A, string[] B, Template[] Templates);
+
+    private sealed record FinanceTheme(
+        string Key,
+        string Label,
+        Template[] IncreaseTemplates,
+        Template[] DecreaseTemplates);
+
+    private static readonly FinanceTheme[] FinanceThemes =
+    [
+        new(
+            "market-sentiment",
+            "Market sentiment",
+            [
+                new(
+                    "Market sentiment rally gathers momentum",
+                    "An upbeat outlook and analyst upgrade have renewed confidence, bringing sector inflows and risk-on demand."),
+                new(
+                    "Improving sentiment lifts sector momentum",
+                    "Strong expectations and renewed confidence are supporting a broad market rally with clear tailwinds."),
+            ],
+            [
+                new(
+                    "Market sentiment selloff deepens",
+                    "A downgrade and gloomy outlook have soured confidence, driving sector outflows and risk-off positioning."),
+                new(
+                    "Souring sentiment triggers fresh jitters",
+                    "Missed expectations and a profit warning are creating headwinds as investors brace for a wider selloff."),
+            ]),
+    ];
 
     private static readonly Theme[] Themes =
     [

@@ -68,9 +68,63 @@ public sealed class DecisionFlowTests : IDisposable
         Assert.False(result.Success);
     }
 
+    [Fact]
+    public async Task GeneratedQuotesUseIndustrySentimentAndDefaultMissingIndustryToZero()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var industry = await context.Industries.SingleAsync();
+        industry.SentimentValue = 375;
+        var cycle = await context.MarketCycles.SingleAsync();
+        var unmappedCompany = new Company
+        {
+            Name = "Unmapped",
+            IndustryId = 999,
+            IssuedSharesCount = 10,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        context.Companies.Add(unmappedCompany);
+        await context.SaveChangesAsync();
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = unmappedCompany.Id,
+            Price = 50m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+
+        var decisionEngine = new QuoteCapturingDecisionEngine();
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            decisionEngine,
+            new MarketCycleLock(),
+            new Random(1));
+
+        var result = await service.GenerateDecisionsAsync();
+
+        Assert.True(result.Success);
+        Assert.NotNull(decisionEngine.LastQuotes);
+        var quotes = decisionEngine.LastQuotes!;
+        Assert.Equal(375, Assert.Single(quotes, quote => quote.CompanyId != unmappedCompany.Id).SectorSentiment);
+        Assert.Equal(0, Assert.Single(quotes, quote => quote.CompanyId == unmappedCompany.Id).SectorSentiment);
+    }
+
     public void Dispose()
     {
         context.Dispose();
         connection.Dispose();
+    }
+
+    private sealed class QuoteCapturingDecisionEngine : IDecisionEngine
+    {
+        public IReadOnlyList<CompanyQuote>? LastQuotes { get; private set; }
+
+        public IReadOnlyList<OrderIntent> Decide(DecisionContext context)
+        {
+            LastQuotes = context.Companies.ToArray();
+            return [];
+        }
     }
 }

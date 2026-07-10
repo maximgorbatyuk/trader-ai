@@ -1,39 +1,52 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
+import { MultiLineChart } from './MultiLineChart'
 import { Panel } from './Panel'
+import { SortHeader, Pager } from './TableControls'
 import { Treemap } from './Treemap'
-import { formatPct, TONE_WORD } from './treemapLayout'
-import { IndustryModal } from './IndustryModal'
+import { TONE_WORD } from './treemapLayout'
+import { useClientTable } from './useClientTable'
 
 const POLL_INTERVAL_MS = 2500
 const CHANGE_GLYPH = { up: '▲', down: '▼', flat: '–' }
 
-// Industry-level view of the market: a treemap sized by each industry's total worth, a full table below it,
-// and a per-industry company modal. Everything is aggregated in the browser from the companies list; the
-// last-cycle change is the same forward-only capitalisation diff the dashboard market map uses (0 until a
-// cycle advances after load), so no dedicated backend endpoint is needed.
+function formatSentiment(value) {
+  if (typeof value !== 'number') return '—'
+  return `${value > 0 ? '+' : ''}${value}`
+}
+
+function formatSentimentChange(value) {
+  if (typeof value !== 'number') return '—'
+  return `${value > 0 ? '+' : ''}${value} pts`
+}
+
+function formatDecimal(value) {
+  return typeof value === 'number' ? value.toFixed(2) : '—'
+}
+
+// The industry roster reads sentiment from the server. Company values only supply the treemap's current area,
+// keeping price-capitalisation aggregation separate from the sentiment model and its history.
 function IndustriesPage() {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
+  const [industries, setIndustries] = useState([])
   const [companies, setCompanies] = useState([])
-  const [cycleNumber, setCycleNumber] = useState(null)
-  const [selected, setSelected] = useState(null)
-  // Previous-cycle capitalisation per company and per industry, anchored to the cycle so the change holds
-  // through every poll of a cycle and only recomputes when a new cycle advances.
-  const [snap, setSnap] = useState({
-    cycle: null,
-    industryCap: new Map(),
-    companyChange: new Map(),
-    industryChange: new Map(),
-  })
+  const [history, setHistory] = useState([])
+  const navigate = useNavigate()
 
   const loadAll = useCallback(async () => {
     try {
-      const [companyData, marketData] = await Promise.all([api.getCompanies(), api.getMarket()])
+      const [industryData, companyData, historyData] = await Promise.all([
+        api.getIndustries(),
+        api.getCompanies(),
+        api.getIndustriesSentimentHistory(),
+      ])
+      setIndustries(industryData ?? [])
       setCompanies(companyData ?? [])
-      setCycleNumber(marketData?.currentCycleNumber ?? null)
+      setHistory(historyData ?? [])
       setLoadError(null)
     } catch (error) {
       setLoadError(error.message)
@@ -51,100 +64,88 @@ function IndustriesPage() {
     }
   }, [loadAll])
 
-  if (snap.cycle !== cycleNumber) {
-    const prevIndustry = snap.industryCap
-    const prevCompanyCap = snap.companyCapForChange ?? new Map()
-    const companyCap = new Map()
-    const industryCap = new Map()
+  const rows = useMemo(() => {
+    const worthByIndustry = new Map()
+    const countByIndustry = new Map()
     for (const company of companies) {
-      const cap = company.issuedSharesCount * (company.currentPrice ?? 0)
-      companyCap.set(company.id, cap)
-      industryCap.set(company.industryId, (industryCap.get(company.industryId) ?? 0) + cap)
+      const worth = (company.issuedSharesCount ?? 0) * (company.currentPrice ?? 0)
+      worthByIndustry.set(company.industryId, (worthByIndustry.get(company.industryId) ?? 0) + worth)
+      countByIndustry.set(company.industryId, (countByIndustry.get(company.industryId) ?? 0) + 1)
     }
-    const companyChange = new Map()
-    for (const [id, cap] of companyCap) {
-      const prev = prevCompanyCap.get(id)
-      companyChange.set(id, prev > 0 ? (cap - prev) / prev : 0)
-    }
-    const industryChange = new Map()
-    for (const [id, cap] of industryCap) {
-      const prev = prevIndustry.get(id)
-      industryChange.set(id, prev > 0 ? (cap - prev) / prev : 0)
-    }
-    setSnap({ cycle: cycleNumber, industryCap, companyCapForChange: companyCap, companyChange, industryChange })
-  }
-
-  // Aggregate companies into their industries.
-  const byIndustry = new Map()
-  for (const company of companies) {
-    const cap = company.issuedSharesCount * (company.currentPrice ?? 0)
-    const entry = byIndustry.get(company.industryId) ?? {
-      id: company.industryId,
-      name: company.industryName ?? '—',
-      count: 0,
-      totalWorth: 0,
-    }
-    entry.count += 1
-    entry.totalWorth += cap
-    byIndustry.set(company.industryId, entry)
-  }
-
-  const industries = [...byIndustry.values()]
-    .map((entry) => ({ ...entry, changePct: snap.industryChange.get(entry.id) ?? 0 }))
-    .sort((a, b) => b.totalWorth - a.totalWorth)
-
-  const treemapItems = industries
-    .filter((industry) => industry.totalWorth > 0)
-    .map((industry) => ({
-      id: industry.id,
-      label: industry.name,
-      value: industry.totalWorth,
-      changePct: industry.changePct,
-      title: `${industry.name} · ${formatCompactMoney(industry.totalWorth)} · ${industry.count} companies · ${formatPct(industry.changePct)}`,
-      ariaLabel: `${industry.name}, ${formatCompactMoney(industry.totalWorth)} total worth, ${industry.count} companies, ${TONE_WORD[toneOf(industry.changePct)]} ${formatPct(industry.changePct)}. Open companies.`,
+    return industries.map((industry) => ({
+      ...industry,
+      totalWorth: worthByIndustry.get(industry.id) ?? 0,
+      companyCount: countByIndustry.get(industry.id) ?? 0,
     }))
+  }, [companies, industries])
 
-  const selectedIndustry = selected ? industries.find((industry) => industry.id === selected) ?? null : null
-  const totalWorth = industries.reduce((sum, industry) => sum + industry.totalWorth, 0)
+  const { pageRows, sortKey, sortDir, toggleSort, page, pageCount, setPage } = useClientTable(rows, {
+    pageSize: 10,
+    initialSortKey: 'totalWorth',
+  })
+  const totalWorth = rows.reduce((sum, industry) => sum + industry.totalWorth, 0)
+  const sentimentSeries = history.map((series) => ({ name: series.industryName, points: series.points }))
+  const treemapItems = rows
+    .filter((industry) => industry.totalWorth > 0)
+    .map((industry) => {
+      const tone = toneOf(industry.lastCycleSentimentChange)
+      return {
+        id: industry.id,
+        label: industry.name,
+        value: industry.totalWorth,
+        changePct: industry.lastCycleSentimentChange,
+        title: `${industry.name} · ${formatCompactMoney(industry.totalWorth)} · ${formatInt(industry.companyCount)} companies · sentiment ${formatSentimentChange(industry.lastCycleSentimentChange)}`,
+        ariaLabel: `${industry.name}, ${formatCompactMoney(industry.totalWorth)} total worth, ${formatInt(industry.companyCount)} companies, sentiment ${TONE_WORD[tone]} ${formatSentimentChange(industry.lastCycleSentimentChange)}. Open industry details.`,
+      }
+    })
 
   return (
-    <>
-      <main className="main">
-        {!ready ? (
-          <section className="placeholder" aria-busy="true">
-            <span className="spinner" aria-hidden="true" />
-            <p>Loading industries…</p>
-          </section>
-        ) : (
-          <>
-            {loadError ? (
-              <div className="banner" role="alert">
-                <strong>Showing last known state.</strong>
-                <span>{loadError}</span>
-              </div>
-            ) : null}
+    <main className="main">
+      {!ready ? (
+        <section className="placeholder" aria-busy="true">
+          <span className="spinner" aria-hidden="true" />
+          <p>Loading industries…</p>
+        </section>
+      ) : (
+        <>
+          {loadError ? (
+            <div className="banner" role="alert">
+              <strong>Showing last known state.</strong>
+              <span>{loadError}</span>
+            </div>
+          ) : null}
 
-            <Panel
-              title="Industry map"
-              count={treemapItems.length ? `${treemapItems.length} industries · ${formatCompactMoney(totalWorth)}` : undefined}
-              className="panel-map"
-            >
-              {treemapItems.length === 0 ? (
-                <p className="note">Seed the market to see industries.</p>
-              ) : (
-                <Treemap
-                  items={treemapItems}
-                  onSelect={setSelected}
-                  formatValue={formatCompactMoney}
-                  ariaLabel="Industries by total worth"
-                />
-              )}
-            </Panel>
+          <Panel
+            title="Industry map"
+            count={treemapItems.length ? `${treemapItems.length} industries · ${formatCompactMoney(totalWorth)}` : undefined}
+            className="panel-map"
+          >
+            {treemapItems.length === 0 ? (
+              <p className="note">Seed the market to see industries.</p>
+            ) : (
+              <Treemap
+                items={treemapItems}
+                onSelect={(industryId) => navigate(`/industries/${industryId}`)}
+                formatValue={formatCompactMoney}
+                formatChange={formatSentimentChange}
+                ariaLabel="Industries by total worth"
+              />
+            )}
+          </Panel>
 
-            <Panel title="Industries" count={`${formatInt(industries.length)}`} className="panel-holdings">
-              {industries.length === 0 ? (
-                <p className="note">No industries yet.</p>
-              ) : (
+          <Panel title="All industry sentiment" count={`${formatInt(sentimentSeries.length)} series`} className="panel-holdings">
+            {sentimentSeries.length === 0 ? (
+              <p className="note">No sentiment history has been recorded yet.</p>
+            ) : (
+              <MultiLineChart series={sentimentSeries} formatValue={formatSentiment} label="Sentiment history for all industries" />
+            )}
+          </Panel>
+
+          <Panel title="Industries" count={`${formatInt(rows.length)}`} className="panel-holdings">
+            {rows.length === 0 ? (
+              <p className="note">No industries yet.</p>
+            ) : (
+              <>
                 <div className="tbl-wrap">
                   <table className="tbl">
                     <thead>
@@ -153,33 +154,43 @@ function IndustriesPage() {
                         <th scope="col" className="ta-r">
                           Companies
                         </th>
-                        <th scope="col" className="ta-r">
-                          Total worth
-                        </th>
+                        <SortHeader label="Total worth" columnKey="totalWorth" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                        <SortHeader label="Sentiment" columnKey="sentimentValue" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                        <SortHeader label="Volatility" columnKey="sentimentVolatility" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                        <SortHeader label="Beta" columnKey="sectorBeta" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                        <SortHeader
+                          label="Last cycle"
+                          columnKey="lastCycleSentimentChange"
+                          sortKey={sortKey}
+                          sortDir={sortDir}
+                          onToggle={toggleSort}
+                          title="Change in sentiment since the preceding cycle"
+                        />
                       </tr>
                     </thead>
                     <tbody>
-                      {industries.map((industry) => {
-                        const tone = toneOf(industry.changePct)
+                      {pageRows.map((industry) => {
+                        const tone = toneOf(industry.lastCycleSentimentChange)
                         return (
                           <tr key={industry.id}>
                             <th scope="row" className="cell-ellipsis">
                               <button
                                 type="button"
                                 className="cell-name-btn"
-                                onClick={() => setSelected(industry.id)}
-                                title={`Open ${industry.name} companies`}
+                                onClick={() => navigate(`/industries/${industry.id}`)}
+                                title={`Open ${industry.name} industry details`}
                               >
                                 {industry.name}
                               </button>
                             </th>
-                            <td className="num ta-r">{formatInt(industry.count)}</td>
-                            <td className="num ta-r">
-                              {formatMoney(industry.totalWorth)}
-                              <span className={`book-diff num tone-${tone}`}>
-                                <span aria-hidden="true">{CHANGE_GLYPH[tone]} </span>
-                                {formatPct(industry.changePct)}
-                              </span>
+                            <td className="num ta-r">{formatInt(industry.companyCount)}</td>
+                            <td className="num ta-r">{formatMoney(industry.totalWorth)}</td>
+                            <td className="num ta-r">{formatSentiment(industry.sentimentValue)}</td>
+                            <td className="num ta-r">{formatDecimal(industry.sentimentVolatility)}</td>
+                            <td className="num ta-r">{formatDecimal(industry.sectorBeta)}</td>
+                            <td className={`num ta-r tone-${tone}`}>
+                              <span aria-hidden="true">{CHANGE_GLYPH[tone]} </span>
+                              {formatSentimentChange(industry.lastCycleSentimentChange)}
                             </td>
                           </tr>
                         )
@@ -187,21 +198,13 @@ function IndustriesPage() {
                     </tbody>
                   </table>
                 </div>
-              )}
-            </Panel>
-          </>
-        )}
-      </main>
-
-      {selectedIndustry ? (
-        <IndustryModal
-          industry={selectedIndustry}
-          companies={companies}
-          companyChangeById={snap.companyChange}
-          onClose={() => setSelected(null)}
-        />
-      ) : null}
-    </>
+                <Pager page={page} pageCount={pageCount} onPage={setPage} />
+              </>
+            )}
+          </Panel>
+        </>
+      )}
+    </main>
   )
 }
 

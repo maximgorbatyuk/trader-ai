@@ -41,6 +41,15 @@ public sealed class ConcentrationCapServiceTests : IDisposable
             }),
             new MarketImpactService(context));
 
+    private NewsService DeferredNews() =>
+        new(
+            context,
+            new MarketCycleLock(),
+            Options.Create(new NewsOptions()),
+            Options.Create(new RandomChanceRatesOptions()),
+            new MarketImpactService(context),
+            new Random(1));
+
     [Fact]
     public async Task DisabledDoesNothing()
     {
@@ -75,6 +84,13 @@ public sealed class ConcentrationCapServiceTests : IDisposable
         Assert.Equal(NewsImpactScope.Company, news.Scope);
         Assert.Equal(NewsImpactDirection.Decrease, news.Direction);
         Assert.Equal(big, news.TargetCompanyId);
+        Assert.Equal(cycle.Id, news.ImpactAppliedInCycleId);
+
+        var snapshotsBeforeApply = await context.PriceSnapshots.CountAsync();
+        Assert.Equal(0, await DeferredNews().ApplyPendingImpactsForCycleAsync(cycle, DateTime.UtcNow));
+        await context.SaveChangesAsync();
+        Assert.Equal(snapshotsBeforeApply, await context.PriceSnapshots.CountAsync());
+        Assert.Equal(75m, await LatestPriceAsync(big));
     }
 
     [Fact]
@@ -117,7 +133,7 @@ public sealed class ConcentrationCapServiceTests : IDisposable
         var now = DateTime.UtcNow;
         cycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
         context.MarketCycles.Add(cycle);
-        var industry = new Industry { Name = "Tech" };
+        var industry = new Industry { Name = "Tech", SentimentValue = 500, SectorBeta = 0.5m };
         context.Industries.Add(industry);
         var market = new Market { Name = "Demo", Status = MarketStatus.Running, CreatedAt = now, UpdatedAt = now };
         context.Markets.Add(market);

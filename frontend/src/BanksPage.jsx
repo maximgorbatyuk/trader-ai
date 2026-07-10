@@ -66,6 +66,9 @@ function BanksPage() {
                       <th scope="col">Bank</th>
                       <th scope="col">Interest rate</th>
                       <th scope="col" className="ta-r">
+                        Revenue
+                      </th>
+                      <th scope="col" className="ta-r">
                         Open loans
                       </th>
                       <th scope="col" className="ta-r">
@@ -80,6 +83,7 @@ function BanksPage() {
                           {bank.name}
                         </th>
                         <td className="num">{rateNote(bank.interestRatePerCycle)}</td>
+                        <td className="num ta-r">{formatMoney(bank.balance)}</td>
                         <td className="num ta-r">{formatInt(bank.openLoanCount)}</td>
                         <td className="num ta-r">{formatMoney(bank.outstandingPrincipal)}</td>
                       </tr>

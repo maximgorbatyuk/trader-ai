@@ -45,6 +45,10 @@ namespace TraderAi.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<decimal>("Balance")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
                     b.Property<decimal>("InterestRatePerCycle")
                         .HasPrecision(18, 6)
                         .HasColumnType("TEXT");
@@ -113,6 +117,9 @@ namespace TraderAi.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("IdleCycles")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsPlayerManaged")
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("ParticipantId")
@@ -387,6 +394,23 @@ namespace TraderAi.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<decimal>("SectorBeta")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue(1m);
+
+                    b.Property<int>("SentimentValue")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0);
+
+                    b.Property<decimal>("SentimentVolatility")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue(0m);
 
                     b.HasKey("Id");
 
@@ -676,6 +700,9 @@ namespace TraderAi.Migrations
 
                     b.Property<string>("Direction")
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("ImpactAppliedInCycleId")
+                        .HasColumnType("INTEGER");
 
                     b.Property<decimal?>("ImpactPercent")
                         .HasPrecision(18, 2)
@@ -1071,6 +1098,58 @@ namespace TraderAi.Migrations
                     b.ToTable("ScienceInvestigationIndustries");
                 });
 
+            modelBuilder.Entity("TraderAi.Models.SectorSentimentSnapshot", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("IndustryId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("SentimentValue")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedInCycleId");
+
+                    b.HasIndex("IndustryId");
+
+                    b.ToTable("SectorSentimentSnapshots");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.SectorSentimentSnapshotArchive", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("IndustryId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("SentimentValue")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedInCycleId");
+
+                    b.ToTable("SectorSentimentSnapshotArchives");
+                });
+
             modelBuilder.Entity("TraderAi.Models.ShareEmission", b =>
                 {
                     b.Property<int>("Id")
@@ -1224,6 +1303,21 @@ namespace TraderAi.Migrations
                     b.HasOne("TraderAi.Models.ScienceInvestigation", null)
                         .WithMany("Industries")
                         .HasForeignKey("ScienceInvestigationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("TraderAi.Models.SectorSentimentSnapshot", b =>
+                {
+                    b.HasOne("TraderAi.Models.MarketCycle", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedInCycleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("TraderAi.Models.Industry", null)
+                        .WithMany()
+                        .HasForeignKey("IndustryId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

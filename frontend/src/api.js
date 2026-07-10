@@ -91,8 +91,12 @@ export const api = {
   getParticipantLoans: (participantId, { status } = {}) =>
     get(`/participants/${participantId}/loans${toQuery({ status })}`),
   repayLoan: (loanId, amount) => post(`/loans/${loanId}/repay`, amount != null ? { amount } : undefined),
-  getNewsThemes: () => get('/news/themes'),
+  getNewsThemes: (scope) => get(`/news/themes${toQuery({ scope })}`),
   getIndustries: () => get('/industries'),
+  getIndustry: (industryId) => get(`/industries/${industryId}`),
+  getIndustrySentimentHistory: (industryId) => get(`/industries/${industryId}/sentiment-history`),
+  getIndustriesSentimentHistory: () => get('/industries/sentiment-history'),
+  getIndustryNews: (industryId, take = 20) => get(`/industries/${industryId}/news?take=${take}`),
   createNews: (payload) => post('/news', payload),
   getHoldings: (participantId) => get(`/participants/${participantId}/holdings`),
   getCompaniesAttention: (participantId) => get(`/participants/${participantId}/companies-attention`),
@@ -114,4 +118,8 @@ export const api = {
   getPlayer: () => get('/player'),
   createPlayer: (payload) => post('/player', payload),
   cancelPlayerOrder: (orderId) => post(`/player/orders/${orderId}/cancel`),
+  openPlayerFund: (payload) => post('/player/fund', payload),
+  depositToPlayerFund: (payload) => post('/player/fund/deposit', payload),
+  withdrawFromPlayerFund: (payload) => post('/player/fund/withdraw', payload),
+  closePlayerFund: () => post('/player/fund/close'),
 }

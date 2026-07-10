@@ -237,6 +237,134 @@ public sealed class RuleBasedDecisionEngineTests
         Assert.True(deep > shallow, $"deep debt {deep} should sell more than shallow debt {shallow}");
     }
 
+    [Fact]
+    public void PositiveSectorSentimentPullsBuyWhileNeutralAndNegativeDoNot()
+    {
+        var positive = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.10d, 0d], []))
+            .Decide(ContextFor(availableCash: 1_000m, sharesOwned: 0, companyPrice: 100m, sectorSentiment: 1_000));
+        var neutral = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.10d], [0]))
+            .Decide(ContextFor(availableCash: 1_000m, sharesOwned: 0, companyPrice: 100m, sectorSentiment: 0));
+        var negative = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.10d], [0]))
+            .Decide(ContextFor(availableCash: 1_000m, sharesOwned: 0, companyPrice: 100m, sectorSentiment: -1_000));
+
+        Assert.Collection(positive, intent => Assert.Equal(OrderType.Buy, intent.Type));
+        Assert.Empty(neutral);
+        Assert.Empty(negative);
+    }
+
+    [Fact]
+    public void NegativeSectorSentimentPullsSellWhileNeutralAndPositiveDoNot()
+    {
+        var negative = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.10d, 0d], [0]))
+            .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, sectorSentiment: -1_000));
+        var neutral = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.10d], [0]))
+            .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, sectorSentiment: 0));
+        var positive = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.10d], [0]))
+            .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, sectorSentiment: 1_000));
+
+        Assert.Collection(negative, intent => Assert.Equal(OrderType.Sell, intent.Type));
+        Assert.Empty(neutral);
+        Assert.Empty(positive);
+    }
+
+    [Fact]
+    public void SectorSentimentClampsAtThePlusAndMinusThousandEquivalents()
+    {
+        var positiveAtLimit = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.19d, 0d], []))
+            .Decide(ContextFor(availableCash: 1_000m, sharesOwned: 0, companyPrice: 100m, sectorSentiment: 1_000));
+        var positiveBeyondLimit = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.20d], [0]))
+            .Decide(ContextFor(availableCash: 1_000m, sharesOwned: 0, companyPrice: 100m, sectorSentiment: 5_000));
+        var negativeAtLimit = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.19d, 0d], []))
+            .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, sectorSentiment: -1_000));
+        var negativeBeyondLimit = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.20d], [0]))
+            .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, sectorSentiment: -5_000));
+
+        Assert.Collection(positiveAtLimit, intent => Assert.Equal(OrderType.Buy, intent.Type));
+        Assert.Empty(positiveBeyondLimit);
+        Assert.Collection(negativeAtLimit, intent => Assert.Equal(OrderType.Sell, intent.Type));
+        Assert.Empty(negativeBeyondLimit);
+    }
+
+    [Fact]
+    public void SentimentSignalsRespectTheExistingBuyAndSellPullCaps()
+    {
+        var buy = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.81d], [0]))
+            .Decide(ContextFor(
+                availableCash: 1_000m,
+                sharesOwned: 0,
+                companyPrice: 100m,
+                priceChangePct: 0.10m,
+                netShareDemand: 200,
+                longRangeChangePct: -0.80m,
+                sectorSentiment: 1_000));
+        var sell = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.81d], [0]))
+            .Decide(ContextFor(
+                availableCash: 0m,
+                sharesOwned: 10,
+                companyPrice: 100m,
+                priceChangePct: -0.10m,
+                longRangeChangePct: 0.80m,
+                sectorSentiment: -1_000));
+
+        Assert.Empty(buy);
+        Assert.Empty(sell);
+    }
+
+    [Fact]
+    public void SentimentDoesNotAddRandomDrawsWhenTheDecisionPathIsUnchanged()
+    {
+        var neutralRandom = new ScriptedRandom([0.90d], [0]);
+        var positiveRandom = new ScriptedRandom([0.90d], [0]);
+
+        var neutral = new RuleBasedDecisionEngine(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), neutralRandom)
+            .Decide(ContextFor(availableCash: 1_000m, sharesOwned: 0, companyPrice: 100m, sectorSentiment: 0));
+        var positive = new RuleBasedDecisionEngine(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), positiveRandom)
+            .Decide(ContextFor(availableCash: 1_000m, sharesOwned: 0, companyPrice: 100m, sectorSentiment: 1_000));
+
+        Assert.Empty(neutral);
+        Assert.Empty(positive);
+        Assert.Equal(neutralRandom.DoubleDrawCount, positiveRandom.DoubleDrawCount);
+        Assert.Equal(neutralRandom.IntegerDrawCount, positiveRandom.IntegerDrawCount);
+        Assert.Equal(1, positiveRandom.DoubleDrawCount);
+        Assert.Equal(1, positiveRandom.IntegerDrawCount);
+    }
+
     // Same fixed seed per engine so the only difference between compared runs is the debt/risk under test.
     private static int CountSells(DecisionContext context)
     {
@@ -317,6 +445,7 @@ public sealed class RuleBasedDecisionEngineTests
         decimal priceChangePct = 0m,
         int netShareDemand = 0,
         decimal longRangeChangePct = 0m,
+        int sectorSentiment = 0,
         Temperament temperament = Temperament.Balanced,
         RiskProfile riskProfile = RiskProfile.Medium)
     {
@@ -329,7 +458,7 @@ public sealed class RuleBasedDecisionEngineTests
         return new DecisionContext(
             NewParticipant(availableCash, temperament, riskProfile),
             availableCash,
-            [new CompanyQuote(companyId, companyPrice, priceChangePct, netShareDemand, longRangeChangePct)],
+            [new CompanyQuote(companyId, companyPrice, priceChangePct, netShareDemand, longRangeChangePct, sectorSentiment)],
             holdings,
             new HashSet<int>(companiesWithOpenOrders ?? []));
     }
@@ -347,4 +476,26 @@ public sealed class RuleBasedDecisionEngineTests
         CurrentBalance = availableCash,
         IsActive = true,
     };
+
+    private sealed class ScriptedRandom(double[] doubles, int[] ints) : Random
+    {
+        private readonly Queue<double> doubles = new(doubles);
+        private readonly Queue<int> ints = new(ints);
+
+        public int DoubleDrawCount { get; private set; }
+
+        public int IntegerDrawCount { get; private set; }
+
+        public override double NextDouble()
+        {
+            DoubleDrawCount++;
+            return doubles.Dequeue();
+        }
+
+        public override int Next(int maxValue)
+        {
+            IntegerDrawCount++;
+            return ints.Dequeue();
+        }
+    }
 }

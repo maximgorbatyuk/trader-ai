@@ -14,6 +14,10 @@ public sealed class CollectiveFund
     // The member who opened the fund; informational only, since the founder can leave like anyone else.
     public int FoundedByParticipantId { get; set; }
 
+    // A fund the human player opened and trades by hand. It is kept out of the AI decision pass and out of the
+    // automatic idle/founder close, but stays a normal fund otherwise: others may still join it and be paid out.
+    public bool IsPlayerManaged { get; set; }
+
     public CollectiveFundStatus Status { get; set; }
 
     public int CreatedInCycleId { get; set; }

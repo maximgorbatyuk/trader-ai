@@ -133,6 +133,7 @@ public sealed class AuditorService(
                     Title = title,
                     Content = content,
                     PublishedInCycleId = currentCycleId,
+                    ImpactAppliedInCycleId = currentCycleId,
                     PublishedAt = now,
                     Scope = NewsImpactScope.Company,
                     Direction = NewsImpactDirection.Decrease,

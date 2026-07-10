@@ -91,6 +91,12 @@ public sealed class EventTriggerChances
 
     // Chance an impactful automated post targets a single company rather than industries.
     public double NewsCompanyScope { get; set; } = 0.5;
+
+    // Base per-cycle chance an industry's sentiment direction is revised.
+    public double IndustrySentimentRevisionBase { get; set; } = 0.25;
+
+    // Chance a science investigation also pushes the affected industry's sentiment upward.
+    public double ScienceSentimentPush { get; set; } = 0.50;
 }
 
 // Values that scale or shift a base chance rather than gating a roll on their own.
@@ -119,6 +125,15 @@ public sealed class ChanceModifiers
 
     // Added to the base appearance chance per delisting since the last listing.
     public double CompanyClosureAppearanceBoost { get; set; } = 0.25;
+
+    // Scales an industry's volatility contribution to its sentiment revision chance.
+    public double IndustrySentimentVolatilityFactor { get; set; } = 0.10;
+
+    // Chance a crisis forces an affected industry's sentiment revision downward.
+    public double CrisisSentimentForcedDown { get; set; } = 0.50;
+
+    // Added revision chance when company-specific news affects an industry member.
+    public double CompanyNewsSentimentBonus { get; set; } = 0.10;
 }
 
 // Bounds of a random draw's magnitude once an event has fired.

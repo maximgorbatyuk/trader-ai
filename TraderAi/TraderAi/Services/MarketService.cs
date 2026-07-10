@@ -49,6 +49,13 @@ public sealed record CancelOrderResult(bool Success, Order? Order, string? Error
     public static CancelOrderResult Fail(string error) => new(false, null, error);
 }
 
+public sealed record PlayerFundResult(bool Success, string? Error)
+{
+    public static PlayerFundResult Ok() => new(true, null);
+
+    public static PlayerFundResult Fail(string error) => new(false, error);
+}
+
 public sealed class MarketService(
     AppDbContext dbContext,
     MatchingEngine matchingEngine,
@@ -70,7 +77,9 @@ public sealed class MarketService(
     ConcentrationCapService? concentrationCapService = null,
     IOptions<ArchiveOptions>? archiveOptions = null,
     IOptions<RandomChanceRatesOptions>? chanceRates = null,
-    IOptions<LoanOptions>? loanOptions = null)
+    IOptions<LoanOptions>? loanOptions = null,
+    IOptions<IndustrySentimentOptions>? industrySentimentOptions = null,
+    IndustrySentimentService? industrySentimentService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -81,6 +90,9 @@ public sealed class MarketService(
 
     // Loan settings, defaulted when not injected so the buffer/cap math still works in reduced-argument tests.
     private readonly LoanOptions loanOptionValues = loanOptions?.Value ?? new LoanOptions();
+
+    private readonly IndustrySentimentOptions industrySentimentOptionValues =
+        industrySentimentOptions?.Value ?? new IndustrySentimentOptions();
 
     // How far back the long-range price move is measured for the engine's extreme-move reactions.
     private const int LongRangeWindowCycles = 10;
@@ -157,6 +169,18 @@ public sealed class MarketService(
 
     public Task<CancelOrderResult> CancelPlayerOrderAsync(int orderId) =>
         WithLockAsync(() => CancelPlayerOrderCoreAsync(orderId));
+
+    public Task<PlayerFundResult> OpenPlayerFundAsync(decimal seedAmount, string? name) =>
+        WithLockAsync(() => OpenPlayerFundCoreAsync(seedAmount, name));
+
+    public Task<PlayerFundResult> DepositToPlayerFundAsync(decimal amount) =>
+        WithLockAsync(() => DepositToPlayerFundCoreAsync(amount));
+
+    public Task<PlayerFundResult> WithdrawFromPlayerFundAsync(decimal amount) =>
+        WithLockAsync(() => WithdrawFromPlayerFundCoreAsync(amount));
+
+    public Task<PlayerFundResult> ClosePlayerFundAsync() =>
+        WithLockAsync(ClosePlayerFundCoreAsync);
 
     // Manual loan repayment goes through the cycle lock so it cannot race a running tick's writes.
     public Task<RepayLoanResult> RepayLoanAsync(int loanId, decimal? amount) => WithLockAsync(async () =>
@@ -252,6 +276,12 @@ public sealed class MarketService(
         var activeCrisis = crisisService is not null
             ? await crisisService.GetActiveCrisisAsync(currentCycleNumber)
             : null;
+
+        // Sector confidence is revised before new decisions so this cycle's market behavior reads one settled mood state.
+        if (industrySentimentService is not null)
+        {
+            await industrySentimentService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, activeCrisis);
+        }
 
         var openOrders = await dbContext.Orders
             .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
@@ -890,6 +920,14 @@ public sealed class MarketService(
             await scienceService.MaybeTriggerForCycleAsync(market, currentCycle, now, duringCrisis);
         }
 
+        // Persist composed automated posts before querying the current-cycle apply pass, so the matching
+        // outcome stays settled before headlines become the price signal for the next decision cycle.
+        if (newsService is not null)
+        {
+            await dbContext.SaveChangesAsync();
+            await newsService.ApplyPendingImpactsForCycleAsync(currentCycle, now);
+        }
+
         // Turn any negative balance this cycle's matching produced into a loan so no participant carries a
         // negative balance across the cycle boundary. The save flushes matching and the shocks first (dividends
         // above already read the pre-match prices), so the origination query sees the settled negative balances.
@@ -925,7 +963,7 @@ public sealed class MarketService(
         return AdvanceCycleResult.Ok(currentCycle.CycleNumber, fillCount);
     }
 
-    // Bulk-moves price snapshots, money transactions, and worth snapshots older than the retention window from
+    // Bulk-moves price, money, worth, and sentiment snapshots older than the retention window from
     // their live tables to the matching archive tables. Nothing in the market references these rows once they
     // age past the window, so the move is a plain INSERT ... SELECT then DELETE keyed on the created-in cycle.
     private async Task ArchiveAgedRowsAsync(int currentCycleNumber)
@@ -969,12 +1007,32 @@ public sealed class MarketService(
             SELECT Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, CreatedAt
             FROM ParticipantWorthSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
         await dbContext.ParticipantWorthSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
+
+        await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
+            INSERT INTO SectorSentimentSnapshotArchives (Id, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt)
+            SELECT Id, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt
+            FROM SectorSentimentSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
+        await dbContext.SectorSentimentSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
     }
 
     // Records each trader's cash and holdings value for the just-completed cycle so per-cycle change figures
     // and the total-worth chart can be derived later. Every participant is captured, not just the human player.
     private async Task WriteWorthSnapshotsAsync(int completedCycleId, DateTime now)
     {
+        var industrySentiments = await dbContext.Industries
+            .Select(industry => new { industry.Id, industry.SentimentValue })
+            .ToListAsync();
+        foreach (var industry in industrySentiments)
+        {
+            dbContext.SectorSentimentSnapshots.Add(new SectorSentimentSnapshot
+            {
+                IndustryId = industry.Id,
+                SentimentValue = industry.SentimentValue,
+                CreatedInCycleId = completedCycleId,
+                CreatedAt = now,
+            });
+        }
+
         var participants = await dbContext.Participants.ToListAsync();
         if (participants.Count == 0)
         {
@@ -1080,6 +1138,296 @@ public sealed class MarketService(
         return CancelOrderResult.Ok(order);
     }
 
+    // The fund the human player runs by hand: a CollectiveFund founded by the player and flagged player-managed.
+    // Distinct from an AI fund only in that the player trades it directly and it never auto-trades or auto-closes.
+    private sealed record PlayerFundContext(Market Market, Participant Player, CollectiveFund Fund, Participant FundParticipant);
+
+    private async Task<(PlayerFundContext? Context, string? Error)> ResolvePlayerFundAsync()
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market is null)
+        {
+            return (null, "No market exists.");
+        }
+
+        var player = await dbContext.Participants
+            .FirstOrDefaultAsync(participant => participant.Type == ParticipantType.Player);
+        if (player is null)
+        {
+            return (null, "No player exists.");
+        }
+
+        var fund = await dbContext.CollectiveFunds
+            .FirstOrDefaultAsync(candidate => candidate.IsPlayerManaged
+                && candidate.FoundedByParticipantId == player.Id
+                && candidate.Status != CollectiveFundStatus.Closed);
+        if (fund is null)
+        {
+            return (null, "The player does not manage a fund.");
+        }
+
+        var fundParticipant = await dbContext.Participants
+            .FirstOrDefaultAsync(participant => participant.Id == fund.ParticipantId);
+        if (fundParticipant is null)
+        {
+            return (null, "The fund is missing its participant.");
+        }
+
+        return (new PlayerFundContext(market, player, fund, fundParticipant), null);
+    }
+
+    private async Task<PlayerFundResult> OpenPlayerFundCoreAsync(decimal seedAmount, string? name)
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market is null)
+        {
+            return PlayerFundResult.Fail("No market exists.");
+        }
+
+        var player = await dbContext.Participants
+            .FirstOrDefaultAsync(participant => participant.Type == ParticipantType.Player);
+        if (player is null)
+        {
+            return PlayerFundResult.Fail("No player exists.");
+        }
+
+        // One managed fund per player, mirroring the single-player invariant.
+        if (await dbContext.CollectiveFunds.AnyAsync(fund => fund.IsPlayerManaged
+                && fund.FoundedByParticipantId == player.Id
+                && fund.Status != CollectiveFundStatus.Closed))
+        {
+            return PlayerFundResult.Fail("The player already manages a fund.");
+        }
+
+        if (seedAmount <= 0m)
+        {
+            return PlayerFundResult.Fail("Seed amount must be positive.");
+        }
+
+        if (seedAmount > player.AvailableBalance)
+        {
+            return PlayerFundResult.Fail("Seed amount exceeds the player's available balance.");
+        }
+
+        var currentCycleId = market.CurrentCycleId ?? 0;
+        var now = DateTime.UtcNow;
+        var trimmed = name?.Trim();
+
+        var fundParticipant = new Participant
+        {
+            Name = string.IsNullOrWhiteSpace(trimmed) ? $"{player.Name}'s Fund" : trimmed,
+            Type = ParticipantType.CollectiveFund,
+            // A player-managed fund never trades on the engine, so temperament and risk are inert; snapshot the
+            // player's for a well-formed row like every other participant.
+            Temperament = player.Temperament,
+            RiskProfile = player.RiskProfile,
+            InitialBalance = 0m,
+            CurrentBalance = 0m,
+            ReservedBalance = 0m,
+            IsActive = true,
+        };
+        dbContext.Participants.Add(fundParticipant);
+        await dbContext.SaveChangesAsync();
+
+        var fund = new CollectiveFund
+        {
+            ParticipantId = fundParticipant.Id,
+            FoundedByParticipantId = player.Id,
+            IsPlayerManaged = true,
+            Status = CollectiveFundStatus.Active,
+            CreatedInCycleId = currentCycleId,
+            CreatedAt = now,
+        };
+        dbContext.CollectiveFunds.Add(fund);
+
+        RecordPlayerFundTransfer(player, fundParticipant, seedAmount, currentCycleId, now);
+        await dbContext.SaveChangesAsync();
+        return PlayerFundResult.Ok();
+    }
+
+    private async Task<PlayerFundResult> DepositToPlayerFundCoreAsync(decimal amount)
+    {
+        var (context, error) = await ResolvePlayerFundAsync();
+        if (context is null)
+        {
+            return PlayerFundResult.Fail(error!);
+        }
+
+        if (amount <= 0m)
+        {
+            return PlayerFundResult.Fail("Deposit amount must be positive.");
+        }
+
+        if (amount > context.Player.AvailableBalance)
+        {
+            return PlayerFundResult.Fail("Deposit amount exceeds the player's available balance.");
+        }
+
+        RecordPlayerFundTransfer(context.Player, context.FundParticipant, amount, context.Market.CurrentCycleId ?? 0, DateTime.UtcNow);
+        await dbContext.SaveChangesAsync();
+        return PlayerFundResult.Ok();
+    }
+
+    private async Task<PlayerFundResult> WithdrawFromPlayerFundCoreAsync(decimal amount)
+    {
+        var (context, error) = await ResolvePlayerFundAsync();
+        if (context is null)
+        {
+            return PlayerFundResult.Fail(error!);
+        }
+
+        if (amount <= 0m)
+        {
+            return PlayerFundResult.Fail("Withdrawal amount must be positive.");
+        }
+
+        // The player may pull out the fund's free cash and trading profits, but not the cash owed back to members
+        // as returnable deposits, so a withdrawal can never strand a member's principal.
+        var memberDepositsOwed = await dbContext.CollectiveFundParticipants
+            .Where(member => member.CollectiveFundId == context.Fund.Id)
+            .SumAsync(member => member.DepositAmount);
+        var withdrawable = Math.Max(0m, context.FundParticipant.AvailableBalance - memberDepositsOwed);
+        if (amount > withdrawable)
+        {
+            return PlayerFundResult.Fail("Withdrawal amount exceeds the fund's withdrawable cash.");
+        }
+
+        RecordPlayerFundTransfer(context.FundParticipant, context.Player, amount, context.Market.CurrentCycleId ?? 0, DateTime.UtcNow);
+        await dbContext.SaveChangesAsync();
+        return PlayerFundResult.Ok();
+    }
+
+    // Instant close: the player absorbs the fund's positions and residual cash while members are made whole in
+    // cash, then the fund is tombstoned like any wound-down fund. Blocked while the fund cannot cover its members'
+    // deposits in cash, since a member's principal must never be stranded.
+    private async Task<PlayerFundResult> ClosePlayerFundCoreAsync()
+    {
+        var (context, error) = await ResolvePlayerFundAsync();
+        if (context is null)
+        {
+            return PlayerFundResult.Fail(error!);
+        }
+
+        var player = context.Player;
+        var fund = context.Fund;
+        var fundParticipant = context.FundParticipant;
+        var currentCycleId = context.Market.CurrentCycleId ?? 0;
+        var now = DateTime.UtcNow;
+
+        var members = await dbContext.CollectiveFundParticipants
+            .Where(member => member.CollectiveFundId == fund.Id)
+            .ToListAsync();
+        var totalDeposits = members.Sum(member => member.DepositAmount);
+        if (totalDeposits > fundParticipant.CurrentBalance)
+        {
+            return PlayerFundResult.Fail(
+                "The fund cannot cover its members' deposits in cash. Deposit the shortfall or sell the fund's holdings first.");
+        }
+
+        // Cancelling releases any buy reservations back into the fund's cash; a sell just stops resting.
+        var openOrders = await dbContext.Orders
+            .Where(order => order.ParticipantId == fundParticipant.Id
+                && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
+            .ToListAsync();
+        foreach (var order in openOrders)
+        {
+            CancelOrder(order, fundParticipant, currentCycleId);
+        }
+
+        // The player takes over every fund position at the fund's cost basis, blended into any it already holds.
+        var fundHoldings = await dbContext.Holdings
+            .Where(holding => holding.ParticipantId == fundParticipant.Id && holding.Quantity > 0)
+            .ToListAsync();
+        foreach (var fundHolding in fundHoldings)
+        {
+            var playerHolding = await dbContext.Holdings
+                .FirstOrDefaultAsync(holding => holding.ParticipantId == player.Id && holding.CompanyId == fundHolding.CompanyId);
+            if (playerHolding is null)
+            {
+                dbContext.Holdings.Add(new Holding
+                {
+                    ParticipantId = player.Id,
+                    CompanyId = fundHolding.CompanyId,
+                    Quantity = fundHolding.Quantity,
+                    AverageCost = fundHolding.AverageCost,
+                });
+            }
+            else
+            {
+                var mergedQuantity = playerHolding.Quantity + fundHolding.Quantity;
+                if (mergedQuantity > 0)
+                {
+                    playerHolding.AverageCost =
+                        ((playerHolding.Quantity * playerHolding.AverageCost) + (fundHolding.Quantity * fundHolding.AverageCost)) / mergedQuantity;
+                }
+                playerHolding.Quantity = mergedQuantity;
+            }
+
+            fundHolding.Quantity = 0;
+        }
+
+        // Members get their deposits back, then the player takes whatever cash is left.
+        foreach (var member in members)
+        {
+            var memberParticipant = await dbContext.Participants
+                .FirstOrDefaultAsync(participant => participant.Id == member.ParticipantId);
+            if (memberParticipant is not null && member.DepositAmount > 0m)
+            {
+                RecordPlayerFundTransfer(fundParticipant, memberParticipant, member.DepositAmount, currentCycleId, now);
+            }
+
+            dbContext.CollectiveFundParticipants.Remove(member);
+        }
+
+        if (fundParticipant.CurrentBalance > 0m)
+        {
+            RecordPlayerFundTransfer(fundParticipant, player, fundParticipant.CurrentBalance, currentCycleId, now);
+        }
+
+        // A winding-down fund's loans are discharged like any departing borrower's.
+        var openLoans = await dbContext.Loans
+            .Where(loan => loan.ParticipantId == fundParticipant.Id && loan.Status == LoanStatus.Open)
+            .ToListAsync();
+        foreach (var loan in openLoans)
+        {
+            LoanService.MarkClosed(loan, LoanCloseReason.ParticipantDeparted, currentCycleId, now);
+        }
+
+        // Rounding dust below the cent is dropped so the closed fund settles flat.
+        fundParticipant.CurrentBalance = 0m;
+        fundParticipant.ReservedBalance = 0m;
+        fundParticipant.IsActive = false;
+        fund.Status = CollectiveFundStatus.Closed;
+        fund.ClosedAt = now;
+
+        await dbContext.SaveChangesAsync();
+        return PlayerFundResult.Ok();
+    }
+
+    // Moves cash one way between the player and its fund and records both legs, reusing the fund cash-movement
+    // type the AI join/leave flow already uses.
+    private void RecordPlayerFundTransfer(Participant from, Participant to, decimal amount, int currentCycleId, DateTime now)
+    {
+        from.CurrentBalance -= amount;
+        to.CurrentBalance += amount;
+        dbContext.MoneyTransactions.Add(new MoneyTransaction
+        {
+            ParticipantId = from.Id,
+            Type = MoneyTransactionType.CollectiveFund,
+            Amount = amount,
+            CreatedInCycleId = currentCycleId,
+            CreatedAt = now,
+        });
+        dbContext.MoneyTransactions.Add(new MoneyTransaction
+        {
+            ParticipantId = to.Id,
+            Type = MoneyTransactionType.CollectiveFund,
+            Amount = amount,
+            CreatedInCycleId = currentCycleId,
+            CreatedAt = now,
+        });
+    }
+
     private async Task<RunDecisionsResult> GenerateDecisionsCoreAsync()
     {
         var market = await dbContext.Markets.FirstOrDefaultAsync();
@@ -1129,6 +1477,18 @@ public sealed class MarketService(
             .ToHashSet();
 
         var snapshots = await dbContext.PriceSnapshots.AsNoTracking().ToListAsync();
+        var quoteCompanyIds = snapshots
+            .Select(snapshot => snapshot.CompanyId)
+            .Where(companyId => !closedCompanyIds.Contains(companyId) && !haltedCompanyIds.Contains(companyId))
+            .ToHashSet();
+        var sentimentByCompany = await dbContext.Companies.AsNoTracking()
+            .Where(company => quoteCompanyIds.Contains(company.Id))
+            .Join(
+                dbContext.Industries.AsNoTracking(),
+                company => company.IndustryId,
+                industry => industry.Id,
+                (company, industry) => new { company.Id, industry.SentimentValue })
+            .ToDictionaryAsync(pair => pair.Id, pair => pair.SentimentValue);
         var quotes = snapshots
             .GroupBy(snapshot => snapshot.CompanyId)
             .Where(group => !closedCompanyIds.Contains(group.Key) && !haltedCompanyIds.Contains(group.Key))
@@ -1154,7 +1514,8 @@ public sealed class MarketService(
                     latest.Price,
                     changePct,
                     (int)Math.Clamp(netDemandByCompany.GetValueOrDefault(group.Key), int.MinValue, int.MaxValue),
-                    longRangeChangePct);
+                    longRangeChangePct,
+                    sentimentByCompany.GetValueOrDefault(group.Key));
             })
             .ToList();
 
@@ -1195,6 +1556,14 @@ public sealed class MarketService(
         var loanLiabilityByParticipant = await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext);
         var fundStatusByParticipantId = await dbContext.CollectiveFunds
             .ToDictionaryAsync(fund => fund.ParticipantId, fund => fund.Status);
+
+        // A player-managed fund only trades when the human places an order through it, so it is left out of the
+        // automatic decision pass entirely.
+        var playerManagedFundParticipantIds = (await dbContext.CollectiveFunds
+                .Where(fund => fund.IsPlayerManaged)
+                .Select(fund => fund.ParticipantId)
+                .ToListAsync())
+            .ToHashSet();
         var memberParticipantIds = (await dbContext.CollectiveFundParticipants
                 .Select(member => member.ParticipantId)
                 .ToListAsync())
@@ -1204,6 +1573,12 @@ public sealed class MarketService(
 
         foreach (var trader in traders)
         {
+            // The human runs a player-managed fund by hand, so the engine never trades it.
+            if (playerManagedFundParticipantIds.Contains(trader.Id))
+            {
+                continue;
+            }
+
             // A fund that is winding down places no new orders; its forced sales are service-driven.
             if (trader.Type == ParticipantType.CollectiveFund
                 && fundStatusByParticipantId.GetValueOrDefault(trader.Id) != CollectiveFundStatus.Active)
@@ -1306,6 +1681,8 @@ public sealed class MarketService(
         await dbContext.PriceSnapshotArchives.ExecuteDeleteAsync();
         await dbContext.MoneyTransactionArchives.ExecuteDeleteAsync();
         await dbContext.ParticipantWorthSnapshotArchives.ExecuteDeleteAsync();
+        await dbContext.SectorSentimentSnapshots.ExecuteDeleteAsync();
+        await dbContext.SectorSentimentSnapshotArchives.ExecuteDeleteAsync();
         await dbContext.Participants.ExecuteDeleteAsync();
         await dbContext.Companies.ExecuteDeleteAsync();
         await dbContext.Industries.ExecuteDeleteAsync();
@@ -1320,6 +1697,7 @@ public sealed class MarketService(
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
             "'CollectiveFunds', 'CollectiveFundParticipants', 'ParticipantWorthSnapshots', " +
             "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives', " +
+            "'SectorSentimentSnapshots', 'SectorSentimentSnapshotArchives', " +
             "'Banks', 'Loans')");
 
         var market = await SeedDemoMarketCoreAsync();
@@ -1486,6 +1864,23 @@ public sealed class MarketService(
         // The appearance clock starts at the first cycle so the same safe period applies from launch.
         market.LastCompanyAppearanceCycleNumber = firstCycle.CycleNumber;
         market.CurrentCycleId = firstCycle.Id;
+
+        if (industrySentimentOptionValues.Enabled)
+        {
+            foreach (var industry in industries.OrderBy(industry => industry.Id))
+            {
+                industry.SentimentValue = random.Next(
+                    industrySentimentOptionValues.SentimentValueMin,
+                    industrySentimentOptionValues.SentimentValueMax + 1);
+                industry.SentimentVolatility = industrySentimentOptionValues.SentimentVolatilityMin +
+                    ((decimal)random.NextDouble() *
+                     (industrySentimentOptionValues.SentimentVolatilityMax - industrySentimentOptionValues.SentimentVolatilityMin));
+                industry.SectorBeta = industrySentimentOptionValues.SectorBetaMin +
+                    ((decimal)random.NextDouble() *
+                     (industrySentimentOptionValues.SectorBetaMax - industrySentimentOptionValues.SectorBetaMin));
+            }
+        }
+
         await dbContext.SaveChangesAsync();
 
         return market;

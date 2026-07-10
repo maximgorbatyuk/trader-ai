@@ -1,0 +1,4 @@
+interface:
+  display_name: "Translate Markdown to Russian"
+  short_description: "Faithful Russian HTML from Markdown"
+  default_prompt: "Use $my-translate-markdown-to-russian to translate this Markdown file into faithful Russian HTML."

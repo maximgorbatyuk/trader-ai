@@ -3,6 +3,7 @@
   flex-direction: column;
   min-height: 100vh;
   background: var(--bg);
+  transition: background-color 400ms ease;
 }
 
 /* ---- App shell (sidebar + routed page) ---- */
@@ -10,6 +11,13 @@
   display: flex;
   min-height: 100vh;
   background: var(--bg);
+  transition: background-color 400ms ease;
+}
+
+/* While the simulation loop is running, wash the page background a very slight green as an ambient cue; the
+   override rides the --bg token so .app inherits it, and the status pill still carries the state as text. */
+.app-shell.is-market-active {
+  --bg: oklch(0.965 0.013 150);
 }
 
 .app-shell .app {
@@ -131,6 +139,39 @@
 
 .sidebar-stat-value.is-lead {
   font-size: var(--t-lg);
+  font-weight: 700;
+}
+
+/* Player / fund actor switch pinned above the sidebar stats; a segmented toggle, not colour-coded chrome. */
+.actor-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.actor-switch-btn {
+  padding: var(--s-1) var(--s-2);
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.actor-switch-btn:hover {
+  color: var(--ink);
+}
+
+.actor-switch-btn.is-active {
+  background: var(--surface);
+  color: var(--ink);
   font-weight: 700;
 }
 
@@ -818,6 +859,52 @@
   vector-effect: non-scaling-stroke;
 }
 
+.multi-chart > svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.multi-chart-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.multi-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  padding: var(--s-2) 0 0;
+  margin: 0;
+  list-style: none;
+}
+
+.multi-chart-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text);
+  font-size: var(--t-xs);
+}
+
+.multi-chart-legend li .num {
+  color: var(--muted);
+}
+
+.multi-chart-swatch {
+  width: 16px;
+  height: 4px;
+  flex: 0 0 auto;
+}
+
+.multi-chart-swatch line {
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
 /* ---- Activity chart (orders per loop, with labelled axes) ---- */
 .activity-chart {
   color: var(--ink);
@@ -1210,6 +1297,11 @@
 .tbl-scroll {
   max-height: 28rem;
   overflow: auto;
+}
+
+/* The order book gets a taller scroll area so more resting orders show at once; overflow still scrolls inside. */
+.panel-book .tbl-scroll {
+  max-height: min(60vh, 44rem);
 }
 
 .tbl-scroll .tbl thead th {
@@ -1868,8 +1960,15 @@
 
 /* The company detail dialog runs ~30% larger than the shared modal to give its chart more room. */
 .modal-company {
-  width: min(884px, 100%);
-  max-height: min(90vh, 988px);
+  width: min(1080px, 100%);
+  max-height: min(92vh, 1120px);
+}
+
+/* A compact chart (the industry sentiment trend sits smaller than the company's own price chart). */
+.chart-sm .chart svg {
+  height: 132px;
+  width: auto;
+  max-width: 100%;
 }
 
 .modal-head {
@@ -1958,6 +2057,17 @@
    between children than the tighter default modal section. */
 .player-section {
   gap: var(--s-3);
+}
+
+/* Player and fund submits sit side by side so both actors are one reach apart, wrapping on a narrow modal. */
+.order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+
+.order-actions .btn {
+  flex: 1 1 auto;
 }
 
 /* Reserved and available read as details under the current balance, so they sit indented and quieter. */

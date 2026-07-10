@@ -28,6 +28,10 @@ public sealed class RuleBasedDecisionEngine(
     private const double ProfitTakingSellBias = 0.40;
     private const double BargainBuyBias = 0.40;
 
+    // Sector rotation and fund flows direct capital toward favoured industries and away from shunned ones.
+    private const double SentimentBuyWeight = 0.20;
+    private const double SentimentSellWeight = 0.20;
+
     // Caps keep any single side from saturating the random draw once several pulls stack.
     private const double MaxBuyPull = 0.80;
     private const double MaxSellPull = 0.80;
@@ -238,7 +242,9 @@ public sealed class RuleBasedDecisionEngine(
         // A deep, sustained drop tempts bargain hunters who do not already hold the share.
         var bargain = !owns && quote.LongRangeChangePct <= -ExtremeMoveThreshold ? BargainBuyBias : 0.0;
 
-        return Math.Min(MaxBuyPull, growth + imbalance + bargain);
+        var sentiment = Math.Clamp((double)quote.SectorSentiment / 1000.0, 0.0, 1.0) * SentimentBuyWeight;
+
+        return Math.Min(MaxBuyPull, growth + imbalance + bargain + sentiment);
     }
 
     private static double SellPull(CompanyQuote quote)
@@ -249,7 +255,9 @@ public sealed class RuleBasedDecisionEngine(
         // A large run-up makes holders lock in profit before it reverses.
         var profitTaking = quote.LongRangeChangePct >= ExtremeMoveThreshold ? ProfitTakingSellBias : 0.0;
 
-        return Math.Min(MaxSellPull, decline + profitTaking);
+        var sentiment = Math.Clamp(-(double)quote.SectorSentiment / 1000.0, 0.0, 1.0) * SentimentSellWeight;
+
+        return Math.Min(MaxSellPull, decline + profitTaking + sentiment);
     }
 
     // Maps a one-cycle move in the favourable direction (positive only) to a capped pull.

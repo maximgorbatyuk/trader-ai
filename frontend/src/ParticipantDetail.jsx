@@ -6,6 +6,8 @@ import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
 import { CASH_LABEL, CASH_TONE } from './cashMovements'
+import { IndustryHoldingsTable } from './IndustryHoldingsTable'
+import { groupHoldingsByIndustry } from './industryHoldings'
 
 const POLL_INTERVAL_MS = 2500
 const WORTH_HISTORY_POINTS = 64
@@ -211,6 +213,8 @@ export function ParticipantDetail({ participantId }) {
 
       <HoldingsPanel holdings={holdings} />
 
+      <IndustryHoldingsPanel holdings={holdings} companies={companies} />
+
       <div className="grid-detail">
         <OrdersPanel orders={orders} companyName={companyName} />
         <CashPanel moves={cashMoves} />
@@ -411,6 +415,20 @@ function HoldingsPanel({ holdings }) {
           </table>
         </div>
       )}
+    </Panel>
+  )
+}
+
+function IndustryHoldingsPanel({ holdings, companies }) {
+  const industryCount = groupHoldingsByIndustry(holdings, companies).length
+
+  return (
+    <Panel
+      title="Portfolio by industry"
+      count={`${formatInt(industryCount)} ${industryCount === 1 ? 'industry' : 'industries'}`}
+      className="panel-holdings"
+    >
+      <IndustryHoldingsTable holdings={holdings} companies={companies} emptyNote="This trader holds no shares." />
     </Panel>
   )
 }

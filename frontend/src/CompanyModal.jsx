@@ -4,24 +4,10 @@ import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { LineChart } from './LineChart'
 import { NewsImpact } from './NewsImpact'
-import { PercentButtons } from './PercentButtons'
+import { OrderForm } from './OrderForm'
+import { RatingBadge } from './RatingBadge'
 
 const POLL_INTERVAL_MS = 1000
-
-const QUANTITY_PRESETS = [
-  { label: '10%', value: 0.1 },
-  { label: '25%', value: 0.25 },
-  { label: '50%', value: 0.5 },
-  { label: '75%', value: 0.75 },
-  { label: '100%', value: 1 },
-]
-const PRICE_PRESETS = [
-  { label: '−25%', value: -0.25 },
-  { label: '−10%', value: -0.1 },
-  { label: 'Original', value: 0 },
-  { label: '+10%', value: 0.1 },
-  { label: '+25%', value: 0.25 },
-]
 
 // A null seller is the share issuer's own offering.
 function dealParty(id, byId) {
@@ -35,109 +21,16 @@ function formatPct(value) {
   return `${sign}${(Math.abs(value) * 100).toFixed(2)}%`
 }
 
-// Inline order form for the player, scoped to one company and side. The company and side are fixed, so only
-// quantity and limit price are asked; the limit defaults to the current price. A sell caps the quantity at
-// the player's holding. Keyed per company and side so its state resets between companies.
-function OrderForm({ player, company, side, maxQuantity }) {
-  const [quantity, setQuantity] = useState('')
-  const [limitPrice, setLimitPrice] = useState(company.currentPrice != null ? String(company.currentPrice) : '')
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState(null)
-  const [confirmation, setConfirmation] = useState(null)
+// Sentiment is a small signed index; a leading + keeps its sign explicit, matching the industries page.
+function formatSentiment(value) {
+  if (typeof value !== 'number') return '—'
+  return `${value > 0 ? '+' : ''}${value}`
+}
 
-  const isSell = side === 'Sell'
-
-  // Sells are capped at owned shares; buys at what available cash covers at the chosen limit price. Round up
-  // so a preset never leaves an odd fractional remainder.
-  function pickQuantity(fraction) {
-    const price = Number(limitPrice)
-    const max = isSell
-      ? maxQuantity ?? 0
-      : price > 0
-        ? Math.floor((player?.availableBalance ?? 0) / price)
-        : 0
-    setQuantity(String(Math.ceil(max * fraction)))
-  }
-
-  // Price presets nudge the limit off the company's current price; "Original" (value 0) snaps back to it.
-  function pickPrice(delta) {
-    if (company.currentPrice == null) return
-    setLimitPrice(String(Math.round(company.currentPrice * (1 + delta) * 100) / 100))
-  }
-
-  async function handleSubmit(event) {
-    event.preventDefault()
-    setError(null)
-    setConfirmation(null)
-    setSubmitting(true)
-    try {
-      await api.placeOrder({
-        participantId: player.id,
-        companyId: company.id,
-        type: side,
-        quantity: Number(quantity),
-        limitPrice: Number(limitPrice),
-      })
-      setConfirmation(`${side} order placed: ${formatInt(Number(quantity))} @ ${formatMoney(Number(limitPrice))}.`)
-      setQuantity('')
-    } catch (submitError) {
-      setError(submitError.message)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <form className="modal-section player-section" onSubmit={handleSubmit}>
-      <span className="map-stat-label">{isSell ? 'Sell shares' : 'Buy shares'}</span>
-      <div className="field-pair">
-        <div className="field">
-          <span>Quantity{isSell && maxQuantity != null ? ` (max ${formatInt(maxQuantity)})` : ''}</span>
-          <PercentButtons options={QUANTITY_PRESETS} ariaLabel="Set quantity from a percentage" onPick={pickQuantity} />
-          <input
-            className="select num"
-            type="number"
-            min="1"
-            max={isSell && maxQuantity != null ? maxQuantity : undefined}
-            step="1"
-            placeholder="0"
-            aria-label={isSell ? 'Sell quantity' : 'Buy quantity'}
-            value={quantity}
-            onChange={(event) => setQuantity(event.target.value)}
-          />
-        </div>
-        <div className="field">
-          <span>Limit price</span>
-          {company.currentPrice != null ? (
-            <PercentButtons options={PRICE_PRESETS} ariaLabel="Adjust price from the current price" onPick={pickPrice} />
-          ) : null}
-          <input
-            className="select num"
-            type="number"
-            min="0.01"
-            step="0.01"
-            placeholder="0.00"
-            aria-label="Limit price"
-            value={limitPrice}
-            onChange={(event) => setLimitPrice(event.target.value)}
-          />
-        </div>
-      </div>
-      {error ? (
-        <p className="command-error" role="alert">
-          {error}
-        </p>
-      ) : null}
-      {confirmation ? (
-        <p className="note note-sm" role="status">
-          {confirmation}
-        </p>
-      ) : null}
-      <button type="submit" className="btn btn-primary" disabled={submitting}>
-        {submitting ? 'Placing…' : `Place ${side.toLowerCase()} order`}
-      </button>
-    </form>
-  )
+function formatCyclesAgo(cyclesAgo) {
+  if (typeof cyclesAgo !== 'number') return ''
+  if (cyclesAgo <= 0) return 'this cycle'
+  return `${formatInt(cyclesAgo)} cycle${cyclesAgo === 1 ? '' : 's'} ago`
 }
 
 // Detail dialog for one company opened from the market map. Live price, cap and share count come from the
@@ -148,8 +41,12 @@ export function CompanyModal({ company, participantNameById, onClose }) {
   const [latestDeal, setLatestDeal] = useState(null)
   const [player, setPlayer] = useState(null)
   const [ownedShares, setOwnedShares] = useState(0)
+  const [fundOwnedShares, setFundOwnedShares] = useState(0)
   const [companyNews, setCompanyNews] = useState([])
+  const [industrySentiment, setIndustrySentiment] = useState([])
+  const [latestRating, setLatestRating] = useState(null)
   const [activeForm, setActiveForm] = useState('none')
+  const industryId = company?.industryId
   const dialogRef = useRef(null)
   const closeRef = useRef(null)
 
@@ -159,25 +56,39 @@ export function CompanyModal({ company, participantNameById, onClose }) {
     let active = true
     async function load() {
       try {
-        const [priceData, dealData, playerData, newsData] = await Promise.all([
+        const [priceData, dealData, playerData, newsData, sentimentData, ratingData] = await Promise.all([
           api.getPrices(companyId),
           api.getCompanyShareTransactions(companyId, 1),
           api.getPlayer(),
           api.getCompanyNews(companyId, 5),
+          industryId != null ? api.getIndustrySentimentHistory(industryId) : Promise.resolve([]),
+          api.getCompanyRatings(companyId, 1),
         ])
         if (!active) return
         setPrices(priceData)
         setLatestDeal(dealData[0] ?? null)
         setPlayer(playerData)
         setCompanyNews(newsData ?? [])
+        setIndustrySentiment(sentimentData ?? [])
+        setLatestRating((ratingData && ratingData[0]) ?? null)
 
         if (playerData) {
           const holdings = await api.getHoldings(playerData.id)
           if (!active) return
           const holding = holdings.find((item) => item.companyId === companyId)
           setOwnedShares(holding ? holding.shares : 0)
+
+          if (playerData.fundParticipantId != null) {
+            const fundHoldings = await api.getHoldings(playerData.fundParticipantId)
+            if (!active) return
+            const fundHolding = fundHoldings.find((item) => item.companyId === companyId)
+            setFundOwnedShares(fundHolding ? fundHolding.shares : 0)
+          } else {
+            setFundOwnedShares(0)
+          }
         } else {
           setOwnedShares(0)
+          setFundOwnedShares(0)
         }
       } catch {
         // Keep the last known values when a refresh fails.
@@ -190,7 +101,7 @@ export function CompanyModal({ company, participantNameById, onClose }) {
       active = false
       clearInterval(intervalId)
     }
-  }, [companyId])
+  }, [companyId, industryId])
 
   // Close on Escape and lock background scroll while the dialog is open.
   useEffect(() => {
@@ -221,6 +132,10 @@ export function CompanyModal({ company, participantNameById, onClose }) {
   }
 
   const isHalted = company.isHalted
+  const fund =
+    player?.fundParticipantId != null
+      ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance }
+      : null
   const capitalization = company.issuedSharesCount * (company.currentPrice ?? 0)
   const values = prices.map((snapshot) => snapshot.price)
   const open = values.at(0)
@@ -232,6 +147,8 @@ export function CompanyModal({ company, participantNameById, onClose }) {
     .filter((snapshot) => snapshot.capitalization != null)
     .map((snapshot) => snapshot.capitalization)
   const capSeriesChange = capValues.length >= 2 ? capValues.at(-1) - capValues.at(0) : 0
+  const sentimentValues = industrySentiment.map((point) => point.sentimentValue)
+  const sentimentChange = sentimentValues.length >= 2 ? sentimentValues.at(-1) - sentimentValues.at(0) : 0
   const headlineTone = toneOf(company.priceChangePct)
   const titleId = `company-modal-title-${company.id}`
 
@@ -312,6 +229,22 @@ export function CompanyModal({ company, participantNameById, onClose }) {
             />
           )}
 
+          <div className="modal-section">
+            <span className="map-stat-label">Industry sentiment · {company.industryName ?? '—'}</span>
+            {sentimentValues.length < 2 ? (
+              <p className="note note-sm">Not enough sentiment history yet.</p>
+            ) : (
+              <div className="chart-sm">
+                <LineChart
+                  values={sentimentValues.slice(-48)}
+                  tone={toneOf(sentimentChange)}
+                  formatValue={formatSentiment}
+                  label={`${company.industryName ?? 'Industry'} sentiment history`}
+                />
+              </div>
+            )}
+          </div>
+
           <dl className="modal-stats">
             <div>
               <dt>Industry</dt>
@@ -338,6 +271,21 @@ export function CompanyModal({ company, participantNameById, onClose }) {
               <dd className="num">{formatMoney(high)}</dd>
             </div>
           </dl>
+
+          <div className="modal-section">
+            <span className="map-stat-label">Latest risk estimation</span>
+            {latestRating ? (
+              <p className="modal-deal">
+                <RatingBadge rating={latestRating.rating} impactPercent={latestRating.impactPercent} />
+                <span className="muted-sub">
+                  {' '}
+                  · {latestRating.auditorName} · {formatCyclesAgo(latestRating.cyclesAgo)}
+                </span>
+              </p>
+            ) : (
+              <p className="note note-sm">No auditor has reviewed this company yet.</p>
+            )}
+          </div>
 
           <div className="modal-section">
             <span className="map-stat-label">Latest deal</span>
@@ -375,10 +323,18 @@ export function CompanyModal({ company, participantNameById, onClose }) {
           </div>
 
           {player && !isHalted && activeForm === 'buy' ? (
-            <OrderForm key={`buy-${company.id}`} player={player} company={company} side="Buy" />
+            <OrderForm key={`buy-${company.id}`} player={player} fund={fund} company={company} side="Buy" />
           ) : null}
           {player && !isHalted && activeForm === 'sell' ? (
-            <OrderForm key={`sell-${company.id}`} player={player} company={company} side="Sell" maxQuantity={ownedShares} />
+            <OrderForm
+              key={`sell-${company.id}`}
+              player={player}
+              fund={fund}
+              company={company}
+              side="Sell"
+              playerMaxQuantity={ownedShares}
+              fundMaxQuantity={fundOwnedShares}
+            />
           ) : null}
         </div>
 
@@ -399,7 +355,7 @@ export function CompanyModal({ company, participantNameById, onClose }) {
               Buy shares
             </button>
           ) : null}
-          {player && !isHalted && ownedShares > 0 ? (
+          {player && !isHalted && (ownedShares > 0 || fundOwnedShares > 0) ? (
             <button
               type="button"
               className="btn"

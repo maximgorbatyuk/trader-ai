@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -132,6 +133,24 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
         }
     }
 
+    [Fact]
+    public async Task NewsThemesFilterToFinanceThemesForScopedNewsAndKeepWhimsicalThemesByDefault()
+    {
+        using var client = factory.CreateClient();
+
+        var allThemes = await client.GetFromJsonAsync<NewsThemeDto[]>("/news/themes");
+        var companyThemes = await client.GetFromJsonAsync<NewsThemeDto[]>("/news/themes?scope=Company");
+        var industryThemes = await client.GetFromJsonAsync<NewsThemeDto[]>("/news/themes?scope=Industries");
+
+        Assert.Contains(allThemes!, theme => theme.Key == "ufo");
+        Assert.DoesNotContain(allThemes!, theme => theme.Key == "market-sentiment");
+        Assert.All([companyThemes, industryThemes], themes =>
+        {
+            var scoped = Assert.Single(themes!);
+            Assert.Equal("market-sentiment", scoped.Key);
+        });
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
@@ -139,4 +158,6 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
             builder.UseSetting("ConnectionStrings:DefaultConnection", $"Data Source={databasePath}");
         });
     }
+
+    private sealed record NewsThemeDto(string Key, string Label);
 }
