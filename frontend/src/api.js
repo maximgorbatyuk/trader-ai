@@ -118,4 +118,7 @@ export const api = {
   getPlayer: () => get('/player'),
   createPlayer: (payload) => post('/player', payload),
   cancelPlayerOrder: (orderId) => post(`/player/orders/${orderId}/cancel`),
+  openPlayerFund: (payload) => post('/player/fund', payload),
+  depositToPlayerFund: (payload) => post('/player/fund/deposit', payload),
+  withdrawFromPlayerFund: (payload) => post('/player/fund/withdraw', payload),
 }

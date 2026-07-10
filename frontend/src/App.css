@@ -2014,6 +2014,17 @@
   gap: var(--s-3);
 }
 
+/* Player and fund submits sit side by side so both actors are one reach apart, wrapping on a narrow modal. */
+.order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+
+.order-actions .btn {
+  flex: 1 1 auto;
+}
+
 /* Reserved and available read as details under the current balance, so they sit indented and quieter. */
 .kv-sub {
   padding-left: var(--s-3);

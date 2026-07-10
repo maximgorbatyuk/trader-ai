@@ -49,6 +49,13 @@ public sealed record CancelOrderResult(bool Success, Order? Order, string? Error
     public static CancelOrderResult Fail(string error) => new(false, null, error);
 }
 
+public sealed record PlayerFundResult(bool Success, string? Error)
+{
+    public static PlayerFundResult Ok() => new(true, null);
+
+    public static PlayerFundResult Fail(string error) => new(false, error);
+}
+
 public sealed class MarketService(
     AppDbContext dbContext,
     MatchingEngine matchingEngine,
@@ -162,6 +169,15 @@ public sealed class MarketService(
 
     public Task<CancelOrderResult> CancelPlayerOrderAsync(int orderId) =>
         WithLockAsync(() => CancelPlayerOrderCoreAsync(orderId));
+
+    public Task<PlayerFundResult> OpenPlayerFundAsync(decimal seedAmount, string? name) =>
+        WithLockAsync(() => OpenPlayerFundCoreAsync(seedAmount, name));
+
+    public Task<PlayerFundResult> DepositToPlayerFundAsync(decimal amount) =>
+        WithLockAsync(() => DepositToPlayerFundCoreAsync(amount));
+
+    public Task<PlayerFundResult> WithdrawFromPlayerFundAsync(decimal amount) =>
+        WithLockAsync(() => WithdrawFromPlayerFundCoreAsync(amount));
 
     // Manual loan repayment goes through the cycle lock so it cannot race a running tick's writes.
     public Task<RepayLoanResult> RepayLoanAsync(int loanId, decimal? amount) => WithLockAsync(async () =>
@@ -1119,6 +1135,189 @@ public sealed class MarketService(
         return CancelOrderResult.Ok(order);
     }
 
+    // The fund the human player runs by hand: a CollectiveFund founded by the player and flagged player-managed.
+    // Distinct from an AI fund only in that the player trades it directly and it never auto-trades or auto-closes.
+    private sealed record PlayerFundContext(Market Market, Participant Player, CollectiveFund Fund, Participant FundParticipant);
+
+    private async Task<(PlayerFundContext? Context, string? Error)> ResolvePlayerFundAsync()
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market is null)
+        {
+            return (null, "No market exists.");
+        }
+
+        var player = await dbContext.Participants
+            .FirstOrDefaultAsync(participant => participant.Type == ParticipantType.Player);
+        if (player is null)
+        {
+            return (null, "No player exists.");
+        }
+
+        var fund = await dbContext.CollectiveFunds
+            .FirstOrDefaultAsync(candidate => candidate.IsPlayerManaged
+                && candidate.FoundedByParticipantId == player.Id
+                && candidate.Status != CollectiveFundStatus.Closed);
+        if (fund is null)
+        {
+            return (null, "The player does not manage a fund.");
+        }
+
+        var fundParticipant = await dbContext.Participants
+            .FirstOrDefaultAsync(participant => participant.Id == fund.ParticipantId);
+        if (fundParticipant is null)
+        {
+            return (null, "The fund is missing its participant.");
+        }
+
+        return (new PlayerFundContext(market, player, fund, fundParticipant), null);
+    }
+
+    private async Task<PlayerFundResult> OpenPlayerFundCoreAsync(decimal seedAmount, string? name)
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market is null)
+        {
+            return PlayerFundResult.Fail("No market exists.");
+        }
+
+        var player = await dbContext.Participants
+            .FirstOrDefaultAsync(participant => participant.Type == ParticipantType.Player);
+        if (player is null)
+        {
+            return PlayerFundResult.Fail("No player exists.");
+        }
+
+        // One managed fund per player, mirroring the single-player invariant.
+        if (await dbContext.CollectiveFunds.AnyAsync(fund => fund.IsPlayerManaged
+                && fund.FoundedByParticipantId == player.Id
+                && fund.Status != CollectiveFundStatus.Closed))
+        {
+            return PlayerFundResult.Fail("The player already manages a fund.");
+        }
+
+        if (seedAmount <= 0m)
+        {
+            return PlayerFundResult.Fail("Seed amount must be positive.");
+        }
+
+        if (seedAmount > player.AvailableBalance)
+        {
+            return PlayerFundResult.Fail("Seed amount exceeds the player's available balance.");
+        }
+
+        var currentCycleId = market.CurrentCycleId ?? 0;
+        var now = DateTime.UtcNow;
+        var trimmed = name?.Trim();
+
+        var fundParticipant = new Participant
+        {
+            Name = string.IsNullOrWhiteSpace(trimmed) ? $"{player.Name}'s Fund" : trimmed,
+            Type = ParticipantType.CollectiveFund,
+            // A player-managed fund never trades on the engine, so temperament and risk are inert; snapshot the
+            // player's for a well-formed row like every other participant.
+            Temperament = player.Temperament,
+            RiskProfile = player.RiskProfile,
+            InitialBalance = 0m,
+            CurrentBalance = 0m,
+            ReservedBalance = 0m,
+            IsActive = true,
+        };
+        dbContext.Participants.Add(fundParticipant);
+        await dbContext.SaveChangesAsync();
+
+        var fund = new CollectiveFund
+        {
+            ParticipantId = fundParticipant.Id,
+            FoundedByParticipantId = player.Id,
+            IsPlayerManaged = true,
+            Status = CollectiveFundStatus.Active,
+            CreatedInCycleId = currentCycleId,
+            CreatedAt = now,
+        };
+        dbContext.CollectiveFunds.Add(fund);
+
+        RecordPlayerFundTransfer(player, fundParticipant, seedAmount, currentCycleId, now);
+        await dbContext.SaveChangesAsync();
+        return PlayerFundResult.Ok();
+    }
+
+    private async Task<PlayerFundResult> DepositToPlayerFundCoreAsync(decimal amount)
+    {
+        var (context, error) = await ResolvePlayerFundAsync();
+        if (context is null)
+        {
+            return PlayerFundResult.Fail(error!);
+        }
+
+        if (amount <= 0m)
+        {
+            return PlayerFundResult.Fail("Deposit amount must be positive.");
+        }
+
+        if (amount > context.Player.AvailableBalance)
+        {
+            return PlayerFundResult.Fail("Deposit amount exceeds the player's available balance.");
+        }
+
+        RecordPlayerFundTransfer(context.Player, context.FundParticipant, amount, context.Market.CurrentCycleId ?? 0, DateTime.UtcNow);
+        await dbContext.SaveChangesAsync();
+        return PlayerFundResult.Ok();
+    }
+
+    private async Task<PlayerFundResult> WithdrawFromPlayerFundCoreAsync(decimal amount)
+    {
+        var (context, error) = await ResolvePlayerFundAsync();
+        if (context is null)
+        {
+            return PlayerFundResult.Fail(error!);
+        }
+
+        if (amount <= 0m)
+        {
+            return PlayerFundResult.Fail("Withdrawal amount must be positive.");
+        }
+
+        // The player may pull out the fund's free cash and trading profits, but not the cash owed back to members
+        // as returnable deposits, so a withdrawal can never strand a member's principal.
+        var memberDepositsOwed = await dbContext.CollectiveFundParticipants
+            .Where(member => member.CollectiveFundId == context.Fund.Id)
+            .SumAsync(member => member.DepositAmount);
+        var withdrawable = Math.Max(0m, context.FundParticipant.AvailableBalance - memberDepositsOwed);
+        if (amount > withdrawable)
+        {
+            return PlayerFundResult.Fail("Withdrawal amount exceeds the fund's withdrawable cash.");
+        }
+
+        RecordPlayerFundTransfer(context.FundParticipant, context.Player, amount, context.Market.CurrentCycleId ?? 0, DateTime.UtcNow);
+        await dbContext.SaveChangesAsync();
+        return PlayerFundResult.Ok();
+    }
+
+    // Moves cash one way between the player and its fund and records both legs, reusing the fund cash-movement
+    // type the AI join/leave flow already uses.
+    private void RecordPlayerFundTransfer(Participant from, Participant to, decimal amount, int currentCycleId, DateTime now)
+    {
+        from.CurrentBalance -= amount;
+        to.CurrentBalance += amount;
+        dbContext.MoneyTransactions.Add(new MoneyTransaction
+        {
+            ParticipantId = from.Id,
+            Type = MoneyTransactionType.CollectiveFund,
+            Amount = amount,
+            CreatedInCycleId = currentCycleId,
+            CreatedAt = now,
+        });
+        dbContext.MoneyTransactions.Add(new MoneyTransaction
+        {
+            ParticipantId = to.Id,
+            Type = MoneyTransactionType.CollectiveFund,
+            Amount = amount,
+            CreatedInCycleId = currentCycleId,
+            CreatedAt = now,
+        });
+    }
+
     private async Task<RunDecisionsResult> GenerateDecisionsCoreAsync()
     {
         var market = await dbContext.Markets.FirstOrDefaultAsync();
@@ -1247,6 +1446,14 @@ public sealed class MarketService(
         var loanLiabilityByParticipant = await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext);
         var fundStatusByParticipantId = await dbContext.CollectiveFunds
             .ToDictionaryAsync(fund => fund.ParticipantId, fund => fund.Status);
+
+        // A player-managed fund only trades when the human places an order through it, so it is left out of the
+        // automatic decision pass entirely.
+        var playerManagedFundParticipantIds = (await dbContext.CollectiveFunds
+                .Where(fund => fund.IsPlayerManaged)
+                .Select(fund => fund.ParticipantId)
+                .ToListAsync())
+            .ToHashSet();
         var memberParticipantIds = (await dbContext.CollectiveFundParticipants
                 .Select(member => member.ParticipantId)
                 .ToListAsync())
@@ -1256,6 +1463,12 @@ public sealed class MarketService(
 
         foreach (var trader in traders)
         {
+            // The human runs a player-managed fund by hand, so the engine never trades it.
+            if (playerManagedFundParticipantIds.Contains(trader.Id))
+            {
+                continue;
+            }
+
             // A fund that is winding down places no new orders; its forced sales are service-driven.
             if (trader.Type == ParticipantType.CollectiveFund
                 && fundStatusByParticipantId.GetValueOrDefault(trader.Id) != CollectiveFundStatus.Active)

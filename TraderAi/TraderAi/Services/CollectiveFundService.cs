@@ -114,15 +114,21 @@ public sealed class CollectiveFundService(
         foreach (var fund in funds.Where(fund => fund.Status == CollectiveFundStatus.Active).OrderBy(fund => fund.Id).ToList())
         {
             RatchetPeakNetWorth(fund);
-            if (MaybeFounderClose(fund, currentCycleId, now))
-            {
-                continue;
-            }
 
-            TrackIdleAndMaybeClose(fund, currentCycleId, now);
-            if (fund.Status != CollectiveFundStatus.Active)
+            // A player-managed fund never auto-closes or idle-unwinds; the human owns its fate. The member pass
+            // below still runs so anyone who joined can leave and be repaid.
+            if (!fund.IsPlayerManaged)
             {
-                continue;
+                if (MaybeFounderClose(fund, currentCycleId, now))
+                {
+                    continue;
+                }
+
+                TrackIdleAndMaybeClose(fund, currentCycleId, now);
+                if (fund.Status != CollectiveFundStatus.Active)
+                {
+                    continue;
+                }
             }
 
             foreach (var membership in membershipsByFundId[fund.Id].OrderBy(member => member.ParticipantId).ToList())
@@ -363,7 +369,9 @@ public sealed class CollectiveFundService(
 
         var fundParticipant = participantsById[fund.ParticipantId];
 
-        if (membershipsByFundId[fund.Id].Count <= 2)
+        // A shrinking AI fund collapses into a wind-down once only a pair is left; a player-managed fund never
+        // does — the player keeps running it even after every AI member has gone.
+        if (!fund.IsPlayerManaged && membershipsByFundId[fund.Id].Count <= 2)
         {
             BeginClosing(fund, fundParticipant, currentCycleId, now);
             return;

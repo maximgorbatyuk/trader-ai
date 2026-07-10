@@ -8,6 +8,7 @@ import { LineChart } from './LineChart'
 import { RatingBadge } from './RatingBadge'
 import { NewsImpact } from './NewsImpact'
 import { NewsModal } from './NewsModal'
+import { OrderForm } from './OrderForm'
 
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
@@ -57,10 +58,13 @@ export function CompanyDetail({ companyId }) {
   const [emissions, setEmissions] = useState([])
   const [news, setNews] = useState([])
   const [selectedNews, setSelectedNews] = useState(null)
+  const [player, setPlayer] = useState(null)
+  const [playerOwned, setPlayerOwned] = useState(0)
+  const [fundOwned, setFundOwned] = useState(0)
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, shareholderData, orderData, tradeData, priceData, ratingData, emissionData, newsData] =
+      const [detailData, shareholderData, orderData, tradeData, priceData, ratingData, emissionData, newsData, playerData] =
         await Promise.all([
           api.getCompany(companyId),
           api.getCompanyShareholders(companyId),
@@ -70,6 +74,7 @@ export function CompanyDetail({ companyId }) {
           api.getCompanyRatings(companyId),
           api.getCompanyEmissions(companyId),
           api.getCompanyNews(companyId),
+          api.getPlayer(),
         ])
 
       setDetail(detailData)
@@ -80,6 +85,23 @@ export function CompanyDetail({ companyId }) {
       setRatings(ratingData ?? [])
       setEmissions(emissionData ?? [])
       setNews(newsData ?? [])
+
+      setPlayer(playerData)
+      if (playerData) {
+        const holdings = await api.getHoldings(playerData.id)
+        const owned = holdings.find((item) => item.companyId === companyId)
+        setPlayerOwned(owned ? owned.shares : 0)
+        if (playerData.fundParticipantId != null) {
+          const fundHoldings = await api.getHoldings(playerData.fundParticipantId)
+          const fundHolding = fundHoldings.find((item) => item.companyId === companyId)
+          setFundOwned(fundHolding ? fundHolding.shares : 0)
+        } else {
+          setFundOwned(0)
+        }
+      } else {
+        setPlayerOwned(0)
+        setFundOwned(0)
+      }
       setLoadError(null)
     } catch (error) {
       setLoadError(error.message)
@@ -200,6 +222,17 @@ export function CompanyDetail({ companyId }) {
 
       <PriceChartPanel name={detail.name} prices={prices} />
 
+      {player && !detail.isClosed && !detail.isHalted ? (
+        <TradePanel
+          companyId={companyId}
+          currentPrice={detail.currentPrice}
+          player={player}
+          playerOwned={playerOwned}
+          fundOwned={fundOwned}
+          onPlaced={loadAll}
+        />
+      ) : null}
+
       <div className="grid-detail">
         <OwnershipPanel detail={detail} />
         <ShareholdersPanel shareholders={shareholders} />
@@ -217,6 +250,58 @@ export function CompanyDetail({ companyId }) {
 
       {selectedNews ? <NewsModal post={selectedNews} onClose={() => setSelectedNews(null)} /> : null}
     </section>
+  )
+}
+
+// Trade the company as the player or, if the player runs a fund, through the fund. Buy/Sell reveal the shared
+// order form; a placed order refreshes the page so the new order and balances show at once.
+function TradePanel({ companyId, currentPrice, player, playerOwned, fundOwned, onPlaced }) {
+  const [side, setSide] = useState('none')
+  const fund =
+    player.fundParticipantId != null
+      ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance }
+      : null
+  const canSell = playerOwned > 0 || fundOwned > 0
+  const company = { id: companyId, currentPrice }
+
+  return (
+    <Panel title="Trade" className="panel-orders-list">
+      <div className="order-actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          aria-expanded={side === 'buy'}
+          onClick={() => setSide((current) => (current === 'buy' ? 'none' : 'buy'))}
+        >
+          Buy shares
+        </button>
+        {canSell ? (
+          <button
+            type="button"
+            className="btn"
+            aria-expanded={side === 'sell'}
+            onClick={() => setSide((current) => (current === 'sell' ? 'none' : 'sell'))}
+          >
+            Sell shares
+          </button>
+        ) : null}
+      </div>
+      {side === 'buy' ? (
+        <OrderForm key={`buy-${companyId}`} player={player} fund={fund} company={company} side="Buy" onPlaced={onPlaced} />
+      ) : null}
+      {side === 'sell' ? (
+        <OrderForm
+          key={`sell-${companyId}`}
+          player={player}
+          fund={fund}
+          company={company}
+          side="Sell"
+          playerMaxQuantity={playerOwned}
+          fundMaxQuantity={fundOwned}
+          onPlaced={onPlaced}
+        />
+      ) : null}
+    </Panel>
   )
 }
 

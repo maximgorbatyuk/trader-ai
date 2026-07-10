@@ -702,6 +702,36 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
+        app.MapPost("/player/fund", async (OpenPlayerFundRequest request, MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.OpenPlayerFundAsync(request.SeedAmount, request.Name);
+            if (!result.Success)
+            {
+                // An existing managed fund is a conflict; everything else is a bad request.
+                return result.Error == "The player already manages a fund."
+                    ? Results.Conflict(new { error = result.Error })
+                    : Results.BadRequest(new { error = result.Error });
+            }
+
+            return Results.Ok(await BuildPlayerResponseAsync(dbContext));
+        });
+
+        app.MapPost("/player/fund/deposit", async (PlayerFundCashRequest request, MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.DepositToPlayerFundAsync(request.Amount);
+            return result.Success
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
+        app.MapPost("/player/fund/withdraw", async (PlayerFundCashRequest request, MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.WithdrawFromPlayerFundAsync(request.Amount);
+            return result.Success
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
         app.MapPost("/cycles/tick", async (MarketService marketService) =>
         {
             var result = await marketService.StepCycleAsync();
@@ -1859,6 +1889,46 @@ public static class MarketEndpoints
                 - (prior.Balance + prior.HoldingsValue - prior.LoanLiability);
         }
 
+        // The player-managed fund (if any) rides along on the player response so the UI can trade through it and
+        // manage its cash without a second round-trip.
+        var managedFund = await dbContext.CollectiveFunds
+            .FirstOrDefaultAsync(fund => fund.IsPlayerManaged
+                && fund.FoundedByParticipantId == player.Id
+                && fund.Status != CollectiveFundStatus.Closed);
+
+        int? fundParticipantId = null;
+        string? fundName = null;
+        decimal? fundCurrentBalance = null;
+        decimal? fundAvailableBalance = null;
+        decimal? fundHoldingsValue = null;
+        decimal? fundTotalWorth = null;
+        decimal? fundWithdrawable = null;
+        if (managedFund is not null)
+        {
+            var fundParticipant = await dbContext.Participants
+                .FirstOrDefaultAsync(participant => participant.Id == managedFund.ParticipantId);
+            if (fundParticipant is not null)
+            {
+                var fundHoldings = await dbContext.Holdings
+                    .Where(holding => holding.ParticipantId == fundParticipant.Id && holding.Quantity > 0)
+                    .Select(holding => new { holding.CompanyId, Shares = holding.Quantity })
+                    .ToListAsync();
+                var fundHoldingsVal = fundHoldings.Sum(holding =>
+                    holding.Shares * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
+                var memberDepositsOwed = await dbContext.CollectiveFundParticipants
+                    .Where(member => member.CollectiveFundId == managedFund.Id)
+                    .SumAsync(member => member.DepositAmount);
+
+                fundParticipantId = fundParticipant.Id;
+                fundName = fundParticipant.Name;
+                fundCurrentBalance = fundParticipant.CurrentBalance;
+                fundAvailableBalance = fundParticipant.AvailableBalance;
+                fundHoldingsValue = fundHoldingsVal;
+                fundTotalWorth = fundParticipant.CurrentBalance + fundHoldingsVal;
+                fundWithdrawable = Math.Max(0m, fundParticipant.AvailableBalance - memberDepositsOwed);
+            }
+        }
+
         return new PlayerResponse(
             player.Id,
             player.Name,
@@ -1874,7 +1944,14 @@ public static class MarketEndpoints
             totalWorth - player.InitialBalance,
             lastCycleMoneyChange,
             lastCycleWorthChange,
-            player.IsActive);
+            player.IsActive,
+            fundParticipantId,
+            fundName,
+            fundCurrentBalance,
+            fundAvailableBalance,
+            fundHoldingsValue,
+            fundTotalWorth,
+            fundWithdrawable);
     }
 
     private static async Task<(string? Status, CollectiveFundMemberResponse[] Members)> BuildCollectiveFundMembersAsync(
@@ -2260,6 +2337,10 @@ public sealed record UpdateParticipantProfileRequest(Temperament Temperament, Ri
 
 public sealed record CreatePlayerRequest(string? Name);
 
+public sealed record OpenPlayerFundRequest(decimal SeedAmount, string? Name);
+
+public sealed record PlayerFundCashRequest(decimal Amount);
+
 public sealed record PlayerResponse(
     int Id,
     string Name,
@@ -2275,7 +2356,14 @@ public sealed record PlayerResponse(
     decimal OverallWorthChange,
     decimal? LastCycleMoneyChange,
     decimal? LastCycleWorthChange,
-    bool IsActive);
+    bool IsActive,
+    int? FundParticipantId,
+    string? FundName,
+    decimal? FundCurrentBalance,
+    decimal? FundAvailableBalance,
+    decimal? FundHoldingsValue,
+    decimal? FundTotalWorth,
+    decimal? FundWithdrawable);
 
 public sealed record PlaceOrderRequest(int ParticipantId, int CompanyId, OrderType Type, int Quantity, decimal LimitPrice);
 

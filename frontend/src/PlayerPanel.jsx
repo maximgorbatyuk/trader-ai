@@ -190,6 +190,169 @@ function JoinPanel({ onJoined }) {
   )
 }
 
+// The player's fund surface: an open form when none exists yet, otherwise a worth summary with deposit and
+// withdraw controls. Trading through the fund happens on the company pages, not here.
+function FundSection({ player, onRefresh }) {
+  if (player.fundParticipantId == null) {
+    return <OpenFundForm player={player} onRefresh={onRefresh} />
+  }
+  return <ManageFundSection player={player} onRefresh={onRefresh} />
+}
+
+function OpenFundForm({ player, onRefresh }) {
+  const [seed, setSeed] = useState('')
+  const [name, setName] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    setError(null)
+    setSubmitting(true)
+    try {
+      await api.openPlayerFund({ seedAmount: Number(seed), name: name.trim() || null })
+      setSeed('')
+      setName('')
+      await onRefresh()
+    } catch (submitError) {
+      setError(submitError.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <form className="modal-section player-section" onSubmit={handleSubmit}>
+      <span className="map-stat-label">Open a fund</span>
+      <p className="note note-sm">
+        Seed a fund from your cash, then trade through it from any company page. Other traders may join it, and you
+        can deposit or withdraw its free cash any time.
+      </p>
+      <div className="field-pair">
+        <label className="field">
+          <span>Seed amount (max {formatMoney(player.availableBalance)})</span>
+          <input
+            className="select num"
+            type="number"
+            min="0.01"
+            step="0.01"
+            placeholder="0.00"
+            value={seed}
+            onChange={(event) => setSeed(event.target.value)}
+            aria-label="Fund seed amount"
+          />
+        </label>
+        <label className="field">
+          <span>Name (optional)</span>
+          <input
+            className="select"
+            type="text"
+            placeholder={`${player.name}'s Fund`}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+      </div>
+      {error ? (
+        <p className="command-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <button type="submit" className="btn btn-primary" disabled={submitting || !(Number(seed) > 0)}>
+        {submitting ? 'Opening…' : 'Open fund'}
+      </button>
+    </form>
+  )
+}
+
+function ManageFundSection({ player, onRefresh }) {
+  const [amount, setAmount] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  const withdrawable = player.fundWithdrawable ?? 0
+  const amountNum = Number(amount)
+
+  async function move(kind) {
+    setError(null)
+    setBusy(true)
+    try {
+      const payload = { amount: amountNum }
+      if (kind === 'deposit') {
+        await api.depositToPlayerFund(payload)
+      } else {
+        await api.withdrawFromPlayerFund(payload)
+      }
+      setAmount('')
+      await onRefresh()
+    } catch (moveError) {
+      setError(moveError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-section player-section">
+      <span className="map-stat-label">Fund — {player.fundName}</span>
+      <dl className="kv">
+        <div className="kv-row">
+          <dt>Cash</dt>
+          <dd className="num">{formatMoney(player.fundCurrentBalance)}</dd>
+        </div>
+        <div className="kv-row kv-sub">
+          <dt>Available</dt>
+          <dd className="num">{formatMoney(player.fundAvailableBalance)}</dd>
+        </div>
+        <div className="kv-row kv-sub">
+          <dt>Holdings</dt>
+          <dd className="num">{formatMoney(player.fundHoldingsValue)}</dd>
+        </div>
+        <div className="kv-row kv-total">
+          <dt>Total worth</dt>
+          <dd className="num">{formatMoney(player.fundTotalWorth)}</dd>
+        </div>
+      </dl>
+      <label className="field">
+        <span>Move cash (withdraw up to {formatMoney(withdrawable)})</span>
+        <input
+          className="select num"
+          type="number"
+          min="0.01"
+          step="0.01"
+          placeholder="0.00"
+          value={amount}
+          onChange={(event) => setAmount(event.target.value)}
+          aria-label="Fund transfer amount"
+        />
+      </label>
+      {error ? (
+        <p className="command-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="order-actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || !(amountNum > 0) || amountNum > (player.availableBalance ?? 0)}
+          onClick={() => move('deposit')}
+        >
+          {busy ? '…' : 'Deposit'}
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={busy || !(amountNum > 0) || amountNum > withdrawable}
+          onClick={() => move('withdraw')}
+        >
+          {busy ? '…' : 'Withdraw'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function PlayerStats({ player, holdings, orders, attention, loans, loanStatus, onLoanStatusChange, worthHistory, cashMoves, companies, onSelectCompany, onRefresh }) {
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
   const lastCycleMissing = player.lastCycleMoneyChange == null || player.lastCycleWorthChange == null
@@ -227,6 +390,8 @@ function PlayerStats({ player, holdings, orders, attention, loans, loanStatus, o
           </div>
         </dl>
       </div>
+
+      <FundSection player={player} onRefresh={onRefresh} />
 
       <div className="modal-section player-section">
         <span className="map-stat-label">Performance</span>
