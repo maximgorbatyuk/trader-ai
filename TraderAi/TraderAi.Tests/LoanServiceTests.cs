@@ -57,6 +57,43 @@ public sealed class LoanServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task OriginateLoanCreditsBorrowerAndRecordsDisbursement()
+    {
+        var (cycle, _) = await SeedAsync(price: 100m);
+        var borrower = await AddTraderAsync(currentBalance: 1_000m, type: ParticipantType.CollectiveFund);
+
+        var loan = await Service().OriginateLoanAsync(borrower, principal: 50_000m, grossWorth: 200_000m, cycle.Id, DateTime.UtcNow);
+
+        Assert.NotNull(loan);
+        Assert.Equal(LoanStatus.Open, loan!.Status);
+        Assert.Equal(50_000m, loan.Principal);
+        Assert.Equal(50_000m, loan.RemainingPrincipal);
+
+        var refreshed = await context.Participants.AsNoTracking().FirstAsync(candidate => candidate.Id == borrower.Id);
+        Assert.Equal(51_000m, refreshed.CurrentBalance);
+
+        var disbursement = await context.MoneyTransactions.AsNoTracking()
+            .SingleAsync(money => money.Type == MoneyTransactionType.LoanDisbursement);
+        Assert.Equal(50_000m, disbursement.Amount);
+        Assert.Equal(loan.Id, disbursement.RelatedLoanId);
+    }
+
+    [Fact]
+    public async Task OriginateLoanReturnsNullWhenLoansDisabled()
+    {
+        var (cycle, _) = await SeedAsync(price: 100m);
+        var borrower = await AddTraderAsync(currentBalance: 1_000m, type: ParticipantType.CollectiveFund);
+
+        var disabled = new LoanService(context, Options.Create(new LoanOptions { Enabled = false }));
+        var loan = await disabled.OriginateLoanAsync(borrower, principal: 50_000m, grossWorth: 200_000m, cycle.Id, DateTime.UtcNow);
+
+        Assert.Null(loan);
+        var refreshed = await context.Participants.AsNoTracking().FirstAsync(candidate => candidate.Id == borrower.Id);
+        Assert.Equal(1_000m, refreshed.CurrentBalance);
+        Assert.False(await context.Loans.AnyAsync());
+    }
+
+    [Fact]
     public async Task UnpaidInterestDoesNotAccrueToBankBalance()
     {
         var (cycle, _) = await SeedAsync(price: 100m);

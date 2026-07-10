@@ -111,6 +111,52 @@ public sealed class LoanService(
         await dbContext.SaveChangesAsync();
     }
 
+    // Originates one loan of an explicit principal for a single borrower and credits it to their balance, for a
+    // caller that must honour a specific obligation rather than a negative balance left by matching (a collective
+    // fund returning a departing member's deposit). Unlike the margin-buy path this ignores the debt cap, since
+    // the obligation must be met; the debt is then serviced by the normal loan machinery. Saves so the
+    // disbursement transaction can link the loan id, and returns the open loan (null when loans are disabled).
+    public async Task<Loan?> OriginateLoanAsync(Participant borrower, decimal principal, decimal grossWorth, int currentCycleId, DateTime now)
+    {
+        if (!options.Value.Enabled)
+        {
+            return null;
+        }
+
+        var roundedPrincipal = Round(principal);
+        if (roundedPrincipal <= 0m)
+        {
+            return null;
+        }
+
+        var loanBank = await ResolveBankAsync();
+        var termCycles = TermForLoan(roundedPrincipal, grossWorth);
+        var loan = new Loan
+        {
+            Bank = loanBank,
+            BankId = loanBank.Id,
+            ParticipantId = borrower.Id,
+            Principal = roundedPrincipal,
+            RemainingPrincipal = roundedPrincipal,
+            InterestRatePerCycle = loanBank.InterestRatePerCycle,
+            TermCycles = termCycles,
+            ScheduledInstallment = Round(roundedPrincipal / termCycles),
+            PastDueAmount = 0m,
+            DistressDiscountStep = 0,
+            Status = LoanStatus.Open,
+            OpenedInCycleId = currentCycleId,
+            CreatedAt = now,
+        };
+        dbContext.Loans.Add(loan);
+        borrower.CurrentBalance += roundedPrincipal;
+
+        // Save so the loan has an id to link its disbursement transaction to.
+        await dbContext.SaveChangesAsync();
+        AddTransaction(borrower.Id, MoneyTransactionType.LoanDisbursement, roundedPrincipal, loan.Id, currentCycleId, now);
+        await dbContext.SaveChangesAsync();
+        return loan;
+    }
+
     // Charges each open loan its per-cycle installment plus interest (oldest loan first, sharing the borrower's
     // cash), fining any shortfall into arrears, then force-sells a borrower still in arrears inside the final
     // stretch of a loan's term. Stages changes only; the caller saves.

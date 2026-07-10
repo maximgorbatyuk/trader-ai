@@ -31,8 +31,17 @@ public sealed class PlayerFundTests : IDisposable
     private MarketService Service(Random random, IDecisionEngine? decisionEngine = null) =>
         new(context, new MatchingEngine(context), decisionEngine ?? new NoOpDecisionEngine(), new MarketCycleLock(), random);
 
-    private CollectiveFundService FundService(Random random) =>
-        new(context, Options.Create(new CollectiveFundOptions { Enabled = true }), Options.Create(new RandomChanceRatesOptions()), random);
+    private CollectiveFundService FundService(Random random)
+    {
+        var loanOptions = Options.Create(new LoanOptions { Enabled = true });
+        return new CollectiveFundService(
+            context,
+            Options.Create(new CollectiveFundOptions { Enabled = true }),
+            Options.Create(new RandomChanceRatesOptions()),
+            loanOptions,
+            new LoanService(context, loanOptions),
+            random);
+    }
 
     // Opening moves the seed from the player to a new player-managed fund participant, records both cash legs, and
     // does not enrol the player as a depositing member.

@@ -34,8 +34,10 @@ public sealed class MarketExitIntegrationTests : IDisposable
         var member = await SeedClosingFundWithDevastatedMemberAsync();
 
         var random = new FixedRandom();
+        var loanOptions = Options.Create(new LoanOptions { Enabled = false });
         var fundService = new CollectiveFundService(
-            context, Options.Create(new CollectiveFundOptions { Enabled = true }), Options.Create(new RandomChanceRatesOptions()), random);
+            context, Options.Create(new CollectiveFundOptions { Enabled = true }), Options.Create(new RandomChanceRatesOptions()),
+            loanOptions, new LoanService(context, loanOptions), random);
         var exitService = new MarketExitService(
             context, Options.Create(new MarketExitOptions { Enabled = true }), Options.Create(new RandomChanceRatesOptions()), random);
         var marketService = new MarketService(

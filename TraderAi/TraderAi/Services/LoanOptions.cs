@@ -30,4 +30,8 @@ public sealed class LoanOptions
 
     // Inside this many cycles of the term, a borrower still in arrears is force-liquidated to raise cash.
     public int DistressWindowCycles { get; set; } = 15;
+
+    // A collective fund short on cash to return a departing member's deposit borrows the shortfall inflated by
+    // this fraction, so the payout clears with a small buffer instead of the fund force-selling shares up front.
+    public decimal LeavePayoutLoanBufferRate { get; set; } = 0.10m;
 }

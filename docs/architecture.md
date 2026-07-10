@@ -84,7 +84,7 @@ See [Participant rules](participant-rules.md), [Player](roles/player.md), [Colle
 
 ## Banking and margin
 
-Margin debt is represented by explicit loans rather than leaving a participant balance negative. When a matched purchase needs borrowed cash, the backend creates a loan, credits the proceeds, and records the disbursement. Loan servicing separates principal, interest, fines, and repayment movements so participant and bank balances remain reconcilable.
+Margin debt is represented by explicit loans rather than leaving a participant balance negative. When a participant needs borrowed cash — a matched purchase beyond its cash, or a fund covering a departing member's deposit — the backend creates a loan, credits the proceeds, and records the disbursement. Loan servicing separates principal, interest, fines, and repayment movements so participant and bank balances remain reconcilable.
 
 The bank grows through secondary-market trade fees and loan interest. Principal repayment removes an existing liability and is therefore not treated as new bank revenue.
 

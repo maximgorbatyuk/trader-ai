@@ -30,8 +30,17 @@ public sealed class CollectiveFundServiceTests : IDisposable
         context.Database.EnsureCreated();
     }
 
-    private CollectiveFundService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new CollectiveFundOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), random);
+    private CollectiveFundService Service(bool enabled, Random random, bool loansEnabled = true)
+    {
+        var loan = Options.Create(new LoanOptions { Enabled = loansEnabled });
+        return new CollectiveFundService(
+            context,
+            Options.Create(new CollectiveFundOptions { Enabled = enabled }),
+            Options.Create(new RandomChanceRatesOptions()),
+            loan,
+            new LoanService(context, loan),
+            random);
+    }
 
     [Fact]
     public async Task DisabledDoesNothing()
@@ -283,7 +292,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task LeaveRaisesCashBySellingWhenFundIsShort()
+    public async Task LeaveBorrowsToPayInFullWhenFundIsShort()
     {
         var (_, cycle, company) = await SeedAsync(price: 100m);
         var (fund, fundParticipant) = await AddFundAsync(balance: 1_000m);
@@ -300,7 +309,75 @@ public sealed class CollectiveFundServiceTests : IDisposable
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
-        // The deposit is not yet covered, so the member stays flagged as leaving and the fund lists shares to raise cash.
+        // Cash (1,000) cannot cover the 90,000 deposit, so the fund borrows the 89,000 shortfall plus the 10%
+        // buffer (97,900) and pays the leaver in full the same cycle rather than listing shares and waiting.
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == leaver.Id));
+
+        var refreshedLeaver = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == leaver.Id);
+        Assert.Equal(150_090_000m, refreshedLeaver.CurrentBalance);
+
+        var loan = await context.Loans.AsNoTracking().SingleAsync(candidate => candidate.ParticipantId == fundParticipant.Id);
+        Assert.Equal(LoanStatus.Open, loan.Status);
+        Assert.Equal(97_900m, loan.Principal);
+
+        // The fund raises the cash by borrowing, not by dumping its shares, so no forced sell is listed.
+        Assert.False(await context.Orders.AnyAsync(order => order.ParticipantId == fundParticipant.Id && order.Type == OrderType.Sell));
+
+        var refreshedFund = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fundParticipant.Id);
+        Assert.Equal(8_900m, refreshedFund.CurrentBalance);
+    }
+
+    [Fact]
+    public async Task PlayerFundBorrowsToPayLeaverWhenUnderwater()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 0m);
+        fund.IsPlayerManaged = true;
+        await context.SaveChangesAsync();
+
+        var leaver = await AddTraderAsync(currentBalance: 0m);
+        // The deposit is large enough that the payout lifts the leaver above the join ceiling, so it does not
+        // become a join candidate and no random is drawn in the join pass.
+        await AddMembershipAsync(fund, leaver, deposit: 600_000m, cycle.Id, isLeaving: true);
+
+        // No random draws: the member is already flagged leaving, and no eligible trader remains to join.
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        // A player fund never pair-closes; with no cash it borrows the deposit plus buffer (660,000) and pays the
+        // member in full, then carries the debt.
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == leaver.Id));
+        var refreshedLeaver = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == leaver.Id);
+        Assert.Equal(600_000m, refreshedLeaver.CurrentBalance);
+
+        var loan = await context.Loans.AsNoTracking().SingleAsync(candidate => candidate.ParticipantId == fundParticipant.Id);
+        Assert.Equal(LoanStatus.Open, loan.Status);
+        Assert.Equal(660_000m, loan.Principal);
+
+        var refreshedFund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(CollectiveFundStatus.Active, refreshedFund.Status);
+    }
+
+    [Fact]
+    public async Task LeaveFallsBackToSellingSharesWhenLoansDisabled()
+    {
+        var (_, cycle, company) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 1_000m);
+        await AddSharesAsync(fundParticipant.Id, company.Id, count: 20, price: 100m);
+        var leaver = await AddTraderAsync(currentBalance: 150_000_000m);
+        await AddMembershipAsync(fund, leaver, deposit: 90_000m, cycle.Id);
+        foreach (var _ in Enumerable.Range(0, 2))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
+        }
+
+        await Service(enabled: true, new ScriptedRandom([0.0d], []), loansEnabled: false)
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        // With loans off, the old behavior stands: the member waits and the fund lists shares to raise the cash.
         var membership = await context.CollectiveFundParticipants.AsNoTracking().FirstAsync(member => member.ParticipantId == leaver.Id);
         Assert.True(membership.IsLeaving);
 
@@ -309,6 +386,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         Assert.Equal(OrderStatus.Open, sell.Status);
         Assert.Equal(20, sell.Quantity);
         Assert.Equal(90m, sell.LimitPrice);
+        Assert.False(await context.Loans.AnyAsync());
     }
 
     [Fact]
@@ -629,7 +707,8 @@ public sealed class CollectiveFundServiceTests : IDisposable
     public async Task AggressiveMemberSwitchesOnRaisedChance()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);
-        // The fund cannot cover the deposit and owns nothing, so the switcher enters the waiting-to-leave state.
+        // Loans are off here so the switch is observed in isolation: the fund cannot cover the deposit and owns
+        // nothing, so the switcher stays in the waiting-to-leave state rather than being borrowed out immediately.
         var (fund, _) = await AddFundAsync(balance: 1_000m);
         var switcher = await AddTraderAsync(currentBalance: 50_000m, temperament: Temperament.Aggressive);
         await AddMembershipAsync(fund, switcher, deposit: 90_000m, cycle.Id, tenure: 25);
@@ -640,7 +719,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         }
 
         // 0.28 clears the 25% base but not the 30% an aggressive member rolls at, so the switch fires.
-        await Service(enabled: true, new ScriptedRandom([0.28d], []))
+        await Service(enabled: true, new ScriptedRandom([0.28d], []), loansEnabled: false)
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -944,10 +1023,13 @@ public sealed class CollectiveFundServiceTests : IDisposable
         // 1,000,000 cash is above the default 500k ceiling but below the raised 2M one, so the trader joins.
         var richJoiner = await AddTraderAsync(currentBalance: 1_000_000m);
 
+        var loanOptions = Options.Create(new LoanOptions { Enabled = true });
         var service = new CollectiveFundService(
             context,
             Options.Create(new CollectiveFundOptions { Enabled = true, JoinBalanceCeiling = 2_000_000m }),
             Options.Create(new RandomChanceRatesOptions()),
+            loanOptions,
+            new LoanService(context, loanOptions),
             new ScriptedRandom([0.0d], []));
         await service.ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();

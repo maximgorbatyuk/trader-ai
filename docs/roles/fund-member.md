@@ -15,7 +15,7 @@ A Fund Member is an Individual or AI Agent while it belongs to a Collective Fund
 - A member receives its share of the fund's dividend pass-through, divided by deposit size.
 - A member also receives ordinary dividends on any shares it still personally holds.
 - A wealthy member must leave the fund once its own cash balance crosses the leave threshold. Its chance to leave rises the longer it stays above that line.
-- On ordinary leave, the fund returns the member's full deposit. If needed, the fund sells holdings to raise the cash.
+- On ordinary leave, the fund returns the member's full deposit the same cycle. If the fund is short on cash, it borrows the shortfall to pay in full rather than making the member wait for share sales.
 - A non-founder member can switch to a stronger fund after the minimum tenure. Aggressive members switch more readily, conservative members less readily.
 - A founder does not switch away from the fund it opened.
 - A switching member joins the best available fund once its old membership is settled, even if its returned cash would normally put it over the join limit.

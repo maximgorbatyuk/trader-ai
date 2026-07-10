@@ -14,6 +14,8 @@ public sealed class CollectiveFundService(
     AppDbContext dbContext,
     IOptions<CollectiveFundOptions> options,
     IOptions<RandomChanceRatesOptions> chanceRates,
+    IOptions<LoanOptions> loanOptions,
+    LoanService loanService,
     Random random)
 {
     // Candidates pool into a fund only while their cash sits below CollectiveFundOptions.JoinBalanceCeiling;
@@ -166,11 +168,11 @@ public sealed class CollectiveFundService(
 
                 if (membership.IsLeaving)
                 {
-                    AdvanceLeave(fund, membership, member, currentCycleId, now);
+                    await AdvanceLeave(fund, membership, member, currentCycleId, now);
                 }
                 else
                 {
-                    MaybeDecideLeave(fund, membership, member, currentCycleId, now);
+                    await MaybeDecideLeave(fund, membership, member, currentCycleId, now);
                 }
             }
         }
@@ -419,7 +421,7 @@ public sealed class CollectiveFundService(
         }
     }
 
-    private void MaybeDecideLeave(CollectiveFund fund, CollectiveFundParticipant membership, Participant member, int currentCycleId, DateTime now)
+    private async Task MaybeDecideLeave(CollectiveFund fund, CollectiveFundParticipant membership, Participant member, int currentCycleId, DateTime now)
     {
         // A member that has grown rich graduates out of the fund on the ramping leave roll and does not come back.
         if (member.CurrentBalance >= LeaveBalanceThreshold)
@@ -433,7 +435,7 @@ public sealed class CollectiveFundService(
             }
 
             membership.IsLeaving = true;
-            AdvanceLeave(fund, membership, member, currentCycleId, now);
+            await AdvanceLeave(fund, membership, member, currentCycleId, now);
             return;
         }
 
@@ -452,7 +454,7 @@ public sealed class CollectiveFundService(
 
         member.PendingFundSwitch = true;
         membership.IsLeaving = true;
-        AdvanceLeave(fund, membership, member, currentCycleId, now);
+        await AdvanceLeave(fund, membership, member, currentCycleId, now);
     }
 
     private double SwitchChance(Temperament temperament) =>
@@ -463,9 +465,12 @@ public sealed class CollectiveFundService(
             _ => 0.0,
         };
 
-    // Returns a leaving member's deposit once the fund has the cash, otherwise lists shares to raise the
-    // shortfall and waits. If the exit would shrink the fund below a pair, the whole fund unwinds instead.
-    private void AdvanceLeave(CollectiveFund fund, CollectiveFundParticipant membership, Participant member, int currentCycleId, DateTime now)
+    // Returns a leaving member's full deposit in the same cycle. When the fund is short on free cash it borrows
+    // the shortfall (inflated by the payout buffer) and pays from that, so no member is ever left waiting on
+    // forced sales; the fund carries the loan, which the loan service repays. If the exit would shrink an AI
+    // fund below a pair, the whole fund unwinds instead. Only when loans are disabled does it fall back to the
+    // old behavior of raising the shortfall by selling shares and waiting.
+    private async Task AdvanceLeave(CollectiveFund fund, CollectiveFundParticipant membership, Participant member, int currentCycleId, DateTime now)
     {
         if (fund.Status != CollectiveFundStatus.Active)
         {
@@ -483,6 +488,16 @@ public sealed class CollectiveFundService(
         }
 
         var deposit = membership.DepositAmount;
+
+        // Short on free cash: borrow the shortfall plus the buffer so the deposit clears now instead of the
+        // member waiting cycles for forced sales to fund it. The debt then rides on the normal loan machinery.
+        if (fundParticipant.AvailableBalance < deposit && loanOptions.Value.Enabled)
+        {
+            var borrowShortfall = deposit - fundParticipant.AvailableBalance;
+            var principal = borrowShortfall * (1m + loanOptions.Value.LeavePayoutLoanBufferRate);
+            await loanService.OriginateLoanAsync(fundParticipant, principal, FundNetWorth(fundParticipant), currentCycleId, now);
+        }
+
         if (fundParticipant.AvailableBalance >= deposit)
         {
             fundParticipant.CurrentBalance -= deposit;
@@ -494,7 +509,8 @@ public sealed class CollectiveFundService(
             return;
         }
 
-        // Existing open sells will already bring in cash, so only list the part of the shortfall they do not cover.
+        // Loans disabled: fall back to raising the shortfall by selling shares and waiting. Existing open sells
+        // already bring in cash, so only list the part of the shortfall they do not cover.
         var shortfall = deposit - fundParticipant.AvailableBalance;
         var alreadyListed = PendingSaleValue(fundParticipant.Id);
         var stillToRaise = shortfall - alreadyListed;
@@ -600,7 +616,12 @@ public sealed class CollectiveFundService(
     {
         var owned = ownedByParticipant.GetValueOrDefault(fundParticipant.Id) ?? [];
         var holdingsValue = owned.Sum(holding => holding.Quantity * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
-        return fundParticipant.CurrentBalance + holdingsValue;
+
+        // A fund can now carry debt (from a leave-payout loan), so net worth subtracts the open-loan liability,
+        // matching the participant worth definition and keeping the founder-close and scoring reads honest.
+        var loanLiability = (openLoansByFundParticipant.GetValueOrDefault(fundParticipant.Id) ?? [])
+            .Sum(loan => loan.RemainingPrincipal + loan.PastDueAmount);
+        return fundParticipant.CurrentBalance + holdingsValue - loanLiability;
     }
 
     private decimal RecentDividends(int fundParticipantId)

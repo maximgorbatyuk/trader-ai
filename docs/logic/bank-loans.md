@@ -7,6 +7,7 @@ Buying on margin opens a bank loan. Debt is a first-class liability that a trade
 - A single bank, the "National bank", lends to every trader. It has no balance of its own; it only sets the interest rate.
 - A trader may borrow up to a fixed fraction of its total worth (cash plus holdings). Every active trader type can borrow, including the human player and collective funds.
 - When a buy fills for more cash than the buyer holds, a loan is opened for the shortfall plus a small cash buffer, and the buffer is left in the buyer's balance after the purchase settles.
+- A collective fund also opens a loan when it lacks the cash to return a departing member's deposit: it borrows the shortfall plus a small buffer, pays the member in full that cycle, and repays the loan through the normal servicing below. Because returning a deposit is an obligation the fund must meet, this borrowing is not limited by the debt fraction that caps margin buys.
 - Each loan snapshots the bank's interest rate when it opens, so a later rate change never touches existing loans.
 - A loan's term is set once at origination and scales with its size against the borrower's worth: a larger loan relative to worth runs a longer term, within a fixed minimum and maximum.
 - Each cycle the loan is charged a scheduled repayment plus interest, paid from the borrower's cash and recorded on the trader's cash movements.

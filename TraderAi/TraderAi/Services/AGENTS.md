@@ -35,6 +35,7 @@ Do not reorder these phases without reviewing which prices, ratings, holdings, o
 - Ordinary order ageing, repricing, bankruptcy, exit, and automated decisions do not manage the human player.
 - Splits, reverse merges, volatility halts, and loan-distress liquidation are deliberate exceptions that may cancel or force action on player positions.
 - A player-managed collective fund is skipped by automated fund trading and fund-level automatic closure, while ordinary membership processing still applies.
+- A fund short on cash to repay a leaving member borrows the shortfall plus the configured buffer and pays in full that cycle instead of force-selling; the payout loan ignores the debt cap and, because loan servicing precedes fund processing, is first serviced the next cycle. Force-selling to fund a leave now runs only as the loans-disabled fallback.
 - Secondary participant sales may pay the configured trade fee; issuer-float sales do not. Loan interest is bank revenue, while principal repayment only reduces the liability.
 - Scoped news impacts settle at the advance boundary so the next decision cycle reacts to them rather than trading against an unsettled book.
 
