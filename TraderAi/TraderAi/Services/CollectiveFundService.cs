@@ -20,8 +20,6 @@ public sealed class CollectiveFundService(
     // members must leave once their own cash climbs back above this upper line.
     private const decimal LeaveBalanceThreshold = 100_000_000m;
 
-    private const int MaxMembers = 20;
-
     // No fund may be created or joined during the market's opening stretch.
     private const int QuietCycles = 50;
 
@@ -550,7 +548,7 @@ public sealed class CollectiveFundService(
 
     private List<CollectiveFund> JoinableFunds() =>
         funds
-            .Where(fund => fund.Status == CollectiveFundStatus.Active && membershipsByFundId[fund.Id].Count < MaxMembers)
+            .Where(fund => fund.Status == CollectiveFundStatus.Active && membershipsByFundId[fund.Id].Count < options.Value.MaxMembers)
             .ToList();
 
     // Picks the fund a joiner prefers: bigger, worth more, paying more dividends recently, and growing fastest.

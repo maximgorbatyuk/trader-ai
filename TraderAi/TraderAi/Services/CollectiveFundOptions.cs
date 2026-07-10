@@ -14,4 +14,8 @@ public sealed class CollectiveFundOptions
     // How many snapshots back the fund-growth trend (join boost and celebratory newswire) looks; the default
     // matches the value this lived at as a service constant.
     public int FundGrowthWindowCycles { get; set; } = 5;
+
+    // Upper bound on members a single fund accepts; new joiners skip a fund once it reaches this. The default
+    // matches the value this lived at as a service constant.
+    public int MaxMembers { get; set; } = 20;
 }
