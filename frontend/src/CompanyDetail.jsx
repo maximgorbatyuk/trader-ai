@@ -9,6 +9,7 @@ import { RatingBadge } from './RatingBadge'
 import { NewsImpact } from './NewsImpact'
 import { NewsModal } from './NewsModal'
 import { OrderForm } from './OrderForm'
+import { TradeModal } from './TradeModal'
 
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
@@ -239,7 +240,7 @@ export function CompanyDetail({ companyId }) {
       </div>
 
       <OrdersPanel orders={orders} currentPrice={detail.currentPrice} issuedShares={detail.issuedSharesCount} />
-      <TradesPanel trades={trades} />
+      <TradesPanel trades={trades} companyName={detail.name} />
 
       <div className="grid-detail">
         <RatingHistoryPanel ratings={ratings} />
@@ -611,7 +612,13 @@ function OrdersPanel({ orders, currentPrice, issuedShares }) {
   )
 }
 
-function TradesPanel({ trades }) {
+function TradesPanel({ trades, companyName }) {
+  const [selectedTrade, setSelectedTrade] = useState(null)
+
+  // The buyer/seller cells carry their own trader links, so those stop propagation to keep navigating instead
+  // of opening the trade dialog.
+  const stopRow = { onClick: (event) => event.stopPropagation(), onKeyDown: (event) => event.stopPropagation() }
+
   return (
     <Panel title="Recent trades" count={`last ${trades.length}`} className="panel-trades">
       {trades.length === 0 ? (
@@ -644,7 +651,20 @@ function TradesPanel({ trades }) {
               {trades.map((trade) => {
                 const vsMarket = priceVsReference(trade.price, trade.marketPriceBefore)
                 return (
-                  <tr key={trade.id}>
+                  <tr
+                    key={trade.id}
+                    className="tbl-row-click"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open details for the trade of ${formatInt(trade.quantity)} shares at ${formatMoney(trade.price)}`}
+                    onClick={() => setSelectedTrade(trade)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        setSelectedTrade(trade)
+                      }
+                    }}
+                  >
                     <td className="num ta-r">{formatInt(trade.quantity)}</td>
                     <td className="num ta-r">
                       {formatMoney(trade.price)}
@@ -660,6 +680,7 @@ function TradesPanel({ trades }) {
                         className="cell-link"
                         to={`/traders/${trade.buyerId}`}
                         title={`Open ${trade.buyerName ?? 'buyer'} trader page`}
+                        {...stopRow}
                       >
                         {trade.buyerName ?? `#${trade.buyerId}`}
                       </Link>
@@ -670,6 +691,7 @@ function TradesPanel({ trades }) {
                           className="cell-link"
                           to={`/traders/${trade.sellerId}`}
                           title={`Open ${trade.sellerName ?? 'seller'} trader page`}
+                          {...stopRow}
                         >
                           {trade.sellerName ?? `#${trade.sellerId}`}
                         </Link>
@@ -684,6 +706,13 @@ function TradesPanel({ trades }) {
           </table>
         </div>
       )}
+      {selectedTrade ? (
+        <TradeModal
+          trade={selectedTrade}
+          companyName={companyName}
+          onClose={() => setSelectedTrade(null)}
+        />
+      ) : null}
     </Panel>
   )
 }

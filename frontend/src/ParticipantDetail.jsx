@@ -8,6 +8,9 @@ import { LineChart } from './LineChart'
 import { CASH_LABEL, CASH_TONE } from './cashMovements'
 import { IndustryHoldingsTable } from './IndustryHoldingsTable'
 import { groupHoldingsByIndustry } from './industryHoldings'
+import { TradeModal } from './TradeModal'
+import { useClientTable } from './useClientTable'
+import { Pager } from './TableControls'
 
 const POLL_INTERVAL_MS = 2500
 const WORTH_HISTORY_POINTS = 64
@@ -53,7 +56,7 @@ export function ParticipantDetail({ participantId }) {
       const [detailData, holdingsData, orderData, tradeData, cashData, companyData, worthData, loanData] = await Promise.all([
         api.getParticipant(participantId),
         api.getHoldings(participantId),
-        api.getParticipantOrders(participantId),
+        api.getParticipantOrders(participantId, 100),
         api.getParticipantShareTransactions(participantId),
         api.getParticipantMoneyTransactions(participantId),
         api.getCompanies(),
@@ -434,50 +437,62 @@ function IndustryHoldingsPanel({ holdings, companies }) {
 }
 
 function OrdersPanel({ orders, companyName }) {
+  // Latest first: order ids increase over time, so a descending id sort keeps the newest orders on page one.
+  const { pageRows, page, pageCount, setPage } = useClientTable(orders, {
+    pageSize: 10,
+    initialSortKey: 'id',
+    initialSortDir: 'desc',
+  })
+
   return (
-    <Panel title="Recent orders" count={`last ${orders.length}`} className="panel-orders-list">
+    <Panel title="Recent orders" count={`${orders.length} total`} className="panel-orders-list">
       {orders.length === 0 ? (
         <p className="note">No orders placed yet.</p>
       ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Side</th>
-                <th scope="col">Company</th>
-                <th scope="col" className="ta-r">
-                  Qty
-                </th>
-                <th scope="col" className="ta-r">
-                  Limit
-                </th>
-                <th scope="col">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {orders.map((order) => (
-                <tr key={order.id}>
-                  <td className={`tone-${order.type === 'Buy' ? 'up' : 'down'}`}>{order.type}</td>
-                  <th scope="row" className="cell-ellipsis">
-                    {companyName(order.companyId)}
+        <>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Side</th>
+                  <th scope="col">Company</th>
+                  <th scope="col" className="ta-r">
+                    Qty
                   </th>
-                  <td className="num ta-r">
-                    {order.filledQuantity}
-                    <span className="muted-sub">/{order.quantity}</span>
-                  </td>
-                  <td className="num ta-r">{formatMoney(order.limitPrice)}</td>
-                  <td>{order.status}</td>
+                  <th scope="col" className="ta-r">
+                    Limit
+                  </th>
+                  <th scope="col">Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {pageRows.map((order) => (
+                  <tr key={order.id}>
+                    <td className={`tone-${order.type === 'Buy' ? 'up' : 'down'}`}>{order.type}</td>
+                    <th scope="row" className="cell-ellipsis">
+                      {companyName(order.companyId)}
+                    </th>
+                    <td className="num ta-r">
+                      {order.filledQuantity}
+                      <span className="muted-sub">/{order.quantity}</span>
+                    </td>
+                    <td className="num ta-r">{formatMoney(order.limitPrice)}</td>
+                    <td>{order.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
       )}
     </Panel>
   )
 }
 
 function TradesPanel({ trades, participantId, companyName }) {
+  const [selectedTrade, setSelectedTrade] = useState(null)
+
   return (
     <Panel title="Recent trades" count={`last ${trades.length}`} className="panel-trades">
       {trades.length === 0 ? (
@@ -504,7 +519,20 @@ function TradesPanel({ trades, participantId, companyName }) {
               {trades.map((trade) => {
                 const bought = trade.buyerId === participantId
                 return (
-                  <tr key={trade.id}>
+                  <tr
+                    key={trade.id}
+                    className="tbl-row-click"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open details for ${bought ? 'buying' : 'selling'} ${formatInt(trade.quantity)} ${companyName(trade.companyId)} shares at ${formatMoney(trade.price)}`}
+                    onClick={() => setSelectedTrade(trade)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        setSelectedTrade(trade)
+                      }
+                    }}
+                  >
                     <td className={`tone-${bought ? 'up' : 'down'}`}>{bought ? 'Bought' : 'Sold'}</td>
                     <th scope="row" className="cell-ellipsis">
                       {companyName(trade.companyId)}
@@ -519,6 +547,14 @@ function TradesPanel({ trades, participantId, companyName }) {
           </table>
         </div>
       )}
+      {selectedTrade ? (
+        <TradeModal
+          trade={selectedTrade}
+          companyName={companyName(selectedTrade.companyId)}
+          participantId={participantId}
+          onClose={() => setSelectedTrade(null)}
+        />
+      ) : null}
     </Panel>
   )
 }
@@ -620,7 +656,9 @@ function CashPanel({ moves }) {
             <tbody>
               {moves.map((move) => (
                 <tr key={move.id}>
-                  <td className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</td>
+                  <td>
+                    <span className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</span>
+                  </td>
                   <td className="num ta-r">{formatMoney(move.amount)}</td>
                   <td className="num ta-r">#{move.createdInCycleId}</td>
                 </tr>

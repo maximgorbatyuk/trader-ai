@@ -5,7 +5,7 @@ The app simulates a trading market.
 Participants place buy and sell orders during market cycles.
 The market matches compatible orders and creates share transactions.
 Money transactions record cash reservations and cash movement.
-Each share is stored as a separate row and has one current owner.
+Share ownership is stored as one quantity-based holding per participant and company.
 
 ## Core Rules
 
@@ -78,7 +78,7 @@ Fields:
 
 Notes:
 
-- Issued shares are represented by separate `Share` records.
+- Issued shares are divided between quantity-based participant holdings and the issuer's implicit unsold float.
 - The company price can be read from the latest price snapshot.
 - Every company belongs to exactly one industry.
 
@@ -268,7 +268,7 @@ Fields:
 
 Notes:
 
-- The market contains companies, participants, shares, orders, share transactions, money transactions, and cycles.
+- The market contains companies, participants, holdings, orders, share transactions, money transactions, and cycles.
 - The market controls when cycles start and finish.
 - The market owns the order-matching rules.
 

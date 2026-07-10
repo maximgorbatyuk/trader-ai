@@ -754,6 +754,19 @@
 .tone-attention {
   color: var(--attention);
 }
+/* Cash-movement label tones: income green, spend dark red, fee amber, reservation blue. */
+.tone-income {
+  color: var(--up);
+}
+.tone-spend {
+  color: var(--cash-out);
+}
+.tone-fee {
+  color: var(--attention);
+}
+.tone-reserve {
+  color: var(--reserve);
+}
 
 .muted-sub {
   color: var(--muted);
@@ -1355,6 +1368,16 @@
 
 .tbl tbody tr.is-selected th:first-child {
   box-shadow: inset 3px 0 0 var(--border-2);
+}
+
+/* Rows that open a detail dialog on click; the :hover tint above already signals hoverability. */
+.tbl tbody tr.tbl-row-click {
+  cursor: pointer;
+}
+
+.tbl tbody tr.tbl-row-click:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
 }
 
 .tbl tbody th {

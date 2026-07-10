@@ -38,6 +38,7 @@ No authentication is required between the frontend and backend for local develop
 
 | Page | What it covers |
 | --- | --- |
+| [Architecture](docs/architecture.md) | The system boundaries and durable patterns connecting the frontend, market cycle, trading, lifecycle, and persistence subsystems. |
 | [Domain](docs/domain.md) | The simulation's data model and the core market rules. |
 | [Participant rules](docs/participant-rules.md) | Shared participant rules and links to each role page. |
 | [Individual](docs/roles/individual.md) | Rules for the default automated trader. |

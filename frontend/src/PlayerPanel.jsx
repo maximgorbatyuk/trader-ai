@@ -722,7 +722,9 @@ function CashMovesTab({ moves }) {
             <tbody>
               {moves.map((move) => (
                 <tr key={move.id}>
-                  <td className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</td>
+                  <td>
+                    <span className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</span>
+                  </td>
                   <td className="num ta-r">{formatMoney(move.amount)}</td>
                   <td className="num ta-r">#{move.createdInCycleId}</td>
                 </tr>
