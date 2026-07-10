@@ -5,6 +5,7 @@ import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { LineChart } from './LineChart'
 import { NewsImpact } from './NewsImpact'
 import { OrderForm } from './OrderForm'
+import { RatingBadge } from './RatingBadge'
 
 const POLL_INTERVAL_MS = 1000
 
@@ -20,6 +21,18 @@ function formatPct(value) {
   return `${sign}${(Math.abs(value) * 100).toFixed(2)}%`
 }
 
+// Sentiment is a small signed index; a leading + keeps its sign explicit, matching the industries page.
+function formatSentiment(value) {
+  if (typeof value !== 'number') return '—'
+  return `${value > 0 ? '+' : ''}${value}`
+}
+
+function formatCyclesAgo(cyclesAgo) {
+  if (typeof cyclesAgo !== 'number') return ''
+  if (cyclesAgo <= 0) return 'this cycle'
+  return `${formatInt(cyclesAgo)} cycle${cyclesAgo === 1 ? '' : 's'} ago`
+}
+
 // Detail dialog for one company opened from the market map. Live price, cap and share count come from the
 // dashboard's already-polled company record; the price history and most recent trade are fetched here.
 export function CompanyModal({ company, participantNameById, onClose }) {
@@ -30,7 +43,10 @@ export function CompanyModal({ company, participantNameById, onClose }) {
   const [ownedShares, setOwnedShares] = useState(0)
   const [fundOwnedShares, setFundOwnedShares] = useState(0)
   const [companyNews, setCompanyNews] = useState([])
+  const [industrySentiment, setIndustrySentiment] = useState([])
+  const [latestRating, setLatestRating] = useState(null)
   const [activeForm, setActiveForm] = useState('none')
+  const industryId = company?.industryId
   const dialogRef = useRef(null)
   const closeRef = useRef(null)
 
@@ -40,17 +56,21 @@ export function CompanyModal({ company, participantNameById, onClose }) {
     let active = true
     async function load() {
       try {
-        const [priceData, dealData, playerData, newsData] = await Promise.all([
+        const [priceData, dealData, playerData, newsData, sentimentData, ratingData] = await Promise.all([
           api.getPrices(companyId),
           api.getCompanyShareTransactions(companyId, 1),
           api.getPlayer(),
           api.getCompanyNews(companyId, 5),
+          industryId != null ? api.getIndustrySentimentHistory(industryId) : Promise.resolve([]),
+          api.getCompanyRatings(companyId, 1),
         ])
         if (!active) return
         setPrices(priceData)
         setLatestDeal(dealData[0] ?? null)
         setPlayer(playerData)
         setCompanyNews(newsData ?? [])
+        setIndustrySentiment(sentimentData ?? [])
+        setLatestRating((ratingData && ratingData[0]) ?? null)
 
         if (playerData) {
           const holdings = await api.getHoldings(playerData.id)
@@ -81,7 +101,7 @@ export function CompanyModal({ company, participantNameById, onClose }) {
       active = false
       clearInterval(intervalId)
     }
-  }, [companyId])
+  }, [companyId, industryId])
 
   // Close on Escape and lock background scroll while the dialog is open.
   useEffect(() => {
@@ -127,6 +147,8 @@ export function CompanyModal({ company, participantNameById, onClose }) {
     .filter((snapshot) => snapshot.capitalization != null)
     .map((snapshot) => snapshot.capitalization)
   const capSeriesChange = capValues.length >= 2 ? capValues.at(-1) - capValues.at(0) : 0
+  const sentimentValues = industrySentiment.map((point) => point.sentimentValue)
+  const sentimentChange = sentimentValues.length >= 2 ? sentimentValues.at(-1) - sentimentValues.at(0) : 0
   const headlineTone = toneOf(company.priceChangePct)
   const titleId = `company-modal-title-${company.id}`
 
@@ -207,6 +229,22 @@ export function CompanyModal({ company, participantNameById, onClose }) {
             />
           )}
 
+          <div className="modal-section">
+            <span className="map-stat-label">Industry sentiment · {company.industryName ?? '—'}</span>
+            {sentimentValues.length < 2 ? (
+              <p className="note note-sm">Not enough sentiment history yet.</p>
+            ) : (
+              <div className="chart-sm">
+                <LineChart
+                  values={sentimentValues.slice(-48)}
+                  tone={toneOf(sentimentChange)}
+                  formatValue={formatSentiment}
+                  label={`${company.industryName ?? 'Industry'} sentiment history`}
+                />
+              </div>
+            )}
+          </div>
+
           <dl className="modal-stats">
             <div>
               <dt>Industry</dt>
@@ -233,6 +271,21 @@ export function CompanyModal({ company, participantNameById, onClose }) {
               <dd className="num">{formatMoney(high)}</dd>
             </div>
           </dl>
+
+          <div className="modal-section">
+            <span className="map-stat-label">Latest risk estimation</span>
+            {latestRating ? (
+              <p className="modal-deal">
+                <RatingBadge rating={latestRating.rating} impactPercent={latestRating.impactPercent} />
+                <span className="muted-sub">
+                  {' '}
+                  · {latestRating.auditorName} · {formatCyclesAgo(latestRating.cyclesAgo)}
+                </span>
+              </p>
+            ) : (
+              <p className="note note-sm">No auditor has reviewed this company yet.</p>
+            )}
+          </div>
 
           <div className="modal-section">
             <span className="map-stat-label">Latest deal</span>

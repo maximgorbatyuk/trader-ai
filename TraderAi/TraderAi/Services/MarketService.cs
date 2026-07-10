@@ -179,6 +179,9 @@ public sealed class MarketService(
     public Task<PlayerFundResult> WithdrawFromPlayerFundAsync(decimal amount) =>
         WithLockAsync(() => WithdrawFromPlayerFundCoreAsync(amount));
 
+    public Task<PlayerFundResult> ClosePlayerFundAsync() =>
+        WithLockAsync(ClosePlayerFundCoreAsync);
+
     // Manual loan repayment goes through the cycle lock so it cannot race a running tick's writes.
     public Task<RepayLoanResult> RepayLoanAsync(int loanId, decimal? amount) => WithLockAsync(async () =>
     {
@@ -1290,6 +1293,113 @@ public sealed class MarketService(
         }
 
         RecordPlayerFundTransfer(context.FundParticipant, context.Player, amount, context.Market.CurrentCycleId ?? 0, DateTime.UtcNow);
+        await dbContext.SaveChangesAsync();
+        return PlayerFundResult.Ok();
+    }
+
+    // Instant close: the player absorbs the fund's positions and residual cash while members are made whole in
+    // cash, then the fund is tombstoned like any wound-down fund. Blocked while the fund cannot cover its members'
+    // deposits in cash, since a member's principal must never be stranded.
+    private async Task<PlayerFundResult> ClosePlayerFundCoreAsync()
+    {
+        var (context, error) = await ResolvePlayerFundAsync();
+        if (context is null)
+        {
+            return PlayerFundResult.Fail(error!);
+        }
+
+        var player = context.Player;
+        var fund = context.Fund;
+        var fundParticipant = context.FundParticipant;
+        var currentCycleId = context.Market.CurrentCycleId ?? 0;
+        var now = DateTime.UtcNow;
+
+        var members = await dbContext.CollectiveFundParticipants
+            .Where(member => member.CollectiveFundId == fund.Id)
+            .ToListAsync();
+        var totalDeposits = members.Sum(member => member.DepositAmount);
+        if (totalDeposits > fundParticipant.CurrentBalance)
+        {
+            return PlayerFundResult.Fail(
+                "The fund cannot cover its members' deposits in cash. Deposit the shortfall or sell the fund's holdings first.");
+        }
+
+        // Cancelling releases any buy reservations back into the fund's cash; a sell just stops resting.
+        var openOrders = await dbContext.Orders
+            .Where(order => order.ParticipantId == fundParticipant.Id
+                && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
+            .ToListAsync();
+        foreach (var order in openOrders)
+        {
+            CancelOrder(order, fundParticipant, currentCycleId);
+        }
+
+        // The player takes over every fund position at the fund's cost basis, blended into any it already holds.
+        var fundHoldings = await dbContext.Holdings
+            .Where(holding => holding.ParticipantId == fundParticipant.Id && holding.Quantity > 0)
+            .ToListAsync();
+        foreach (var fundHolding in fundHoldings)
+        {
+            var playerHolding = await dbContext.Holdings
+                .FirstOrDefaultAsync(holding => holding.ParticipantId == player.Id && holding.CompanyId == fundHolding.CompanyId);
+            if (playerHolding is null)
+            {
+                dbContext.Holdings.Add(new Holding
+                {
+                    ParticipantId = player.Id,
+                    CompanyId = fundHolding.CompanyId,
+                    Quantity = fundHolding.Quantity,
+                    AverageCost = fundHolding.AverageCost,
+                });
+            }
+            else
+            {
+                var mergedQuantity = playerHolding.Quantity + fundHolding.Quantity;
+                if (mergedQuantity > 0)
+                {
+                    playerHolding.AverageCost =
+                        ((playerHolding.Quantity * playerHolding.AverageCost) + (fundHolding.Quantity * fundHolding.AverageCost)) / mergedQuantity;
+                }
+                playerHolding.Quantity = mergedQuantity;
+            }
+
+            fundHolding.Quantity = 0;
+        }
+
+        // Members get their deposits back, then the player takes whatever cash is left.
+        foreach (var member in members)
+        {
+            var memberParticipant = await dbContext.Participants
+                .FirstOrDefaultAsync(participant => participant.Id == member.ParticipantId);
+            if (memberParticipant is not null && member.DepositAmount > 0m)
+            {
+                RecordPlayerFundTransfer(fundParticipant, memberParticipant, member.DepositAmount, currentCycleId, now);
+            }
+
+            dbContext.CollectiveFundParticipants.Remove(member);
+        }
+
+        if (fundParticipant.CurrentBalance > 0m)
+        {
+            RecordPlayerFundTransfer(fundParticipant, player, fundParticipant.CurrentBalance, currentCycleId, now);
+        }
+
+        // A winding-down fund's loans are discharged like any departing borrower's.
+        var openLoans = await dbContext.Loans
+            .Where(loan => loan.ParticipantId == fundParticipant.Id && loan.Status == LoanStatus.Open)
+            .ToListAsync();
+        foreach (var loan in openLoans)
+        {
+            LoanService.MarkClosed(loan, LoanCloseReason.ParticipantDeparted, currentCycleId, now);
+        }
+
+        // Rounding dust below the cent is dropped so the closed fund settles flat.
+        fundParticipant.CurrentBalance = 0m;
+        fundParticipant.ReservedBalance = 0m;
+        fundParticipant.IsActive = false;
+        fund.Status = CollectiveFundStatus.Closed;
+        fund.ClosedAt = now;
+
         await dbContext.SaveChangesAsync();
         return PlayerFundResult.Ok();
     }

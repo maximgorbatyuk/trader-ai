@@ -66,6 +66,7 @@ builder.Services.Configure<AuditorOptions>(builder.Configuration.GetSection(Audi
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
 builder.Services.Configure<CompanyLifecycleOptions>(builder.Configuration.GetSection(CompanyLifecycleOptions.SectionName));
 builder.Services.Configure<LoanOptions>(builder.Configuration.GetSection(LoanOptions.SectionName));
+builder.Services.Configure<TradeFeeOptions>(builder.Configuration.GetSection(TradeFeeOptions.SectionName));
 builder.Services.Configure<VolatilityHaltOptions>(builder.Configuration.GetSection(VolatilityHaltOptions.SectionName));
 builder.Services.Configure<ConcentrationCapOptions>(builder.Configuration.GetSection(ConcentrationCapOptions.SectionName));
 builder.Services.Configure<ArchiveOptions>(builder.Configuration.GetSection(ArchiveOptions.SectionName));

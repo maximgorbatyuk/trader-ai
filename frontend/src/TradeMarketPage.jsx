@@ -6,8 +6,11 @@ import { Panel } from './Panel'
 import { MarketMapPanel } from './MarketMapPanel'
 import { OrdersActivity } from './OrdersActivity'
 import { LatestNews } from './LatestNews'
+import { OrderBookPanel } from './OrderBook'
+import { emptyActorHintFor, holdingCompanyIdSet, resolveActor } from './actor'
 
 const POLL_INTERVAL_MS = 1500
+const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
 const TABS = [
   { key: 'map', label: 'Market map' },
   { key: 'activity', label: 'Orders activity' },
@@ -17,42 +20,57 @@ const TABS = [
 // tab pair, with the two latest news below. Market state comes from the app shell; this page owns the rest of
 // its polling. Clicking a company opens its detail route rather than a modal.
 function TradeMarketPage() {
-  const { market } = useOutletContext()
+  const { market, actorKind } = useOutletContext()
   const navigate = useNavigate()
   const [companies, setCompanies] = useState([])
   const [participants, setParticipants] = useState([])
   const [activity, setActivity] = useState([])
   const [news, setNews] = useState([])
+  const [orders, setOrders] = useState([])
+  const [player, setPlayer] = useState(null)
   const [playerHoldingCompanyIds, setPlayerHoldingCompanyIds] = useState(() => new Set())
+  const [actorHoldingCompanyIds, setActorHoldingCompanyIds] = useState(() => new Set())
   const [active, setActive] = useState('map')
   const tabRefs = useRef({})
 
   const loadAll = useCallback(async () => {
     try {
-      const [companyData, participantData, activityData, newsData, playerData] = await Promise.all([
+      const [companyData, participantData, activityData, newsData, orderData, playerData] = await Promise.all([
         api.getCompanies(),
         api.getParticipants(),
         api.getCycleActivity(),
         api.getNews(10),
+        api.getOrders('open'),
         api.getPlayer(),
       ])
       setCompanies(companyData)
       setParticipants(participantData)
       setActivity(activityData)
       setNews(newsData)
+      setOrders(orderData)
+      setPlayer(playerData)
 
       if (playerData) {
         const holdings = await api.getHoldings(playerData.id)
-        setPlayerHoldingCompanyIds(
-          new Set(holdings.filter((holding) => holding.shares > 0).map((holding) => holding.companyId)),
-        )
+        const playerHeld = holdingCompanyIdSet(holdings)
+        setPlayerHoldingCompanyIds(playerHeld)
+
+        const activeId = actorKind === 'fund' ? playerData.fundParticipantId : playerData.id
+        if (activeId == null) {
+          setActorHoldingCompanyIds(new Set())
+        } else if (activeId === playerData.id) {
+          setActorHoldingCompanyIds(playerHeld)
+        } else {
+          setActorHoldingCompanyIds(holdingCompanyIdSet(await api.getHoldings(activeId)))
+        }
       } else {
         setPlayerHoldingCompanyIds(new Set())
+        setActorHoldingCompanyIds(new Set())
       }
     } catch {
       // Keep the last known state when a refresh fails; the shell surfaces the offline status.
     }
-  }, [])
+  }, [actorKind])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)
@@ -85,6 +103,17 @@ function TradeMarketPage() {
 
   const currentCycleNumber = market?.currentCycleNumber ?? null
   const onSelectCompany = (companyId) => navigate(`/companies/${companyId}`)
+
+  const participantNameById = new Map(participants.map((participant) => [participant.id, participant.name]))
+  const bankruptParticipantIds = new Set(
+    participants.filter((participant) => participant.isBankrupt).map((participant) => participant.id),
+  )
+  const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
+  const companyPriceById = new Map(companies.map((company) => [company.id, company.currentPrice]))
+  const companySharesById = new Map(companies.map((company) => [company.id, company.issuedSharesCount]))
+  const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
+  const actor = resolveActor(player, actorKind)
+  const emptyActorHint = emptyActorHintFor(player, actorKind)
 
   return (
     <main className="main">
@@ -144,6 +173,22 @@ function TradeMarketPage() {
             </div>
           </Panel>
         )}
+      </div>
+
+      <div className="dashboard">
+        <OrderBookPanel
+          orders={openOrders}
+          participantNameById={participantNameById}
+          bankruptParticipantIds={bankruptParticipantIds}
+          companyNameById={companyNameById}
+          companyPriceById={companyPriceById}
+          companySharesById={companySharesById}
+          actor={actor}
+          actorHoldingCompanyIds={actorHoldingCompanyIds}
+          emptyActorHint={emptyActorHint}
+          onSelectCompany={onSelectCompany}
+          onTraded={loadAll}
+        />
       </div>
     </main>
   )

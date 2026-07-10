@@ -7,6 +7,10 @@ import { Footer, TopBar } from './Chrome'
 
 const SHELL_POLL_INTERVAL_MS = 1500
 const WORTH_GLYPH = { up: '▲', down: '▼' }
+const ACTOR_TABS = [
+  { key: 'player', label: 'Player' },
+  { key: 'fund', label: 'Fund' },
+]
 
 const sideLinkClass = ({ isActive }) => `side-link${isActive ? ' is-active' : ''}`
 
@@ -49,6 +53,9 @@ export function AppShell() {
   const [ready, setReady] = useState(false)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
+  // Whether the player trades and reads stats as themselves or through their managed fund; shared with the
+  // dashboard tabs and the order book so one switch drives all three surfaces.
+  const [actorKind, setActorKind] = useState('player')
 
   const load = useCallback(async () => {
     try {
@@ -94,6 +101,8 @@ export function AppShell() {
 
   const worthTone = player ? worthToneOf(player.lastCycleWorthChange) : null
   const marketActive = market?.status === 'Running'
+  const showFund = actorKind === 'fund'
+  const hasFund = player?.fundParticipantId != null
 
   return (
     <div className={`app-shell${marketActive ? ' is-market-active' : ''}`}>
@@ -150,22 +159,55 @@ export function AppShell() {
         </nav>
         {player ? (
           <div className="sidebar-player">
-            <span className="sidebar-player-title">Player</span>
-            <div className="sidebar-stat">
-              <span className="map-stat-label">Total worth</span>
-              <span className={`sidebar-stat-value is-lead num${worthTone ? ` tone-${worthTone}` : ''}`}>
-                {worthTone ? <span aria-hidden="true">{WORTH_GLYPH[worthTone]} </span> : null}
-                {formatMoney(player.totalWorth)}
-              </span>
+            <div className="actor-switch" role="group" aria-label="Trade as">
+              {ACTOR_TABS.map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  className={`actor-switch-btn${actorKind === tab.key ? ' is-active' : ''}`}
+                  aria-pressed={actorKind === tab.key}
+                  onClick={() => setActorKind(tab.key)}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
-            <div className="sidebar-stat">
-              <span className="map-stat-label">Available</span>
-              <span className="sidebar-stat-value num">{formatMoney(player.availableBalance)}</span>
-            </div>
-            <div className="sidebar-stat">
-              <span className="map-stat-label">Shares bought</span>
-              <span className="sidebar-stat-value num">{formatInt(player.sharesOwned)}</span>
-            </div>
+            {showFund && !hasFund ? (
+              <span className="map-stat-label">No fund yet — create one on the dashboard.</span>
+            ) : showFund ? (
+              <>
+                <div className="sidebar-stat">
+                  <span className="map-stat-label">Total worth</span>
+                  <span className="sidebar-stat-value is-lead num">{formatMoney(player.fundTotalWorth)}</span>
+                </div>
+                <div className="sidebar-stat">
+                  <span className="map-stat-label">Available</span>
+                  <span className="sidebar-stat-value num">{formatMoney(player.fundAvailableBalance)}</span>
+                </div>
+                <div className="sidebar-stat">
+                  <span className="map-stat-label">Holdings</span>
+                  <span className="sidebar-stat-value num">{formatMoney(player.fundHoldingsValue)}</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="sidebar-stat">
+                  <span className="map-stat-label">Total worth</span>
+                  <span className={`sidebar-stat-value is-lead num${worthTone ? ` tone-${worthTone}` : ''}`}>
+                    {worthTone ? <span aria-hidden="true">{WORTH_GLYPH[worthTone]} </span> : null}
+                    {formatMoney(player.totalWorth)}
+                  </span>
+                </div>
+                <div className="sidebar-stat">
+                  <span className="map-stat-label">Available</span>
+                  <span className="sidebar-stat-value num">{formatMoney(player.availableBalance)}</span>
+                </div>
+                <div className="sidebar-stat">
+                  <span className="map-stat-label">Shares bought</span>
+                  <span className="sidebar-stat-value num">{formatInt(player.sharesOwned)}</span>
+                </div>
+              </>
+            )}
           </div>
         ) : null}
       </aside>
@@ -178,7 +220,9 @@ export function AppShell() {
           runAction={runAction}
           resetMarket={resetMarket}
         />
-        <Outlet context={{ market, connected, ready, pending, actionError, runAction }} />
+        <Outlet
+          context={{ market, connected, ready, pending, actionError, runAction, player, actorKind, setActorKind }}
+        />
         <Footer />
       </div>
     </div>

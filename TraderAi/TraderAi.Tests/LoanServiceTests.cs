@@ -50,6 +50,25 @@ public sealed class LoanServiceTests : IDisposable
             .SingleAsync(money => money.Type == MoneyTransactionType.LoanRepayment);
         Assert.Equal(100m, repayment.Amount);
         Assert.Equal(loan.Id, repayment.RelatedLoanId);
+
+        // The interest is the lender's revenue and accrues to the bank; principal repayment is not banked.
+        var bank = await context.Banks.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.BankId);
+        Assert.Equal(10m, bank.Balance);
+    }
+
+    [Fact]
+    public async Task UnpaidInterestDoesNotAccrueToBankBalance()
+    {
+        var (cycle, _) = await SeedAsync(price: 100m);
+        var trader = await AddTraderAsync(currentBalance: 0m);
+        var loan = await AddLoanAsync(trader.Id, principal: 10_000m, termCycles: 100, cycle.Id);
+
+        await Service().ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        // The borrower had no cash, so no interest was paid and the bank earns nothing this cycle.
+        var bank = await context.Banks.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.BankId);
+        Assert.Equal(0m, bank.Balance);
     }
 
     [Fact]

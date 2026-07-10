@@ -131,6 +131,12 @@ public sealed class LoanService(
             return;
         }
 
+        // Interest paid this cycle is the lender's income, so it accrues to the loan's own bank balance.
+        var bankIds = openLoans.Select(loan => loan.BankId).Distinct().ToList();
+        var banksById = await dbContext.Banks
+            .Where(bank => bankIds.Contains(bank.Id))
+            .ToDictionaryAsync(bank => bank.Id);
+
         var loansByParticipant = openLoans
             .GroupBy(loan => loan.ParticipantId)
             .ToDictionary(group => group.Key, group => group.ToList());
@@ -160,14 +166,14 @@ public sealed class LoanService(
 
             foreach (var loan in loans)
             {
-                ServiceLoan(participant, loan, currentCycleId, now);
+                ServiceLoan(participant, loan, banksById.GetValueOrDefault(loan.BankId), currentCycleId, now);
             }
         }
 
         await ForceSellDistressedBorrowersAsync(loansByParticipant, participantsById, cycleNumberById, currentCycleNumber, currentCycleId, now);
     }
 
-    private void ServiceLoan(Participant participant, Loan loan, int currentCycleId, DateTime now)
+    private void ServiceLoan(Participant participant, Loan loan, Bank? bank, int currentCycleId, DateTime now)
     {
         var interest = Round(loan.RemainingPrincipal * loan.InterestRatePerCycle);
         var principalDue = Math.Min(loan.ScheduledInstallment, loan.RemainingPrincipal);
@@ -191,6 +197,14 @@ public sealed class LoanService(
         if (interestPaid > 0m)
         {
             AddTransaction(participant.Id, MoneyTransactionType.LoanInterest, interestPaid, loan.Id, currentCycleId, now);
+
+            // The interest leaves the borrower for the lender: the bank keeps it as revenue, mirroring how a
+            // trade fee accrues to the same balance. Principal repayment is not credited — it merely unwinds
+            // the money created at disbursement, so crediting it would fabricate cash in the bank.
+            if (bank is not null)
+            {
+                bank.Balance += interestPaid;
+            }
         }
 
         var repayment = arrearsPaid + principalPaid;

@@ -732,6 +732,14 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
+        app.MapPost("/player/fund/close", async (MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.ClosePlayerFundAsync();
+            return result.Success
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
         app.MapPost("/cycles/tick", async (MarketService marketService) =>
         {
             var result = await marketService.StepCycleAsync();
@@ -1197,6 +1205,7 @@ public static class MarketEndpoints
                     bank.Id,
                     bank.Name,
                     bank.InterestRatePerCycle,
+                    bank.Balance,
                     openByBank.TryGetValue(bank.Id, out var open) ? open.Count : 0,
                     openByBank.TryGetValue(bank.Id, out var open2) ? open2.Outstanding : 0m))
                 .ToArray();
@@ -2237,6 +2246,7 @@ public sealed record BankResponse(
     int Id,
     string Name,
     decimal InterestRatePerCycle,
+    decimal Balance,
     int OpenLoanCount,
     decimal OutstandingPrincipal);
 

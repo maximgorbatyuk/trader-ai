@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
 
@@ -8,8 +9,20 @@ namespace TraderAi.Services;
 // movements, and price snapshots. Orders pair by price-time priority, but each cross executes at the
 // midpoint of the two limits. Mutations are tracked on the shared DbContext; the caller owns saving and
 // the surrounding transaction.
-public sealed class MatchingEngine(AppDbContext dbContext)
+//
+// When trade fees are enabled, a participant seller's proceeds are skimmed by TradeFeeOptions.FeeRate and
+// the fee accrues to the National bank's balance. Company-float (primary-issuance) sells carry no fee, so
+// the fee only ever touches secondary-market cash and the ledger stays reconciled.
+public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOptions>? tradeFeeOptions = null)
 {
+    private readonly bool feeEnabled = tradeFeeOptions?.Value.Enabled ?? false;
+    private readonly decimal feeRate = tradeFeeOptions?.Value.FeeRate ?? 0m;
+    private readonly string feeBankName = tradeFeeOptions?.Value.BankName ?? "National bank";
+
+    // Resolved once per run only when a participant sell could be charged, so a fee-disabled book (or one
+    // with only company-float sells) never touches the Banks table.
+    private Bank? feeBank;
+
     public async Task<int> RunAsync(MarketCycle cycle)
     {
         var now = DateTime.UtcNow;
@@ -34,6 +47,12 @@ public sealed class MatchingEngine(AppDbContext dbContext)
         var openOrders = await dbContext.Orders
             .Where(order => order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
             .ToListAsync();
+
+        if (feeEnabled && feeRate > 0m
+            && openOrders.Any(order => order.Type == OrderType.Sell && order.ParticipantId != null))
+        {
+            feeBank = await ResolveFeeBankAsync();
+        }
 
         var fillCount = 0;
 
@@ -184,6 +203,30 @@ public sealed class MatchingEngine(AppDbContext dbContext)
                 CreatedInCycleId = cycle.Id,
                 CreatedAt = now,
             });
+
+            // The seller keeps the full sale credit above and pays the fee as a separate debit, so the two
+            // ledger rows net to the seller's actual balance change. Company-float sells (seller == null) are
+            // primary issuance and carry no fee.
+            if (feeBank is not null)
+            {
+                var fee = Round(spent * feeRate);
+                if (fee > 0m)
+                {
+                    seller.CurrentBalance -= fee;
+                    feeBank.Balance += fee;
+
+                    dbContext.MoneyTransactions.Add(new MoneyTransaction
+                    {
+                        ParticipantId = seller.Id,
+                        Type = MoneyTransactionType.TradeFee,
+                        Amount = fee,
+                        RelatedOrderId = sell.Id,
+                        RelatedShareTransaction = shareTransaction,
+                        CreatedInCycleId = cycle.Id,
+                        CreatedAt = now,
+                    });
+                }
+            }
         }
 
         dbContext.OrderFills.Add(new OrderFill
@@ -252,5 +295,20 @@ public sealed class MatchingEngine(AppDbContext dbContext)
         // keeping the row avoids a delete-then-insert on the same (participant, company) unique key when a
         // seller sells out and rebuys the same company within one matching run.
         holdings[(participantId, companyId)].Quantity -= quantity;
+    }
+
+    // Mirrors LoanService's first-by-id resolve-or-create so the fee sink and the lender converge on the one
+    // seeded bank. A created bank only appears when none exists yet (fee on, loans off, fresh database).
+    private async Task<Bank> ResolveFeeBankAsync()
+    {
+        var existing = await dbContext.Banks.OrderBy(bank => bank.Id).FirstOrDefaultAsync();
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        var created = new Bank { Name = feeBankName, InterestRatePerCycle = 0m };
+        dbContext.Banks.Add(created);
+        return created;
     }
 }

@@ -240,6 +240,87 @@ public sealed class PlayerFundTests : IDisposable
         Assert.True(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == joiner.Id));
     }
 
+    // Closing an empty fund hands its cash and positions to the player and tombstones it, freeing the player to
+    // open another.
+    [Fact]
+    public async Task ClosingFundHandsCashAndHoldingsToPlayer()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        var player = (await market.CreatePlayerAsync("Ada")).Player!; // FixedRoll pins the balance to 10,000.
+        await market.OpenPlayerFundAsync(4_000m, null); // player 6,000, fund 4,000
+        var fund = await context.CollectiveFunds.SingleAsync();
+        var company = await context.Companies.FirstAsync();
+        context.Holdings.Add(new Holding { ParticipantId = fund.ParticipantId, CompanyId = company.Id, Quantity = 5, AverageCost = 80m });
+        await context.SaveChangesAsync();
+
+        var result = await market.ClosePlayerFundAsync();
+
+        Assert.True(result.Success);
+        var refreshedFund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(CollectiveFundStatus.Closed, refreshedFund.Status);
+        var fundParticipant = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fund.ParticipantId);
+        Assert.False(fundParticipant.IsActive);
+        Assert.Equal(0m, fundParticipant.CurrentBalance);
+
+        await context.Entry(player).ReloadAsync();
+        Assert.Equal(10_000m, player.CurrentBalance); // seed cash returned in full
+
+        var playerHolding = await context.Holdings.AsNoTracking()
+            .FirstAsync(holding => holding.ParticipantId == player.Id && holding.CompanyId == company.Id);
+        Assert.Equal(5, playerHolding.Quantity);
+        Assert.Equal(80m, playerHolding.AverageCost);
+        Assert.Equal(0, await context.Holdings.Where(holding => holding.ParticipantId == fund.ParticipantId).SumAsync(holding => holding.Quantity));
+
+        // The player may open a fresh fund once the old one is closed.
+        Assert.True((await market.OpenPlayerFundAsync(1_000m, null)).Success);
+    }
+
+    // Closing returns each member's deposit and hands the leftover cash to the player.
+    [Fact]
+    public async Task ClosingFundReturnsMemberDepositsThenResidualToPlayer()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        var player = (await market.CreatePlayerAsync("Ada")).Player!;
+        await market.OpenPlayerFundAsync(4_000m, null); // player 6,000, fund 4,000
+        var fund = await context.CollectiveFunds.SingleAsync();
+        var fundParticipant = await context.Participants.FirstAsync(participant => participant.Id == fund.ParticipantId);
+        var member = await AddTraderAsync(500m);
+        await AddMembershipAsync(fund, member, deposit: 3_000m, joinedCycleId: 0);
+        fundParticipant.CurrentBalance += 3_000m; // the member's deposit is now pooled: fund holds 7,000
+        await context.SaveChangesAsync();
+
+        var result = await market.ClosePlayerFundAsync();
+
+        Assert.True(result.Success);
+        await context.Entry(member).ReloadAsync();
+        Assert.Equal(3_500m, member.CurrentBalance); // 500 + 3,000 deposit back
+        await context.Entry(player).ReloadAsync();
+        Assert.Equal(10_000m, player.CurrentBalance); // 6,000 + (7,000 − 3,000) residual
+        Assert.Equal(0, await context.CollectiveFundParticipants.CountAsync());
+        Assert.Equal(CollectiveFundStatus.Closed, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+    }
+
+    // A close cannot strand a member's principal: it is refused while the fund's cash cannot cover the deposits.
+    [Fact]
+    public async Task ClosingFundBlockedWhenCashCannotCoverMemberDeposits()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        await market.CreatePlayerAsync("Ada");
+        await market.OpenPlayerFundAsync(4_000m, null); // fund holds only 4,000
+        var fund = await context.CollectiveFunds.SingleAsync();
+        var member = await AddTraderAsync(500m);
+        await AddMembershipAsync(fund, member, deposit: 5_000m, joinedCycleId: 0); // owed more than the fund's cash
+
+        var result = await market.ClosePlayerFundAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("cannot cover", result.Error);
+        Assert.Equal(CollectiveFundStatus.Active, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+    }
+
     private async Task<MarketCycle> SeedFundScenarioAsync()
     {
         var now = DateTime.UtcNow;

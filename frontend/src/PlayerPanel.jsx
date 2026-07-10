@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { Pager, SortHeader } from './TableControls'
@@ -12,6 +13,11 @@ const POLL_INTERVAL_MS = 1000
 const WORTH_HISTORY_POINTS = 64
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
 const CHANGE_GLYPH = { up: '▲', down: '▼', flat: '◆' }
+const MEMBER_TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund', Player: 'Player' }
+const ACTOR_TABS = [
+  { key: 'player', label: 'Player' },
+  { key: 'fund', label: "Player's Fund" },
+]
 
 // A signed money delta rendered with a market tone plus a glyph, so the sign never rides on colour alone;
 // a non-numeric value (fewer than two worth snapshots) shows an em dash.
@@ -28,11 +34,42 @@ function ChangeAmount({ value }) {
   )
 }
 
-// The player's live control surface: worth headline, balances, performance, active assets, the companies that
-// need attention, and open orders. Owns its own polling so it can be dropped straight into the dashboard.
-export function PlayerPanel({ companies, onSelectCompany }) {
+// The player subject reads straight off the player response; the fund subject is derived client-side from the
+// fund's participant detail, holdings, and worth history so the Fund tab shows the same balances and performance
+// figures as the Player tab without a dedicated endpoint.
+function fundSubjectOf(fundDetail, holdings, worthHistory) {
+  const holdingsValue = holdings.reduce((sum, holding) => sum + holding.marketValue, 0)
+  const totalWorth = fundDetail.currentBalance + holdingsValue - fundDetail.loanLiability
+  let lastCycleMoneyChange = null
+  let lastCycleWorthChange = null
+  if (worthHistory.length >= 2) {
+    const latest = worthHistory[worthHistory.length - 1]
+    const prior = worthHistory[worthHistory.length - 2]
+    lastCycleMoneyChange = latest.balance - prior.balance
+    lastCycleWorthChange = latest.totalWorth - prior.totalWorth
+  }
+  return {
+    name: fundDetail.name,
+    initialBalance: fundDetail.initialBalance,
+    currentBalance: fundDetail.currentBalance,
+    reservedBalance: fundDetail.reservedBalance,
+    availableBalance: fundDetail.availableBalance,
+    loanLiability: fundDetail.loanLiability,
+    totalWorth,
+    overallMoneyChange: fundDetail.currentBalance - fundDetail.initialBalance,
+    overallWorthChange: totalWorth - fundDetail.initialBalance,
+    lastCycleMoneyChange,
+    lastCycleWorthChange,
+  }
+}
+
+// The player's live control surface, split into a Player tab and a Player's-Fund tab. The active tab is the
+// shared actor selection (`actorKind`) owned by the app shell, so switching here also flips the sidebar switch
+// and the order book. The panel polls only the active actor's dataset.
+export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKind }) {
   const [loading, setLoading] = useState(true)
   const [player, setPlayer] = useState(null)
+  const [fundDetail, setFundDetail] = useState(null)
   const [holdings, setHoldings] = useState([])
   const [orders, setOrders] = useState([])
   const [attention, setAttention] = useState([])
@@ -46,14 +83,22 @@ export function PlayerPanel({ companies, onSelectCompany }) {
     try {
       const playerData = await api.getPlayer()
       if (!mountedRef.current) return
-      if (playerData) {
-        const [holdingsData, orderData, attentionData, loanData, worthData, cashData] = await Promise.all([
-          api.getHoldings(playerData.id),
-          api.getParticipantOrders(playerData.id, 20),
-          api.getCompaniesAttention(playerData.id),
-          api.getParticipantLoans(playerData.id, { status: loanStatus }),
-          api.getParticipantWorthHistory(playerData.id),
-          api.getParticipantMoneyTransactions(playerData.id, 20),
+
+      const activeId = playerData
+        ? actorKind === 'fund'
+          ? playerData.fundParticipantId
+          : playerData.id
+        : null
+
+      if (activeId != null) {
+        const [holdingsData, orderData, attentionData, loanData, worthData, cashData, fundData] = await Promise.all([
+          api.getHoldings(activeId),
+          api.getParticipantOrders(activeId, 20),
+          api.getCompaniesAttention(activeId),
+          api.getParticipantLoans(activeId, { status: loanStatus }),
+          api.getParticipantWorthHistory(activeId),
+          api.getParticipantMoneyTransactions(activeId, 20),
+          actorKind === 'fund' ? api.getParticipant(activeId) : Promise.resolve(null),
         ])
         if (!mountedRef.current) return
         setHoldings(holdingsData)
@@ -62,6 +107,7 @@ export function PlayerPanel({ companies, onSelectCompany }) {
         setLoans(loanData ?? [])
         setWorthHistory(worthData ?? [])
         setCashMoves(cashData ?? [])
+        setFundDetail(fundData)
       } else {
         setHoldings([])
         setOrders([])
@@ -69,6 +115,7 @@ export function PlayerPanel({ companies, onSelectCompany }) {
         setLoans([])
         setWorthHistory([])
         setCashMoves([])
+        setFundDetail(null)
       }
       setPlayer(playerData)
     } catch {
@@ -76,7 +123,7 @@ export function PlayerPanel({ companies, onSelectCompany }) {
     } finally {
       if (mountedRef.current) setLoading(false)
     }
-  }, [loanStatus])
+  }, [loanStatus, actorKind])
 
   useEffect(() => {
     mountedRef.current = true
@@ -95,37 +142,23 @@ export function PlayerPanel({ companies, onSelectCompany }) {
     return () => clearInterval(intervalId)
   }, [refresh])
 
-  // Headline delta tracks the last completed cycle; it stays hidden until the first cycle produces a figure.
-  const lastCycleWorthChange = player?.lastCycleWorthChange
-  const worthTone = typeof lastCycleWorthChange === 'number' ? toneOf(lastCycleWorthChange) : null
+  const showTabs = !loading && player !== null
+  const onFund = actorKind === 'fund'
+  const hasFund = player?.fundParticipantId != null
 
   return (
     <div className="player-panel">
-      <div className="player-panel-head">
-        <div className="command-id">
-          <span className="command-label">Player</span>
-          <span className="command-name">{player ? player.name : 'Play the market'}</span>
-        </div>
-        {player ? (
-          <div className="quote">
-            <strong className="quote-last num">{formatMoney(player.totalWorth)}</strong>
-            {worthTone ? (
-              <span className={`quote-change num tone-${worthTone}`} title="Change over the last completed cycle">
-                <span aria-hidden="true">{CHANGE_GLYPH[worthTone]} </span>
-                {formatSigned(lastCycleWorthChange)}
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+      {showTabs ? <ActorTabStrip actorKind={actorKind} onSelect={setActorKind} /> : null}
 
       {loading ? (
         <p className="note">Loading the player…</p>
       ) : player === null ? (
         <JoinPanel onJoined={refresh} />
-      ) : (
-        <PlayerStats
-          player={player}
+      ) : !onFund ? (
+        <ActorView
+          key="player"
+          subject={player}
+          canCancelOrders
           holdings={holdings}
           orders={orders}
           attention={attention}
@@ -138,7 +171,73 @@ export function PlayerPanel({ companies, onSelectCompany }) {
           onSelectCompany={onSelectCompany}
           onRefresh={refresh}
         />
+      ) : !hasFund ? (
+        <OpenFundForm player={player} onRefresh={refresh} />
+      ) : fundDetail == null ? (
+        <p className="note">Loading the fund…</p>
+      ) : (
+        <>
+          <ManageFundSection player={player} onRefresh={refresh} />
+          <ActorView
+            key="fund"
+            subject={fundSubjectOf(fundDetail, holdings, worthHistory)}
+            canCancelOrders={false}
+            members={fundDetail.collectiveFundMembers ?? []}
+            holdings={holdings}
+            orders={orders}
+            attention={attention}
+            loans={loans}
+            loanStatus={loanStatus}
+            onLoanStatusChange={setLoanStatus}
+            worthHistory={worthHistory}
+            cashMoves={cashMoves}
+            companies={companies}
+            onSelectCompany={onSelectCompany}
+            onRefresh={refresh}
+          />
+        </>
       )}
+    </div>
+  )
+}
+
+// Player | Player's Fund. Bound to the shared actor selection; arrow keys move focus (roving tabindex) to match
+// the order-book and sub-tab tablists.
+function ActorTabStrip({ actorKind, onSelect }) {
+  const tabRefs = useRef({})
+
+  function focusTab(key) {
+    onSelect(key)
+    tabRefs.current[key]?.focus()
+  }
+
+  function onKeyDown(event) {
+    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
+    event.preventDefault()
+    focusTab(actorKind === 'player' ? 'fund' : 'player')
+  }
+
+  return (
+    <div className="tabs tabbar" role="tablist" aria-label="Trade as" onKeyDown={onKeyDown}>
+      {ACTOR_TABS.map((tab) => {
+        const selected = tab.key === actorKind
+        return (
+          <button
+            key={tab.key}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            tabIndex={selected ? 0 : -1}
+            ref={(element) => {
+              tabRefs.current[tab.key] = element
+            }}
+            className={`tab${selected ? ' is-active' : ''}`}
+            onClick={() => onSelect(tab.key)}
+          >
+            {tab.label}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -190,15 +289,6 @@ function JoinPanel({ onJoined }) {
   )
 }
 
-// The player's fund surface: an open form when none exists yet, otherwise a worth summary with deposit and
-// withdraw controls. Trading through the fund happens on the company pages, not here.
-function FundSection({ player, onRefresh }) {
-  if (player.fundParticipantId == null) {
-    return <OpenFundForm player={player} onRefresh={onRefresh} />
-  }
-  return <ManageFundSection player={player} onRefresh={onRefresh} />
-}
-
 function OpenFundForm({ player, onRefresh }) {
   const [seed, setSeed] = useState('')
   const [name, setName] = useState('')
@@ -223,10 +313,10 @@ function OpenFundForm({ player, onRefresh }) {
 
   return (
     <form className="modal-section player-section" onSubmit={handleSubmit}>
-      <span className="map-stat-label">Open a fund</span>
+      <span className="map-stat-label">Create a Fund</span>
       <p className="note note-sm">
-        Seed a fund from your cash, then trade through it from any company page. Other traders may join it, and you
-        can deposit or withdraw its free cash any time.
+        Seed a fund from your cash, then trade through it from the order book or any company page. Other traders may
+        join it, and you can deposit or withdraw its free cash any time.
       </p>
       <div className="field-pair">
         <label className="field">
@@ -259,7 +349,7 @@ function OpenFundForm({ player, onRefresh }) {
         </p>
       ) : null}
       <button type="submit" className="btn btn-primary" disabled={submitting || !(Number(seed) > 0)}>
-        {submitting ? 'Opening…' : 'Open fund'}
+        {submitting ? 'Creating…' : 'Create fund'}
       </button>
     </form>
   )
@@ -269,6 +359,7 @@ function ManageFundSection({ player, onRefresh }) {
   const [amount, setAmount] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const [confirmingClose, setConfirmingClose] = useState(false)
 
   const withdrawable = player.fundWithdrawable ?? 0
   const amountNum = Number(amount)
@@ -292,29 +383,24 @@ function ManageFundSection({ player, onRefresh }) {
     }
   }
 
+  // A successful close removes the fund, so this component unmounts on refresh; only reset busy on failure.
+  async function closeFund() {
+    setError(null)
+    setBusy(true)
+    try {
+      await api.closePlayerFund()
+      await onRefresh()
+    } catch (closeError) {
+      setError(closeError.message)
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="modal-section player-section">
-      <span className="map-stat-label">Fund — {player.fundName}</span>
-      <dl className="kv">
-        <div className="kv-row">
-          <dt>Cash</dt>
-          <dd className="num">{formatMoney(player.fundCurrentBalance)}</dd>
-        </div>
-        <div className="kv-row kv-sub">
-          <dt>Available</dt>
-          <dd className="num">{formatMoney(player.fundAvailableBalance)}</dd>
-        </div>
-        <div className="kv-row kv-sub">
-          <dt>Holdings</dt>
-          <dd className="num">{formatMoney(player.fundHoldingsValue)}</dd>
-        </div>
-        <div className="kv-row kv-total">
-          <dt>Total worth</dt>
-          <dd className="num">{formatMoney(player.fundTotalWorth)}</dd>
-        </div>
-      </dl>
+      <span className="map-stat-label">Move cash</span>
       <label className="field">
-        <span>Move cash (withdraw up to {formatMoney(withdrawable)})</span>
+        <span>Amount (withdraw up to {formatMoney(withdrawable)})</span>
         <input
           className="select num"
           type="number"
@@ -349,49 +435,101 @@ function ManageFundSection({ player, onRefresh }) {
           {busy ? '…' : 'Withdraw'}
         </button>
       </div>
+      {confirmingClose ? (
+        <div className="modal-section player-section">
+          <p className="note note-sm">
+            Closing returns members&apos; deposits, hands the fund&apos;s shares and remaining cash to you, and dissolves
+            the fund.
+          </p>
+          <div className="order-actions">
+            <button type="button" className="btn" disabled={busy} onClick={closeFund}>
+              {busy ? 'Closing…' : 'Confirm close'}
+            </button>
+            <button type="button" className="btn" disabled={busy} onClick={() => setConfirmingClose(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" className="btn" onClick={() => setConfirmingClose(true)}>
+          Close fund
+        </button>
+      )}
     </div>
   )
 }
 
-function PlayerStats({ player, holdings, orders, attention, loans, loanStatus, onLoanStatusChange, worthHistory, cashMoves, companies, onSelectCompany, onRefresh }) {
+// One actor's balances, performance, and detail sub-tabs. Reused for the player and the fund; the fund variant
+// passes `members` (adding a Members sub-tab) and `canCancelOrders={false}` (fund orders cannot be cancelled
+// through the player-scoped cancel endpoint).
+function ActorView({
+  subject,
+  canCancelOrders,
+  members,
+  holdings,
+  orders,
+  attention,
+  loans,
+  loanStatus,
+  onLoanStatusChange,
+  worthHistory,
+  cashMoves,
+  companies,
+  onSelectCompany,
+  onRefresh,
+}) {
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
-  const lastCycleMissing = player.lastCycleMoneyChange == null || player.lastCycleWorthChange == null
+  const lastCycleMissing = subject.lastCycleMoneyChange == null || subject.lastCycleWorthChange == null
+  const worthTone = typeof subject.lastCycleWorthChange === 'number' ? toneOf(subject.lastCycleWorthChange) : null
 
   return (
     <>
+      <div className="player-panel-head">
+        <div className="command-id">
+          <span className="command-name">{subject.name}</span>
+        </div>
+        <div className="quote">
+          <strong className="quote-last num">{formatMoney(subject.totalWorth)}</strong>
+          {worthTone ? (
+            <span className={`quote-change num tone-${worthTone}`} title="Change over the last completed cycle">
+              <span aria-hidden="true">{CHANGE_GLYPH[worthTone]} </span>
+              {formatSigned(subject.lastCycleWorthChange)}
+            </span>
+          ) : null}
+        </div>
+      </div>
+
       <div className="modal-section player-section">
         <span className="map-stat-label">Balances</span>
         <dl className="kv">
           <div className="kv-row">
             <dt>Initial balance</dt>
-            <dd className="num">{formatMoney(player.initialBalance)}</dd>
+            <dd className="num">{formatMoney(subject.initialBalance)}</dd>
           </div>
           <div className="kv-row">
             <dt>Current balance</dt>
-            <dd className="num">{formatMoney(player.currentBalance)}</dd>
+            <dd className="num">{formatMoney(subject.currentBalance)}</dd>
           </div>
           <div className="kv-row kv-sub">
             <dt>Available</dt>
-            <dd className="num">{formatMoney(player.availableBalance)}</dd>
+            <dd className="num">{formatMoney(subject.availableBalance)}</dd>
           </div>
           <div className="kv-row kv-sub">
             <dt>Reserved</dt>
-            <dd className="num">{formatMoney(player.reservedBalance)}</dd>
+            <dd className="num">{formatMoney(subject.reservedBalance)}</dd>
           </div>
-          {player.loanLiability > 0 ? (
+          {subject.loanLiability > 0 ? (
             <div className="kv-row kv-sub">
               <dt>Loan debt</dt>
-              <dd className="num tone-down">−{formatMoney(player.loanLiability)}</dd>
+              <dd className="num tone-down">−{formatMoney(subject.loanLiability)}</dd>
             </div>
           ) : null}
           <div className="kv-row kv-total">
             <dt>Total worth</dt>
-            <dd className="num">{formatMoney(player.totalWorth)}</dd>
+            <dd className="num">{formatMoney(subject.totalWorth)}</dd>
           </div>
         </dl>
       </div>
-
-      <FundSection player={player} onRefresh={onRefresh} />
 
       <div className="modal-section player-section">
         <span className="map-stat-label">Performance</span>
@@ -411,19 +549,19 @@ function PlayerStats({ player, holdings, orders, attention, loans, loanStatus, o
             <tr>
               <th scope="row">Money</th>
               <td className="ta-r">
-                <ChangeAmount value={player.overallMoneyChange} />
+                <ChangeAmount value={subject.overallMoneyChange} />
               </td>
               <td className="ta-r">
-                <ChangeAmount value={player.lastCycleMoneyChange} />
+                <ChangeAmount value={subject.lastCycleMoneyChange} />
               </td>
             </tr>
             <tr>
               <th scope="row">Worth</th>
               <td className="ta-r">
-                <ChangeAmount value={player.overallWorthChange} />
+                <ChangeAmount value={subject.overallWorthChange} />
               </td>
               <td className="ta-r">
-                <ChangeAmount value={player.lastCycleWorthChange} />
+                <ChangeAmount value={subject.lastCycleWorthChange} />
               </td>
             </tr>
           </tbody>
@@ -433,7 +571,9 @@ function PlayerStats({ player, holdings, orders, attention, loans, loanStatus, o
         ) : null}
       </div>
 
-      <PlayerTabs
+      <ActorTabs
+        canCancelOrders={canCancelOrders}
+        members={members}
         holdings={holdings}
         attention={attention}
         openOrders={openOrders}
@@ -450,7 +590,7 @@ function PlayerStats({ player, holdings, orders, attention, loans, loanStatus, o
   )
 }
 
-const PLAYER_TABS = [
+const BASE_TABS = [
   { key: 'assets', label: 'Active assets', hasCount: true },
   { key: 'industries', label: 'By industry', hasCount: true },
   { key: 'attention', label: 'Companies needing attention', hasCount: true },
@@ -459,10 +599,13 @@ const PLAYER_TABS = [
   { key: 'cash', label: 'Cash movements', hasCount: false },
   { key: 'loans', label: 'Loans', hasCount: true },
 ]
+const MEMBERS_TAB = { key: 'members', label: 'Members', hasCount: true }
 
-// The player's detail views behind one tab strip so the panel stays compact: the three roster tabs carry a
-// live count, and arrow keys move focus between tabs (roving tabindex) to match the order-book tablist.
-function PlayerTabs({ holdings, attention, openOrders, loans, loanStatus, onLoanStatusChange, worthHistory, cashMoves, companies, onSelectCompany, onRefresh }) {
+// The actor's detail views behind one tab strip so the panel stays compact: the roster tabs carry a live count,
+// and arrow keys move focus between tabs (roving tabindex) to match the order-book tablist. The fund variant
+// appends a Members tab.
+function ActorTabs({ canCancelOrders, members, holdings, attention, openOrders, loans, loanStatus, onLoanStatusChange, worthHistory, cashMoves, companies, onSelectCompany, onRefresh }) {
+  const tabs = members ? [...BASE_TABS, MEMBERS_TAB] : BASE_TABS
   const [activeKey, setActiveKey] = useState('assets')
   const tabRefs = useRef({})
 
@@ -473,6 +616,7 @@ function PlayerTabs({ holdings, attention, openOrders, loans, loanStatus, onLoan
     attention: attention.length,
     orders: openOrders.length,
     loans: loans.length,
+    members: members?.length ?? 0,
   }
 
   function focusTab(key) {
@@ -483,15 +627,15 @@ function PlayerTabs({ holdings, attention, openOrders, loans, loanStatus, onLoan
   function onTabKeyDown(event) {
     if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
     event.preventDefault()
-    const index = PLAYER_TABS.findIndex((tab) => tab.key === activeKey)
+    const index = tabs.findIndex((tab) => tab.key === activeKey)
     const delta = event.key === 'ArrowRight' ? 1 : -1
-    focusTab(PLAYER_TABS[(index + delta + PLAYER_TABS.length) % PLAYER_TABS.length].key)
+    focusTab(tabs[(index + delta + tabs.length) % tabs.length].key)
   }
 
   return (
     <div className="modal-section player-tabs">
-      <div className="tabs tabbar" role="tablist" aria-label="Player details" onKeyDown={onTabKeyDown}>
-        {PLAYER_TABS.map((tab) => {
+      <div className="tabs tabbar" role="tablist" aria-label="Actor details" onKeyDown={onTabKeyDown}>
+        {tabs.map((tab) => {
           const selected = tab.key === activeKey
           return (
             <button
@@ -527,12 +671,15 @@ function PlayerTabs({ holdings, attention, openOrders, loans, loanStatus, onLoan
           </div>
         ) : null}
         {activeKey === 'attention' ? <AttentionSection attention={attention} onSelectCompany={onSelectCompany} /> : null}
-        {activeKey === 'orders' ? <OpenOrdersSection orders={openOrders} companies={companies} onCancelled={onRefresh} /> : null}
+        {activeKey === 'orders' ? (
+          <OpenOrdersSection orders={openOrders} companies={companies} canCancel={canCancelOrders} onCancelled={onRefresh} />
+        ) : null}
         {activeKey === 'worth' ? <WorthChartTab worthHistory={worthHistory} /> : null}
         {activeKey === 'cash' ? <CashMovesTab moves={cashMoves} /> : null}
         {activeKey === 'loans' ? (
           <LoansSection loans={loans} status={loanStatus} onStatusChange={onLoanStatusChange} onRepaid={onRefresh} />
         ) : null}
+        {activeKey === 'members' ? <MembersSection members={members ?? []} /> : null}
       </div>
     </div>
   )
@@ -547,7 +694,7 @@ function WorthChartTab({ worthHistory }) {
       {values.length < 2 ? (
         <p className="note note-sm">Not enough history yet. Total worth is recorded once per completed cycle.</p>
       ) : (
-        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} formatValue={formatCompactMoney} label="Player total worth over time" />
+        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} formatValue={formatCompactMoney} label="Total worth over time" />
       )}
     </div>
   )
@@ -723,6 +870,59 @@ function AttentionSection({ attention, onSelectCompany }) {
   )
 }
 
+// The fund's joiners, paged at 10. Deposits and payouts are sortable; the member name links to its trader page.
+function MembersSection({ members }) {
+  const { pageRows, sortKey, sortDir, toggleSort, page, pageCount, setPage } = useClientTable(members, {
+    initialSortKey: 'deposit',
+    pageSize: 10,
+  })
+
+  return (
+    <div className="modal-section player-section">
+      {members.length === 0 ? (
+        <p className="note note-sm">No members have joined yet.</p>
+      ) : (
+        <>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Member</th>
+                  <th scope="col">Type</th>
+                  <SortHeader label="Joined" columnKey="joinedInCycleNumber" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Deposit" columnKey="deposit" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Payouts" columnKey="payouts" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                </tr>
+              </thead>
+              <tbody>
+                {pageRows.map((member) => (
+                  <tr key={member.participantId}>
+                    <th scope="row" className="cell-ellipsis">
+                      <Link className="cell-link" to={`/traders/${member.participantId}`}>
+                        {member.name}
+                      </Link>
+                    </th>
+                    <td>
+                      <span className="cell-trader">
+                        <span className="tag">{MEMBER_TYPE_LABEL[member.type] ?? member.type}</span>
+                        {member.isLeaving ? <span className="tag tag-bankrupt">Leaving</span> : null}
+                      </span>
+                    </td>
+                    <td className="num ta-r">cycle {formatInt(member.joinedInCycleNumber)}</td>
+                    <td className="num ta-r">{formatMoney(member.deposit)}</td>
+                    <td className="num ta-r">{formatMoney(member.payouts)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
+      )}
+    </div>
+  )
+}
+
 function LoansSection({ loans, status, onStatusChange, onRepaid }) {
   const [amounts, setAmounts] = useState({})
   const [busyId, setBusyId] = useState(null)
@@ -852,7 +1052,7 @@ function LoansSection({ loans, status, onStatusChange, onRepaid }) {
   )
 }
 
-function OpenOrdersSection({ orders, companies, onCancelled }) {
+function OpenOrdersSection({ orders, companies, canCancel, onCancelled }) {
   const [cancelingId, setCancelingId] = useState(null)
   const [error, setError] = useState(null)
   const companyById = new Map((companies ?? []).map((company) => [company.id, company]))
@@ -895,9 +1095,11 @@ function OpenOrdersSection({ orders, companies, onCancelled }) {
                 <th scope="col" className="ta-r">
                   Market
                 </th>
-                <th scope="col" className="ta-r">
-                  Action
-                </th>
+                {canCancel ? (
+                  <th scope="col" className="ta-r">
+                    Action
+                  </th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -917,16 +1119,18 @@ function OpenOrdersSection({ orders, companies, onCancelled }) {
                   <td className="num ta-r">
                     {company?.currentPrice != null ? formatMoney(company.currentPrice) : '—'}
                   </td>
-                  <td className="ta-r">
-                    <button
-                      type="button"
-                      className="btn select-sm"
-                      disabled={cancelingId === order.id}
-                      onClick={() => handleCancel(order.id)}
-                    >
-                      {cancelingId === order.id ? 'Canceling…' : 'Cancel'}
-                    </button>
-                  </td>
+                  {canCancel ? (
+                    <td className="ta-r">
+                      <button
+                        type="button"
+                        className="btn select-sm"
+                        disabled={cancelingId === order.id}
+                        onClick={() => handleCancel(order.id)}
+                      >
+                        {cancelingId === order.id ? 'Canceling…' : 'Cancel'}
+                      </button>
+                    </td>
+                  ) : null}
                 </tr>
                 )
               })}
