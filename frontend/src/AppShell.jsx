@@ -93,9 +93,10 @@ export function AppShell() {
   }, [])
 
   const worthTone = player ? worthToneOf(player.lastCycleWorthChange) : null
+  const marketActive = market?.status === 'Running'
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${marketActive ? ' is-market-active' : ''}`}>
       <aside className="sidebar">
         <nav className="sidebar-nav" aria-label="Primary">
           <NavLink className={sideLinkClass} to="/" end>

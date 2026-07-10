@@ -14,6 +14,7 @@ import NewsPage from './NewsPage.jsx'
 import TraderDetailPage from './TraderDetailPage.jsx'
 import CompanyDetailPage from './CompanyDetailPage.jsx'
 import IndustriesPage from './IndustriesPage.jsx'
+import IndustryDetailPage from './IndustryDetailPage.jsx'
 import TradeMarketPage from './TradeMarketPage.jsx'
 import CrisesPage from './CrisesPage.jsx'
 import CrisisDetailPage from './CrisisDetailPage.jsx'
@@ -35,6 +36,7 @@ createRoot(document.getElementById('root')).render(
           <Route path="/companies/:id" element={<CompanyDetailPage />} />
           <Route path="/closed-companies" element={<ClosedCompaniesPage />} />
           <Route path="/industries" element={<IndustriesPage />} />
+          <Route path="/industries/:id" element={<IndustryDetailPage />} />
           <Route path="/news" element={<NewsPage />} />
           <Route path="/crises" element={<CrisesPage />} />
           <Route path="/crises/:id" element={<CrisisDetailPage />} />

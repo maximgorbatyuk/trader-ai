@@ -7,6 +7,7 @@ import { CompanyCombobox } from './CompanyCombobox'
 // the affected prices.
 export function AddNewsModal({ companies, onClose, onPublished }) {
   const [themes, setThemes] = useState([])
+  const [themesLoading, setThemesLoading] = useState(true)
   const [industries, setIndustries] = useState([])
   const [scope, setScope] = useState('Company')
   const [themeKey, setThemeKey] = useState('')
@@ -18,21 +19,44 @@ export function AddNewsModal({ companies, onClose, onPublished }) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const dialogRef = useRef(null)
+  const themeRequestRef = useRef(0)
 
   useEffect(() => {
     let active = true
-    Promise.all([api.getNewsThemes(), api.getIndustries()])
-      .then(([themeData, industryData]) => {
+    api.getIndustries()
+      .then((industryData) => {
         if (!active) return
-        setThemes(themeData)
         setIndustries(industryData)
-        setThemeKey((current) => current || themeData[0]?.key || '')
       })
-      .catch(() => setError('Could not load themes and industries.'))
+      .catch(() => {
+        if (active) setError('Could not load industries.')
+      })
     return () => {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    const requestId = themeRequestRef.current + 1
+    themeRequestRef.current = requestId
+    api.getNewsThemes(scope)
+      .then((themeData) => {
+        if (!active || themeRequestRef.current !== requestId) return
+        setThemes(themeData)
+        setThemeKey(themeData[0]?.key || '')
+        setThemesLoading(false)
+      })
+      .catch(() => {
+        if (active && themeRequestRef.current === requestId) {
+          setError('Could not load themes.')
+          setThemesLoading(false)
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [scope])
 
   useEffect(() => {
     function onKeyDown(event) {
@@ -48,6 +72,7 @@ export function AddNewsModal({ companies, onClose, onPublished }) {
   }, [onClose])
 
   const resolvedCompanyId = companyId || companies[0]?.id || ''
+  const hasValidTheme = themes.some((theme) => theme.key === themeKey)
 
   function toggleIndustry(id) {
     setIndustryIds((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]))
@@ -55,6 +80,14 @@ export function AddNewsModal({ companies, onClose, onPublished }) {
 
   function onBackdropClick(event) {
     if (event.target === event.currentTarget) onClose()
+  }
+
+  function handleScopeChange(event) {
+    themeRequestRef.current += 1
+    setScope(event.target.value)
+    setThemes([])
+    setThemeKey('')
+    setThemesLoading(true)
   }
 
   async function handleSubmit(event) {
@@ -96,7 +129,7 @@ export function AddNewsModal({ companies, onClose, onPublished }) {
         <form className="modal-body news-form" onSubmit={handleSubmit}>
           <label className="field">
             <span>Impacts</span>
-            <select className="select" value={scope} onChange={(event) => setScope(event.target.value)} autoFocus>
+            <select className="select" value={scope} onChange={handleScopeChange} autoFocus>
               <option value="Company">A single company</option>
               <option value="Industries">Industries</option>
             </select>
@@ -140,7 +173,12 @@ export function AddNewsModal({ companies, onClose, onPublished }) {
 
           <label className="field">
             <span>Theme</span>
-            <select className="select" value={themeKey} onChange={(event) => setThemeKey(event.target.value)}>
+            <select
+              className="select"
+              value={themeKey}
+              onChange={(event) => setThemeKey(event.target.value)}
+              disabled={themesLoading || themes.length === 0}
+            >
               {themes.map((theme) => (
                 <option key={theme.key} value={theme.key}>
                   {theme.label}
@@ -181,7 +219,7 @@ export function AddNewsModal({ companies, onClose, onPublished }) {
             <button type="button" className="btn" onClick={onClose}>
               Cancel
             </button>
-            <button type="submit" className="btn btn-primary" disabled={submitting}>
+            <button type="submit" className="btn btn-primary" disabled={submitting || themesLoading || !hasValidTheme}>
               Publish news
             </button>
           </footer>

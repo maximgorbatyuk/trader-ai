@@ -13,6 +13,8 @@ public sealed class NewsPost
 
     public int PublishedInCycleId { get; set; }
 
+    public int? ImpactAppliedInCycleId { get; set; }
+
     public DateTime PublishedAt { get; set; }
 
     public NewsImpactScope Scope { get; set; }

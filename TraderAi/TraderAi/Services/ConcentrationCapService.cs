@@ -73,6 +73,7 @@ public sealed class ConcentrationCapService(
             Title = $"{company.Name} trimmed for its outsized market weight",
             Content = $"{company.Name} had grown into an outsized share of the whole market, so its price is cut {cutPercent:N0}% to bring its weight back toward the rest of the field.",
             PublishedInCycleId = currentCycleId,
+            ImpactAppliedInCycleId = currentCycleId,
             PublishedAt = now,
             Scope = NewsImpactScope.Company,
             Direction = NewsImpactDirection.Decrease,

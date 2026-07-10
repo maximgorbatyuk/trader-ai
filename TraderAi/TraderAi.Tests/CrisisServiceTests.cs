@@ -28,8 +28,14 @@ public sealed class CrisisServiceTests : IDisposable
         context.Database.EnsureCreated();
     }
 
-    private CrisisService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new CrisisOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), new MarketImpactService(context), random);
+    private CrisisService Service(bool enabled, Random random, IndustrySentimentOptions? sentimentOptions = null) =>
+        new(
+            context,
+            Options.Create(new CrisisOptions { Enabled = enabled }),
+            Options.Create(new RandomChanceRatesOptions()),
+            new MarketImpactService(context),
+            random,
+            Options.Create(sentimentOptions ?? new IndustrySentimentOptions { Enabled = true }));
 
     [Fact]
     public async Task DisabledDoesNotTrigger()
@@ -65,6 +71,10 @@ public sealed class CrisisServiceTests : IDisposable
         await SeedAsync(industryCount: 1, cycleNumber: 150);
         var (market, cycle) = await MarketAndCycleAsync();
         var company = await context.Companies.FirstAsync();
+        var industry = await context.Industries.FirstAsync();
+        industry.SentimentValue = -500;
+        industry.SectorBeta = 2m;
+        await context.SaveChangesAsync();
         var buyer = await AddBuyerWithOpenBuyOrderAsync(company.Id, cycle.Id);
 
         // doubles: global gate (chance 0 at cycle 150 → no fire), local gate (chance 1.0 → fire), one impact
@@ -84,7 +94,7 @@ public sealed class CrisisServiceTests : IDisposable
             .Where(snapshot => snapshot.CompanyId == company.Id)
             .OrderByDescending(snapshot => snapshot.Id)
             .FirstAsync();
-        Assert.Equal(95m, latest.Price);
+        Assert.Equal(85m, latest.Price);
 
         var order = await context.Orders.AsNoTracking().FirstAsync(order => order.ParticipantId == buyer.Id);
         Assert.Equal(OrderStatus.Cancelled, order.Status);
@@ -95,6 +105,28 @@ public sealed class CrisisServiceTests : IDisposable
         var savedMarket = await context.Markets.AsNoTracking().FirstAsync();
         Assert.Equal(150, savedMarket.LastLocalCrisisCycleNumber);
         Assert.Equal(0, savedMarket.LastGlobalCrisisCycleNumber);
+    }
+
+    [Fact]
+    public async Task DisabledSentimentUsesTheBaseCrisisImpact()
+    {
+        await SeedAsync(industryCount: 1, cycleNumber: 150);
+        var (market, cycle) = await MarketAndCycleAsync();
+        var company = await context.Companies.FirstAsync();
+        var industry = await context.Industries.FirstAsync();
+        industry.SentimentValue = -500;
+        industry.SectorBeta = 2m;
+        await context.SaveChangesAsync();
+
+        var result = await Service(
+                enabled: true,
+                new ScriptedRandom([0.5d, 0.0d, 0.0d], [1, 0, 0, 0, 0, 10]),
+                new IndustrySentimentOptions { Enabled = false })
+            .MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.True(result.Triggered);
+        Assert.Equal(95m, await LatestPriceAsync(company.Id));
     }
 
     [Fact]
@@ -169,6 +201,13 @@ public sealed class CrisisServiceTests : IDisposable
         var cycle = await context.MarketCycles.FirstAsync(cycle => cycle.Id == market.CurrentCycleId);
         return (market, cycle);
     }
+
+    private async Task<decimal> LatestPriceAsync(int companyId) =>
+        await context.PriceSnapshots
+            .Where(snapshot => snapshot.CompanyId == companyId)
+            .OrderByDescending(snapshot => snapshot.Id)
+            .Select(snapshot => snapshot.Price)
+            .FirstAsync();
 
     private async Task<Participant> AddBuyerWithOpenBuyOrderAsync(int companyId, int cycleId)
     {

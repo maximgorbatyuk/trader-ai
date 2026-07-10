@@ -1,10 +1,9 @@
 import { formatCompactMoney, toneOf } from './format'
 import { MAP_BOX_W, MAP_BOX_H, TONE_GLYPH, formatPct, heatMix, mapTileSize, squarify } from './treemapLayout'
 
-// Squarified treemap of tiles sized by `value` and coloured by `changePct` (green up, red down, grey flat,
-// with a glyph and signed percent so it is never colour-only). Each item supplies its own title/ariaLabel so
-// the same grid backs both the company market map and the industries map. Items need not be pre-sorted.
-export function Treemap({ items, formatValue = formatCompactMoney, onSelect, ariaLabel }) {
+// Squarified treemap of tiles sized by `value` and coloured by directional change. A caller may format that
+// change as a percentage or another unit while the glyph keeps the direction legible without colour alone.
+export function Treemap({ items, formatValue = formatCompactMoney, formatChange = formatPct, onSelect, ariaLabel }) {
   const sorted = [...items].sort((a, b) => b.value - a.value)
   const total = sorted.reduce((sum, item) => sum + item.value, 0)
   const tiles = squarify(
@@ -54,7 +53,7 @@ export function Treemap({ items, formatValue = formatCompactMoney, onSelect, ari
             <span className="map-name">{item.label}</span>
             <span className="map-cap num">{formatValue(item.value)}</span>
             <span className="map-change num">
-              <span aria-hidden="true">{TONE_GLYPH[tone]}</span> {formatPct(item.changePct)}
+              <span aria-hidden="true">{TONE_GLYPH[tone]}</span> {formatChange(item.changePct)}
             </span>
           </div>
         )

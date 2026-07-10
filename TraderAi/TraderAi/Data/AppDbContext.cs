@@ -63,6 +63,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<ParticipantWorthSnapshotArchive> ParticipantWorthSnapshotArchives => Set<ParticipantWorthSnapshotArchive>();
 
+    public DbSet<SectorSentimentSnapshot> SectorSentimentSnapshots => Set<SectorSentimentSnapshot>();
+
+    public DbSet<SectorSentimentSnapshotArchive> SectorSentimentSnapshotArchives => Set<SectorSentimentSnapshotArchive>();
+
     public DbSet<Bank> Banks => Set<Bank>();
 
     public DbSet<Loan> Loans => Set<Loan>();
@@ -109,6 +113,26 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         // Worth snapshots are read back per trader in cycle order to chart total worth over time.
         modelBuilder.Entity<ParticipantWorthSnapshot>()
             .HasIndex(snapshot => new { snapshot.ParticipantId, snapshot.CreatedInCycleId });
+
+        modelBuilder.Entity<Industry>().Property(industry => industry.SentimentValue).HasDefaultValue(0);
+        modelBuilder.Entity<Industry>().Property(industry => industry.SentimentVolatility).HasDefaultValue(0m);
+        modelBuilder.Entity<Industry>().Property(industry => industry.SectorBeta).HasDefaultValue(1m);
+
+        modelBuilder.Entity<SectorSentimentSnapshot>()
+            .HasOne<Industry>()
+            .WithMany()
+            .HasForeignKey(snapshot => snapshot.IndustryId);
+
+        modelBuilder.Entity<SectorSentimentSnapshot>()
+            .HasOne<MarketCycle>()
+            .WithMany()
+            .HasForeignKey(snapshot => snapshot.CreatedInCycleId);
+
+        modelBuilder.Entity<SectorSentimentSnapshot>()
+            .HasIndex(snapshot => snapshot.CreatedInCycleId);
+
+        modelBuilder.Entity<SectorSentimentSnapshotArchive>()
+            .HasIndex(snapshot => snapshot.CreatedInCycleId);
 
         // Ratings are read back per company to find the current verdict and its history.
         modelBuilder.Entity<CompanyRating>()

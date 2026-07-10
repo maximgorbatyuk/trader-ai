@@ -181,6 +181,7 @@ public sealed class CompanyLifecycleService(
             Title = $"{company.Name} takes a sharp writedown",
             Content = $"{company.Name} would have been delisted, but as a large-cap it is spared — its share price is cut {ProtectedCompanyPriceDropPercent:N0}% instead.",
             PublishedInCycleId = currentCycleId,
+            ImpactAppliedInCycleId = currentCycleId,
             PublishedAt = now,
             Scope = NewsImpactScope.Company,
             Direction = NewsImpactDirection.Decrease,

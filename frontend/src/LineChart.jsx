@@ -14,7 +14,7 @@ export function LineChart({ values, tone, formatValue, label }) {
   const plotWidth = width - left - padX
 
   const points = values.map((value, index) => ({
-    x: left + (index * plotWidth) / (values.length - 1),
+    x: values.length <= 1 ? left + plotWidth / 2 : left + (index * plotWidth) / (values.length - 1),
     // A flat (zero-range) series centers vertically instead of pinning to the floor.
     y: range === 0 ? height / 2 : padY + plot - ((value - min) / range) * plot,
   }))

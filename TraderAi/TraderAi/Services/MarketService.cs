@@ -70,7 +70,9 @@ public sealed class MarketService(
     ConcentrationCapService? concentrationCapService = null,
     IOptions<ArchiveOptions>? archiveOptions = null,
     IOptions<RandomChanceRatesOptions>? chanceRates = null,
-    IOptions<LoanOptions>? loanOptions = null)
+    IOptions<LoanOptions>? loanOptions = null,
+    IOptions<IndustrySentimentOptions>? industrySentimentOptions = null,
+    IndustrySentimentService? industrySentimentService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -81,6 +83,9 @@ public sealed class MarketService(
 
     // Loan settings, defaulted when not injected so the buffer/cap math still works in reduced-argument tests.
     private readonly LoanOptions loanOptionValues = loanOptions?.Value ?? new LoanOptions();
+
+    private readonly IndustrySentimentOptions industrySentimentOptionValues =
+        industrySentimentOptions?.Value ?? new IndustrySentimentOptions();
 
     // How far back the long-range price move is measured for the engine's extreme-move reactions.
     private const int LongRangeWindowCycles = 10;
@@ -252,6 +257,12 @@ public sealed class MarketService(
         var activeCrisis = crisisService is not null
             ? await crisisService.GetActiveCrisisAsync(currentCycleNumber)
             : null;
+
+        // Sector confidence is revised before new decisions so this cycle's market behavior reads one settled mood state.
+        if (industrySentimentService is not null)
+        {
+            await industrySentimentService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, activeCrisis);
+        }
 
         var openOrders = await dbContext.Orders
             .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
@@ -890,6 +901,14 @@ public sealed class MarketService(
             await scienceService.MaybeTriggerForCycleAsync(market, currentCycle, now, duringCrisis);
         }
 
+        // Persist composed automated posts before querying the current-cycle apply pass, so the matching
+        // outcome stays settled before headlines become the price signal for the next decision cycle.
+        if (newsService is not null)
+        {
+            await dbContext.SaveChangesAsync();
+            await newsService.ApplyPendingImpactsForCycleAsync(currentCycle, now);
+        }
+
         // Turn any negative balance this cycle's matching produced into a loan so no participant carries a
         // negative balance across the cycle boundary. The save flushes matching and the shocks first (dividends
         // above already read the pre-match prices), so the origination query sees the settled negative balances.
@@ -925,7 +944,7 @@ public sealed class MarketService(
         return AdvanceCycleResult.Ok(currentCycle.CycleNumber, fillCount);
     }
 
-    // Bulk-moves price snapshots, money transactions, and worth snapshots older than the retention window from
+    // Bulk-moves price, money, worth, and sentiment snapshots older than the retention window from
     // their live tables to the matching archive tables. Nothing in the market references these rows once they
     // age past the window, so the move is a plain INSERT ... SELECT then DELETE keyed on the created-in cycle.
     private async Task ArchiveAgedRowsAsync(int currentCycleNumber)
@@ -969,12 +988,32 @@ public sealed class MarketService(
             SELECT Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, CreatedAt
             FROM ParticipantWorthSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
         await dbContext.ParticipantWorthSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
+
+        await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
+            INSERT INTO SectorSentimentSnapshotArchives (Id, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt)
+            SELECT Id, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt
+            FROM SectorSentimentSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
+        await dbContext.SectorSentimentSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
     }
 
     // Records each trader's cash and holdings value for the just-completed cycle so per-cycle change figures
     // and the total-worth chart can be derived later. Every participant is captured, not just the human player.
     private async Task WriteWorthSnapshotsAsync(int completedCycleId, DateTime now)
     {
+        var industrySentiments = await dbContext.Industries
+            .Select(industry => new { industry.Id, industry.SentimentValue })
+            .ToListAsync();
+        foreach (var industry in industrySentiments)
+        {
+            dbContext.SectorSentimentSnapshots.Add(new SectorSentimentSnapshot
+            {
+                IndustryId = industry.Id,
+                SentimentValue = industry.SentimentValue,
+                CreatedInCycleId = completedCycleId,
+                CreatedAt = now,
+            });
+        }
+
         var participants = await dbContext.Participants.ToListAsync();
         if (participants.Count == 0)
         {
@@ -1129,6 +1168,18 @@ public sealed class MarketService(
             .ToHashSet();
 
         var snapshots = await dbContext.PriceSnapshots.AsNoTracking().ToListAsync();
+        var quoteCompanyIds = snapshots
+            .Select(snapshot => snapshot.CompanyId)
+            .Where(companyId => !closedCompanyIds.Contains(companyId) && !haltedCompanyIds.Contains(companyId))
+            .ToHashSet();
+        var sentimentByCompany = await dbContext.Companies.AsNoTracking()
+            .Where(company => quoteCompanyIds.Contains(company.Id))
+            .Join(
+                dbContext.Industries.AsNoTracking(),
+                company => company.IndustryId,
+                industry => industry.Id,
+                (company, industry) => new { company.Id, industry.SentimentValue })
+            .ToDictionaryAsync(pair => pair.Id, pair => pair.SentimentValue);
         var quotes = snapshots
             .GroupBy(snapshot => snapshot.CompanyId)
             .Where(group => !closedCompanyIds.Contains(group.Key) && !haltedCompanyIds.Contains(group.Key))
@@ -1154,7 +1205,8 @@ public sealed class MarketService(
                     latest.Price,
                     changePct,
                     (int)Math.Clamp(netDemandByCompany.GetValueOrDefault(group.Key), int.MinValue, int.MaxValue),
-                    longRangeChangePct);
+                    longRangeChangePct,
+                    sentimentByCompany.GetValueOrDefault(group.Key));
             })
             .ToList();
 
@@ -1306,6 +1358,8 @@ public sealed class MarketService(
         await dbContext.PriceSnapshotArchives.ExecuteDeleteAsync();
         await dbContext.MoneyTransactionArchives.ExecuteDeleteAsync();
         await dbContext.ParticipantWorthSnapshotArchives.ExecuteDeleteAsync();
+        await dbContext.SectorSentimentSnapshots.ExecuteDeleteAsync();
+        await dbContext.SectorSentimentSnapshotArchives.ExecuteDeleteAsync();
         await dbContext.Participants.ExecuteDeleteAsync();
         await dbContext.Companies.ExecuteDeleteAsync();
         await dbContext.Industries.ExecuteDeleteAsync();
@@ -1320,6 +1374,7 @@ public sealed class MarketService(
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
             "'CollectiveFunds', 'CollectiveFundParticipants', 'ParticipantWorthSnapshots', " +
             "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives', " +
+            "'SectorSentimentSnapshots', 'SectorSentimentSnapshotArchives', " +
             "'Banks', 'Loans')");
 
         var market = await SeedDemoMarketCoreAsync();
@@ -1486,6 +1541,23 @@ public sealed class MarketService(
         // The appearance clock starts at the first cycle so the same safe period applies from launch.
         market.LastCompanyAppearanceCycleNumber = firstCycle.CycleNumber;
         market.CurrentCycleId = firstCycle.Id;
+
+        if (industrySentimentOptionValues.Enabled)
+        {
+            foreach (var industry in industries.OrderBy(industry => industry.Id))
+            {
+                industry.SentimentValue = random.Next(
+                    industrySentimentOptionValues.SentimentValueMin,
+                    industrySentimentOptionValues.SentimentValueMax + 1);
+                industry.SentimentVolatility = industrySentimentOptionValues.SentimentVolatilityMin +
+                    ((decimal)random.NextDouble() *
+                     (industrySentimentOptionValues.SentimentVolatilityMax - industrySentimentOptionValues.SentimentVolatilityMin));
+                industry.SectorBeta = industrySentimentOptionValues.SectorBetaMin +
+                    ((decimal)random.NextDouble() *
+                     (industrySentimentOptionValues.SectorBetaMax - industrySentimentOptionValues.SectorBetaMin));
+            }
+        }
+
         await dbContext.SaveChangesAsync();
 
         return market;

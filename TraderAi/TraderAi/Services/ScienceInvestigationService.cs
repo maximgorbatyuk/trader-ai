@@ -10,22 +10,26 @@ public sealed record TriggerScienceResult(bool Triggered, ScienceInvestigation? 
     public static TriggerScienceResult None() => new(false, null);
 }
 
-// Rolls the chance of a science investigation once per cycle advance and applies it when it fires. It is the
-// upbeat, local-only sibling of a crisis: a breakthrough that lifts a few sectors instead of a shock that
-// drops them. The chance ramps up after a short quiet stretch and resets its own clock when it fires. Unlike
-// a crisis it only nudges price up and never cancels orders. Called from inside the cycle advance, which
-// already holds the lock and owns the save, so this only stages changes on the shared context.
+// Science investigations are the upbeat counterpart to a crisis and defer persistence to the cycle advance
+// so one transaction keeps their price response and headline inseparable.
+// When sentiment is enabled, each selected industry consumes one push roll after price work to keep scripted
+// simulations reproducible; disabled mode leaves the legacy draw sequence intact.
 public sealed class ScienceInvestigationService(
     AppDbContext dbContext,
     IOptions<ScienceInvestigationOptions> options,
     IOptions<RandomChanceRatesOptions> chanceRates,
     MarketImpactService marketImpact,
-    Random random)
+    Random random,
+    IOptions<IndustrySentimentOptions>? industrySentimentOptions = null)
 {
     // No chance for the first 50 cycles since the last one, then the chance climbs by the configured step a cycle.
     private const int QuietCycles = 50;
     private const int MinIndustries = 1;
     private const int MaxIndustries = 5;
+    private const int SentimentPush = 15;
+
+    private readonly IndustrySentimentOptions industrySentimentOptionValues =
+        industrySentimentOptions?.Value ?? new IndustrySentimentOptions();
 
     public async Task<TriggerScienceResult> MaybeTriggerForCycleAsync(
         Market market, MarketCycle currentCycle, DateTime now, bool duringCrisis = false)
@@ -98,7 +102,24 @@ public sealed class ScienceInvestigationService(
                 .ToListAsync();
 
             await marketImpact.ApplyImpactAsync(
-                NewsImpactDirection.Increase, companyIds, percent, currentCycle.Id, now, cancelStaleOrders: false);
+                NewsImpactDirection.Increase,
+                companyIds,
+                percent,
+                currentCycle.Id,
+                now,
+                cancelStaleOrders: false,
+                applySectorSentiment: industrySentimentOptionValues.Enabled);
+
+            if (industrySentimentOptionValues.Enabled
+                && random.NextDouble() < chanceRates.Value.EventTriggerChances.ScienceSentimentPush)
+            {
+                var industry = await dbContext.Industries.SingleAsync(industry => industry.Id == industryId);
+                var limit = Math.Max(0, industrySentimentOptionValues.SentimentValueLimit);
+                industry.SentimentValue = (int)Math.Clamp(
+                    (long)industry.SentimentValue + SentimentPush,
+                    -(long)limit,
+                    limit);
+            }
         }
 
         dbContext.ScienceInvestigations.Add(investigation);

@@ -3,6 +3,7 @@
   flex-direction: column;
   min-height: 100vh;
   background: var(--bg);
+  transition: background-color 400ms ease;
 }
 
 /* ---- App shell (sidebar + routed page) ---- */
@@ -10,6 +11,13 @@
   display: flex;
   min-height: 100vh;
   background: var(--bg);
+  transition: background-color 400ms ease;
+}
+
+/* While the simulation loop is running, wash the page background a very slight green as an ambient cue; the
+   override rides the --bg token so .app inherits it, and the status pill still carries the state as text. */
+.app-shell.is-market-active {
+  --bg: oklch(0.965 0.013 150);
 }
 
 .app-shell .app {
@@ -814,6 +822,52 @@
 .chart-dot {
   fill: var(--surface);
   stroke: currentColor;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.multi-chart > svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.multi-chart-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.multi-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  padding: var(--s-2) 0 0;
+  margin: 0;
+  list-style: none;
+}
+
+.multi-chart-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text);
+  font-size: var(--t-xs);
+}
+
+.multi-chart-legend li .num {
+  color: var(--muted);
+}
+
+.multi-chart-swatch {
+  width: 16px;
+  height: 4px;
+  flex: 0 0 auto;
+}
+
+.multi-chart-swatch line {
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
 }

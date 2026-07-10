@@ -5,6 +5,8 @@ import { Pager, SortHeader } from './TableControls'
 import { useClientTable } from './useClientTable'
 import { LineChart } from './LineChart'
 import { CASH_LABEL, CASH_TONE } from './cashMovements'
+import { IndustryHoldingsTable } from './IndustryHoldingsTable'
+import { groupHoldingsByIndustry } from './industryHoldings'
 
 const POLL_INTERVAL_MS = 1000
 const WORTH_HISTORY_POINTS = 64
@@ -285,6 +287,7 @@ function PlayerStats({ player, holdings, orders, attention, loans, loanStatus, o
 
 const PLAYER_TABS = [
   { key: 'assets', label: 'Active assets', hasCount: true },
+  { key: 'industries', label: 'By industry', hasCount: true },
   { key: 'attention', label: 'Companies needing attention', hasCount: true },
   { key: 'orders', label: 'Open orders', hasCount: true },
   { key: 'worth', label: 'Total worth chart', hasCount: false },
@@ -298,8 +301,10 @@ function PlayerTabs({ holdings, attention, openOrders, loans, loanStatus, onLoan
   const [activeKey, setActiveKey] = useState('assets')
   const tabRefs = useRef({})
 
+  const industryRows = groupHoldingsByIndustry(holdings, companies)
   const counts = {
     assets: holdings.length,
+    industries: industryRows.length,
     attention: attention.length,
     orders: openOrders.length,
     loans: loans.length,
@@ -351,6 +356,11 @@ function PlayerTabs({ holdings, attention, openOrders, loans, loanStatus, onLoan
         aria-labelledby={`playertab-${activeKey}`}
       >
         {activeKey === 'assets' ? <HoldingsSection holdings={holdings} onSelectCompany={onSelectCompany} /> : null}
+        {activeKey === 'industries' ? (
+          <div className="modal-section player-section">
+            <IndustryHoldingsTable holdings={holdings} companies={companies} />
+          </div>
+        ) : null}
         {activeKey === 'attention' ? <AttentionSection attention={attention} onSelectCompany={onSelectCompany} /> : null}
         {activeKey === 'orders' ? <OpenOrdersSection orders={openOrders} companies={companies} onCancelled={onRefresh} /> : null}
         {activeKey === 'worth' ? <WorthChartTab worthHistory={worthHistory} /> : null}

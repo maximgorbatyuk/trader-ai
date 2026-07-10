@@ -13,6 +13,8 @@ namespace TraderAi.Services;
 // it can run inside the cycle advance's transaction.
 public sealed class MarketImpactService(AppDbContext dbContext)
 {
+    private const decimal SentimentImpactClamp = 0.5m;
+
     // A positive-only event (a science investigation) passes cancelStaleOrders: false so it nudges price up
     // without clearing the order book; news and crises keep the default and reprice around the move.
     public async Task<int> ApplyImpactAsync(
@@ -21,14 +23,21 @@ public sealed class MarketImpactService(AppDbContext dbContext)
         decimal percent,
         int cycleId,
         DateTime now,
-        bool cancelStaleOrders = true)
+        bool cancelStaleOrders = true,
+        bool applySectorSentiment = false)
     {
         if (companyIds.Count == 0)
         {
             return 0;
         }
 
-        var moved = await ApplySnapshotsAsync(direction, percent, companyIds, cycleId, now);
+        var moved = await ApplySnapshotsAsync(
+            direction,
+            percent,
+            companyIds,
+            cycleId,
+            now,
+            applySectorSentiment);
         if (cancelStaleOrders)
         {
             await CancelStaleOrdersAsync(direction, companyIds, cycleId, now);
@@ -42,15 +51,31 @@ public sealed class MarketImpactService(AppDbContext dbContext)
         decimal percent,
         IReadOnlyCollection<int> companyIds,
         int cycleId,
-        DateTime now)
+        DateTime now,
+        bool applySectorSentiment)
     {
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
-        var sharesByCompany = await dbContext.Companies
+        var companyStateById = await dbContext.Companies
             .Where(company => companyIds.Contains(company.Id))
-            .ToDictionaryAsync(company => company.Id, company => company.IssuedSharesCount);
-        var factor = direction == NewsImpactDirection.Increase
-            ? 1m + (percent / 100m)
-            : 1m - (percent / 100m);
+            .ToDictionaryAsync(
+                company => company.Id,
+                company => new { company.IndustryId, company.IssuedSharesCount });
+
+        var sectorStateByIndustryId = new Dictionary<int, (int SentimentValue, decimal SectorBeta)>();
+        if (applySectorSentiment)
+        {
+            var industryIds = companyStateById.Values
+                .Select(company => company.IndustryId)
+                .Distinct()
+                .ToList();
+            var sectorStates = await dbContext.Industries
+                .Where(industry => industryIds.Contains(industry.Id))
+                .Select(industry => new { industry.Id, industry.SentimentValue, industry.SectorBeta })
+                .ToListAsync();
+            sectorStateByIndustryId = sectorStates.ToDictionary(
+                industry => industry.Id,
+                industry => (industry.SentimentValue, industry.SectorBeta));
+        }
 
         var moved = 0;
         foreach (var companyId in companyIds)
@@ -60,6 +85,29 @@ public sealed class MarketImpactService(AppDbContext dbContext)
                 continue;
             }
 
+            var issuedShares = companyStateById.TryGetValue(companyId, out var companyState)
+                ? companyState.IssuedSharesCount
+                : 0;
+            var beta = 1m;
+            var sentimentFactor = 0m;
+            if (applySectorSentiment
+                && companyState is not null
+                && sectorStateByIndustryId.TryGetValue(companyState.IndustryId, out var sectorState))
+            {
+                beta = sectorState.SectorBeta;
+                sentimentFactor = Math.Clamp(
+                    sectorState.SentimentValue / 1000m,
+                    -SentimentImpactClamp,
+                    SentimentImpactClamp);
+            }
+
+            // CAPM-style beta lets defensive sectors cushion shocks and cyclical sectors amplify them, while mood further cushions or amplifies the move.
+            var effectivePercent = direction == NewsImpactDirection.Increase
+                ? percent * beta * (1m + sentimentFactor)
+                : percent * beta * (1m - sentimentFactor);
+            var factor = direction == NewsImpactDirection.Increase
+                ? 1m + (effectivePercent / 100m)
+                : 1m - (effectivePercent / 100m);
             var newPrice = Round(price * factor);
             if (newPrice <= 0m)
             {
@@ -70,7 +118,7 @@ public sealed class MarketImpactService(AppDbContext dbContext)
             {
                 CompanyId = companyId,
                 Price = newPrice,
-                Capitalization = newPrice * sharesByCompany.GetValueOrDefault(companyId),
+                Capitalization = newPrice * issuedShares,
                 CreatedInCycleId = cycleId,
                 CreatedAt = now,
             });

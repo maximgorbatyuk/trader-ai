@@ -91,8 +91,12 @@ export const api = {
   getParticipantLoans: (participantId, { status } = {}) =>
     get(`/participants/${participantId}/loans${toQuery({ status })}`),
   repayLoan: (loanId, amount) => post(`/loans/${loanId}/repay`, amount != null ? { amount } : undefined),
-  getNewsThemes: () => get('/news/themes'),
+  getNewsThemes: (scope) => get(`/news/themes${toQuery({ scope })}`),
   getIndustries: () => get('/industries'),
+  getIndustry: (industryId) => get(`/industries/${industryId}`),
+  getIndustrySentimentHistory: (industryId) => get(`/industries/${industryId}/sentiment-history`),
+  getIndustriesSentimentHistory: () => get('/industries/sentiment-history'),
+  getIndustryNews: (industryId, take = 20) => get(`/industries/${industryId}/news?take=${take}`),
   createNews: (payload) => post('/news', payload),
   getHoldings: (participantId) => get(`/participants/${participantId}/holdings`),
   getCompaniesAttention: (participantId) => get(`/participants/${participantId}/companies-attention`),

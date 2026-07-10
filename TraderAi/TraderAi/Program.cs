@@ -52,6 +52,7 @@ builder.Services.AddScoped<CompanyLifecycleService>();
 builder.Services.AddScoped<LoanService>();
 builder.Services.AddScoped<VolatilityHaltService>();
 builder.Services.AddScoped<ConcentrationCapService>();
+builder.Services.AddScoped<IndustrySentimentService>();
 builder.Services.AddSingleton<MarketCycleLock>();
 builder.Services.Configure<MarketLoopOptions>(builder.Configuration.GetSection(MarketLoopOptions.SectionName));
 builder.Services.Configure<NewsOptions>(builder.Configuration.GetSection(NewsOptions.SectionName));
@@ -68,6 +69,7 @@ builder.Services.Configure<LoanOptions>(builder.Configuration.GetSection(LoanOpt
 builder.Services.Configure<VolatilityHaltOptions>(builder.Configuration.GetSection(VolatilityHaltOptions.SectionName));
 builder.Services.Configure<ConcentrationCapOptions>(builder.Configuration.GetSection(ConcentrationCapOptions.SectionName));
 builder.Services.Configure<ArchiveOptions>(builder.Configuration.GetSection(ArchiveOptions.SectionName));
+builder.Services.Configure<IndustrySentimentOptions>(builder.Configuration.GetSection(IndustrySentimentOptions.SectionName));
 builder.Services.Configure<RandomChanceRatesOptions>(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName));
 builder.Services.AddHostedService<MarketLoopService>();
 
