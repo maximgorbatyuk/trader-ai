@@ -399,3 +399,24 @@ Notes:
 - A participant belongs to at most one fund at a time.
 - While the membership exists the member places no buy orders of its own, though it may keep selling shares it already holds.
 - The deposit is returned in full when the member leaves, and the membership ends when the trader leaves or the fund closes.
+
+### CollectiveFundMembershipEvent
+
+A collective fund membership event is an append-only record of a member joining or leaving a fund, kept so a fund's or a trader's membership history stays available after the membership row itself is gone.
+
+Fields:
+
+- ID
+- CollectiveFundId
+- FundParticipantId (the fund's own participant)
+- ParticipantId (the member)
+- Type (Joined, Left)
+- Amount (the deposit contributed on a join, or the payout returned on a leave)
+- CreatedInCycleId
+- CreatedAt
+
+Notes:
+
+- A join records the contributed deposit; a leave records the returned payout, which is zero when a closing fund could return nothing or the member had already left the market.
+- The same history is read from either side: a trader's page lists the funds it joined or left, and a fund's page lists the members who joined or left it.
+- The records survive a member leaving the market but are cleared on a database reset.

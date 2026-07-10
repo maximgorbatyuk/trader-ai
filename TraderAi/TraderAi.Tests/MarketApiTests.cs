@@ -1169,6 +1169,109 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
+    [Fact]
+    public async Task FundMembershipHistoryEndpointServesBothMemberAndFundPerspectives()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int fundParticipantId;
+            int memberId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 12, Status = CycleStatus.Running, StartedAt = now };
+                dbContext.MarketCycles.Add(cycle);
+                await dbContext.SaveChangesAsync();
+
+                var fundParticipant = new Participant
+                {
+                    Name = "History Fund",
+                    Type = ParticipantType.CollectiveFund,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    CurrentBalance = 0m,
+                    IsActive = true,
+                };
+                var member = new Participant
+                {
+                    Name = "History Member",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    CurrentBalance = 10_000m,
+                    IsActive = true,
+                };
+                dbContext.Participants.AddRange(fundParticipant, member);
+                await dbContext.SaveChangesAsync();
+                fundParticipantId = fundParticipant.Id;
+                memberId = member.Id;
+
+                var fund = new CollectiveFund
+                {
+                    ParticipantId = fundParticipant.Id,
+                    FoundedByParticipantId = member.Id,
+                    Status = CollectiveFundStatus.Active,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = now,
+                };
+                dbContext.CollectiveFunds.Add(fund);
+                await dbContext.SaveChangesAsync();
+
+                dbContext.CollectiveFundMembershipEvents.AddRange(
+                    new CollectiveFundMembershipEvent
+                    {
+                        CollectiveFundId = fund.Id,
+                        FundParticipantId = fundParticipant.Id,
+                        ParticipantId = member.Id,
+                        Type = CollectiveFundMembershipEventType.Joined,
+                        Amount = 9_000m,
+                        CreatedInCycleId = cycle.Id,
+                        CreatedAt = now,
+                    },
+                    new CollectiveFundMembershipEvent
+                    {
+                        CollectiveFundId = fund.Id,
+                        FundParticipantId = fundParticipant.Id,
+                        ParticipantId = member.Id,
+                        Type = CollectiveFundMembershipEventType.Left,
+                        Amount = 9_500m,
+                        CreatedInCycleId = cycle.Id,
+                        CreatedAt = now,
+                    });
+                await dbContext.SaveChangesAsync();
+            }
+
+            // The fund's page reads newest-first and names the member as the counterparty.
+            var fromFund = await client.GetFromJsonAsync<PagedFundMembershipEventsDto>(
+                $"/participants/{fundParticipantId}/fund-membership-history");
+            Assert.Equal(2, fromFund!.Total);
+            Assert.Equal("Left", fromFund.Items[0].Type);
+            Assert.Equal(9_500m, fromFund.Items[0].Amount);
+            Assert.Equal("History Member", fromFund.Items[0].MemberName);
+            Assert.Equal("History Fund", fromFund.Items[0].FundName);
+            Assert.Equal(12, fromFund.Items[0].CreatedInCycleNumber);
+
+            // The member's page returns the same two events from the other side.
+            var fromMember = await client.GetFromJsonAsync<PagedFundMembershipEventsDto>(
+                $"/participants/{memberId}/fund-membership-history");
+            Assert.Equal(2, fromMember!.Total);
+            Assert.Equal("Joined", fromMember.Items[1].Type);
+            Assert.Equal(9_000m, fromMember.Items[1].Amount);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
@@ -1254,6 +1357,20 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         DateTime? ClosedAt);
 
     private sealed record PagedClosedFundsDto(ClosedFundDto[] Items, int Total, int Page, int PageSize);
+
+    private sealed record FundMembershipEventDto(
+        int Id,
+        string Type,
+        decimal Amount,
+        int CollectiveFundId,
+        int MemberParticipantId,
+        string MemberName,
+        int FundParticipantId,
+        string FundName,
+        int CreatedInCycleId,
+        int CreatedInCycleNumber);
+
+    private sealed record PagedFundMembershipEventsDto(FundMembershipEventDto[] Items, int Total, int Page, int PageSize);
 
     private sealed record CycleTickDto(bool Ran, int? CompletedCycleNumber, int OrdersPlaced, int FillCount);
 

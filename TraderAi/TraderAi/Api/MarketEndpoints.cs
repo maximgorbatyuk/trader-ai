@@ -649,6 +649,54 @@ public static class MarketEndpoints
             return Results.Ok(response);
         });
 
+        // Fund join/leave history for a participant, serving both sides from one contract: a trader's page sees
+        // the funds it joined or left, a fund's page sees the members who joined or left it. Server-paged,
+        // newest-first.
+        app.MapGet("/participants/{participantId:int}/fund-membership-history", async (
+            int participantId, int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+
+            var query = dbContext.CollectiveFundMembershipEvents
+                .Where(membershipEvent => membershipEvent.ParticipantId == participantId
+                    || membershipEvent.FundParticipantId == participantId);
+            var total = await query.CountAsync();
+
+            var events = await query
+                .OrderByDescending(membershipEvent => membershipEvent.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            var participantIds = events
+                .SelectMany(membershipEvent => new[] { membershipEvent.ParticipantId, membershipEvent.FundParticipantId })
+                .Distinct()
+                .ToList();
+            var nameById = await dbContext.Participants
+                .Where(participant => participantIds.Contains(participant.Id))
+                .ToDictionaryAsync(participant => participant.Id, participant => participant.Name);
+            var cycleNumberById = await dbContext.MarketCycles
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+            var items = events
+                .Select(membershipEvent => new FundMembershipEventResponse(
+                    membershipEvent.Id,
+                    membershipEvent.Type.ToString(),
+                    membershipEvent.Amount,
+                    membershipEvent.CollectiveFundId,
+                    membershipEvent.ParticipantId,
+                    nameById.GetValueOrDefault(membershipEvent.ParticipantId, $"#{membershipEvent.ParticipantId}"),
+                    membershipEvent.FundParticipantId,
+                    nameById.GetValueOrDefault(membershipEvent.FundParticipantId, $"#{membershipEvent.FundParticipantId}"),
+                    membershipEvent.CreatedInCycleId,
+                    cycleNumberById.GetValueOrDefault(membershipEvent.CreatedInCycleId),
+                    membershipEvent.CreatedAt))
+                .ToArray();
+
+            return Results.Ok(new PagedFundMembershipEventsResponse(items, total, pageIndex, size));
+        });
+
         app.MapGet("/orders", async (string? status, AppDbContext dbContext) =>
         {
             var query = dbContext.Orders.AsQueryable();
@@ -2228,6 +2276,21 @@ public sealed record ClosedFundResponse(
     DateTime? ClosedAt);
 
 public sealed record PagedClosedFundsResponse(ClosedFundResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record FundMembershipEventResponse(
+    int Id,
+    string Type,
+    decimal Amount,
+    int CollectiveFundId,
+    int MemberParticipantId,
+    string MemberName,
+    int FundParticipantId,
+    string FundName,
+    int CreatedInCycleId,
+    int CreatedInCycleNumber,
+    DateTime CreatedAt);
+
+public sealed record PagedFundMembershipEventsResponse(FundMembershipEventResponse[] Items, int Total, int Page, int PageSize);
 
 public sealed record ClosedCompanyResponse(
     int Id,

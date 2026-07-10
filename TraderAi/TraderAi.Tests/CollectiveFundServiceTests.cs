@@ -212,6 +212,77 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task JoiningAFundRecordsAJoinedEvent()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 50_000m);
+        var existing = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, existing, deposit: 50_000m, cycle.Id);
+        var joiner = await AddTraderAsync(currentBalance: 100_000m);
+
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var joinEvent = await context.CollectiveFundMembershipEvents.AsNoTracking()
+            .SingleAsync(membershipEvent => membershipEvent.ParticipantId == joiner.Id);
+        Assert.Equal(CollectiveFundMembershipEventType.Joined, joinEvent.Type);
+        Assert.Equal(fund.Id, joinEvent.CollectiveFundId);
+        Assert.Equal(fundParticipant.Id, joinEvent.FundParticipantId);
+        Assert.Equal(90_000m, joinEvent.Amount);
+        Assert.Equal(cycle.Id, joinEvent.CreatedInCycleId);
+    }
+
+    [Fact]
+    public async Task ReturningADepositRecordsALeftEvent()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 200_000m);
+        var leaver = await AddTraderAsync(currentBalance: 150_000_000m);
+        await AddMembershipAsync(fund, leaver, deposit: 90_000m, cycle.Id);
+        foreach (var _ in Enumerable.Range(0, 2))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
+        }
+
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var leaveEvent = await context.CollectiveFundMembershipEvents.AsNoTracking()
+            .SingleAsync(membershipEvent => membershipEvent.ParticipantId == leaver.Id);
+        Assert.Equal(CollectiveFundMembershipEventType.Left, leaveEvent.Type);
+        Assert.Equal(fundParticipant.Id, leaveEvent.FundParticipantId);
+        Assert.Equal(90_000m, leaveEvent.Amount);
+    }
+
+    [Fact]
+    public async Task ClosingSplitRecordsLeftEventsForEverySurvivor()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 200_000m);
+        var leaver = await AddTraderAsync(currentBalance: 150_000_000m);
+        await AddMembershipAsync(fund, leaver, deposit: 90_000m, cycle.Id);
+        var partner = await AddTraderAsync(currentBalance: 450_000m);
+        await AddMembershipAsync(fund, partner, deposit: 80_000m, cycle.Id);
+
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        // The last pair unwinds and the 200k pot splits evenly, so both members get a 100k leave event.
+        var leaveEvents = await context.CollectiveFundMembershipEvents.AsNoTracking()
+            .Where(membershipEvent => membershipEvent.Type == CollectiveFundMembershipEventType.Left
+                && membershipEvent.FundParticipantId == fundParticipant.Id)
+            .ToListAsync();
+        Assert.Equal(2, leaveEvents.Count);
+        Assert.All(leaveEvents, membershipEvent => Assert.Equal(100_000m, membershipEvent.Amount));
+        Assert.Contains(leaveEvents, membershipEvent => membershipEvent.ParticipantId == leaver.Id);
+        Assert.Contains(leaveEvents, membershipEvent => membershipEvent.ParticipantId == partner.Id);
+    }
+
+    [Fact]
     public async Task LeaveRaisesCashBySellingWhenFundIsShort()
     {
         var (_, cycle, company) = await SeedAsync(price: 100m);

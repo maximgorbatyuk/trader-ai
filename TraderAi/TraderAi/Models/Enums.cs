@@ -119,6 +119,12 @@ public enum CollectiveFundStatus
     Closed,
 }
 
+public enum CollectiveFundMembershipEventType
+{
+    Joined,
+    Left,
+}
+
 public enum MarketExitReason
 {
     FundLoss,

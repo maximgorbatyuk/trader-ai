@@ -154,9 +154,10 @@ public sealed class CollectiveFundService(
                 }
 
                 // A member whose participant row left the market leaves a stale membership behind; drop it
-                // rather than dereferencing a key that no longer exists.
+                // rather than dereferencing a key that no longer exists. It got no payout, so the event records zero.
                 if (!participantsById.TryGetValue(membership.ParticipantId, out var member))
                 {
+                    AddMembershipEvent(fund, membership.ParticipantId, CollectiveFundMembershipEventType.Left, 0m, currentCycleId, now);
                     RemoveMembership(fund, membership);
                     continue;
                 }
@@ -488,6 +489,7 @@ public sealed class CollectiveFundService(
             member.CurrentBalance += deposit;
             AddFundTransaction(fundParticipant.Id, deposit, currentCycleId, now);
             AddFundTransaction(member.Id, deposit, currentCycleId, now);
+            AddMembershipEvent(fund, member.Id, CollectiveFundMembershipEventType.Left, deposit, currentCycleId, now);
             RemoveMembership(fund, membership);
             return;
         }
@@ -686,9 +688,11 @@ public sealed class CollectiveFundService(
             var share = Round(fundParticipant.AvailableBalance / members.Count);
             foreach (var membership in members.ToList())
             {
-                // A member whose participant row left the market leaves a stale membership behind; just drop it.
+                // A member whose participant row left the market leaves a stale membership behind; just drop it,
+                // recording a zero-payout leave so the fund's history has no silent gap.
                 if (!participantsById.TryGetValue(membership.ParticipantId, out var member))
                 {
+                    AddMembershipEvent(fund, membership.ParticipantId, CollectiveFundMembershipEventType.Left, 0m, currentCycleId, now);
                     RemoveMembership(fund, membership);
                     continue;
                 }
@@ -698,6 +702,8 @@ public sealed class CollectiveFundService(
                     member.CurrentBalance += share;
                     AddFundTransaction(member.Id, share, currentCycleId, now);
                 }
+
+                AddMembershipEvent(fund, member.Id, CollectiveFundMembershipEventType.Left, share, currentCycleId, now);
 
                 // A payout that barely dents the deposit (a zero payout dents nothing) is a devastating loss:
                 // flag the member so the market-exit service can offer a one-shot quit on its first shareless cycle.
@@ -846,6 +852,7 @@ public sealed class CollectiveFundService(
         fundParticipant.CurrentBalance += deposit;
         AddFundTransaction(member.Id, deposit, currentCycleId, now);
         AddFundTransaction(fundParticipant.Id, deposit, currentCycleId, now);
+        AddMembershipEvent(fund, member.Id, CollectiveFundMembershipEventType.Joined, deposit, currentCycleId, now);
 
         var membership = new CollectiveFundParticipant
         {
@@ -991,6 +998,18 @@ public sealed class CollectiveFundService(
         {
             ParticipantId = participantId,
             Type = MoneyTransactionType.CollectiveFund,
+            Amount = amount,
+            CreatedInCycleId = currentCycleId,
+            CreatedAt = now,
+        });
+
+    private void AddMembershipEvent(CollectiveFund fund, int memberParticipantId, CollectiveFundMembershipEventType type, decimal amount, int currentCycleId, DateTime now) =>
+        dbContext.CollectiveFundMembershipEvents.Add(new CollectiveFundMembershipEvent
+        {
+            CollectiveFundId = fund.Id,
+            FundParticipantId = fund.ParticipantId,
+            ParticipantId = memberParticipantId,
+            Type = type,
             Amount = amount,
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,

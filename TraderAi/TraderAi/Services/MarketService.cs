@@ -1404,10 +1404,22 @@ public sealed class MarketService(
         {
             var memberParticipant = await dbContext.Participants
                 .FirstOrDefaultAsync(participant => participant.Id == member.ParticipantId);
-            if (memberParticipant is not null && member.DepositAmount > 0m)
+            var payout = memberParticipant is not null && member.DepositAmount > 0m ? member.DepositAmount : 0m;
+            if (payout > 0m)
             {
-                RecordPlayerFundTransfer(fundParticipant, memberParticipant, member.DepositAmount, currentCycleId, now);
+                RecordPlayerFundTransfer(fundParticipant, memberParticipant!, payout, currentCycleId, now);
             }
+
+            dbContext.CollectiveFundMembershipEvents.Add(new CollectiveFundMembershipEvent
+            {
+                CollectiveFundId = fund.Id,
+                FundParticipantId = fundParticipant.Id,
+                ParticipantId = member.ParticipantId,
+                Type = CollectiveFundMembershipEventType.Left,
+                Amount = payout,
+                CreatedInCycleId = currentCycleId,
+                CreatedAt = now,
+            });
 
             dbContext.CollectiveFundParticipants.Remove(member);
         }
@@ -1699,6 +1711,7 @@ public sealed class MarketService(
         await dbContext.ScienceInvestigations.ExecuteDeleteAsync();
         await dbContext.Bankruptcies.ExecuteDeleteAsync();
         await dbContext.MarketExits.ExecuteDeleteAsync();
+        await dbContext.CollectiveFundMembershipEvents.ExecuteDeleteAsync();
         await dbContext.CollectiveFundParticipants.ExecuteDeleteAsync();
         await dbContext.CollectiveFunds.ExecuteDeleteAsync();
         await dbContext.NewsPostIndustries.ExecuteDeleteAsync();
@@ -1728,7 +1741,7 @@ public sealed class MarketService(
             "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', 'CrisisEvents', " +
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
-            "'CollectiveFunds', 'CollectiveFundParticipants', 'ParticipantWorthSnapshots', " +
+            "'CollectiveFunds', 'CollectiveFundParticipants', 'CollectiveFundMembershipEvents', 'ParticipantWorthSnapshots', " +
             "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives', " +
             "'SectorSentimentSnapshots', 'SectorSentimentSnapshotArchives', " +
             "'Banks', 'Loans')");

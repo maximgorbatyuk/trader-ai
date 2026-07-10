@@ -300,6 +300,13 @@ public sealed class PlayerFundTests : IDisposable
         Assert.Equal(10_000m, player.CurrentBalance); // 6,000 + (7,000 − 3,000) residual
         Assert.Equal(0, await context.CollectiveFundParticipants.CountAsync());
         Assert.Equal(CollectiveFundStatus.Closed, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+
+        // The member's exit is logged with the deposit it was handed back.
+        var leaveEvent = await context.CollectiveFundMembershipEvents.AsNoTracking()
+            .SingleAsync(membershipEvent => membershipEvent.ParticipantId == member.Id);
+        Assert.Equal(CollectiveFundMembershipEventType.Left, leaveEvent.Type);
+        Assert.Equal(fundParticipant.Id, leaveEvent.FundParticipantId);
+        Assert.Equal(3_000m, leaveEvent.Amount);
     }
 
     // A close cannot strand a member's principal: it is refused while the fund's cash cannot cover the deposits.

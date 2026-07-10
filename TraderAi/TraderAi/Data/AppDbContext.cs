@@ -47,6 +47,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<CollectiveFundParticipant> CollectiveFundParticipants => Set<CollectiveFundParticipant>();
 
+    public DbSet<CollectiveFundMembershipEvent> CollectiveFundMembershipEvents => Set<CollectiveFundMembershipEvent>();
+
     public DbSet<ParticipantWorthSnapshot> ParticipantWorthSnapshots => Set<ParticipantWorthSnapshot>();
 
     public DbSet<MarketExit> MarketExits => Set<MarketExit>();
@@ -97,6 +99,14 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasMany(fund => fund.Members)
             .WithOne()
             .HasForeignKey(member => member.CollectiveFundId);
+
+        // Membership history is read newest-first from two sides: a member's page seeks on ParticipantId, a
+        // fund's page on FundParticipantId; each index covers its own paged lookup.
+        modelBuilder.Entity<CollectiveFundMembershipEvent>()
+            .HasIndex(membershipEvent => new { membershipEvent.ParticipantId, membershipEvent.Id });
+
+        modelBuilder.Entity<CollectiveFundMembershipEvent>()
+            .HasIndex(membershipEvent => new { membershipEvent.FundParticipantId, membershipEvent.Id });
 
         // One position row per (participant, company); every holdings read groups on these columns.
         modelBuilder.Entity<Holding>()

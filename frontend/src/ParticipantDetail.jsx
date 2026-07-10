@@ -225,6 +225,8 @@ export function ParticipantDetail({ participantId }) {
 
       <LoansPanel loans={loans} status={loanStatus} onStatusChange={setLoanStatus} />
 
+      <FundMembershipHistoryPanel participantId={participantId} isFund={detail.type === 'CollectiveFund'} />
+
       <TradesPanel trades={trades} participantId={participantId} companyName={companyName} />
     </section>
   )
@@ -629,6 +631,97 @@ function LoansPanel({ loans, status, onStatusChange }) {
             </tbody>
           </table>
         </div>
+      )}
+    </Panel>
+  )
+}
+
+const MEMBERSHIP_HISTORY_PAGE_SIZE = 10
+
+// Join/leave history for a fund or a trader, paged newest-first from the shared endpoint. On a fund's page the
+// counterparty column names the member; on a trader's page it names the fund. Kept off pages that never touch a
+// fund by rendering nothing once the load confirms there is no history and the participant is not itself a fund.
+function FundMembershipHistoryPanel({ participantId, isFund }) {
+  const [ready, setReady] = useState(false)
+  const [data, setData] = useState(null)
+  const [page, setPage] = useState(1)
+
+  const loadHistory = useCallback(async () => {
+    try {
+      setData(await api.getFundMembershipHistory(participantId, page, MEMBERSHIP_HISTORY_PAGE_SIZE))
+    } catch {
+      // Keep the last page on a failed refresh; the detail header already surfaces the offline state.
+    } finally {
+      setReady(true)
+    }
+  }, [participantId, page])
+
+  useEffect(() => {
+    const initialId = setTimeout(loadHistory, 0)
+    const intervalId = setInterval(loadHistory, POLL_INTERVAL_MS)
+    return () => {
+      clearTimeout(initialId)
+      clearInterval(intervalId)
+    }
+  }, [loadHistory])
+
+  const total = data?.total ?? 0
+  const items = data?.items ?? []
+  const pageCount = Math.max(1, Math.ceil(total / MEMBERSHIP_HISTORY_PAGE_SIZE))
+
+  if (!ready || (!isFund && total === 0)) {
+    return null
+  }
+
+  const counterpartyLabel = isFund ? 'Member' : 'Fund'
+
+  return (
+    <Panel title="Fund membership history" count={`${formatInt(total)}`} className="panel-holdings">
+      {items.length === 0 ? (
+        <p className="note">No members have joined or left yet.</p>
+      ) : (
+        <>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Event</th>
+                  <th scope="col">{counterpartyLabel}</th>
+                  <th scope="col" className="ta-r">
+                    Amount
+                  </th>
+                  <th scope="col" className="ta-r">
+                    Cycle
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((event) => {
+                  const joined = event.type === 'Joined'
+                  const counterpartyId = isFund ? event.memberParticipantId : event.fundParticipantId
+                  const counterpartyName = isFund ? event.memberName : event.fundName
+                  return (
+                    <tr key={event.id}>
+                      <td>
+                        <span className={`tag ${joined ? 'tag-collective' : 'tag-bankrupt'}`}>
+                          {joined ? 'Joined' : 'Left'}
+                        </span>
+                      </td>
+                      <th scope="row" className="cell-ellipsis">
+                        <Link className="cell-link" to={`/traders/${counterpartyId}`}>
+                          {counterpartyName}
+                        </Link>
+                      </th>
+                      <td className="num ta-r">{formatMoney(event.amount)}</td>
+                      <td className="num ta-r">cycle {formatInt(event.createdInCycleNumber || event.createdInCycleId)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
       )}
     </Panel>
   )
