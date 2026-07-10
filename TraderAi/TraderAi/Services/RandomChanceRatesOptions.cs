@@ -126,6 +126,10 @@ public sealed class ChanceModifiers
     // Added to the base appearance chance per delisting since the last listing.
     public double CompanyClosureAppearanceBoost { get; set; } = 0.25;
 
+    // Added to a trader's fund-join chance when a fund whose net worth has grown recently is joinable, so a
+    // fund on a hot streak draws more members.
+    public double FundGrowthJoinBonus { get; set; } = 0.15;
+
     // Scales an industry's volatility contribution to its sentiment revision chance.
     public double IndustrySentimentVolatilityFactor { get; set; } = 0.10;
 

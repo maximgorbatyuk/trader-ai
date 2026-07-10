@@ -1119,7 +1119,15 @@ public sealed class MarketService(
 
         var order = await dbContext.Orders
             .FirstOrDefaultAsync(candidate => candidate.Id == orderId);
-        if (order is null || order.ParticipantId != player.Id)
+        if (order is null)
+        {
+            return CancelOrderResult.Fail("Order does not belong to the player.");
+        }
+
+        // The player cancels its own orders and, since it hand-trades its managed fund, that fund's orders too.
+        // Any other order is rejected. The reservation is released to the order's actual owner, not the player.
+        var owner = await ResolveCancellableOwnerAsync(player, order);
+        if (owner is null)
         {
             return CancelOrderResult.Fail("Order does not belong to the player.");
         }
@@ -1133,9 +1141,34 @@ public sealed class MarketService(
         var market = await dbContext.Markets.FirstOrDefaultAsync();
         var currentCycleId = market?.CurrentCycleId ?? order.CreatedInCycleId;
 
-        CancelOrder(order, player, currentCycleId);
+        CancelOrder(order, owner, currentCycleId);
         await dbContext.SaveChangesAsync();
         return CancelOrderResult.Ok(order);
+    }
+
+    // The participant whose reservation a player-driven cancel releases: the player for its own order, or the
+    // participant of the active fund the player manages for that fund's order. Null when the order is neither.
+    private async Task<Participant?> ResolveCancellableOwnerAsync(Participant player, Order order)
+    {
+        if (order.ParticipantId == player.Id)
+        {
+            return player;
+        }
+
+        if (order.ParticipantId is not int ownerId)
+        {
+            return null;
+        }
+
+        var managesFund = await dbContext.CollectiveFunds
+            .AnyAsync(fund => fund.IsPlayerManaged
+                && fund.FoundedByParticipantId == player.Id
+                && fund.Status != CollectiveFundStatus.Closed
+                && fund.ParticipantId == ownerId);
+
+        return managesFund
+            ? await dbContext.Participants.FirstOrDefaultAsync(participant => participant.Id == ownerId)
+            : null;
     }
 
     // The fund the human player runs by hand: a CollectiveFund founded by the player and flagged player-managed.

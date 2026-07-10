@@ -6,4 +6,8 @@ public sealed class CollectiveFundOptions
 
     // Opt-in: collective funds stay off unless this is set to true.
     public bool Enabled { get; set; }
+
+    // Only traders whose cash sits below this line are candidates to pool into a fund. Raising it widens the
+    // pool of would-be joiners; the default matches the value this lived at as a service constant.
+    public decimal JoinBalanceCeiling { get; set; } = 500_000m;
 }

@@ -321,6 +321,55 @@ public sealed class PlayerFundTests : IDisposable
         Assert.Equal(CollectiveFundStatus.Active, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
     }
 
+    // The player hand-trades its managed fund, so it can also cancel that fund's open orders; the reservation
+    // is released back to the fund, not the player.
+    [Fact]
+    public async Task PlayerCanCancelManagedFundBuyOrder()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        await market.CreatePlayerAsync("Ada");
+        await market.OpenPlayerFundAsync(4_000m, null);
+        var fund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        var company = await context.Companies.FirstAsync();
+
+        var placed = await market.PlaceOrderAsync(fund.ParticipantId, company.Id, OrderType.Buy, 5, 100m);
+        Assert.True(placed.Success);
+
+        var fundParticipant = await context.Participants.FirstAsync(participant => participant.Id == fund.ParticipantId);
+        await context.Entry(fundParticipant).ReloadAsync();
+        Assert.Equal(500m, fundParticipant.ReservedBalance);
+
+        var cancelled = await market.CancelPlayerOrderAsync(placed.Order!.Id);
+
+        Assert.True(cancelled.Success);
+        var refreshed = await context.Orders.AsNoTracking().FirstAsync(order => order.Id == placed.Order!.Id);
+        Assert.Equal(OrderStatus.Cancelled, refreshed.Status);
+        await context.Entry(fundParticipant).ReloadAsync();
+        Assert.Equal(0m, fundParticipant.ReservedBalance);
+    }
+
+    // The player-scoped cancel still rejects an order that is neither the player's nor its managed fund's.
+    [Fact]
+    public async Task CancelRejectsAnotherParticipantsOrder()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        await market.CreatePlayerAsync("Ada");
+        var bob = await context.Participants.FirstAsync(participant => participant.Name == "Bob");
+        var company = await context.Companies.FirstAsync();
+
+        var placed = await market.PlaceOrderAsync(bob.Id, company.Id, OrderType.Buy, 5, 100m);
+        Assert.True(placed.Success);
+
+        var result = await market.CancelPlayerOrderAsync(placed.Order!.Id);
+
+        Assert.False(result.Success);
+        Assert.Equal("Order does not belong to the player.", result.Error);
+        var refreshed = await context.Orders.AsNoTracking().FirstAsync(order => order.Id == placed.Order!.Id);
+        Assert.Equal(OrderStatus.Open, refreshed.Status);
+    }
+
     private async Task<MarketCycle> SeedFundScenarioAsync()
     {
         var now = DateTime.UtcNow;

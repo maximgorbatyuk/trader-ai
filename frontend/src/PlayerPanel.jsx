@@ -181,7 +181,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
           <ActorView
             key="fund"
             subject={fundSubjectOf(fundDetail, holdings, worthHistory)}
-            canCancelOrders={false}
+            canCancelOrders
             members={fundDetail.collectiveFundMembers ?? []}
             holdings={holdings}
             orders={orders}
@@ -460,8 +460,8 @@ function ManageFundSection({ player, onRefresh }) {
 }
 
 // One actor's balances, performance, and detail sub-tabs. Reused for the player and the fund; the fund variant
-// passes `members` (adding a Members sub-tab) and `canCancelOrders={false}` (fund orders cannot be cancelled
-// through the player-scoped cancel endpoint).
+// passes `members` (adding a Members sub-tab). Both can cancel their open orders through the player-scoped
+// cancel endpoint, which accepts the player's own orders and its managed fund's.
 function ActorView({
   subject,
   canCancelOrders,

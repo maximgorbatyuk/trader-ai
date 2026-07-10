@@ -103,6 +103,7 @@ public enum NewsCategory
     CompanyClosed,
     StockSplit,
     StockMerge,
+    FundPerformance,
 }
 
 public enum CrisisScope

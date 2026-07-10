@@ -4,6 +4,7 @@ const NEWS_CATEGORY = {
   CompanyClosed: { className: 'news-closed', label: 'Delisted' },
   StockSplit: { className: 'news-stock', label: 'Stock split' },
   StockMerge: { className: 'news-stock', label: 'Reverse split' },
+  FundPerformance: { className: 'news-stock', label: 'Fund growth' },
 }
 
 export function newsCategoryStyle(category) {

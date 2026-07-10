@@ -764,6 +764,127 @@ public sealed class CollectiveFundServiceTests : IDisposable
         Assert.Equal(CollectiveFundStatus.Active, refreshed.Status);
     }
 
+    [Fact]
+    public async Task GrowingFundPostsGrowthNewswire()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 500_000m);
+        var member = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, member, deposit: 90_000m, cycle.Id);
+
+        // Net worth doubled across the window, far past the 2% growth threshold.
+        await AddRisingWorthSeriesAsync(fundParticipant.Id, from: 100_000m, to: 200_000m);
+
+        // The member is below the leave line, under the switch tenure, and skipped as an existing member in the
+        // join pass, so nothing draws; posting the growth headline draws nothing either.
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var post = await context.NewsPosts.AsNoTracking()
+            .SingleAsync(newsPost => newsPost.Category == NewsCategory.FundPerformance);
+        Assert.Equal(NewsImpactScope.None, post.Scope);
+        Assert.Contains(fundParticipant.Name, post.Title);
+
+        var refreshedFund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(cycle.CycleNumber, refreshedFund.LastGrowthNewsInCycleNumber);
+    }
+
+    [Fact]
+    public async Task GrowthNewswireRespectsCooldown()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 500_000m);
+        var member = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, member, deposit: 90_000m, cycle.Id);
+        await AddRisingWorthSeriesAsync(fundParticipant.Id, from: 100_000m, to: 200_000m);
+
+        // A headline went out only five cycles ago, inside the 25-cycle cooldown, so no fresh one is posted.
+        fund.LastGrowthNewsInCycleNumber = cycle.CycleNumber - 5;
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.False(await context.NewsPosts.AnyAsync(newsPost => newsPost.Category == NewsCategory.FundPerformance));
+        var refreshedFund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(cycle.CycleNumber - 5, refreshedFund.LastGrowthNewsInCycleNumber);
+    }
+
+    [Fact]
+    public async Task GrowingJoinableFundRaisesTheJoinChance()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 500_000m);
+        var founder = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, founder, deposit: 90_000m, cycle.Id);
+        await AddRisingWorthSeriesAsync(fundParticipant.Id, from: 100_000m, to: 200_000m);
+
+        var joiner = await AddTraderAsync(currentBalance: 100_000m);
+
+        // 0.10 clears neither the 5% base chance nor the 8% join+open band, but the +15% growth bonus lifts the
+        // join chance to 20%, so the growing fund pulls the joiner in rather than it opening its own.
+        await Service(enabled: true, new ScriptedRandom([0.10d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1, await context.CollectiveFunds.CountAsync());
+        Assert.True(await context.CollectiveFundParticipants
+            .AnyAsync(membership => membership.ParticipantId == joiner.Id && membership.CollectiveFundId == fund.Id));
+    }
+
+    [Fact]
+    public async Task JoinerPrefersTheGrowingFund()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+
+        // Two funds even on size, worth, and dividends; only the second is growing, so the growth score decides.
+        var (flatFund, _) = await AddFundAsync(balance: 100_000m);
+        var flatMember = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(flatFund, flatMember, deposit: 10_000m, cycle.Id);
+
+        var (growingFund, growingParticipant) = await AddFundAsync(balance: 100_000m);
+        var growingMember = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(growingFund, growingMember, deposit: 10_000m, cycle.Id);
+        await AddRisingWorthSeriesAsync(growingParticipant.Id, from: 100_000m, to: 200_000m);
+
+        var joiner = await AddTraderAsync(currentBalance: 100_000m);
+
+        // Only the joiner draws; a growing fund is joinable so 0.0 lands inside the raised band, and the growth
+        // score breaks the otherwise-even tie toward the growing fund.
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var membership = await context.CollectiveFundParticipants.AsNoTracking()
+            .FirstAsync(member => member.ParticipantId == joiner.Id);
+        Assert.Equal(growingFund.Id, membership.CollectiveFundId);
+    }
+
+    [Fact]
+    public async Task RaisedJoinCeilingLetsRicherTraderJoin()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, _) = await AddFundAsync(balance: 500_000m);
+        var member = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, member, deposit: 90_000m, cycle.Id);
+
+        // 1,000,000 cash is above the default 500k ceiling but below the raised 2M one, so the trader joins.
+        var richJoiner = await AddTraderAsync(currentBalance: 1_000_000m);
+
+        var service = new CollectiveFundService(
+            context,
+            Options.Create(new CollectiveFundOptions { Enabled = true, JoinBalanceCeiling = 2_000_000m }),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.0d], []));
+        await service.ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.True(await context.CollectiveFundParticipants
+            .AnyAsync(membership => membership.ParticipantId == richJoiner.Id && membership.CollectiveFundId == fund.Id));
+    }
+
     private async Task<Crisis> AddCrisisAsync(MarketCycle cycle)
     {
         var crisis = new Crisis
@@ -917,6 +1038,30 @@ public sealed class CollectiveFundServiceTests : IDisposable
             CreatedAt = DateTime.UtcNow,
         });
         await context.SaveChangesAsync();
+    }
+
+    private async Task AddWorthSnapshotAsync(int participantId, int cycleId, decimal netWorth)
+    {
+        context.ParticipantWorthSnapshots.Add(new ParticipantWorthSnapshot
+        {
+            ParticipantId = participantId,
+            CreatedInCycleId = cycleId,
+            Balance = netWorth,
+            HoldingsValue = 0m,
+            LoanLiability = 0m,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+    }
+
+    // Records a rising worth series so the fund reads as growing: six snapshots climbing from `from` to `to`.
+    private async Task AddRisingWorthSeriesAsync(int participantId, decimal from, decimal to)
+    {
+        for (var index = 0; index <= 5; index++)
+        {
+            var worth = from + ((to - from) * index / 5m);
+            await AddWorthSnapshotAsync(participantId, cycleId: index + 1, worth);
+        }
     }
 
     private async Task AddSharesAsync(int ownerId, int companyId, int count, decimal price)

@@ -16,9 +16,8 @@ public sealed class CollectiveFundService(
     IOptions<RandomChanceRatesOptions> chanceRates,
     Random random)
 {
-    // Only traders below this cash line are candidates to pool into a fund; members must leave once their own
-    // cash climbs back above the upper line.
-    private const decimal JoinBalanceCeiling = 500_000m;
+    // Candidates pool into a fund only while their cash sits below CollectiveFundOptions.JoinBalanceCeiling;
+    // members must leave once their own cash climbs back above this upper line.
     private const decimal LeaveBalanceThreshold = 100_000_000m;
 
     private const int MaxMembers = 20;
@@ -60,12 +59,24 @@ public sealed class CollectiveFundService(
     private const decimal FounderLossFraction = 0.15m;
     private const int FounderDividendLookbackPayouts = 2;
 
-    // A joiner scores each candidate fund on size, net worth, and dividends over its last this-many payout
-    // events, each min-max normalised across the candidates and summed with the weights below.
+    // A joiner scores each candidate fund on size, net worth, dividends over its last this-many payout events,
+    // and recent net-worth growth, each min-max normalised across the candidates and summed with the weights
+    // below.
     private const int JoinDividendLookbackPayouts = 3;
     private const double ScoreWeightSize = 1.0;
     private const double ScoreWeightWorth = 1.0;
     private const double ScoreWeightDividends = 1.0;
+    private const double ScoreWeightGrowth = 1.0;
+
+    // A fund whose net worth this many cycles ago is at least FundGrowthThreshold below its latest recorded
+    // worth is "growing": it earns a willingness-to-join boost and a celebratory newswire. A fund without that
+    // much snapshot history has no signal yet.
+    private const int FundGrowthWindowCycles = 5;
+    private const decimal FundGrowthThreshold = 0.02m;
+
+    // A growing fund posts a fresh "on a hot streak" headline at most once per this many cycles, so a long
+    // winning run does not spam the newswire every cycle.
+    private const int GrowthNewsCooldownCycles = 25;
 
     private Dictionary<int, Participant> participantsById = null!;
     private List<CollectiveFund> funds = null!;
@@ -84,13 +95,20 @@ public sealed class CollectiveFundService(
     // Open loans a fund participant carries, so a wind-down can discharge them.
     private Dictionary<int, List<Loan>> openLoansByFundParticipant = null!;
 
+    // Recent net-worth growth per fund id (fraction over the growth window; 0 when the fund lacks the history),
+    // and the subset whose growth cleared the threshold. The first feeds fund scoring, the second the join
+    // boost and the growth newswire.
+    private Dictionary<int, decimal> growthPercentByFundId = null!;
+    private HashSet<int> growingFundIds = null!;
+
     // The crisis active this cycle (if any) and its cycle number, stashed per-cycle so a fund that closes deep in
     // the call chain can record itself on the crisis timeline without threading them through every method.
     private Crisis? activeCrisis;
     private int crisisCycleNumber;
 
     // Draw discipline for a scripted Random in tests: no draws while closing funds, returning deposits, ratcheting
-    // peak worth, running the founder close, or dropping a stale membership. In the member pass (fund id, then participant id order) each
+    // peak worth, running the founder close, detecting fund growth, posting the growth newswire, or dropping a
+    // stale membership. In the member pass (fund id, then participant id order) each
     // member draws at most once — the forced-leave roll if it sits at or above the leave line, otherwise the
     // switch roll if it is a non-founder past the minimum tenure, otherwise nothing. In the join pass (independent
     // traders, id order) a switch-flagged member draws nothing, and every other eligible trader draws once.
@@ -104,7 +122,7 @@ public sealed class CollectiveFundService(
         this.activeCrisis = activeCrisis;
         crisisCycleNumber = currentCycleNumber;
 
-        await LoadStateAsync();
+        await LoadStateAsync(currentCycleId);
 
         foreach (var fund in funds.Where(fund => fund.Status == CollectiveFundStatus.GoingToBeClosed).OrderBy(fund => fund.Id).ToList())
         {
@@ -158,6 +176,8 @@ public sealed class CollectiveFundService(
                 }
             }
         }
+
+        PostGrowthNewsForFunds(currentCycleId, currentCycleNumber, now);
 
         // Opening protection: traders only start pooling once the market clears its quiet window.
         if (currentCycleNumber <= QuietCycles)
@@ -241,7 +261,7 @@ public sealed class CollectiveFundService(
         fundOwner.CurrentBalance -= distributed;
     }
 
-    private async Task LoadStateAsync()
+    private async Task LoadStateAsync(int currentCycleId)
     {
         latestPriceByCompany = await LatestPriceByCompanyAsync();
 
@@ -312,6 +332,90 @@ public sealed class CollectiveFundService(
                 .ToListAsync())
             .GroupBy(loan => loan.ParticipantId)
             .ToDictionary(group => group.Key, group => group.ToList());
+
+        await LoadFundGrowthAsync(currentCycleId, fundParticipantIds);
+    }
+
+    // Measures each fund's recent net-worth trend from its worth snapshots: the latest recorded worth against
+    // the worth FundGrowthWindowCycles snapshots earlier. Only the recent slice is queried (cycle ids are
+    // effectively contiguous), so the scan stays small regardless of retention. Draws no randomness.
+    private async Task LoadFundGrowthAsync(int currentCycleId, List<int> fundParticipantIds)
+    {
+        growthPercentByFundId = new Dictionary<int, decimal>();
+        growingFundIds = new HashSet<int>();
+        if (fundParticipantIds.Count == 0)
+        {
+            return;
+        }
+
+        // A little slack beyond the window guards against any gap in recorded cycle ids.
+        var earliestCycleId = currentCycleId - (FundGrowthWindowCycles + 5);
+        var snapshotsByFund = (await dbContext.ParticipantWorthSnapshots
+                .Where(snapshot => fundParticipantIds.Contains(snapshot.ParticipantId)
+                    && snapshot.CreatedInCycleId > earliestCycleId)
+                .Select(snapshot => new
+                {
+                    snapshot.ParticipantId,
+                    snapshot.CreatedInCycleId,
+                    NetWorth = snapshot.Balance + snapshot.HoldingsValue - snapshot.LoanLiability,
+                })
+                .ToListAsync())
+            .GroupBy(snapshot => snapshot.ParticipantId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(snapshot => snapshot.CreatedInCycleId).ToList());
+
+        foreach (var fund in funds)
+        {
+            // Need one snapshot beyond the window so index [FundGrowthWindowCycles] is the worth that many
+            // cycles back; a younger fund has no trend to read yet.
+            if (!snapshotsByFund.TryGetValue(fund.ParticipantId, out var snapshots)
+                || snapshots.Count <= FundGrowthWindowCycles)
+            {
+                continue;
+            }
+
+            var recent = snapshots[0].NetWorth;
+            var past = snapshots[FundGrowthWindowCycles].NetWorth;
+            if (past <= 0m)
+            {
+                continue;
+            }
+
+            var growth = (recent - past) / past;
+            growthPercentByFundId[fund.Id] = growth;
+            if (growth >= FundGrowthThreshold)
+            {
+                growingFundIds.Add(fund.Id);
+            }
+        }
+    }
+
+    // Posts an impact-free (Scope = None) newswire for each active, growing fund past its headline cooldown, so
+    // a fund on a hot streak advertises itself to would-be joiners. Draws no randomness.
+    private void PostGrowthNewsForFunds(int currentCycleId, int currentCycleNumber, DateTime now)
+    {
+        foreach (var fund in funds.Where(fund => fund.Status == CollectiveFundStatus.Active).OrderBy(fund => fund.Id))
+        {
+            if (!growingFundIds.Contains(fund.Id)
+                || (fund.LastGrowthNewsInCycleNumber is int last && currentCycleNumber - last < GrowthNewsCooldownCycles)
+                || !participantsById.TryGetValue(fund.ParticipantId, out var fundParticipant))
+            {
+                continue;
+            }
+
+            var gainPercent = Math.Round(growthPercentByFundId.GetValueOrDefault(fund.Id) * 100m, 1, MidpointRounding.AwayFromZero);
+            dbContext.NewsPosts.Add(new NewsPost
+            {
+                Title = $"{fundParticipant.Name} is up {gainPercent}% over the last {FundGrowthWindowCycles} cycles",
+                Content = $"{fundParticipant.Name} has grown its net worth {gainPercent}% across the last {FundGrowthWindowCycles} cycles, drawing fresh interest from traders looking for a fund to join.",
+                PublishedInCycleId = currentCycleId,
+                PublishedAt = now,
+                Scope = NewsImpactScope.None,
+                Category = NewsCategory.FundPerformance,
+            });
+            fund.LastGrowthNewsInCycleNumber = currentCycleNumber;
+        }
     }
 
     private void MaybeDecideLeave(CollectiveFund fund, CollectiveFundParticipant membership, Participant member, int currentCycleId, DateTime now)
@@ -447,9 +551,9 @@ public sealed class CollectiveFundService(
             .Where(fund => fund.Status == CollectiveFundStatus.Active && membershipsByFundId[fund.Id].Count < MaxMembers)
             .ToList();
 
-    // Picks the fund a joiner prefers: bigger, worth more, and paying more dividends recently. Each metric is
-    // min-max normalised across the candidates so no single scale dominates, then summed with the score weights;
-    // ties fall to the lowest fund id.
+    // Picks the fund a joiner prefers: bigger, worth more, paying more dividends recently, and growing fastest.
+    // Each metric is min-max normalised across the candidates so no single scale dominates, then summed with the
+    // score weights; ties fall to the lowest fund id.
     private CollectiveFund? SelectBestFund(List<CollectiveFund> candidates)
     {
         if (candidates.Count <= 1)
@@ -464,6 +568,7 @@ public sealed class CollectiveFundService(
                 Size = (double)membershipsByFundId[fund.Id].Count,
                 Worth = (double)FundNetWorth(participantsById[fund.ParticipantId]),
                 Dividends = (double)RecentDividends(fund.ParticipantId),
+                Growth = (double)growthPercentByFundId.GetValueOrDefault(fund.Id),
             })
             .ToList();
 
@@ -473,6 +578,8 @@ public sealed class CollectiveFundService(
         var worthMax = scored.Max(entry => entry.Worth);
         var dividendMin = scored.Min(entry => entry.Dividends);
         var dividendMax = scored.Max(entry => entry.Dividends);
+        var growthMin = scored.Min(entry => entry.Growth);
+        var growthMax = scored.Max(entry => entry.Growth);
 
         static double Normalise(double value, double min, double max) => max > min ? (value - min) / (max - min) : 0.0;
 
@@ -480,7 +587,8 @@ public sealed class CollectiveFundService(
             .OrderByDescending(entry =>
                 (ScoreWeightSize * Normalise(entry.Size, sizeMin, sizeMax))
                 + (ScoreWeightWorth * Normalise(entry.Worth, worthMin, worthMax))
-                + (ScoreWeightDividends * Normalise(entry.Dividends, dividendMin, dividendMax)))
+                + (ScoreWeightDividends * Normalise(entry.Dividends, dividendMin, dividendMax))
+                + (ScoreWeightGrowth * Normalise(entry.Growth, growthMin, growthMax)))
             .ThenBy(entry => entry.Fund.Id)
             .First()
             .Fund;
@@ -655,16 +763,18 @@ public sealed class CollectiveFundService(
 
         if (!participant.IsActive
             || participant.IsBankrupt
-            || participant.CurrentBalance >= JoinBalanceCeiling
+            || participant.CurrentBalance >= options.Value.JoinBalanceCeiling
             || membershipByParticipantId.ContainsKey(participant.Id))
         {
             return;
         }
 
         var joinable = JoinableFunds();
+        var growingJoinable = joinable.Any(fund => growingFundIds.Contains(fund.Id));
 
         var roll = random.NextDouble();
-        var joinChance = JoinChance(participant.CannotBuyCycles);
+        var joinChance = JoinChance(participant.CannotBuyCycles)
+            + (growingJoinable ? chanceRates.Value.ChanceModifiers.FundGrowthJoinBonus : 0.0);
         var openChance = OpenChance(participant.CannotBuyCycles);
 
         if (joinable.Count > 0 && roll < joinChance)

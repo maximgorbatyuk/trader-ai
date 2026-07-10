@@ -34,5 +34,9 @@ public sealed class CollectiveFund
     // closes the fund once its current worth collapses to a small fraction of this peak.
     public decimal PeakNetWorth { get; set; }
 
+    // Cycle number of the last "fund is growing" newswire, so a fund on a long winning streak posts a fresh
+    // headline only once per cooldown instead of every cycle. Null until the fund has ever posted one.
+    public int? LastGrowthNewsInCycleNumber { get; set; }
+
     public ICollection<CollectiveFundParticipant> Members { get; set; } = new List<CollectiveFundParticipant>();
 }
