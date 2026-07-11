@@ -111,6 +111,7 @@ function TradeMarketPage() {
   const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
   const companyPriceById = new Map(companies.map((company) => [company.id, company.currentPrice]))
   const companySharesById = new Map(companies.map((company) => [company.id, company.issuedSharesCount]))
+  const companyById = new Map(companies.map((company) => [company.id, company]))
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
   const actor = resolveActor(player, actorKind)
   const emptyActorHint = emptyActorHintFor(player, actorKind)
@@ -183,6 +184,7 @@ function TradeMarketPage() {
           companyNameById={companyNameById}
           companyPriceById={companyPriceById}
           companySharesById={companySharesById}
+          companyById={companyById}
           actor={actor}
           actorHoldingCompanyIds={actorHoldingCompanyIds}
           emptyActorHint={emptyActorHint}
