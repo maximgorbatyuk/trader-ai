@@ -106,6 +106,8 @@ export const api = {
     get(`/participants/${participantId}/share-transactions?take=${take}`),
   getParticipantMoneyTransactions: (participantId, take = 10) =>
     get(`/participants/${participantId}/money-transactions?take=${take}`),
+  getMoneyTransactionDetail: (participantId, transactionId) =>
+    get(`/participants/${participantId}/money-transactions/${transactionId}`),
   getParticipantWorthHistory: (participantId, take) =>
     get(take ? `/participants/${participantId}/worth-history?take=${take}` : `/participants/${participantId}/worth-history`),
   getFundMembershipHistory: (participantId, page = 1, pageSize = 10) =>

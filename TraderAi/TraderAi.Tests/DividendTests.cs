@@ -62,6 +62,26 @@ public sealed class DividendTests : IDisposable
     }
 
     [Fact]
+    public async Task PayoutRecordsThePayingCompanyInTheBreakdown()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = await context.Markets.FirstAsync();
+        market.NextDividendCycleNumber = 1;
+        await context.SaveChangesAsync();
+
+        var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
+        var holding = await context.Holdings.FirstAsync(row => row.ParticipantId == alice.Id);
+
+        await Service().StepCycleAsync();
+
+        var dividend = await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.Dividend);
+        var line = await context.DividendPayouts.SingleAsync(payout => payout.MoneyTransactionId == dividend.Id);
+        Assert.Equal(holding.CompanyId, line.CompanyId);
+        // A single paying company means its line carries the whole payout.
+        Assert.Equal(dividend.Amount, line.Amount);
+    }
+
+    [Fact]
     public async Task NoDividendIsPaidBeforeTheScheduledCycle()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);

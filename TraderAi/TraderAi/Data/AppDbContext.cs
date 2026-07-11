@@ -21,6 +21,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<MoneyTransaction> MoneyTransactions => Set<MoneyTransaction>();
 
+    public DbSet<DividendPayout> DividendPayouts => Set<DividendPayout>();
+
     public DbSet<PriceSnapshot> PriceSnapshots => Set<PriceSnapshot>();
 
     public DbSet<Market> Markets => Set<Market>();
@@ -188,6 +190,19 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<MoneyTransaction>()
             .HasIndex(transaction => transaction.RelatedLoanId);
+
+        // A Dividend transaction's per-company breakdown: read by parent for the detail view, deleted by cycle
+        // when the parent transaction is archived.
+        modelBuilder.Entity<DividendPayout>()
+            .HasOne(payout => payout.MoneyTransaction)
+            .WithMany()
+            .HasForeignKey(payout => payout.MoneyTransactionId);
+
+        modelBuilder.Entity<DividendPayout>()
+            .HasIndex(payout => payout.MoneyTransactionId);
+
+        modelBuilder.Entity<DividendPayout>()
+            .HasIndex(payout => payout.CreatedInCycleId);
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {

@@ -621,6 +621,100 @@ public static class MarketEndpoints
             return Results.Ok(response);
         });
 
+        // One cash movement, enriched on open with whatever it links to: the order and settled trade for a
+        // trade-driven row, the loan behind a loan row, or the per-company breakdown behind a dividend. The list
+        // endpoint stays lean; this resolves names and related detail only when a row is inspected.
+        app.MapGet("/participants/{participantId:int}/money-transactions/{transactionId:int}", async (
+            int participantId, int transactionId, AppDbContext dbContext) =>
+        {
+            var transaction = await dbContext.MoneyTransactions
+                .FirstOrDefaultAsync(row => row.Id == transactionId && row.ParticipantId == participantId);
+            if (transaction is null)
+            {
+                return Results.NotFound();
+            }
+
+            var cycleNumber = await dbContext.MarketCycles
+                .Where(cycle => cycle.Id == transaction.CreatedInCycleId)
+                .Select(cycle => (int?)cycle.CycleNumber)
+                .FirstOrDefaultAsync();
+
+            var order = transaction.RelatedOrderId is int orderId
+                ? await dbContext.Orders.FirstOrDefaultAsync(row => row.Id == orderId)
+                : null;
+            var trade = transaction.RelatedShareTransactionId is int shareTransactionId
+                ? await dbContext.ShareTransactions.FirstOrDefaultAsync(row => row.Id == shareTransactionId)
+                : null;
+            var loan = transaction.RelatedLoanId is int loanId
+                ? await dbContext.Loans.FirstOrDefaultAsync(row => row.Id == loanId)
+                : null;
+            var dividendLines = transaction.Type == MoneyTransactionType.Dividend
+                ? await dbContext.DividendPayouts
+                    .Where(payout => payout.MoneyTransactionId == transaction.Id)
+                    .OrderByDescending(payout => payout.Amount)
+                    .ToListAsync()
+                : [];
+
+            // Resolve every referenced company in one query. Closed companies are retained, so historical rows
+            // still get their names.
+            var companyIds = new List<int>();
+            if (order is not null) companyIds.Add(order.CompanyId);
+            if (trade is not null) companyIds.Add(trade.CompanyId);
+            companyIds.AddRange(dividendLines.Select(payout => payout.CompanyId));
+            var companyNameById = companyIds.Count == 0
+                ? new Dictionary<int, string>()
+                : await dbContext.Companies
+                    .Where(company => companyIds.Contains(company.Id))
+                    .ToDictionaryAsync(company => company.Id, company => company.Name);
+
+            string? NameOf(int companyId) => companyNameById.GetValueOrDefault(companyId);
+
+            var response = new MoneyTransactionDetailResponse(
+                transaction.Id,
+                transaction.Type.ToString(),
+                transaction.Amount,
+                transaction.CreatedInCycleId,
+                cycleNumber,
+                transaction.CreatedAt,
+                order is null
+                    ? null
+                    : new MoneyTransactionOrderInfo(
+                        order.Id,
+                        order.CompanyId,
+                        NameOf(order.CompanyId),
+                        order.Type.ToString(),
+                        order.Status.ToString(),
+                        order.Quantity,
+                        order.FilledQuantity,
+                        order.LimitPrice),
+                trade is null
+                    ? null
+                    : new MoneyTransactionTradeInfo(
+                        trade.Id,
+                        trade.CompanyId,
+                        NameOf(trade.CompanyId),
+                        trade.Quantity,
+                        trade.Price,
+                        trade.TotalCost),
+                loan is null
+                    ? null
+                    : new MoneyTransactionLoanInfo(
+                        loan.Id,
+                        loan.Principal,
+                        loan.RemainingPrincipal,
+                        loan.InterestRatePerCycle,
+                        loan.TermCycles,
+                        loan.PastDueAmount,
+                        loan.Status.ToString()),
+                dividendLines.Count == 0
+                    ? null
+                    : dividendLines
+                        .Select(payout => new DividendPayoutLineResponse(payout.CompanyId, NameOf(payout.CompanyId), payout.Amount))
+                        .ToArray());
+
+            return Results.Ok(response);
+        });
+
         app.MapGet("/participants/{participantId:int}/worth-history", async (int participantId, int? take, AppDbContext dbContext) =>
         {
             // Newest first for the cap, then flipped to chronological so the chart reads left-to-right.
@@ -2474,6 +2568,47 @@ public sealed record MoneyTransactionResponse(
     int? RelatedLoanId,
     int CreatedInCycleId,
     DateTime CreatedAt);
+
+public sealed record MoneyTransactionDetailResponse(
+    int Id,
+    string Type,
+    decimal Amount,
+    int CreatedInCycleId,
+    int? CycleNumber,
+    DateTime CreatedAt,
+    MoneyTransactionOrderInfo? Order,
+    MoneyTransactionTradeInfo? Trade,
+    MoneyTransactionLoanInfo? Loan,
+    IReadOnlyList<DividendPayoutLineResponse>? DividendBreakdown);
+
+public sealed record MoneyTransactionOrderInfo(
+    int OrderId,
+    int CompanyId,
+    string? CompanyName,
+    string Side,
+    string Status,
+    int Quantity,
+    int FilledQuantity,
+    decimal LimitPrice);
+
+public sealed record MoneyTransactionTradeInfo(
+    int ShareTransactionId,
+    int CompanyId,
+    string? CompanyName,
+    int Quantity,
+    decimal Price,
+    decimal TotalCost);
+
+public sealed record MoneyTransactionLoanInfo(
+    int LoanId,
+    decimal Principal,
+    decimal RemainingPrincipal,
+    decimal InterestRatePerCycle,
+    int TermCycles,
+    decimal PastDueAmount,
+    string Status);
+
+public sealed record DividendPayoutLineResponse(int CompanyId, string? CompanyName, decimal Amount);
 
 public sealed record CycleResponse(int Id, int CycleNumber, string Status, DateTime? StartedAt, DateTime? CompletedAt);
 

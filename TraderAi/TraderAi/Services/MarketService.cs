@@ -645,23 +645,48 @@ public sealed class MarketService(
                 continue;
             }
 
-            var payout = ownerGroup.Sum(holding =>
-                latestPriceByCompany[holding.CompanyId] * effectiveRateByCompany[holding.CompanyId] * holding.Quantity);
-            payout = Round(payout);
+            var payout = Round(ownerGroup.Sum(holding =>
+                latestPriceByCompany[holding.CompanyId] * effectiveRateByCompany[holding.CompanyId] * holding.Quantity));
             if (payout <= 0m)
             {
                 continue;
             }
 
             owner.CurrentBalance += payout;
-            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            var transaction = new MoneyTransaction
             {
                 ParticipantId = owner.Id,
                 Type = MoneyTransactionType.Dividend,
                 Amount = payout,
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
-            });
+            };
+            dbContext.MoneyTransactions.Add(transaction);
+
+            // Persist which companies paid into this payout. Each share is rounded to the money scale and the
+            // sub-cent residual folds into the largest line so the breakdown reconciles exactly to the payout.
+            var lines = ownerGroup
+                .Select(holding => (
+                    holding.CompanyId,
+                    Amount: Round(latestPriceByCompany[holding.CompanyId] * effectiveRateByCompany[holding.CompanyId] * holding.Quantity)))
+                .Where(line => line.Amount > 0m)
+                .OrderByDescending(line => line.Amount)
+                .ToList();
+            if (lines.Count > 0)
+            {
+                lines[0] = (lines[0].CompanyId, lines[0].Amount + (payout - lines.Sum(line => line.Amount)));
+                foreach (var line in lines)
+                {
+                    dbContext.DividendPayouts.Add(new DividendPayout
+                    {
+                        MoneyTransaction = transaction,
+                        CompanyId = line.CompanyId,
+                        Amount = line.Amount,
+                        CreatedInCycleId = currentCycleId,
+                        CreatedAt = now,
+                    });
+                }
+            }
 
             // A fund passes part of its own dividend straight through to its members, split by their deposit.
             if (owner.Type == ParticipantType.CollectiveFund && collectiveFundService is not null)
@@ -1000,6 +1025,9 @@ public sealed class MarketService(
             INSERT INTO MoneyTransactionArchives (Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, CreatedInCycleId, CreatedAt)
             SELECT Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, CreatedInCycleId, CreatedAt
             FROM MoneyTransactions WHERE CreatedInCycleId <= {cutoffCycleId}");
+        // The archive twin keeps no dividend line detail, so drop the breakdown with its parent rather than
+        // leaving rows that reference an archived transaction.
+        await dbContext.DividendPayouts.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
         await dbContext.MoneyTransactions.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
@@ -1717,6 +1745,7 @@ public sealed class MarketService(
         await dbContext.NewsPostIndustries.ExecuteDeleteAsync();
         await dbContext.NewsPosts.ExecuteDeleteAsync();
         await dbContext.OrderFills.ExecuteDeleteAsync();
+        await dbContext.DividendPayouts.ExecuteDeleteAsync();
         await dbContext.MoneyTransactions.ExecuteDeleteAsync();
         await dbContext.PriceSnapshots.ExecuteDeleteAsync();
         await dbContext.Holdings.ExecuteDeleteAsync();
@@ -1738,7 +1767,7 @@ public sealed class MarketService(
         await dbContext.Database.ExecuteSqlRawAsync(
             "DELETE FROM sqlite_sequence WHERE name IN (" +
             "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
-            "'ShareTransactions', 'MoneyTransactions', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
+            "'ShareTransactions', 'MoneyTransactions', 'DividendPayouts', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', 'CrisisEvents', " +
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
             "'CollectiveFunds', 'CollectiveFundParticipants', 'CollectiveFundMembershipEvents', 'ParticipantWorthSnapshots', " +
