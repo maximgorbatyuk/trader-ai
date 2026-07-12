@@ -1,0 +1,44 @@
+# Trading days
+
+Trader AI uses a compressed, deterministic trading-day schedule. It borrows the open-versus-closed distinction of an equities market without reproducing a real exchange calendar or clock.
+
+## Schedule
+
+| Phase | Duration while running | Trading-cycle effect | Trading behavior |
+| --- | ---: | --- | --- |
+| Trading | 7 minutes | Advances from cycle 1 through cycle 210 | New orders, matching, and cancellations are available. |
+| Break | 1 minute | Holds at cycle 210 | New orders and matching stop; cancellations remain available. |
+
+Each trading cycle represents two seconds of active simulation time. A complete day-to-day loop therefore lasts eight minutes while the market is running: seven minutes of trading followed by one minute of break.
+
+Finishing cycle 210 activates one break cycle for that trading day. The break has its own countdown, but it never creates or increments a trading cycle. When the countdown reaches zero, the break completes and the next numbered day opens at cycle 1.
+
+## Pause and manual steps
+
+Pausing the market freezes both the trading countdown and the break countdown. Starting it again resumes the active phase from the same remaining value.
+
+`Step once` advances one two-second unit of logical time. During trading, that step completes one trading cycle. During the break, it advances only the break countdown, so thirty manual break steps complete the one-minute break without changing the trading-cycle number.
+
+Resetting the market returns the clock to day 1 before its first trading cycle.
+
+## Frontend display
+
+The top navigation always shows the numbered day, the active phase, cycle progress, cycles remaining, and time remaining. During trading, an example is:
+
+```text
+Day 7 · Trading    Cycle 84/210 · 126 left    04:12 left
+```
+
+During the break, the trading-cycle values remain fixed while only the break countdown changes:
+
+```text
+Day 7 · Break      Cycle 210/210 · 0 left     00:43 left
+```
+
+The countdown updates between server refreshes, freezes visibly when the market is paused, and is corrected by the next server response. Phase and timer information is presented as text so it does not depend on color alone.
+
+## Trading-day boundaries
+
+Trading-day numbers are unique and increase one at a time. Settlement rules such as T+1 use those day boundaries rather than raw cycle counts. Security-specific pauses do not pause the market-wide trading-day clock, while the market-wide break pauses trading in every security.
+
+Weekends, public holidays, extended-hours sessions, overnight orders, and a literal U.S. exchange timezone are outside this schedule.

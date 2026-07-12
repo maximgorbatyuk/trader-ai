@@ -28,6 +28,8 @@ The market advances through an ordered service pipeline. Early phases settle sec
 
 That ordering is part of the model, not an incidental implementation detail. Later phases are allowed to observe changes from earlier phases, while earlier risk checks intentionally operate on the previous settled state. Services therefore share the cycle context and stage related changes within the coordinated advance rather than running as independent background jobs.
 
+The logical trading clock groups 210 two-second trading cycles into a seven-minute trading day. A separate one-minute break follows each day without advancing the trading-cycle counter; pausing the market freezes either countdown. Trading-day boundaries provide the calendar used by settlement and other day-based rules. See [Trading days](rules/trading-days.md).
+
 Random market behavior is configurable through one shared family of chance and magnitude settings. Deterministic services do not consume random values. Randomized services preserve a stable draw order so seeded simulations and scripted tests remain reproducible when unrelated features are disabled.
 
 ## Orders, holdings, and prices
@@ -103,5 +105,6 @@ Frequently used history remains in live tables for a configured retention window
 - [Domain](domain.md) describes the data model and core market rules.
 - [Participant rules](participant-rules.md) links the shared and role-specific participant behavior.
 - [Share price formation](rules/share-price-formation.md) explains how matching and direct market events create prices.
+- [Trading days](rules/trading-days.md) explains the market-wide trading and break schedule.
 - The [logic](logic/) pages explain focused mechanisms such as sentiment, share emission, and loans.
 - The [roles](roles/) pages explain the behavior of companies, auditors, traders, funds, and the player.
