@@ -162,7 +162,6 @@ function App() {
       {mapModalCompany ? (
         <CompanyModal
           company={mapModalCompany}
-          participantNameById={participantNameById}
           onClose={() => setMapModalCompanyId(null)}
         />
       ) : null}
