@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from './api'
-import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from './format'
+import { formatCompactMoney, formatInt, formatMoney, formatSigned, formatSignedInt, toneOf } from './format'
 import { Pager, SortHeader } from './TableControls'
 import { useClientTable } from './useClientTable'
 import { LineChart } from './LineChart'
@@ -988,6 +988,14 @@ function MembersSection({ members }) {
                   <SortHeader label="Joined" columnKey="joinedInCycleNumber" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   <SortHeader label="Deposit" columnKey="deposit" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   <SortHeader label="Payouts" columnKey="payouts" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader
+                    label="Leave in"
+                    columnKey="leaveCountdownCycles"
+                    sortKey={sortKey}
+                    sortDir={sortDir}
+                    onToggle={toggleSort}
+                    title="Cycles until the member becomes eligible to leave (negative), then cycles it has stayed past that point (positive)."
+                  />
                 </tr>
               </thead>
               <tbody>
@@ -1007,6 +1015,9 @@ function MembersSection({ members }) {
                     <td className="num ta-r">cycle {formatInt(member.joinedInCycleNumber)}</td>
                     <td className="num ta-r">{formatMoney(member.deposit)}</td>
                     <td className="num ta-r">{formatMoney(member.payouts)}</td>
+                    <td className="num ta-r">
+                      <MemberLeaveCountdown member={member} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -1017,6 +1028,19 @@ function MembersSection({ members }) {
       )}
     </div>
   )
+}
+
+// A member's standing relative to switch-eligibility: a founder never leaves, a member still inside its locked
+// tenure counts down (negative), and one past the tenure shows how many cycles it has held on while rolling to
+// leave (zero or positive, flagged since it may go any cycle).
+function MemberLeaveCountdown({ member }) {
+  if (member.isFounder) {
+    return <span className="muted-sub">Founder</span>
+  }
+  if (member.leaveCountdownCycles >= 0) {
+    return <span className="tag tag-flag">{formatSignedInt(member.leaveCountdownCycles)}</span>
+  }
+  return formatSignedInt(member.leaveCountdownCycles)
 }
 
 function LoansSection({ loans, status, onStatusChange, onRepaid }) {

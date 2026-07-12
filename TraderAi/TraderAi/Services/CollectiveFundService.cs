@@ -51,7 +51,8 @@ public sealed class CollectiveFundService(
 
     // A non-founder member may leave to chase a better fund only after this tenure; each cycle past it, it rolls
     // to switch at the base chance shifted by temperament (aggressive leaves more readily, conservative less).
-    private const int MinTenureToSwitchCycles = 20;
+    // Public so the API can show each member how many cycles remain before it becomes switch-eligible.
+    public const int MinTenureToSwitchCycles = 50;
     private const double SwitchTemperamentDelta = 0.05;
 
     // The founder closes the fund once its net worth collapses to this fraction of its all-time peak, or once it

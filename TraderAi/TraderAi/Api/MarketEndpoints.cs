@@ -2171,7 +2171,9 @@ public static class MarketEndpoints
                     member.JoinedAt,
                     member.DepositAmount,
                     payoutByMember.GetValueOrDefault(member.ParticipantId),
-                    member.IsLeaving);
+                    member.IsLeaving,
+                    member.TenureCycles - CollectiveFundService.MinTenureToSwitchCycles,
+                    member.ParticipantId == fund.FoundedByParticipantId);
             })
             .ToArray();
 
@@ -2522,7 +2524,12 @@ public sealed record CollectiveFundMemberResponse(
     DateTime JoinedAt,
     decimal Deposit,
     decimal Payouts,
-    bool IsLeaving);
+    bool IsLeaving,
+    // Cycles relative to switch-eligibility: negative while the member is still within its locked tenure (that
+    // many cycles remain before it may start leaving), zero or positive once past it (cycles survived while
+    // rolling to leave). Ignored for founders, who never switch away.
+    int LeaveCountdownCycles,
+    bool IsFounder);
 
 public sealed record UpdateParticipantProfileRequest(Temperament Temperament, RiskProfile RiskProfile);
 

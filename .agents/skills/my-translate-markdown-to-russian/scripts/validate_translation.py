@@ -207,6 +207,8 @@ def validate_document_shell(html):
         errors.append("Missing UTF-8 charset metadata.")
     if not re.search(r"<title\b[^>]*>\s*[^<\s]", html, re.IGNORECASE):
         errors.append("Missing a non-empty <title> element.")
+    if not re.search(r"<style\b[^>]*>\s*\S", html, re.IGNORECASE):
+        errors.append("Missing an embedded <style> stylesheet for readability.")
     if not re.search(r"<body\b[^>]*>.*?</body\s*>", html, re.IGNORECASE | re.DOTALL):
         errors.append("Missing a complete <body> element.")
     return errors

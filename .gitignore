@@ -66,3 +66,4 @@ riderModule.iml
 /_ReSharper.Caches/
 TraderAi/.idea
 .DS_Store
+__pycache__

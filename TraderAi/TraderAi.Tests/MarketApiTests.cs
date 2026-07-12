@@ -1273,6 +1273,118 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task FundDetailReportsMemberLeaveCountdownAndFounder()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        const int founderTenure = 60;
+        const int freshTenure = 5;
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int fundParticipantId;
+            int founderId;
+            int freshId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 12, Status = CycleStatus.Running, StartedAt = now };
+                dbContext.MarketCycles.Add(cycle);
+                await dbContext.SaveChangesAsync();
+
+                var fundParticipant = new Participant
+                {
+                    Name = "Countdown Fund",
+                    Type = ParticipantType.CollectiveFund,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    CurrentBalance = 0m,
+                    IsActive = true,
+                };
+                var founder = new Participant
+                {
+                    Name = "Founder",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    CurrentBalance = 1_000m,
+                    IsActive = true,
+                };
+                var fresh = new Participant
+                {
+                    Name = "Fresh Joiner",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    CurrentBalance = 1_000m,
+                    IsActive = true,
+                };
+                dbContext.Participants.AddRange(fundParticipant, founder, fresh);
+                await dbContext.SaveChangesAsync();
+                fundParticipantId = fundParticipant.Id;
+                founderId = founder.Id;
+                freshId = fresh.Id;
+
+                var fund = new CollectiveFund
+                {
+                    ParticipantId = fundParticipant.Id,
+                    FoundedByParticipantId = founder.Id,
+                    Status = CollectiveFundStatus.Active,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = now,
+                };
+                dbContext.CollectiveFunds.Add(fund);
+                await dbContext.SaveChangesAsync();
+
+                dbContext.CollectiveFundParticipants.AddRange(
+                    new CollectiveFundParticipant
+                    {
+                        CollectiveFundId = fund.Id,
+                        ParticipantId = founder.Id,
+                        JoinedAt = now,
+                        JoinedInCycleId = cycle.Id,
+                        DepositAmount = 9_000m,
+                        TenureCycles = founderTenure,
+                    },
+                    new CollectiveFundParticipant
+                    {
+                        CollectiveFundId = fund.Id,
+                        ParticipantId = fresh.Id,
+                        JoinedAt = now,
+                        JoinedInCycleId = cycle.Id,
+                        DepositAmount = 900m,
+                        TenureCycles = freshTenure,
+                    });
+                await dbContext.SaveChangesAsync();
+            }
+
+            var detail = await client.GetFromJsonAsync<FundDetailDto>($"/participants/{fundParticipantId}");
+            Assert.NotNull(detail);
+
+            // The founder never switches away, so its row is flagged and its countdown is not shown to users.
+            var founderMember = detail!.CollectiveFundMembers.Single(member => member.ParticipantId == founderId);
+            Assert.True(founderMember.IsFounder);
+            Assert.Equal(founderTenure - CollectiveFundService.MinTenureToSwitchCycles, founderMember.LeaveCountdownCycles);
+
+            // A fresh joiner is still inside its locked tenure, so the countdown is negative.
+            var freshMember = detail.CollectiveFundMembers.Single(member => member.ParticipantId == freshId);
+            Assert.False(freshMember.IsFounder);
+            Assert.Equal(freshTenure - CollectiveFundService.MinTenureToSwitchCycles, freshMember.LeaveCountdownCycles);
+            Assert.True(freshMember.LeaveCountdownCycles < 0);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task MoneyTransactionDetailReturnsTheDividendCompanyBreakdown()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -1577,6 +1689,16 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal AvailableBalance,
         int SharesOwned,
         bool IsActive);
+
+    private sealed record FundDetailDto(int Id, CollectiveFundMemberDto[] CollectiveFundMembers);
+
+    private sealed record CollectiveFundMemberDto(
+        int ParticipantId,
+        string Name,
+        decimal Deposit,
+        bool IsLeaving,
+        int LeaveCountdownCycles,
+        bool IsFounder);
 
     private sealed record MoneyTransactionDto(int Id, string Type, decimal Amount, int CreatedInCycleId);
 

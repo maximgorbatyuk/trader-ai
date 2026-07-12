@@ -807,15 +807,15 @@ public sealed class CollectiveFundServiceTests : IDisposable
         // nothing, so the switcher stays in the waiting-to-leave state rather than being borrowed out immediately.
         var (fund, _) = await AddFundAsync(balance: 1_000m);
         var switcher = await AddTraderAsync(currentBalance: 50_000m, temperament: Temperament.Aggressive);
-        await AddMembershipAsync(fund, switcher, deposit: 90_000m, cycle.Id, tenure: 25);
+        await AddMembershipAsync(fund, switcher, deposit: 90_000m, cycle.Id, tenure: 55);
         foreach (var _ in Enumerable.Range(0, 2))
         {
             var member = await AddTraderAsync(currentBalance: 50_000m);
             await AddMembershipAsync(fund, member, deposit: 90_000m, cycle.Id);
         }
 
-        // 0.28 clears the 25% base but not the 30% an aggressive member rolls at, so the switch fires.
-        await Service(enabled: true, new ScriptedRandom([0.28d], []), loansEnabled: false)
+        // 0.18 sits above a normal member's 15% base but under the 20% an aggressive member rolls at, so the switch fires.
+        await Service(enabled: true, new ScriptedRandom([0.18d], []), loansEnabled: false)
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -831,15 +831,15 @@ public sealed class CollectiveFundServiceTests : IDisposable
         var (_, cycle, _) = await SeedAsync(price: 100m);
         var (fund, _) = await AddFundAsync(balance: 1_000m);
         var conservative = await AddTraderAsync(currentBalance: 50_000m, temperament: Temperament.Conservative);
-        await AddMembershipAsync(fund, conservative, deposit: 90_000m, cycle.Id, tenure: 25);
+        await AddMembershipAsync(fund, conservative, deposit: 90_000m, cycle.Id, tenure: 55);
         foreach (var _ in Enumerable.Range(0, 2))
         {
             var member = await AddTraderAsync(currentBalance: 50_000m);
             await AddMembershipAsync(fund, member, deposit: 90_000m, cycle.Id);
         }
 
-        // 0.22 would clear a conservative member's raised-down 20% only if it were higher; it stays put.
-        await Service(enabled: true, new ScriptedRandom([0.22d], []))
+        // 0.12 is above a conservative member's lowered 10% chance (a normal member's 15% base would have fired); it stays put.
+        await Service(enabled: true, new ScriptedRandom([0.12d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -855,7 +855,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         var (_, cycle, _) = await SeedAsync(price: 100m);
         var (fund, _) = await AddFundAsync(balance: 1_000m);
         var founder = await AddTraderAsync(currentBalance: 50_000m, temperament: Temperament.Aggressive);
-        await AddMembershipAsync(fund, founder, deposit: 90_000m, cycle.Id, tenure: 25);
+        await AddMembershipAsync(fund, founder, deposit: 90_000m, cycle.Id, tenure: 55);
         var other = await AddTraderAsync(currentBalance: 50_000m);
         await AddMembershipAsync(fund, other, deposit: 90_000m, cycle.Id);
 
@@ -908,7 +908,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         // The current fund holds enough cash to return the deposit immediately, so the switch completes this cycle.
         var (fromFund, _) = await AddFundAsync(balance: 200_000m);
         var switcher = await AddTraderAsync(currentBalance: 10_000m);
-        await AddMembershipAsync(fromFund, switcher, deposit: 90_000m, cycle.Id, tenure: 25);
+        await AddMembershipAsync(fromFund, switcher, deposit: 90_000m, cycle.Id, tenure: 55);
         foreach (var _ in Enumerable.Range(0, 2))
         {
             var member = await AddTraderAsync(currentBalance: 10_000m);

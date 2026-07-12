@@ -30,7 +30,7 @@ public sealed class EventTriggerChances
     public double FundLeaveMax { get; set; } = 0.90;
 
     // Base chance an eligible member switches to a better-scoring fund.
-    public double FundSwitchBase { get; set; } = 0.25;
+    public double FundSwitchBase { get; set; } = 0.15;
 
     // Ceiling on a trader's per-cycle bankruptcy chance from the wealth ramp.
     public double BankruptcyMax { get; set; } = 0.10;

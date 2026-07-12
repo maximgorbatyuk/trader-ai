@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,10 @@ VALID_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <title>Руководство по повторным попыткам оплаты</title>
+  <style>
+    body { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem; line-height: 1.65; color: #1f2328; }
+    pre { background: #f6f8fa; padding: 1rem; overflow: auto; }
+  </style>
 </head>
 <body>
   <h1>Руководство по повторным попыткам оплаты</h1>
@@ -54,7 +59,7 @@ VALID_HTML = """<!doctype html>
 def html_document(body, title="Пример"):
     return f"""<!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><title>{title}</title></head>
+<head><meta charset="utf-8"><title>{title}</title><style>body{{max-width:46rem;margin:0 auto}}</style></head>
 <body>{body}</body>
 </html>
 """
@@ -123,6 +128,20 @@ class ValidatorCliTests(unittest.TestCase):
         self.assertIn("doctype", result.stderr.lower())
         self.assertIn('lang="ru"', result.stderr)
         self.assertIn("UTF-8", result.stderr)
+
+    def test_rejects_a_document_without_a_stylesheet(self):
+        without_style = re.sub(
+            r"<style\b[^>]*>.*?</style>",
+            "",
+            VALID_HTML,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        self.output.write_text(without_style, encoding="utf-8")
+
+        result = self.run_validator()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("style", result.stderr.lower())
 
     def test_rejects_a_changed_fenced_code_block(self):
         changed = VALID_HTML.replace(
