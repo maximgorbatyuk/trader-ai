@@ -18,4 +18,10 @@ public sealed class CollectiveFundOptions
     // Upper bound on members a single fund accepts; new joiners skip a fund once it reaches this. The default
     // matches the value this lived at as a service constant.
     public int MaxMembers { get; set; } = 20;
+
+    // Operative member capacity: a fund closes to new joiners once it reaches this, and a fund found above it
+    // returns its most recently joined member's deposit and drops them each cycle (by the standard leave rules)
+    // until it is back within capacity. Clamped to MaxMembers and defaulting to it, so enforcement stays off
+    // until this is set below MaxMembers.
+    public int SoftCloseMembers { get; set; } = 20;
 }

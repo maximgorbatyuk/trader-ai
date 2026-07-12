@@ -30,8 +30,10 @@ Popularity Index, which biases how automated traders pick a fund to join.
 - Buying an advertisement debits the fund's cash as a fund-advertisement cash movement.
 - Each advertisement posts a recruiting newswire that carries no market impact.
 - An advertisement changes join odds only through the Popularity Index; it moves no price directly.
-- When a trader picks a fund to join, popularity is one of the scored terms alongside fund size, worth, recent
-  dividends, and recent growth, each min-max normalised across the candidate funds and summed.
+- When a trader picks a fund to join, popularity is one of the scored terms alongside worth, recent dividends,
+  and recent growth, each min-max normalised across the candidate funds and summed. That score is then eased down
+  by how full the fund is, and the trader picks a fund with a chance proportional to the result rather than always
+  the highest, so a heavily advertised fund is favoured without automatically capturing every joiner.
 
 The advertising price and payment live in `MarketService`; the popularity decay and its role in fund-join
 selection live in `CollectiveFundService`.

@@ -59,11 +59,11 @@ public sealed class CollectiveFundService(
     private const decimal FounderLossFraction = 0.15m;
     private const int FounderDividendLookbackPayouts = 2;
 
-    // A joiner scores each candidate fund on size, net worth, dividends over its last this-many payout events,
-    // recent net-worth growth, and advertised popularity, each min-max normalised across the candidates and
-    // summed with the weights below.
+    // A joiner scores each candidate fund on net worth, dividends over its last this-many payout events, recent
+    // net-worth growth, and advertised popularity, each min-max normalised across the candidates and summed with
+    // the weights below. The summed score is then damped by the fund's free member capacity and the joiner is
+    // placed by a score-proportional wheel, so joiners no longer all pile into the single largest fund.
     private const int JoinDividendLookbackPayouts = 3;
-    private const double ScoreWeightSize = 1.0;
     private const double ScoreWeightWorth = 1.0;
     private const double ScoreWeightDividends = 1.0;
     private const double ScoreWeightGrowth = 1.0;
@@ -111,11 +111,12 @@ public sealed class CollectiveFundService(
     private int crisisCycleNumber;
 
     // Draw discipline for a scripted Random in tests: no draws while closing funds, returning deposits, ratcheting
-    // peak worth, decaying advertised popularity, running the founder close, detecting fund growth, posting the
-    // growth newswire, or dropping a stale membership. In the member pass (fund id, then participant id order) each
+    // peak worth, decaying advertised popularity, running the founder close, enforcing member capacity, detecting
+    // fund growth, posting the growth newswire, or dropping a stale membership. In the member pass (fund id, then participant id order) each
     // member draws at most once — the forced-leave roll if it sits at or above the leave line, otherwise the
     // switch roll if it is a non-founder past the minimum tenure, otherwise nothing. In the join pass (independent
-    // traders, id order) a switch-flagged member draws nothing, and every other eligible trader draws once.
+    // traders, id order) a switch-flagged member draws nothing, and every other eligible trader draws once; that
+    // single draw both decides join-versus-open and, when it joins, positions the score-proportional fund pick.
     public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
     {
         if (!options.Value.Enabled)
@@ -152,6 +153,14 @@ public sealed class CollectiveFundService(
                 {
                     continue;
                 }
+            }
+
+            // Capacity is enforced on every fund, the player-managed one included: a fund above the cap sheds its
+            // newest member before the member pass. The eviction can wind an AI fund down to its last pair.
+            await EnforceMemberCapacityAsync(fund, currentCycleId, now);
+            if (fund.Status != CollectiveFundStatus.Active)
+            {
+                continue;
             }
 
             foreach (var membership in membershipsByFundId[fund.Id].OrderBy(member => member.ParticipantId).ToList())
@@ -588,15 +597,50 @@ public sealed class CollectiveFundService(
         return relevantPayouts.All(cycleId => (byCycle?.GetValueOrDefault(cycleId) ?? 0m) <= 0m);
     }
 
+    // The operative member cap: a fund closes to new joiners once it reaches this and sheds its newest member
+    // while above it. Never exceeds the absolute MaxMembers ceiling.
+    private int MemberCapacity => Math.Min(options.Value.SoftCloseMembers, options.Value.MaxMembers);
+
     private List<CollectiveFund> JoinableFunds() =>
         funds
-            .Where(fund => fund.Status == CollectiveFundStatus.Active && membershipsByFundId[fund.Id].Count < options.Value.MaxMembers)
+            .Where(fund => fund.Status == CollectiveFundStatus.Active && membershipsByFundId[fund.Id].Count < MemberCapacity)
             .ToList();
 
-    // Picks the fund a joiner prefers: bigger, worth more, paying more dividends recently, growing fastest, and
-    // more heavily advertised. Each metric is min-max normalised across the candidates so no single scale
-    // dominates, then summed with the score weights; ties fall to the lowest fund id.
-    private CollectiveFund? SelectBestFund(List<CollectiveFund> candidates)
+    // Brings a fund at or above capacity back into line by returning the most recently joined member's deposit
+    // through the standard leave path (borrowing the shortfall, or listing shares when loans are off, and
+    // pair-closing an AI fund if it drops to its last pair). One member leaves per cycle. Draws no randomness.
+    private async Task EnforceMemberCapacityAsync(CollectiveFund fund, int currentCycleId, DateTime now)
+    {
+        var members = membershipsByFundId[fund.Id];
+        if (members.Count <= MemberCapacity)
+        {
+            return;
+        }
+
+        var newest = members
+            .OrderByDescending(membership => membership.JoinedInCycleId)
+            .ThenByDescending(membership => membership.Id)
+            .First();
+
+        // A member whose participant row already left the market leaves a stale membership behind; drop it with a
+        // zero-payout leave rather than dereferencing a key that no longer exists.
+        if (!participantsById.TryGetValue(newest.ParticipantId, out var member))
+        {
+            AddMembershipEvent(fund, newest.ParticipantId, CollectiveFundMembershipEventType.Left, 0m, currentCycleId, now);
+            RemoveMembership(fund, newest);
+            return;
+        }
+
+        newest.IsLeaving = true;
+        await AdvanceLeave(fund, newest, member, currentCycleId, now);
+    }
+
+    // Places a joiner on a candidate fund. Each quality metric — net worth, recent dividends, recent growth, and
+    // advertised popularity — is min-max normalised across the candidates and summed, then exponentiated and
+    // scaled by the fund's free member capacity so a fund near its cap softly closes to newcomers. The joiner
+    // rides a roulette wheel over those weights, so the strongest fund is likeliest yet never captures every
+    // joiner; selectionPoint in [0,1) walks the wheel and 0 lands on the top-weighted fund, ties to the lowest id.
+    private CollectiveFund? SelectBestFund(List<CollectiveFund> candidates, double selectionPoint)
     {
         if (candidates.Count <= 1)
         {
@@ -607,16 +651,14 @@ public sealed class CollectiveFundService(
             .Select(fund => new
             {
                 Fund = fund,
-                Size = (double)membershipsByFundId[fund.Id].Count,
                 Worth = (double)FundNetWorth(participantsById[fund.ParticipantId]),
                 Dividends = (double)RecentDividends(fund.ParticipantId),
                 Growth = (double)growthPercentByFundId.GetValueOrDefault(fund.Id),
                 Popularity = (double)fund.PopularityIndex,
+                RoomFraction = RoomFraction(fund),
             })
             .ToList();
 
-        var sizeMin = scored.Min(entry => entry.Size);
-        var sizeMax = scored.Max(entry => entry.Size);
         var worthMin = scored.Min(entry => entry.Worth);
         var worthMax = scored.Max(entry => entry.Worth);
         var dividendMin = scored.Min(entry => entry.Dividends);
@@ -628,16 +670,53 @@ public sealed class CollectiveFundService(
 
         static double Normalise(double value, double min, double max) => max > min ? (value - min) / (max - min) : 0.0;
 
-        return scored
-            .OrderByDescending(entry =>
-                (ScoreWeightSize * Normalise(entry.Size, sizeMin, sizeMax))
-                + (ScoreWeightWorth * Normalise(entry.Worth, worthMin, worthMax))
-                + (ScoreWeightDividends * Normalise(entry.Dividends, dividendMin, dividendMax))
-                + (ScoreWeightGrowth * Normalise(entry.Growth, growthMin, growthMax))
-                + (ScoreWeightPopularity * Normalise(entry.Popularity, popularityMin, popularityMax)))
-            .ThenBy(entry => entry.Fund.Id)
-            .First()
-            .Fund;
+        var wheel = scored
+            .Select(entry => new
+            {
+                entry.Fund,
+                Weight = Math.Exp(
+                    (ScoreWeightWorth * Normalise(entry.Worth, worthMin, worthMax))
+                    + (ScoreWeightDividends * Normalise(entry.Dividends, dividendMin, dividendMax))
+                    + (ScoreWeightGrowth * Normalise(entry.Growth, growthMin, growthMax))
+                    + (ScoreWeightPopularity * Normalise(entry.Popularity, popularityMin, popularityMax)))
+                    * entry.RoomFraction,
+            })
+            .OrderByDescending(slot => slot.Weight)
+            .ThenBy(slot => slot.Fund.Id)
+            .ToList();
+
+        var totalWeight = wheel.Sum(slot => slot.Weight);
+        if (totalWeight <= 0.0)
+        {
+            return wheel[0].Fund;
+        }
+
+        var target = Math.Clamp(selectionPoint, 0.0, 1.0) * totalWeight;
+        var cumulative = 0.0;
+        foreach (var slot in wheel)
+        {
+            cumulative += slot.Weight;
+            if (target < cumulative)
+            {
+                return slot.Fund;
+            }
+        }
+
+        return wheel[^1].Fund;
+    }
+
+    // The share of a fund's member capacity still free. Candidates are always below the cap, so this stays
+    // positive; a fuller fund weighs less on the join wheel, easing it toward a soft close as it approaches capacity.
+    private double RoomFraction(CollectiveFund fund)
+    {
+        var capacity = MemberCapacity;
+        if (capacity <= 0)
+        {
+            return 0.0;
+        }
+
+        var free = capacity - membershipsByFundId[fund.Id].Count;
+        return Math.Max(0.0, (double)free / capacity);
     }
 
     private decimal FundNetWorth(Participant fundParticipant)
@@ -808,7 +887,9 @@ public sealed class CollectiveFundService(
             }
 
             participant.PendingFundSwitch = false;
-            if (participant.IsActive && !participant.IsBankrupt && SelectBestFund(JoinableFunds()) is { } switchTarget)
+            // A switcher already gave up its old fund, so it takes the top-weighted fund outright rather than
+            // rolling the wheel; passing 0 keeps this draw-free and lands it on the strongest available fund.
+            if (participant.IsActive && !participant.IsBankrupt && SelectBestFund(JoinableFunds(), 0.0) is { } switchTarget)
             {
                 JoinFund(switchTarget, participantsById[switchTarget.ParticipantId], participant, currentCycleId, now);
             }
@@ -834,7 +915,11 @@ public sealed class CollectiveFundService(
 
         if (joinable.Count > 0 && roll < joinChance)
         {
-            var target = SelectBestFund(joinable)!;
+            // Reuse the join roll to ride the selection wheel: because the join fired, roll sits in [0, joinChance),
+            // so roll / joinChance is a uniform point in [0, 1). Taking no extra draw keeps the join-pass draw
+            // discipline (one draw per eligible trader) intact.
+            var selectionPoint = joinChance > 0.0 ? Math.Min(roll / joinChance, 0.999999) : 0.0;
+            var target = SelectBestFund(joinable, selectionPoint)!;
             JoinFund(target, participantsById[target.ParticipantId], participant, currentCycleId, now);
             return;
         }

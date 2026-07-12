@@ -30,12 +30,18 @@ public sealed class CollectiveFundServiceTests : IDisposable
         context.Database.EnsureCreated();
     }
 
-    private CollectiveFundService Service(bool enabled, Random random, bool loansEnabled = true)
+    private CollectiveFundService Service(bool enabled, Random random, bool loansEnabled = true, int? softCloseMembers = null)
     {
         var loan = Options.Create(new LoanOptions { Enabled = loansEnabled });
+        var fundOptions = new CollectiveFundOptions { Enabled = enabled };
+        if (softCloseMembers is int capacity)
+        {
+            fundOptions.SoftCloseMembers = capacity;
+        }
+
         return new CollectiveFundService(
             context,
-            Options.Create(new CollectiveFundOptions { Enabled = enabled }),
+            Options.Create(fundOptions),
             Options.Create(new RandomChanceRatesOptions()),
             loan,
             new LoanService(context, loan),
@@ -168,6 +174,96 @@ public sealed class CollectiveFundServiceTests : IDisposable
         var joinerMembership = await context.CollectiveFundParticipants.AsNoTracking()
             .FirstAsync(member => member.ParticipantId == joiner.Id);
         Assert.NotEqual(fund.Id, joinerMembership.CollectiveFundId);
+    }
+
+    [Fact]
+    public async Task OverCapacityFundEvictsItsNewestMember()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+
+        // Capacity is two, so a three-member fund is over the line and returns its most recently joined member.
+        var (fund, _) = await AddFundAsync(balance: 200_000m);
+        Participant? newest = null;
+        for (var index = 1; index <= 3; index++)
+        {
+            // Each member sits above the join ceiling but below the leave line, so none rolls in either pass.
+            var member = await AddTraderAsync(currentBalance: 600_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, joinedCycleId: index);
+            newest = member;
+        }
+
+        // No draws: the members neither leave nor re-pool, the eviction is deterministic, and no free trader joins.
+        await Service(enabled: true, new ScriptedRandom([], []), softCloseMembers: 2)
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        // The newest member is dropped, the fund settles at capacity, and the deposit is returned in full.
+        Assert.Equal(2, await context.CollectiveFundParticipants.CountAsync(member => member.CollectiveFundId == fund.Id));
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == newest!.Id));
+
+        var refreshedNewest = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == newest!.Id);
+        Assert.Equal(610_000m, refreshedNewest.CurrentBalance);
+
+        var leaveEvent = await context.CollectiveFundMembershipEvents.AsNoTracking()
+            .SingleAsync(membershipEvent => membershipEvent.ParticipantId == newest!.Id
+                && membershipEvent.Type == CollectiveFundMembershipEventType.Left);
+        Assert.Equal(10_000m, leaveEvent.Amount);
+
+        Assert.Equal(CollectiveFundStatus.Active, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+    }
+
+    [Fact]
+    public async Task FundAtCapacityTakesNoNewJoiner()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+
+        // The fund sits exactly at capacity, so it is closed to new joiners and the would-be joiner opens its own.
+        var (fund, _) = await AddFundAsync(balance: 50_000m);
+        for (var index = 0; index < 2; index++)
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, joinedCycleId: cycle.Id);
+        }
+
+        var joiner = await AddTraderAsync(currentBalance: 100_000m);
+
+        // Only the joiner draws; with the fund closed there is nothing to join, so 0.0 falls into the open band.
+        await Service(enabled: true, new ScriptedRandom([0.0d], []), softCloseMembers: 2)
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(2, await context.CollectiveFundParticipants.CountAsync(member => member.CollectiveFundId == fund.Id));
+        Assert.Equal(2, await context.CollectiveFunds.CountAsync());
+        var joinerMembership = await context.CollectiveFundParticipants.AsNoTracking()
+            .FirstAsync(member => member.ParticipantId == joiner.Id);
+        Assert.NotEqual(fund.Id, joinerMembership.CollectiveFundId);
+    }
+
+    [Fact]
+    public async Task PlayerManagedFundIsAlsoShedWhenOverCapacity()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+
+        // Capacity is enforced uniformly: a player-managed fund over the cap also returns its newest member.
+        var (fund, _) = await AddFundAsync(balance: 200_000m);
+        fund.IsPlayerManaged = true;
+        await context.SaveChangesAsync();
+
+        Participant? newest = null;
+        for (var index = 1; index <= 3; index++)
+        {
+            var member = await AddTraderAsync(currentBalance: 600_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, joinedCycleId: index);
+            newest = member;
+        }
+
+        await Service(enabled: true, new ScriptedRandom([], []), softCloseMembers: 2)
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(2, await context.CollectiveFundParticipants.CountAsync(member => member.CollectiveFundId == fund.Id));
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == newest!.Id));
+        Assert.Equal(CollectiveFundStatus.Active, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
     }
 
     [Fact]
@@ -1039,6 +1135,65 @@ public sealed class CollectiveFundServiceTests : IDisposable
         var membership = await context.CollectiveFundParticipants.AsNoTracking()
             .FirstAsync(member => member.ParticipantId == joiner.Id);
         Assert.Equal(popularFund.Id, membership.CollectiveFundId);
+    }
+
+    [Fact]
+    public async Task JoinerAvoidsACrowdedFundForARoomierPeerOfEqualStrength()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+
+        // Two funds of equal worth; one sits near its member cap and one has room. Capacity damping should send
+        // the joiner to the roomier fund even though the crowded one carries far more members.
+        var (crowdedFund, _) = await AddFundAsync(balance: 100_000m);
+        for (var index = 0; index < 18; index++)
+        {
+            var member = await AddTraderAsync(currentBalance: 1_000m);
+            await AddMembershipAsync(crowdedFund, member, deposit: 1_000m, cycle.Id);
+        }
+
+        var (roomyFund, _) = await AddFundAsync(balance: 100_000m);
+        var roomyMember = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(roomyFund, roomyMember, deposit: 1_000m, cycle.Id);
+
+        var joiner = await AddTraderAsync(currentBalance: 100_000m);
+
+        // Only the joiner draws; 0.0 lands in the 5% join band and on the top-weighted (roomiest) fund.
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var membership = await context.CollectiveFundParticipants.AsNoTracking()
+            .FirstAsync(member => member.ParticipantId == joiner.Id);
+        Assert.Equal(roomyFund.Id, membership.CollectiveFundId);
+    }
+
+    [Fact]
+    public async Task JoinWheelCanSendAJoinerToALowerScoringFund()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+
+        // A wealthier and a leaner fund both have room. The wheel makes the strong fund likeliest, not certain: a
+        // join roll landing high in the band walks past it onto the weaker fund, so joiners spread rather than all
+        // piling into the single strongest fund.
+        var (strongFund, _) = await AddFundAsync(balance: 500_000m);
+        var strongMember = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(strongFund, strongMember, deposit: 10_000m, cycle.Id);
+
+        var (weakFund, _) = await AddFundAsync(balance: 100_000m);
+        var weakMember = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(weakFund, weakMember, deposit: 10_000m, cycle.Id);
+
+        var joiner = await AddTraderAsync(currentBalance: 100_000m);
+
+        // 0.04 clears the join test (below the 5% band) but sits near its top, so selectionPoint ≈ 0.8 walks past
+        // the strong fund's slice of the wheel onto the weaker fund.
+        await Service(enabled: true, new ScriptedRandom([0.04d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var membership = await context.CollectiveFundParticipants.AsNoTracking()
+            .FirstAsync(member => member.ParticipantId == joiner.Id);
+        Assert.Equal(weakFund.Id, membership.CollectiveFundId);
     }
 
     // Popularity ebbs one point per cycle once the last advertisement is more than the idle window behind.
