@@ -126,4 +126,6 @@ export const api = {
   depositToPlayerFund: (payload) => post('/player/fund/deposit', payload),
   withdrawFromPlayerFund: (payload) => post('/player/fund/withdraw', payload),
   closePlayerFund: () => post('/player/fund/close'),
+  getFundAdvertiseQuote: (fundParticipantId) => get(`/funds/${fundParticipantId}/advertise-quote`),
+  advertiseFund: (fundParticipantId) => post(`/funds/${fundParticipantId}/advertise`),
 }

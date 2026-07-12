@@ -56,6 +56,18 @@ public sealed record PlayerFundResult(bool Success, string? Error)
     public static PlayerFundResult Fail(string error) => new(false, error);
 }
 
+// What a single advertisement would cost the fund right now: the price (a fraction of fund worth), the fraction
+// itself, the 20-cycle net-worth growth that set it (as a percent), the fund worth it is charged against, and
+// the fund's current popularity.
+public sealed record FundAdvertiseQuote(decimal Price, decimal Fraction, decimal GrowthPct, decimal FundWorth, int PopularityIndex);
+
+public sealed record FundAdvertiseQuoteResult(bool Success, FundAdvertiseQuote? Quote, string? Error)
+{
+    public static FundAdvertiseQuoteResult Ok(FundAdvertiseQuote quote) => new(true, quote, null);
+
+    public static FundAdvertiseQuoteResult Fail(string error) => new(false, null, error);
+}
+
 public sealed class MarketService(
     AppDbContext dbContext,
     MatchingEngine matchingEngine,
@@ -79,7 +91,8 @@ public sealed class MarketService(
     IOptions<RandomChanceRatesOptions>? chanceRates = null,
     IOptions<LoanOptions>? loanOptions = null,
     IOptions<IndustrySentimentOptions>? industrySentimentOptions = null,
-    IndustrySentimentService? industrySentimentService = null)
+    IndustrySentimentService? industrySentimentService = null,
+    BehaviorAuditService? behaviorAuditService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -110,6 +123,14 @@ public sealed class MarketService(
     // A collective fund keeps roughly this share of its total worth liquid so it can return members' deposits,
     // spending only the rest when it trades.
     private const decimal CollectiveFundCashBufferFraction = 0.10m;
+
+    // A fund advertisement is priced as a fraction of fund worth that falls the faster the fund has grown: a fund
+    // flat or down over the window pays the dear fraction, one up by the growth cap or more pays the cheap
+    // fraction, linear and clamped between. The growth is measured over this many worth snapshots.
+    private const int AdvertiseWindowCycles = 20;
+    private const decimal AdvertiseGrowthCap = 0.20m;
+    private const decimal AdvertiseDearFraction = 0.10m;
+    private const decimal AdvertiseCheapFraction = 0.001m;
 
     // A trader may reserve for buys beyond its available cash, borrowing up to this share of its total worth
     // (cash plus holdings). The debt is carried as open Loan liability, kept at or under this fraction of worth.
@@ -181,6 +202,12 @@ public sealed class MarketService(
 
     public Task<PlayerFundResult> ClosePlayerFundAsync() =>
         WithLockAsync(ClosePlayerFundCoreAsync);
+
+    public Task<FundAdvertiseQuoteResult> GetFundAdvertiseQuoteAsync(int fundParticipantId) =>
+        WithLockAsync(() => GetFundAdvertiseQuoteCoreAsync(fundParticipantId));
+
+    public Task<PlayerFundResult> AdvertiseFundAsync(int fundParticipantId) =>
+        WithLockAsync(() => AdvertiseFundCoreAsync(fundParticipantId));
 
     // Manual loan repayment goes through the cycle lock so it cannot race a running tick's writes.
     public Task<RepayLoanResult> RepayLoanAsync(int loanId, decimal? amount) => WithLockAsync(async () =>
@@ -975,6 +1002,13 @@ public sealed class MarketService(
         // the added rows flush with the market update below, inside the advance transaction.
         await WriteWorthSnapshotsAsync(currentCycle.Id, now);
 
+        // On its thirty-cycle cadence the behavioural audit reclassifies the player and its fund from recent
+        // activity; its staged participant and news changes flush with the market update below.
+        if (behaviorAuditService is not null)
+        {
+            await behaviorAuditService.ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, now);
+        }
+
         market.CurrentCycleId = nextCycle.Id;
         market.UpdatedAt = now;
         await dbContext.SaveChangesAsync();
@@ -1475,6 +1509,128 @@ public sealed class MarketService(
 
         await dbContext.SaveChangesAsync();
         return PlayerFundResult.Ok();
+    }
+
+    private async Task<FundAdvertiseQuoteResult> GetFundAdvertiseQuoteCoreAsync(int fundParticipantId)
+    {
+        var (context, error) = await ResolvePlayerFundAsync();
+        if (context is null)
+        {
+            return FundAdvertiseQuoteResult.Fail(error!);
+        }
+
+        if (context.FundParticipant.Id != fundParticipantId)
+        {
+            return FundAdvertiseQuoteResult.Fail("The fund is not player-managed.");
+        }
+
+        return FundAdvertiseQuoteResult.Ok(await ComputeAdvertiseQuoteAsync(context.Fund, context.FundParticipant));
+    }
+
+    // Pays for one advertisement out of the fund's own cash: a fund advertisement debit, a no-impact newswire so
+    // traders see the fund is recruiting, one more popularity point, and a stamp of the cycle so decay knows the
+    // fund is fresh. Popularity is the only channel by which an ad changes anyone's join odds.
+    private async Task<PlayerFundResult> AdvertiseFundCoreAsync(int fundParticipantId)
+    {
+        var (context, error) = await ResolvePlayerFundAsync();
+        if (context is null)
+        {
+            return PlayerFundResult.Fail(error!);
+        }
+
+        if (context.FundParticipant.Id != fundParticipantId)
+        {
+            return PlayerFundResult.Fail("The fund is not player-managed.");
+        }
+
+        var fund = context.Fund;
+        var fundParticipant = context.FundParticipant;
+        var quote = await ComputeAdvertiseQuoteAsync(fund, fundParticipant);
+        if (quote.Price > fundParticipant.AvailableBalance)
+        {
+            return PlayerFundResult.Fail("The fund cannot afford the advertisement.");
+        }
+
+        var currentCycleId = context.Market.CurrentCycleId ?? 0;
+        var currentCycleNumber = await dbContext.MarketCycles
+            .Where(cycle => cycle.Id == currentCycleId)
+            .Select(cycle => (int?)cycle.CycleNumber)
+            .FirstOrDefaultAsync() ?? 0;
+        var now = DateTime.UtcNow;
+
+        if (quote.Price > 0m)
+        {
+            fundParticipant.CurrentBalance -= quote.Price;
+            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            {
+                ParticipantId = fundParticipant.Id,
+                Type = MoneyTransactionType.FundAdvertisement,
+                Amount = quote.Price,
+                CreatedInCycleId = currentCycleId,
+                CreatedAt = now,
+            });
+        }
+
+        dbContext.NewsPosts.Add(new NewsPost
+        {
+            Title = $"{fundParticipant.Name} is looking for new members",
+            Content = $"{fundParticipant.Name} has taken out an advertisement inviting traders to pool their cash and join the fund.",
+            PublishedInCycleId = currentCycleId,
+            PublishedAt = now,
+            Scope = NewsImpactScope.None,
+            Category = NewsCategory.FundAdvertisement,
+        });
+
+        fund.PopularityIndex += 1;
+        fund.LastAdvertisedInCycleNumber = currentCycleNumber;
+
+        await dbContext.SaveChangesAsync();
+        return PlayerFundResult.Ok();
+    }
+
+    // Prices one advertisement: a fraction of the fund's worth (cash plus holdings minus open-loan liability) that
+    // slides from the dear fraction when the fund is flat or down to the cheap fraction once it is up by the growth
+    // cap or more, linear and clamped. Reused by the quote endpoint and the paid advertisement.
+    private async Task<FundAdvertiseQuote> ComputeAdvertiseQuoteAsync(CollectiveFund fund, Participant fundParticipant)
+    {
+        var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        var holdings = await dbContext.Holdings
+            .Where(holding => holding.ParticipantId == fundParticipant.Id && holding.Quantity > 0)
+            .Select(holding => new { holding.CompanyId, holding.Quantity })
+            .ToListAsync();
+        var holdingsValue = holdings.Sum(holding => holding.Quantity * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
+        var loanLiability = await dbContext.Loans
+            .Where(loan => loan.ParticipantId == fundParticipant.Id && loan.Status == LoanStatus.Open)
+            .SumAsync(loan => loan.RemainingPrincipal + loan.PastDueAmount);
+        var fundWorth = fundParticipant.CurrentBalance + holdingsValue - loanLiability;
+
+        var growth = await ComputeFundGrowthAsync(fundParticipant.Id);
+        var clampedGrowth = Math.Clamp(growth, 0m, AdvertiseGrowthCap);
+        var fraction = AdvertiseDearFraction + ((clampedGrowth / AdvertiseGrowthCap) * (AdvertiseCheapFraction - AdvertiseDearFraction));
+        var price = Round(Math.Max(0m, fraction * fundWorth));
+
+        return new FundAdvertiseQuote(price, fraction, Round(growth * 100m), fundWorth, fund.PopularityIndex);
+    }
+
+    // The fund's net-worth growth over the advertising window, read from its worth snapshots: latest against the
+    // snapshot a window back, or against the earliest recorded snapshot when it has less than a full window of
+    // history. Zero (the dearest price) when there is no usable baseline.
+    private async Task<decimal> ComputeFundGrowthAsync(int fundParticipantId)
+    {
+        var recentWorths = (await dbContext.ParticipantWorthSnapshots
+                .Where(snapshot => snapshot.ParticipantId == fundParticipantId)
+                .OrderByDescending(snapshot => snapshot.Id)
+                .Take(AdvertiseWindowCycles + 1)
+                .Select(snapshot => snapshot.Balance + snapshot.HoldingsValue - snapshot.LoanLiability)
+                .ToListAsync());
+        if (recentWorths.Count == 0)
+        {
+            return 0m;
+        }
+
+        var latest = recentWorths[0];
+        var baseline = recentWorths[^1];
+        return baseline > 0m ? (latest - baseline) / baseline : 0m;
     }
 
     // Moves cash one way between the player and its fund and records both legs, reusing the fund cash-movement

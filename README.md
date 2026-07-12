@@ -52,6 +52,8 @@ No authentication is required between the frontend and backend for local develop
 | [Sector sentiment](docs/logic/sector-sentiment.md) | How sector confidence shapes shocks and automated trading demand. |
 | [Free-share emission](docs/logic/free-share-emission.md) | How large companies issue free shares to dilute price. |
 | [Bank loans](docs/logic/bank-loans.md) | How buying on margin opens a bank loan that is repaid over time. |
+| [Fund advertising](docs/logic/fund-advertising.md) | How the player-managed fund pays to raise its Popularity Index and attract joiners. |
+| [Behavioural audit](docs/logic/behavioral-audit.md) | How the thirty-cycle audit scores trading activity and reclassifies the player and their fund. |
 
 ## Tech stack
 

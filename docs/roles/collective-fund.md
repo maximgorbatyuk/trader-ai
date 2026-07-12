@@ -13,7 +13,7 @@ A Collective Fund is a pooled automated trader created during the simulation. It
 - A fund can hold shares, receive dividends, and sell holdings.
 - A fund passes part of its own dividend income through to members, divided by deposit size.
 - A fund can hold up to twenty members.
-- When several funds have room, joiners prefer stronger funds: larger membership, higher net worth, and better recent dividend income.
+- When several funds have room, joiners prefer stronger funds: larger membership, higher net worth, better recent dividend income, faster recent growth, and heavier advertised popularity.
 - A fund that is winding down stops buying. It cancels open buys, lists remaining holdings for sale, and closes once it no longer owns shares.
 - When a fund is short on cash to return a leaving member's deposit, it borrows the shortfall plus a small buffer and pays the member in full the same cycle, then carries that loan. Only when lending is disabled does it fall back to selling shares at a discount and making the member wait.
 - If only two members remain and one leaves, the whole fund winds down.

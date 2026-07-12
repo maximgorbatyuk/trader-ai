@@ -60,6 +60,7 @@ public enum MoneyTransactionType
     LoanRepayment,
     LoanFine,
     TradeFee,
+    FundAdvertisement,
 }
 
 public enum LoanStatus
@@ -104,6 +105,7 @@ public enum NewsCategory
     StockSplit,
     StockMerge,
     FundPerformance,
+    FundAdvertisement,
 }
 
 public enum CrisisScope

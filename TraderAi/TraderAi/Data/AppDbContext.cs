@@ -227,5 +227,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         // rate columns a finer scale after the blanket pass.
         modelBuilder.Entity<Bank>().Property(bank => bank.InterestRatePerCycle).HasPrecision(18, 6);
         modelBuilder.Entity<Loan>().Property(loan => loan.InterestRatePerCycle).HasPrecision(18, 6);
+
+        // Behavioural-audit indices are min-max-normalised sums near the 0..5 range; the money scale above would
+        // flatten the small gaps the nearest-group-average classification reads, so give them a finer scale.
+        modelBuilder.Entity<Participant>().Property(participant => participant.TemperamentIndex).HasPrecision(18, 6);
+        modelBuilder.Entity<Participant>().Property(participant => participant.RiskProfileIndex).HasPrecision(18, 6);
     }
 }

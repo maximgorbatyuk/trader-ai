@@ -53,6 +53,7 @@ builder.Services.AddScoped<LoanService>();
 builder.Services.AddScoped<VolatilityHaltService>();
 builder.Services.AddScoped<ConcentrationCapService>();
 builder.Services.AddScoped<IndustrySentimentService>();
+builder.Services.AddScoped<BehaviorAuditService>();
 builder.Services.AddSingleton<MarketCycleLock>();
 builder.Services.Configure<MarketLoopOptions>(builder.Configuration.GetSection(MarketLoopOptions.SectionName));
 builder.Services.Configure<NewsOptions>(builder.Configuration.GetSection(NewsOptions.SectionName));

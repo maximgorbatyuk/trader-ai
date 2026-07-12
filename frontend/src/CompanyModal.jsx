@@ -218,31 +218,34 @@ export function CompanyModal({ company, participantNameById, onClose }) {
             </p>
           ) : null}
 
-          {capValues.length < 2 ? (
-            <p className="note">Not enough capitalization history yet. Start the loop or step a cycle to record trades.</p>
-          ) : (
-            <LineChart
-              values={capValues.slice(-32)}
-              tone={toneOf(capSeriesChange)}
-              formatValue={formatCompactMoney}
-              label="Capitalization history"
-            />
-          )}
+          <div className="modal-charts">
+            <div className="modal-section">
+              <span className="map-stat-label">Capitalization</span>
+              {capValues.length < 2 ? (
+                <p className="note note-sm">Not enough capitalization history yet. Start the loop or step a cycle to record trades.</p>
+              ) : (
+                <LineChart
+                  values={capValues.slice(-32)}
+                  tone={toneOf(capSeriesChange)}
+                  formatValue={formatCompactMoney}
+                  label="Capitalization history"
+                />
+              )}
+            </div>
 
-          <div className="modal-section">
-            <span className="map-stat-label">Industry sentiment · {company.industryName ?? '—'}</span>
-            {sentimentValues.length < 2 ? (
-              <p className="note note-sm">Not enough sentiment history yet.</p>
-            ) : (
-              <div className="chart-sm">
+            <div className="modal-section">
+              <span className="map-stat-label">Industry sentiment · {company.industryName ?? '—'}</span>
+              {sentimentValues.length < 2 ? (
+                <p className="note note-sm">Not enough sentiment history yet.</p>
+              ) : (
                 <LineChart
                   values={sentimentValues.slice(-48)}
                   tone={toneOf(sentimentChange)}
                   formatValue={formatSentiment}
                   label={`${company.industryName ?? 'Industry'} sentiment history`}
                 />
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           <dl className="modal-stats">

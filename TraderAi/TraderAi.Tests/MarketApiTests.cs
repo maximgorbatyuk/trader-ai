@@ -1394,6 +1394,42 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
+    [Fact]
+    public async Task AdvertiseEndpointsQuoteThenChargeTheFundAndLiftPopularity()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+            var withFund = await (await client.PostAsJsonAsync("/player/fund", new { seedAmount = 5_000m, name = (string?)null }))
+                .Content.ReadFromJsonAsync<PlayerDto>();
+            var fundId = withFund!.FundParticipantId!.Value;
+
+            // A fresh fund has no growth history, so the quote is the dear 10% of its 5,000 worth.
+            var quote = await client.GetFromJsonAsync<FundAdvertiseQuoteDto>($"/funds/{fundId}/advertise-quote");
+            Assert.Equal(0, quote!.PopularityIndex);
+            Assert.Equal(0.10m, quote.Fraction);
+            Assert.Equal(5_000m, quote.FundWorth);
+            Assert.Equal(500m, quote.Price);
+
+            var afterAd = await (await client.PostAsync($"/funds/{fundId}/advertise", null))
+                .Content.ReadFromJsonAsync<PlayerDto>();
+            Assert.Equal(1, afterAd!.FundPopularityIndex);
+            Assert.Equal(4_500m, afterAd.FundCurrentBalance);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
@@ -1415,6 +1451,10 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     private sealed record ParticipantDto(int Id, string Name, decimal CurrentBalance, decimal ReservedBalance, int SharesOwned);
+
+    private sealed record PlayerDto(int Id, int? FundParticipantId, decimal? FundCurrentBalance, int? FundPopularityIndex);
+
+    private sealed record FundAdvertiseQuoteDto(decimal Price, decimal Fraction, decimal GrowthPct, decimal FundWorth, int PopularityIndex);
 
     private sealed record CompanyDto(int Id, string Name, decimal? CurrentPrice, decimal PriceChangePct);
 

@@ -882,6 +882,27 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
+        app.MapGet("/funds/{id:int}/advertise-quote", async (int id, MarketService marketService) =>
+        {
+            var result = await marketService.GetFundAdvertiseQuoteAsync(id);
+            return result is { Success: true, Quote: not null }
+                ? Results.Ok(new FundAdvertiseQuoteResponse(
+                    result.Quote.Price,
+                    result.Quote.Fraction,
+                    result.Quote.GrowthPct,
+                    result.Quote.FundWorth,
+                    result.Quote.PopularityIndex))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
+        app.MapPost("/funds/{id:int}/advertise", async (int id, MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.AdvertiseFundAsync(id);
+            return result.Success
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
         app.MapPost("/cycles/tick", async (MarketService marketService) =>
         {
             var result = await marketService.StepCycleAsync();
@@ -2054,8 +2075,10 @@ public static class MarketEndpoints
         decimal? fundHoldingsValue = null;
         decimal? fundTotalWorth = null;
         decimal? fundWithdrawable = null;
+        int? fundPopularityIndex = null;
         if (managedFund is not null)
         {
+            fundPopularityIndex = managedFund.PopularityIndex;
             var fundParticipant = await dbContext.Participants
                 .FirstOrDefaultAsync(participant => participant.Id == managedFund.ParticipantId);
             if (fundParticipant is not null)
@@ -2102,7 +2125,8 @@ public static class MarketEndpoints
             fundAvailableBalance,
             fundHoldingsValue,
             fundTotalWorth,
-            fundWithdrawable);
+            fundWithdrawable,
+            fundPopularityIndex);
     }
 
     private static async Task<(string? Status, CollectiveFundMemberResponse[] Members)> BuildCollectiveFundMembersAsync(
@@ -2508,6 +2532,13 @@ public sealed record OpenPlayerFundRequest(decimal SeedAmount, string? Name);
 
 public sealed record PlayerFundCashRequest(decimal Amount);
 
+public sealed record FundAdvertiseQuoteResponse(
+    decimal Price,
+    decimal Fraction,
+    decimal GrowthPct,
+    decimal FundWorth,
+    int PopularityIndex);
+
 public sealed record PlayerResponse(
     int Id,
     string Name,
@@ -2530,7 +2561,8 @@ public sealed record PlayerResponse(
     decimal? FundAvailableBalance,
     decimal? FundHoldingsValue,
     decimal? FundTotalWorth,
-    decimal? FundWithdrawable);
+    decimal? FundWithdrawable,
+    int? FundPopularityIndex);
 
 public sealed record PlaceOrderRequest(int ParticipantId, int CompanyId, OrderType Type, int Quantity, decimal LimitPrice);
 

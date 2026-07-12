@@ -1013,6 +1013,75 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task JoinerPrefersTheMorePopularFund()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+
+        // Two funds even on size, worth, dividends, and growth; only the second is advertised, so the popularity
+        // score breaks the otherwise-even tie toward it.
+        var (plainFund, _) = await AddFundAsync(balance: 100_000m);
+        var plainMember = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(plainFund, plainMember, deposit: 10_000m, cycle.Id);
+
+        var (popularFund, _) = await AddFundAsync(balance: 100_000m);
+        var popularMember = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(popularFund, popularMember, deposit: 10_000m, cycle.Id);
+        popularFund.PopularityIndex = 5;
+        await context.SaveChangesAsync();
+
+        var joiner = await AddTraderAsync(currentBalance: 100_000m);
+
+        // Only the joiner draws, and 0.0 lands inside the 5% join band.
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var membership = await context.CollectiveFundParticipants.AsNoTracking()
+            .FirstAsync(member => member.ParticipantId == joiner.Id);
+        Assert.Equal(popularFund.Id, membership.CollectiveFundId);
+    }
+
+    // Popularity ebbs one point per cycle once the last advertisement is more than the idle window behind.
+    [Fact]
+    public async Task PopularityDecaysWhenTheLastAdvertisementIsBeyondTheIdleWindow()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m, cycleNumber: 100);
+        var (fund, _) = await AddFundAsync(balance: 500_000m);
+        var member = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
+        fund.PopularityIndex = 3;
+        fund.LastAdvertisedInCycleNumber = cycle.CycleNumber - 21;
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(2, refreshed.PopularityIndex);
+    }
+
+    // Advertising within the idle window holds popularity steady.
+    [Fact]
+    public async Task PopularityHoldsWhenAdvertisedWithinTheIdleWindow()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m, cycleNumber: 100);
+        var (fund, _) = await AddFundAsync(balance: 500_000m);
+        var member = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
+        fund.PopularityIndex = 3;
+        fund.LastAdvertisedInCycleNumber = cycle.CycleNumber - 20;
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(3, refreshed.PopularityIndex);
+    }
+
+    [Fact]
     public async Task RaisedJoinCeilingLetsRicherTraderJoin()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);

@@ -38,5 +38,14 @@ public sealed class CollectiveFund
     // headline only once per cooldown instead of every cycle. Null until the fund has ever posted one.
     public int? LastGrowthNewsInCycleNumber { get; set; }
 
+    // How visible the fund is to would-be joiners: each paid advertisement lifts it by one, and it decays by one
+    // each cycle the fund goes without advertising past the idle window, floored at zero. It biases fund-join
+    // selection alongside size, worth, dividends, and growth.
+    public int PopularityIndex { get; set; }
+
+    // Cycle number of the fund's most recent paid advertisement; null until it has ever advertised. Popularity
+    // only starts decaying once this is more than the idle window of cycles behind the current cycle.
+    public int? LastAdvertisedInCycleNumber { get; set; }
+
     public ICollection<CollectiveFundParticipant> Members { get; set; } = new List<CollectiveFundParticipant>();
 }

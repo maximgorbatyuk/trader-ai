@@ -363,6 +363,9 @@ function ManageFundSection({ player, onRefresh }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [confirmingClose, setConfirmingClose] = useState(false)
+  const [adQuote, setAdQuote] = useState(null)
+  const [adBusy, setAdBusy] = useState(false)
+  const [adError, setAdError] = useState(null)
 
   const withdrawable = player.fundWithdrawable ?? 0
   const amountNum = Number(amount)
@@ -383,6 +386,33 @@ function ManageFundSection({ player, onRefresh }) {
       setError(moveError.message)
     } finally {
       setBusy(false)
+    }
+  }
+
+  // Fetching the quote is a preview step: the player sees the cost before any cash moves, then confirms to pay.
+  async function fetchAdQuote() {
+    setAdError(null)
+    setAdBusy(true)
+    try {
+      setAdQuote(await api.getFundAdvertiseQuote(player.fundParticipantId))
+    } catch (quoteError) {
+      setAdError(quoteError.message)
+    } finally {
+      setAdBusy(false)
+    }
+  }
+
+  async function confirmAdvertise() {
+    setAdError(null)
+    setAdBusy(true)
+    try {
+      await api.advertiseFund(player.fundParticipantId)
+      setAdQuote(null)
+      await onRefresh()
+    } catch (advertiseError) {
+      setAdError(advertiseError.message)
+    } finally {
+      setAdBusy(false)
     }
   }
 
@@ -437,6 +467,43 @@ function ManageFundSection({ player, onRefresh }) {
         >
           {busy ? '…' : 'Withdraw'}
         </button>
+      </div>
+      <div className="modal-section player-section">
+        <div className="player-panel-head">
+          <span className="map-stat-label">Advertise</span>
+          <span className="num" title="How visible the fund is to would-be joiners">
+            Popularity {formatInt(player.fundPopularityIndex ?? 0)}
+          </span>
+        </div>
+        <p className="note note-sm">
+          A paid advertisement lifts the fund&apos;s popularity, drawing more traders to join. It is paid from the
+          fund&apos;s cash and costs less the more the fund has grown.
+        </p>
+        {adError ? (
+          <p className="command-error" role="alert">
+            {adError}
+          </p>
+        ) : null}
+        {adQuote ? (
+          <>
+            <p className="note note-sm">
+              Advertising now costs {formatMoney(adQuote.price)} ({(adQuote.fraction * 100).toFixed(2)}% of fund worth),
+              set by {adQuote.growthPct.toFixed(1)}% growth over the last 20 cycles.
+            </p>
+            <div className="order-actions">
+              <button type="button" className="btn btn-primary" disabled={adBusy} onClick={confirmAdvertise}>
+                {adBusy ? 'Paying…' : 'Confirm & pay'}
+              </button>
+              <button type="button" className="btn" disabled={adBusy} onClick={() => setAdQuote(null)}>
+                Cancel
+              </button>
+            </div>
+          </>
+        ) : (
+          <button type="button" className="btn" disabled={adBusy} onClick={fetchAdQuote}>
+            {adBusy ? 'Checking…' : 'Advertise fund'}
+          </button>
+        )}
       </div>
       {confirmingClose ? (
         <div className="modal-section player-section">
