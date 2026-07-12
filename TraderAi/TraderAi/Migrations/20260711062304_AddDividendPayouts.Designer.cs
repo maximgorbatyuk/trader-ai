@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using TraderAi.Data;
 
@@ -10,9 +11,11 @@ using TraderAi.Data;
 namespace TraderAi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260711062304_AddDividendPayouts")]
+    partial class AddDividendPayouts
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
@@ -122,9 +125,6 @@ namespace TraderAi.Migrations
                     b.Property<bool>("IsPlayerManaged")
                         .HasColumnType("INTEGER");
 
-                    b.Property<int?>("LastAdvertisedInCycleNumber")
-                        .HasColumnType("INTEGER");
-
                     b.Property<int?>("LastGrowthNewsInCycleNumber")
                         .HasColumnType("INTEGER");
 
@@ -134,9 +134,6 @@ namespace TraderAi.Migrations
                     b.Property<decimal>("PeakNetWorth")
                         .HasPrecision(18, 2)
                         .HasColumnType("TEXT");
-
-                    b.Property<int>("PopularityIndex")
-                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -976,16 +973,8 @@ namespace TraderAi.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<decimal>("RiskProfileIndex")
-                        .HasPrecision(18, 6)
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("Temperament")
                         .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<decimal>("TemperamentIndex")
-                        .HasPrecision(18, 6)
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Type")

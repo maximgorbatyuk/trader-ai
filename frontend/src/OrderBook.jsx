@@ -1,16 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from './api'
-import { formatMoney } from './format'
+import { formatMoney, toneOf } from './format'
+import { LineChart } from './LineChart'
 import { Panel } from './Panel'
 import { PercentButtons } from './PercentButtons'
-
-const QUANTITY_PRESETS = [
-  { label: '10%', value: 0.1 },
-  { label: '25%', value: 0.25 },
-  { label: '50%', value: 0.5 },
-  { label: '75%', value: 0.75 },
-  { label: '100%', value: 1 },
-]
+import { recentPriceValues, recentSentimentValues, TRADE_QUANTITY_PRESETS } from './tradeOrderModalModel'
 
 const BUY_FILTER_OPTIONS = [
   { value: 'owned', label: 'Owned' },
@@ -42,6 +36,7 @@ export function OrderBookPanel({
   companyNameById,
   companyPriceById,
   companySharesById,
+  companyById,
   actor,
   actorHoldingCompanyIds,
   emptyActorHint,
@@ -166,6 +161,7 @@ export function OrderBookPanel({
           actor={actor}
           companyName={companyNameById.get(tradeOrder.companyId) ?? `#${tradeOrder.companyId}`}
           currentPrice={companyPriceById.get(tradeOrder.companyId) ?? null}
+          company={companyById.get(tradeOrder.companyId) ?? null}
           onClose={() => setTradeOrder(null)}
           onTraded={onTraded}
         />
@@ -306,7 +302,12 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
 // Confirms an actor's trade against one resting order. The actor (the player or their managed fund) takes the
 // opposite side at that order's limit; like every order it settles on the next cycle at the midpoint, so this
 // books a competitive order rather than instantly hitting the shown counterparty.
-function TradeOrderModal({ order, actor, companyName, currentPrice, onClose, onTraded }) {
+function formatSentiment(value) {
+  if (typeof value !== 'number') return '—'
+  return `${value > 0 ? '+' : ''}${value}`
+}
+
+function TradeOrderModal({ order, actor, companyName, currentPrice, company, onClose, onTraded }) {
   const takingSellOffer = order.type === 'Sell'
   const playerSide = takingSellOffer ? 'Buy' : 'Sell'
   const remaining = order.quantity - order.filledQuantity
@@ -315,6 +316,10 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, onClose, onT
   const [quantity, setQuantity] = useState(takingSellOffer ? String(remaining) : '')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
+  const [priceHistory, setPriceHistory] = useState(null)
+  const [sentimentHistory, setSentimentHistory] = useState(null)
+  const [priceHistoryFailed, setPriceHistoryFailed] = useState(false)
+  const [sentimentHistoryFailed, setSentimentHistoryFailed] = useState(false)
 
   useEffect(() => {
     function onKeyDown(event) {
@@ -329,6 +334,28 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, onClose, onT
       document.body.style.overflow = previousOverflow
     }
   }, [onClose])
+
+  useEffect(() => {
+    let active = true
+
+    async function loadChartData() {
+      const [pricesResult, sentimentResult] = await Promise.allSettled([
+        api.getPrices(order.companyId),
+        company?.industryId != null ? api.getIndustrySentimentHistory(company.industryId) : Promise.resolve([]),
+      ])
+      if (!active) return
+
+      setPriceHistory(pricesResult.status === 'fulfilled' ? pricesResult.value ?? [] : [])
+      setSentimentHistory(sentimentResult.status === 'fulfilled' ? sentimentResult.value ?? [] : [])
+      setPriceHistoryFailed(pricesResult.status === 'rejected')
+      setSentimentHistoryFailed(sentimentResult.status === 'rejected')
+    }
+
+    loadChartData()
+    return () => {
+      active = false
+    }
+  }, [order.companyId, company?.industryId])
 
   // A sell can only offer shares the player holds, so seed the quantity with the most that both the holding
   // and the resting bid can absorb.
@@ -368,6 +395,10 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, onClose, onT
   }
   const validQuantity = Number.isInteger(quantityNumber) && quantityNumber > 0 && quantityNumber <= maxQuantity
   const total = (validQuantity ? quantityNumber : 0) * order.limitPrice
+  const priceValues = recentPriceValues(priceHistory ?? [])
+  const sentimentValues = recentSentimentValues(sentimentHistory ?? [])
+  const priceChange = priceValues.length >= 2 ? priceValues.at(-1) - priceValues.at(0) : 0
+  const sentimentChange = sentimentValues.length >= 2 ? sentimentValues.at(-1) - sentimentValues.at(0) : 0
 
   // How far the order's limit sits from the live market price, so the player can judge the deal at a glance.
   const percentDiff =
@@ -405,7 +436,7 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, onClose, onT
 
   return (
     <div className="modal-backdrop" onClick={onBackdropClick}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label="Trade against order">
+      <div className="modal modal-trade" role="dialog" aria-modal="true" aria-label="Trade against order">
         <header className="modal-head">
           <div className="command-id">
             <span className="command-label">Order book</span>
@@ -425,6 +456,58 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, onClose, onT
                 </span>
               ) : null}
             </div>
+          </div>
+
+          <div className="trade-charts">
+            <section className="trade-chart" aria-labelledby="trade-price-chart-title">
+              <div className="trade-chart-head">
+                <h3 id="trade-price-chart-title">Company share price change</h3>
+                <span className={`trade-chart-change num tone-${toneOf(priceChange)}`}>
+                  <span aria-hidden="true">{priceChange > 0 ? '▲' : priceChange < 0 ? '▼' : '◆'} </span>
+                  {formatMoney(priceValues.at(-1))}
+                </span>
+              </div>
+              <p className="trade-chart-context">{companyName} · Latest 48 cycles</p>
+              {priceHistory === null ? (
+                <p className="note note-sm">Loading price history…</p>
+              ) : priceHistoryFailed ? (
+                <p className="note note-sm">Price history is unavailable.</p>
+              ) : priceValues.length < 2 ? (
+                <p className="note note-sm">Not enough price history yet.</p>
+              ) : (
+                <LineChart
+                  values={priceValues}
+                  tone={toneOf(priceChange)}
+                  formatValue={formatMoney}
+                  label={`${companyName} share price history`}
+                />
+              )}
+            </section>
+
+            <section className="trade-chart" aria-labelledby="trade-sentiment-chart-title">
+              <div className="trade-chart-head">
+                <h3 id="trade-sentiment-chart-title">Industry sentiment change</h3>
+                <span className={`trade-chart-change num tone-${toneOf(sentimentChange)}`}>
+                  <span aria-hidden="true">{sentimentChange > 0 ? '▲' : sentimentChange < 0 ? '▼' : '◆'} </span>
+                  {formatSentiment(sentimentValues.at(-1))}
+                </span>
+              </div>
+              <p className="trade-chart-context">{company?.industryName ?? 'Industry'} · Latest 48 cycles</p>
+              {sentimentHistory === null ? (
+                <p className="note note-sm">Loading sentiment history…</p>
+              ) : sentimentHistoryFailed ? (
+                <p className="note note-sm">Sentiment history is unavailable.</p>
+              ) : sentimentValues.length < 2 ? (
+                <p className="note note-sm">Not enough sentiment history yet.</p>
+              ) : (
+                <LineChart
+                  values={sentimentValues}
+                  tone={toneOf(sentimentChange)}
+                  formatValue={formatSentiment}
+                  label={`${company?.industryName ?? 'Industry'} sentiment history`}
+                />
+              )}
+            </section>
           </div>
 
           <dl className="modal-stats">
@@ -457,7 +540,7 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, onClose, onT
             <>
               <div className="field">
                 <span>Quantity (max {maxQuantity})</span>
-                <PercentButtons options={QUANTITY_PRESETS} ariaLabel="Set quantity from a percentage" onPick={pickQuantity} />
+                <PercentButtons options={TRADE_QUANTITY_PRESETS} ariaLabel="Set quantity from a percentage" onPick={pickQuantity} />
                 <input
                   className="select num"
                   type="number"
@@ -489,7 +572,7 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, onClose, onT
             </button>
             {loadingHoldings || noShares ? null : (
               <button type="submit" className="btn btn-primary" disabled={submitting || !validQuantity}>
-                {submitting ? 'Placing…' : `Place ${playerSide.toLowerCase()} order`}
+                {submitting ? 'Placing…' : actor.kind === 'fund' ? 'Place order for Fund' : 'Place order As Player'}
               </button>
             )}
           </footer>

@@ -1026,6 +1026,17 @@
   color: var(--info-text);
 }
 
+/* A paid fund advertisement gets the amber attention frame, apart from the up/down and info tones. */
+.map-news.news-ad {
+  border-color: var(--attention);
+  border-left-color: var(--attention);
+  background: var(--attention-soft);
+}
+
+.map-news.news-ad .map-news-label {
+  color: color-mix(in oklch, var(--attention) 72%, black);
+}
+
 .map-news-head {
   display: flex;
   align-items: baseline;
@@ -1987,11 +1998,26 @@
   max-height: min(92vh, 1120px);
 }
 
-/* A compact chart (the industry sentiment trend sits smaller than the company's own price chart). */
-.chart-sm .chart svg {
-  height: 132px;
-  width: auto;
-  max-width: 100%;
+.modal-trade {
+  width: min(1040px, 100%);
+  max-height: min(92vh, 920px);
+}
+
+/* Capitalization and industry-sentiment trends share one compact row instead of stacking. */
+.modal-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-3) var(--s-5);
+}
+
+.modal-charts .modal-section {
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .modal-charts {
+    grid-template-columns: 1fr;
+  }
 }
 
 .modal-head {
@@ -2040,6 +2066,59 @@
   display: flex;
   flex-direction: column;
   gap: var(--s-1);
+}
+
+.trade-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-5);
+  padding-block: var(--s-1);
+}
+
+.trade-chart {
+  min-width: 0;
+}
+
+.trade-chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding-bottom: var(--s-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.trade-chart-head h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+
+.trade-chart-change {
+  flex-shrink: 0;
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+
+.trade-chart-context {
+  margin: var(--s-1) 0 var(--s-2);
+  color: var(--muted);
+  font-size: var(--t-2xs);
+}
+
+.trade-chart > .note {
+  min-height: 150px;
+}
+
+@media (max-width: 760px) {
+  .trade-charts {
+    grid-template-columns: 1fr;
+  }
+
+  .trade-chart > .note {
+    min-height: auto;
+  }
 }
 
 .modal-deal {

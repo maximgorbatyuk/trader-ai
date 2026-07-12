@@ -6,6 +6,7 @@ import { formatCompactMoney, formatInt, formatMoney, formatSigned, toneOf } from
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
 import { CASH_LABEL, CASH_TONE } from './cashMovements'
+import { MoneyTransactionModal } from './MoneyTransactionModal'
 import { IndustryHoldingsTable } from './IndustryHoldingsTable'
 import { groupHoldingsByIndustry } from './industryHoldings'
 import { TradeModal } from './TradeModal'
@@ -220,7 +221,7 @@ export function ParticipantDetail({ participantId }) {
 
       <div className="grid-detail">
         <OrdersPanel orders={orders} companyName={companyName} />
-        <CashPanel moves={cashMoves} />
+        <CashPanel moves={cashMoves} participantId={participantId} />
       </div>
 
       <LoansPanel loans={loans} status={loanStatus} onStatusChange={setLoanStatus} />
@@ -727,7 +728,9 @@ function FundMembershipHistoryPanel({ participantId, isFund }) {
   )
 }
 
-function CashPanel({ moves }) {
+function CashPanel({ moves, participantId }) {
+  const [selectedMove, setSelectedMove] = useState(null)
+
   return (
     <Panel title="Cash movements" count={`last ${moves.length}`} className="panel-cash">
       {moves.length === 0 ? (
@@ -748,7 +751,20 @@ function CashPanel({ moves }) {
             </thead>
             <tbody>
               {moves.map((move) => (
-                <tr key={move.id}>
+                <tr
+                  key={move.id}
+                  className="tbl-row-click"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open details for ${CASH_LABEL[move.type] ?? move.type} of ${formatMoney(move.amount)}`}
+                  onClick={() => setSelectedMove(move)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      setSelectedMove(move)
+                    }
+                  }}
+                >
                   <td>
                     <span className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</span>
                   </td>
@@ -760,6 +776,13 @@ function CashPanel({ moves }) {
           </table>
         </div>
       )}
+      {selectedMove ? (
+        <MoneyTransactionModal
+          transaction={selectedMove}
+          participantId={participantId}
+          onClose={() => setSelectedMove(null)}
+        />
+      ) : null}
     </Panel>
   )
 }

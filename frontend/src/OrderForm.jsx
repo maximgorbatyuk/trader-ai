@@ -11,6 +11,8 @@ const QUANTITY_PRESETS = [
   { label: '100%', value: 1 },
 ]
 
+const ACTOR_ORDER_LABELS = { player: 'Place order As Player', fund: 'Place order for Fund' }
+
 const PRICE_PRESETS = [
   { label: '−25%', value: -0.25 },
   { label: '−10%', value: -0.1 },
@@ -155,7 +157,7 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
             disabled={disabledFor(actor)}
             onClick={actor.key === 'player' ? undefined : () => submitFor(actor)}
           >
-            {submittingActor === actor.key ? 'Placing…' : hasFund ? `Place ${actor.label} order` : `Place ${side.toLowerCase()} order`}
+            {submittingActor === actor.key ? 'Placing…' : ACTOR_ORDER_LABELS[actor.key]}
           </button>
         ))}
       </div>

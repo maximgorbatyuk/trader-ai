@@ -3,17 +3,10 @@ import { Link } from 'react-router-dom'
 import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { LineChart } from './LineChart'
-import { NewsImpact } from './NewsImpact'
 import { OrderForm } from './OrderForm'
 import { RatingBadge } from './RatingBadge'
 
 const POLL_INTERVAL_MS = 1000
-
-// A null seller is the share issuer's own offering.
-function dealParty(id, byId) {
-  if (id == null) return 'Issuer'
-  return byId.get(id) ?? `#${id}`
-}
 
 function formatPct(value) {
   if (typeof value !== 'number') return '—'
@@ -35,14 +28,12 @@ function formatCyclesAgo(cyclesAgo) {
 
 // Detail dialog for one company opened from the market map. Live price, cap and share count come from the
 // dashboard's already-polled company record; the price history and most recent trade are fetched here.
-export function CompanyModal({ company, participantNameById, onClose }) {
+export function CompanyModal({ company, onClose }) {
   const companyId = company?.id
   const [prices, setPrices] = useState([])
-  const [latestDeal, setLatestDeal] = useState(null)
   const [player, setPlayer] = useState(null)
   const [ownedShares, setOwnedShares] = useState(0)
   const [fundOwnedShares, setFundOwnedShares] = useState(0)
-  const [companyNews, setCompanyNews] = useState([])
   const [industrySentiment, setIndustrySentiment] = useState([])
   const [latestRating, setLatestRating] = useState(null)
   const [activeForm, setActiveForm] = useState('none')
@@ -56,19 +47,15 @@ export function CompanyModal({ company, participantNameById, onClose }) {
     let active = true
     async function load() {
       try {
-        const [priceData, dealData, playerData, newsData, sentimentData, ratingData] = await Promise.all([
+        const [priceData, playerData, sentimentData, ratingData] = await Promise.all([
           api.getPrices(companyId),
-          api.getCompanyShareTransactions(companyId, 1),
           api.getPlayer(),
-          api.getCompanyNews(companyId, 5),
           industryId != null ? api.getIndustrySentimentHistory(industryId) : Promise.resolve([]),
           api.getCompanyRatings(companyId, 1),
         ])
         if (!active) return
         setPrices(priceData)
-        setLatestDeal(dealData[0] ?? null)
         setPlayer(playerData)
-        setCompanyNews(newsData ?? [])
         setIndustrySentiment(sentimentData ?? [])
         setLatestRating((ratingData && ratingData[0]) ?? null)
 
@@ -137,10 +124,6 @@ export function CompanyModal({ company, participantNameById, onClose }) {
       ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance }
       : null
   const capitalization = company.issuedSharesCount * (company.currentPrice ?? 0)
-  const values = prices.map((snapshot) => snapshot.price)
-  const open = values.at(0)
-  const low = values.length ? Math.min(...values) : undefined
-  const high = values.length ? Math.max(...values) : undefined
   // The trend line charts capitalisation, not price, so a stock split (price down, shares up, cap flat) does
   // not read as a crash. Capitalisation is recorded going forward, so snapshots predating it are skipped.
   const capValues = prices
@@ -218,31 +201,34 @@ export function CompanyModal({ company, participantNameById, onClose }) {
             </p>
           ) : null}
 
-          {capValues.length < 2 ? (
-            <p className="note">Not enough capitalization history yet. Start the loop or step a cycle to record trades.</p>
-          ) : (
-            <LineChart
-              values={capValues.slice(-32)}
-              tone={toneOf(capSeriesChange)}
-              formatValue={formatCompactMoney}
-              label="Capitalization history"
-            />
-          )}
+          <div className="modal-charts">
+            <div className="modal-section">
+              <span className="map-stat-label">Capitalization</span>
+              {capValues.length < 2 ? (
+                <p className="note note-sm">Not enough capitalization history yet. Start the loop or step a cycle to record trades.</p>
+              ) : (
+                <LineChart
+                  values={capValues.slice(-32)}
+                  tone={toneOf(capSeriesChange)}
+                  formatValue={formatCompactMoney}
+                  label="Capitalization history"
+                />
+              )}
+            </div>
 
-          <div className="modal-section">
-            <span className="map-stat-label">Industry sentiment · {company.industryName ?? '—'}</span>
-            {sentimentValues.length < 2 ? (
-              <p className="note note-sm">Not enough sentiment history yet.</p>
-            ) : (
-              <div className="chart-sm">
+            <div className="modal-section">
+              <span className="map-stat-label">Industry sentiment · {company.industryName ?? '—'}</span>
+              {sentimentValues.length < 2 ? (
+                <p className="note note-sm">Not enough sentiment history yet.</p>
+              ) : (
                 <LineChart
                   values={sentimentValues.slice(-48)}
                   tone={toneOf(sentimentChange)}
                   formatValue={formatSentiment}
                   label={`${company.industryName ?? 'Industry'} sentiment history`}
                 />
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           <dl className="modal-stats">
@@ -258,18 +244,6 @@ export function CompanyModal({ company, participantNameById, onClose }) {
               <dt>Shares</dt>
               <dd className="num">{formatInt(company.issuedSharesCount)}</dd>
             </div>
-            <div>
-              <dt>Open</dt>
-              <dd className="num">{formatMoney(open)}</dd>
-            </div>
-            <div>
-              <dt>Low</dt>
-              <dd className="num">{formatMoney(low)}</dd>
-            </div>
-            <div>
-              <dt>High</dt>
-              <dd className="num">{formatMoney(high)}</dd>
-            </div>
           </dl>
 
           <div className="modal-section">
@@ -284,41 +258,6 @@ export function CompanyModal({ company, participantNameById, onClose }) {
               </p>
             ) : (
               <p className="note note-sm">No auditor has reviewed this company yet.</p>
-            )}
-          </div>
-
-          <div className="modal-section">
-            <span className="map-stat-label">Latest deal</span>
-            {latestDeal ? (
-              <p className="modal-deal">
-                <span className="cell-ellipsis">{dealParty(latestDeal.sellerId, participantNameById)}</span>
-                <span className="flow-arrow" aria-label="to">
-                  →
-                </span>
-                <span className="cell-ellipsis">{dealParty(latestDeal.buyerId, participantNameById)}</span>
-                <span className="muted-sub">
-                  {' '}
-                  · {formatInt(latestDeal.quantity)} @ {formatMoney(latestDeal.price)}
-                </span>
-              </p>
-            ) : (
-              <p className="note">No trades for this company yet.</p>
-            )}
-          </div>
-
-          <div className="modal-section">
-            <span className="map-stat-label">Related news</span>
-            {companyNews.length === 0 ? (
-              <p className="note note-sm">No related news yet.</p>
-            ) : (
-              <ul className="news-mini">
-                {companyNews.map((post) => (
-                  <li key={post.id} className="news-mini-item">
-                    <span className="news-mini-title cell-ellipsis">{post.title}</span>
-                    <NewsImpact post={post} />
-                  </li>
-                ))}
-              </ul>
             )}
           </div>
 

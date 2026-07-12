@@ -9,9 +9,9 @@ export function holdingCompanyIdSet(holdings) {
 export function resolveActor(player, actorKind) {
   if (!player) return null
   if (actorKind === 'fund') {
-    return player.fundParticipantId != null ? { id: player.fundParticipantId, name: player.fundName } : null
+    return player.fundParticipantId != null ? { kind: 'fund', id: player.fundParticipantId, name: player.fundName } : null
   }
-  return { id: player.id, name: player.name }
+  return { kind: 'player', id: player.id, name: player.name }
 }
 
 // The order book's read-only hint when the fund is selected but not yet created.

@@ -60,13 +60,18 @@ public sealed class CollectiveFundService(
     private const int FounderDividendLookbackPayouts = 2;
 
     // A joiner scores each candidate fund on size, net worth, dividends over its last this-many payout events,
-    // and recent net-worth growth, each min-max normalised across the candidates and summed with the weights
-    // below.
+    // recent net-worth growth, and advertised popularity, each min-max normalised across the candidates and
+    // summed with the weights below.
     private const int JoinDividendLookbackPayouts = 3;
     private const double ScoreWeightSize = 1.0;
     private const double ScoreWeightWorth = 1.0;
     private const double ScoreWeightDividends = 1.0;
     private const double ScoreWeightGrowth = 1.0;
+    private const double ScoreWeightPopularity = 1.0;
+
+    // A fund's popularity decays by one only once its last advertisement is more than this many cycles behind the
+    // current cycle (or it has never advertised); advertising within the window holds popularity steady.
+    private const int AdvertisementDecayIdleCycles = 20;
 
     // A fund whose net worth CollectiveFundOptions.FundGrowthWindowCycles snapshots ago is at least
     // FundGrowthThreshold below its latest recorded worth is "growing": it earns a willingness-to-join boost and
@@ -106,8 +111,8 @@ public sealed class CollectiveFundService(
     private int crisisCycleNumber;
 
     // Draw discipline for a scripted Random in tests: no draws while closing funds, returning deposits, ratcheting
-    // peak worth, running the founder close, detecting fund growth, posting the growth newswire, or dropping a
-    // stale membership. In the member pass (fund id, then participant id order) each
+    // peak worth, decaying advertised popularity, running the founder close, detecting fund growth, posting the
+    // growth newswire, or dropping a stale membership. In the member pass (fund id, then participant id order) each
     // member draws at most once — the forced-leave roll if it sits at or above the leave line, otherwise the
     // switch roll if it is a non-founder past the minimum tenure, otherwise nothing. In the join pass (independent
     // traders, id order) a switch-flagged member draws nothing, and every other eligible trader draws once.
@@ -131,6 +136,7 @@ public sealed class CollectiveFundService(
         foreach (var fund in funds.Where(fund => fund.Status == CollectiveFundStatus.Active).OrderBy(fund => fund.Id).ToList())
         {
             RatchetPeakNetWorth(fund);
+            DecayPopularity(fund, currentCycleNumber);
 
             // A player-managed fund never auto-closes or idle-unwinds; the human owns its fate. The member pass
             // below still runs so anyone who joined can leave and be repaid.
@@ -529,6 +535,24 @@ public sealed class CollectiveFundService(
         }
     }
 
+    // An advertised fund holds its popularity while its last ad is within the idle window; past that (or if it
+    // never advertised) popularity ebbs one point per cycle, floored at zero. Deterministic, so scripted tests
+    // are unaffected.
+    private static void DecayPopularity(CollectiveFund fund, int currentCycleNumber)
+    {
+        if (fund.PopularityIndex <= 0)
+        {
+            return;
+        }
+
+        var advertisedRecently = fund.LastAdvertisedInCycleNumber is int lastAd
+            && currentCycleNumber - lastAd <= AdvertisementDecayIdleCycles;
+        if (!advertisedRecently)
+        {
+            fund.PopularityIndex = Math.Max(0, fund.PopularityIndex - 1);
+        }
+    }
+
     // The founder unwinds the fund the moment it has clearly failed: its worth has collapsed to a small fraction
     // of its peak, or it has drawn no dividend income across its last couple of post-founding payout cycles. No
     // random draws, so scripted tests are unaffected.
@@ -569,9 +593,9 @@ public sealed class CollectiveFundService(
             .Where(fund => fund.Status == CollectiveFundStatus.Active && membershipsByFundId[fund.Id].Count < options.Value.MaxMembers)
             .ToList();
 
-    // Picks the fund a joiner prefers: bigger, worth more, paying more dividends recently, and growing fastest.
-    // Each metric is min-max normalised across the candidates so no single scale dominates, then summed with the
-    // score weights; ties fall to the lowest fund id.
+    // Picks the fund a joiner prefers: bigger, worth more, paying more dividends recently, growing fastest, and
+    // more heavily advertised. Each metric is min-max normalised across the candidates so no single scale
+    // dominates, then summed with the score weights; ties fall to the lowest fund id.
     private CollectiveFund? SelectBestFund(List<CollectiveFund> candidates)
     {
         if (candidates.Count <= 1)
@@ -587,6 +611,7 @@ public sealed class CollectiveFundService(
                 Worth = (double)FundNetWorth(participantsById[fund.ParticipantId]),
                 Dividends = (double)RecentDividends(fund.ParticipantId),
                 Growth = (double)growthPercentByFundId.GetValueOrDefault(fund.Id),
+                Popularity = (double)fund.PopularityIndex,
             })
             .ToList();
 
@@ -598,6 +623,8 @@ public sealed class CollectiveFundService(
         var dividendMax = scored.Max(entry => entry.Dividends);
         var growthMin = scored.Min(entry => entry.Growth);
         var growthMax = scored.Max(entry => entry.Growth);
+        var popularityMin = scored.Min(entry => entry.Popularity);
+        var popularityMax = scored.Max(entry => entry.Popularity);
 
         static double Normalise(double value, double min, double max) => max > min ? (value - min) / (max - min) : 0.0;
 
@@ -606,7 +633,8 @@ public sealed class CollectiveFundService(
                 (ScoreWeightSize * Normalise(entry.Size, sizeMin, sizeMax))
                 + (ScoreWeightWorth * Normalise(entry.Worth, worthMin, worthMax))
                 + (ScoreWeightDividends * Normalise(entry.Dividends, dividendMin, dividendMax))
-                + (ScoreWeightGrowth * Normalise(entry.Growth, growthMin, growthMax)))
+                + (ScoreWeightGrowth * Normalise(entry.Growth, growthMin, growthMax))
+                + (ScoreWeightPopularity * Normalise(entry.Popularity, popularityMin, popularityMax)))
             .ThenBy(entry => entry.Fund.Id)
             .First()
             .Fund;

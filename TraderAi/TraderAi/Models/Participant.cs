@@ -60,6 +60,13 @@ public sealed class Participant
     // the best available fund regardless of the usual cash ceiling and clears the flag.
     public bool PendingFundSwitch { get; set; }
 
+    // Behavioural-audit scores, refreshed every thirtieth cycle from the trader's recent order and trade activity.
+    // Temperament sums all five normalised activity metrics; risk sums the three that read as risk appetite. Both
+    // seed the nearest-group-average reclassification of the Player and Player's Fund.
+    public decimal TemperamentIndex { get; set; }
+
+    public decimal RiskProfileIndex { get; set; }
+
     [NotMapped]
     public decimal AvailableBalance => CurrentBalance - ReservedBalance;
 }

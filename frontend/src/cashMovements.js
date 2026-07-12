@@ -13,6 +13,7 @@ export const CASH_TONE = {
   LoanInterest: 'spend',
   LoanRepayment: 'spend',
   LoanFine: 'spend',
+  FundAdvertisement: 'spend',
   TradeFee: 'fee',
   Reserve: 'reserve',
   Release: 'reserve',
@@ -25,5 +26,6 @@ export const CASH_LABEL = {
   LoanFine: 'Loan fine',
   CollectiveFund: 'Fund deposit',
   CollectiveFundDividend: 'Fund dividend',
+  FundAdvertisement: 'Fund advertisement',
   TradeFee: 'Trade fee',
 }

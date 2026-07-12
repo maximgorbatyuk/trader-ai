@@ -6,6 +6,7 @@ import { Pager, SortHeader } from './TableControls'
 import { useClientTable } from './useClientTable'
 import { LineChart } from './LineChart'
 import { CASH_LABEL, CASH_TONE } from './cashMovements'
+import { MoneyTransactionModal } from './MoneyTransactionModal'
 import { IndustryHoldingsTable } from './IndustryHoldingsTable'
 import { groupHoldingsByIndustry } from './industryHoldings'
 
@@ -158,6 +159,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
         <ActorView
           key="player"
           subject={player}
+          participantId={player.id}
           canCancelOrders
           holdings={holdings}
           orders={orders}
@@ -181,6 +183,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
           <ActorView
             key="fund"
             subject={fundSubjectOf(fundDetail, holdings, worthHistory)}
+            participantId={player.fundParticipantId}
             canCancelOrders
             members={fundDetail.collectiveFundMembers ?? []}
             holdings={holdings}
@@ -360,6 +363,9 @@ function ManageFundSection({ player, onRefresh }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [confirmingClose, setConfirmingClose] = useState(false)
+  const [adQuote, setAdQuote] = useState(null)
+  const [adBusy, setAdBusy] = useState(false)
+  const [adError, setAdError] = useState(null)
 
   const withdrawable = player.fundWithdrawable ?? 0
   const amountNum = Number(amount)
@@ -380,6 +386,33 @@ function ManageFundSection({ player, onRefresh }) {
       setError(moveError.message)
     } finally {
       setBusy(false)
+    }
+  }
+
+  // Fetching the quote is a preview step: the player sees the cost before any cash moves, then confirms to pay.
+  async function fetchAdQuote() {
+    setAdError(null)
+    setAdBusy(true)
+    try {
+      setAdQuote(await api.getFundAdvertiseQuote(player.fundParticipantId))
+    } catch (quoteError) {
+      setAdError(quoteError.message)
+    } finally {
+      setAdBusy(false)
+    }
+  }
+
+  async function confirmAdvertise() {
+    setAdError(null)
+    setAdBusy(true)
+    try {
+      await api.advertiseFund(player.fundParticipantId)
+      setAdQuote(null)
+      await onRefresh()
+    } catch (advertiseError) {
+      setAdError(advertiseError.message)
+    } finally {
+      setAdBusy(false)
     }
   }
 
@@ -435,6 +468,43 @@ function ManageFundSection({ player, onRefresh }) {
           {busy ? '…' : 'Withdraw'}
         </button>
       </div>
+      <div className="modal-section player-section">
+        <div className="player-panel-head">
+          <span className="map-stat-label">Advertise</span>
+          <span className="num" title="How visible the fund is to would-be joiners">
+            Popularity {formatInt(player.fundPopularityIndex ?? 0)}
+          </span>
+        </div>
+        <p className="note note-sm">
+          A paid advertisement lifts the fund&apos;s popularity, drawing more traders to join. It is paid from the
+          fund&apos;s cash and costs less the more the fund has grown.
+        </p>
+        {adError ? (
+          <p className="command-error" role="alert">
+            {adError}
+          </p>
+        ) : null}
+        {adQuote ? (
+          <>
+            <p className="note note-sm">
+              Advertising now costs {formatMoney(adQuote.price)} ({(adQuote.fraction * 100).toFixed(2)}% of fund worth),
+              set by {adQuote.growthPct.toFixed(1)}% growth over the last 20 cycles.
+            </p>
+            <div className="order-actions">
+              <button type="button" className="btn btn-primary" disabled={adBusy} onClick={confirmAdvertise}>
+                {adBusy ? 'Paying…' : 'Confirm & pay'}
+              </button>
+              <button type="button" className="btn" disabled={adBusy} onClick={() => setAdQuote(null)}>
+                Cancel
+              </button>
+            </div>
+          </>
+        ) : (
+          <button type="button" className="btn" disabled={adBusy} onClick={fetchAdQuote}>
+            {adBusy ? 'Checking…' : 'Advertise fund'}
+          </button>
+        )}
+      </div>
       {confirmingClose ? (
         <div className="modal-section player-section">
           <p className="note note-sm">
@@ -464,6 +534,7 @@ function ManageFundSection({ player, onRefresh }) {
 // cancel endpoint, which accepts the player's own orders and its managed fund's.
 function ActorView({
   subject,
+  participantId,
   canCancelOrders,
   members,
   holdings,
@@ -572,6 +643,7 @@ function ActorView({
       </div>
 
       <ActorTabs
+        participantId={participantId}
         canCancelOrders={canCancelOrders}
         members={members}
         holdings={holdings}
@@ -604,7 +676,7 @@ const MEMBERS_TAB = { key: 'members', label: 'Members', hasCount: true }
 // The actor's detail views behind one tab strip so the panel stays compact: the roster tabs carry a live count,
 // and arrow keys move focus between tabs (roving tabindex) to match the order-book tablist. The fund variant
 // appends a Members tab.
-function ActorTabs({ canCancelOrders, members, holdings, attention, openOrders, loans, loanStatus, onLoanStatusChange, worthHistory, cashMoves, companies, onSelectCompany, onRefresh }) {
+function ActorTabs({ participantId, canCancelOrders, members, holdings, attention, openOrders, loans, loanStatus, onLoanStatusChange, worthHistory, cashMoves, companies, onSelectCompany, onRefresh }) {
   const tabs = members ? [...BASE_TABS, MEMBERS_TAB] : BASE_TABS
   const [activeKey, setActiveKey] = useState('assets')
   const tabRefs = useRef({})
@@ -675,7 +747,7 @@ function ActorTabs({ canCancelOrders, members, holdings, attention, openOrders, 
           <OpenOrdersSection orders={openOrders} companies={companies} canCancel={canCancelOrders} onCancelled={onRefresh} />
         ) : null}
         {activeKey === 'worth' ? <WorthChartTab worthHistory={worthHistory} /> : null}
-        {activeKey === 'cash' ? <CashMovesTab moves={cashMoves} /> : null}
+        {activeKey === 'cash' ? <CashMovesTab moves={cashMoves} participantId={participantId} /> : null}
         {activeKey === 'loans' ? (
           <LoansSection loans={loans} status={loanStatus} onStatusChange={onLoanStatusChange} onRepaid={onRefresh} />
         ) : null}
@@ -700,7 +772,9 @@ function WorthChartTab({ worthHistory }) {
   )
 }
 
-function CashMovesTab({ moves }) {
+function CashMovesTab({ moves, participantId }) {
+  const [selectedMove, setSelectedMove] = useState(null)
+
   return (
     <div className="modal-section player-section">
       {moves.length === 0 ? (
@@ -721,7 +795,20 @@ function CashMovesTab({ moves }) {
             </thead>
             <tbody>
               {moves.map((move) => (
-                <tr key={move.id}>
+                <tr
+                  key={move.id}
+                  className="tbl-row-click"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open details for ${CASH_LABEL[move.type] ?? move.type} of ${formatMoney(move.amount)}`}
+                  onClick={() => setSelectedMove(move)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      setSelectedMove(move)
+                    }
+                  }}
+                >
                   <td>
                     <span className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</span>
                   </td>
@@ -733,6 +820,13 @@ function CashMovesTab({ moves }) {
           </table>
         </div>
       )}
+      {selectedMove ? (
+        <MoneyTransactionModal
+          transaction={selectedMove}
+          participantId={participantId}
+          onClose={() => setSelectedMove(null)}
+        />
+      ) : null}
     </div>
   )
 }

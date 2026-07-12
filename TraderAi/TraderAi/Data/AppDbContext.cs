@@ -21,6 +21,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<MoneyTransaction> MoneyTransactions => Set<MoneyTransaction>();
 
+    public DbSet<DividendPayout> DividendPayouts => Set<DividendPayout>();
+
     public DbSet<PriceSnapshot> PriceSnapshots => Set<PriceSnapshot>();
 
     public DbSet<Market> Markets => Set<Market>();
@@ -189,6 +191,19 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<MoneyTransaction>()
             .HasIndex(transaction => transaction.RelatedLoanId);
 
+        // A Dividend transaction's per-company breakdown: read by parent for the detail view, deleted by cycle
+        // when the parent transaction is archived.
+        modelBuilder.Entity<DividendPayout>()
+            .HasOne(payout => payout.MoneyTransaction)
+            .WithMany()
+            .HasForeignKey(payout => payout.MoneyTransactionId);
+
+        modelBuilder.Entity<DividendPayout>()
+            .HasIndex(payout => payout.MoneyTransactionId);
+
+        modelBuilder.Entity<DividendPayout>()
+            .HasIndex(payout => payout.CreatedInCycleId);
+
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
             foreach (var property in entityType.GetProperties())
@@ -212,5 +227,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         // rate columns a finer scale after the blanket pass.
         modelBuilder.Entity<Bank>().Property(bank => bank.InterestRatePerCycle).HasPrecision(18, 6);
         modelBuilder.Entity<Loan>().Property(loan => loan.InterestRatePerCycle).HasPrecision(18, 6);
+
+        // Behavioural-audit indices are min-max-normalised sums near the 0..5 range; the money scale above would
+        // flatten the small gaps the nearest-group-average classification reads, so give them a finer scale.
+        modelBuilder.Entity<Participant>().Property(participant => participant.TemperamentIndex).HasPrecision(18, 6);
+        modelBuilder.Entity<Participant>().Property(participant => participant.RiskProfileIndex).HasPrecision(18, 6);
     }
 }

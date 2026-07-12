@@ -1272,6 +1272,164 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
+    [Fact]
+    public async Task MoneyTransactionDetailReturnsTheDividendCompanyBreakdown()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int participantId;
+            int transactionId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 12, Status = CycleStatus.Completed, StartedAt = now };
+                dbContext.MarketCycles.Add(cycle);
+                var industry = new Industry { Name = "Tech" };
+                dbContext.Industries.Add(industry);
+                await dbContext.SaveChangesAsync();
+
+                var acme = new Company { Name = "Acme", IndustryId = industry.Id, IssuedSharesCount = 1000, CreatedAt = now, UpdatedAt = now };
+                var globex = new Company { Name = "Globex", IndustryId = industry.Id, IssuedSharesCount = 1000, CreatedAt = now, UpdatedAt = now };
+                dbContext.Companies.AddRange(acme, globex);
+                var holder = new Participant
+                {
+                    Name = "Holder",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    InitialBalance = 0m,
+                    CurrentBalance = 30m,
+                    IsActive = true,
+                };
+                dbContext.Participants.Add(holder);
+                await dbContext.SaveChangesAsync();
+                participantId = holder.Id;
+
+                var dividend = new MoneyTransaction
+                {
+                    ParticipantId = holder.Id,
+                    Type = MoneyTransactionType.Dividend,
+                    Amount = 30m,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = now,
+                };
+                dbContext.MoneyTransactions.Add(dividend);
+                dbContext.DividendPayouts.Add(new DividendPayout { MoneyTransaction = dividend, CompanyId = acme.Id, Amount = 20m, CreatedInCycleId = cycle.Id, CreatedAt = now });
+                dbContext.DividendPayouts.Add(new DividendPayout { MoneyTransaction = dividend, CompanyId = globex.Id, Amount = 10m, CreatedInCycleId = cycle.Id, CreatedAt = now });
+                await dbContext.SaveChangesAsync();
+                transactionId = dividend.Id;
+            }
+
+            var detail = await client.GetFromJsonAsync<MoneyTransactionDetailDto>(
+                $"/participants/{participantId}/money-transactions/{transactionId}");
+
+            Assert.Equal("Dividend", detail!.Type);
+            Assert.Equal(30m, detail.Amount);
+            Assert.Equal(12, detail.CycleNumber);
+            Assert.Null(detail.Order);
+            Assert.Null(detail.Loan);
+            Assert.NotNull(detail.DividendBreakdown);
+            Assert.Equal(2, detail.DividendBreakdown!.Length);
+            // Ordered by amount descending, so the larger payer leads and names resolve.
+            Assert.Equal("Acme", detail.DividendBreakdown[0].CompanyName);
+            Assert.Equal(20m, detail.DividendBreakdown[0].Amount);
+            Assert.Equal("Globex", detail.DividendBreakdown[1].CompanyName);
+            Assert.Equal(30m, detail.DividendBreakdown.Sum(line => line.Amount));
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task MoneyTransactionDetailReturnsNotFoundForAnotherParticipant()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int transactionId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 3, Status = CycleStatus.Completed, StartedAt = now };
+                dbContext.MarketCycles.Add(cycle);
+                await dbContext.SaveChangesAsync();
+
+                var transaction = new MoneyTransaction
+                {
+                    ParticipantId = 100,
+                    Type = MoneyTransactionType.Credit,
+                    Amount = 5m,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = now,
+                };
+                dbContext.MoneyTransactions.Add(transaction);
+                await dbContext.SaveChangesAsync();
+                transactionId = transaction.Id;
+            }
+
+            // The transaction belongs to participant 100; requesting it under a different id must not leak it.
+            using var response = await client.GetAsync($"/participants/200/money-transactions/{transactionId}");
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AdvertiseEndpointsQuoteThenChargeTheFundAndLiftPopularity()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+            var withFund = await (await client.PostAsJsonAsync("/player/fund", new { seedAmount = 5_000m, name = (string?)null }))
+                .Content.ReadFromJsonAsync<PlayerDto>();
+            var fundId = withFund!.FundParticipantId!.Value;
+
+            // A fresh fund has no growth history, so the quote is the dear 10% of its 5,000 worth.
+            var quote = await client.GetFromJsonAsync<FundAdvertiseQuoteDto>($"/funds/{fundId}/advertise-quote");
+            Assert.Equal(0, quote!.PopularityIndex);
+            Assert.Equal(0.10m, quote.Fraction);
+            Assert.Equal(5_000m, quote.FundWorth);
+            Assert.Equal(500m, quote.Price);
+
+            var afterAd = await (await client.PostAsync($"/funds/{fundId}/advertise", null))
+                .Content.ReadFromJsonAsync<PlayerDto>();
+            Assert.Equal(1, afterAd!.FundPopularityIndex);
+            Assert.Equal(4_500m, afterAd.FundCurrentBalance);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
@@ -1293,6 +1451,10 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     private sealed record ParticipantDto(int Id, string Name, decimal CurrentBalance, decimal ReservedBalance, int SharesOwned);
+
+    private sealed record PlayerDto(int Id, int? FundParticipantId, decimal? FundCurrentBalance, int? FundPopularityIndex);
+
+    private sealed record FundAdvertiseQuoteDto(decimal Price, decimal Fraction, decimal GrowthPct, decimal FundWorth, int PopularityIndex);
 
     private sealed record CompanyDto(int Id, string Name, decimal? CurrentPrice, decimal PriceChangePct);
 
@@ -1330,6 +1492,25 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal PctOfIssued);
 
     private sealed record ShareTransactionDto(int Id, int? SellerId, int BuyerId, int Quantity, decimal Price);
+
+    private sealed record MoneyTransactionDetailDto(
+        int Id,
+        string Type,
+        decimal Amount,
+        int CreatedInCycleId,
+        int? CycleNumber,
+        MoneyTransactionOrderDto? Order,
+        MoneyTransactionTradeDto? Trade,
+        MoneyTransactionLoanDto? Loan,
+        DividendPayoutLineDto[]? DividendBreakdown);
+
+    private sealed record MoneyTransactionOrderDto(int OrderId, int CompanyId, string? CompanyName, string Side, string Status);
+
+    private sealed record MoneyTransactionTradeDto(int ShareTransactionId, int CompanyId, string? CompanyName, int Quantity, decimal Price);
+
+    private sealed record MoneyTransactionLoanDto(int LoanId, decimal Principal, decimal RemainingPrincipal, string Status);
+
+    private sealed record DividendPayoutLineDto(int CompanyId, string? CompanyName, decimal Amount);
 
     private sealed record MarketExitDto(
         int Id,
