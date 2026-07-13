@@ -10,9 +10,13 @@ import { NewsImpact } from './NewsImpact'
 import { NewsModal } from './NewsModal'
 import { OrderForm } from './OrderForm'
 import { TradeModal } from './TradeModal'
+import { Pager } from './TableControls'
+import { corporateCashMovementPresentation } from './cashMovements'
+import { luldPresentation } from './marketAccounting'
 
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
+const CORPORATE_CASH_PAGE_SIZE = 10
 const RISK_ORDER = { Low: 0, High: 1, Extra: 2 }
 
 function formatPct(fraction) {
@@ -58,6 +62,8 @@ export function CompanyDetail({ companyId }) {
   const [ratings, setRatings] = useState([])
   const [emissions, setEmissions] = useState([])
   const [news, setNews] = useState([])
+  const [corporateCashMovements, setCorporateCashMovements] = useState({ items: [], total: 0, page: 1, pageSize: 10 })
+  const [corporateCashPage, setCorporateCashPage] = useState(1)
   const [selectedNews, setSelectedNews] = useState(null)
   const [player, setPlayer] = useState(null)
   const [playerOwned, setPlayerOwned] = useState(0)
@@ -65,7 +71,18 @@ export function CompanyDetail({ companyId }) {
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, shareholderData, orderData, tradeData, priceData, ratingData, emissionData, newsData, playerData] =
+      const [
+        detailData,
+        shareholderData,
+        orderData,
+        tradeData,
+        priceData,
+        ratingData,
+        emissionData,
+        newsData,
+        corporateCashData,
+        playerData,
+      ] =
         await Promise.all([
           api.getCompany(companyId),
           api.getCompanyShareholders(companyId),
@@ -75,6 +92,7 @@ export function CompanyDetail({ companyId }) {
           api.getCompanyRatings(companyId),
           api.getCompanyEmissions(companyId),
           api.getCompanyNews(companyId),
+          api.getCompanyCorporateCashMovements(companyId, corporateCashPage, CORPORATE_CASH_PAGE_SIZE),
           api.getPlayer(),
         ])
 
@@ -86,6 +104,7 @@ export function CompanyDetail({ companyId }) {
       setRatings(ratingData ?? [])
       setEmissions(emissionData ?? [])
       setNews(newsData ?? [])
+      setCorporateCashMovements(corporateCashData ?? { items: [], total: 0, page: 1, pageSize: CORPORATE_CASH_PAGE_SIZE })
 
       setPlayer(playerData)
       if (playerData) {
@@ -109,7 +128,7 @@ export function CompanyDetail({ companyId }) {
     } finally {
       setReady(true)
     }
-  }, [companyId])
+  }, [companyId, corporateCashPage])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)
@@ -140,6 +159,7 @@ export function CompanyDetail({ companyId }) {
 
   const changeTone = toneOf(detail.priceChangePct)
   const riskTrend = ratingTrend(detail.currentRating, detail.previousRating)
+  const luld = luldPresentation(detail.luldState)
 
   return (
     <section className="detail-stack" aria-label={`${detail.name} details`}>
@@ -161,13 +181,14 @@ export function CompanyDetail({ companyId }) {
         </div>
       ) : null}
 
-      {detail.isHalted ? (
+      {detail.luldState && detail.luldState !== 'Normal' ? (
         <div className="banner" role="status">
-          <strong>Trading halted.</strong>
+          <strong>{luld.indicator} {luld.label}.</strong>
           <span>
-            Trading in this company is frozen after a sharp price move
-            {typeof detail.haltedUntilCycleNumber === 'number' ? ` until cycle ${detail.haltedUntilCycleNumber}` : ''}.
-            Open orders were cancelled and no new orders can be placed until it resumes.
+            Reference {formatMoney(detail.referencePrice)} · band {formatMoney(detail.lowerBandPrice)}–
+            {formatMoney(detail.upperBandPrice)}
+            {detail.luldState === 'TradingPause' ? ` · ${formatInt(detail.remainingPauseSeconds)} trading seconds left` : ''}.
+            {' '}{luld.executionNote}
           </span>
         </div>
       ) : null}
@@ -202,6 +223,24 @@ export function CompanyDetail({ companyId }) {
             <dd className="num">{formatMoney(detail.marketCap)}</dd>
           </div>
           <div className="stat">
+            <dt>Issuer cash</dt>
+            <dd className="num">{formatMoney(detail.issuerCash)}</dd>
+          </div>
+          <div className="stat">
+            <dt>Price control</dt>
+            <dd className={`tone-${luld.tone}`}>
+              <span aria-hidden="true">{luld.indicator} </span>{luld.label}
+            </dd>
+          </div>
+          <div className="stat">
+            <dt>Price band</dt>
+            <dd className="num">
+              {detail.lowerBandPrice != null && detail.upperBandPrice != null
+                ? `${formatMoney(detail.lowerBandPrice)}–${formatMoney(detail.upperBandPrice)}`
+                : '—'}
+            </dd>
+          </div>
+          <div className="stat">
             <dt>Risk rating</dt>
             <dd>
               {detail.currentRating ? (
@@ -223,13 +262,22 @@ export function CompanyDetail({ companyId }) {
 
       <PriceChartPanel name={detail.name} prices={prices} />
 
-      {player && !detail.isClosed && !detail.isHalted ? (
+      <CorporateCashMovementsPanel
+        movements={corporateCashMovements}
+        page={corporateCashPage}
+        onPage={setCorporateCashPage}
+      />
+
+      {player && !detail.isClosed ? (
         <TradePanel
           companyId={companyId}
           currentPrice={detail.currentPrice}
           player={player}
           playerOwned={playerOwned}
           fundOwned={fundOwned}
+          luldState={detail.luldState}
+          lowerBandPrice={detail.lowerBandPrice}
+          upperBandPrice={detail.upperBandPrice}
           onPlaced={loadAll}
         />
       ) : null}
@@ -254,16 +302,63 @@ export function CompanyDetail({ companyId }) {
   )
 }
 
+function CorporateCashMovementsPanel({ movements, page, onPage }) {
+  const items = movements.items ?? []
+  const pageCount = Math.max(1, Math.ceil((movements.total ?? 0) / (movements.pageSize || CORPORATE_CASH_PAGE_SIZE)))
+
+  return (
+    <Panel title="Corporate cash movements" count={`${formatInt(movements.total ?? 0)} total`} className="panel-cash">
+      {items.length === 0 ? (
+        <p className="note">No issuer cash movements yet.</p>
+      ) : (
+        <>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Type</th>
+                  <th scope="col" className="ta-r">
+                    Amount
+                  </th>
+                  <th scope="col" className="ta-r">
+                    Cycle
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((movement) => {
+                  const presentation = corporateCashMovementPresentation(movement.type)
+                  return (
+                    <tr key={movement.id}>
+                      <th scope="row">{presentation.label}</th>
+                      <td className={`num ta-r tone-${presentation.tone}`}>
+                        <span aria-label={presentation.direction}>{presentation.sign} </span>
+                        {formatMoney(movement.amount)}
+                      </td>
+                      <td className="num ta-r">{formatInt(movement.createdInCycleNumber || movement.createdInCycleId)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={onPage} />
+        </>
+      )}
+    </Panel>
+  )
+}
+
 // Trade the company as the player or, if the player runs a fund, through the fund. Buy/Sell reveal the shared
 // order form; a placed order refreshes the page so the new order and balances show at once.
-function TradePanel({ companyId, currentPrice, player, playerOwned, fundOwned, onPlaced }) {
+function TradePanel({ companyId, currentPrice, player, playerOwned, fundOwned, luldState, lowerBandPrice, upperBandPrice, onPlaced }) {
   const [side, setSide] = useState('none')
   const fund =
     player.fundParticipantId != null
-      ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance }
+      ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance, margin: player.fundMargin }
       : null
   const canSell = playerOwned > 0 || fundOwned > 0
-  const company = { id: companyId, currentPrice }
+  const company = { id: companyId, currentPrice, luldState, lowerBandPrice, upperBandPrice }
 
   return (
     <Panel title="Trade" className="panel-orders-list">

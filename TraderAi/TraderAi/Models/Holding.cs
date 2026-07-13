@@ -13,6 +13,8 @@ public sealed class Holding
 
     public int Quantity { get; set; }
 
+    public int SettledQuantity { get; set; }
+
     // Weighted-average cost basis per share; a buy fill blends the fill price in, a sell leaves it
     // unchanged, and a split divides it. CostBasis for display is Quantity times this.
     public decimal AverageCost { get; set; }

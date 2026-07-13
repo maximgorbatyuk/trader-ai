@@ -66,6 +66,8 @@ export const api = {
     get(`/companies/${companyId}/share-transactions?take=${take}`),
   getCompanyRatings: (companyId, take = 20) => get(`/companies/${companyId}/ratings?take=${take}`),
   getCompanyEmissions: (companyId, take = 20) => get(`/companies/${companyId}/emissions?take=${take}`),
+  getCompanyCorporateCashMovements: (companyId, page = 1, pageSize = 10) =>
+    get(`/companies/${companyId}/corporate-cash-movements?page=${page}&pageSize=${pageSize}`),
   getAuditors: () => get('/auditors'),
   getAuditor: (auditorId) => get(`/auditors/${auditorId}`),
   getAuditorAudits: (auditorId, page = 1, pageSize = 20) =>
@@ -104,6 +106,8 @@ export const api = {
   getParticipantOrders: (participantId, take = 10) => get(`/participants/${participantId}/orders?take=${take}`),
   getParticipantShareTransactions: (participantId, take = 10) =>
     get(`/participants/${participantId}/share-transactions?take=${take}`),
+  getParticipantSettlements: (participantId, { status = 'pending', page = 1, pageSize = 100 } = {}) =>
+    get(`/participants/${participantId}/settlements${toQuery({ status, page, pageSize })}`),
   getParticipantMoneyTransactions: (participantId, take = 10) =>
     get(`/participants/${participantId}/money-transactions?take=${take}`),
   getMoneyTransactionDetail: (participantId, transactionId) =>

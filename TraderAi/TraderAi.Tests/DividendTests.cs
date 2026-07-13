@@ -6,9 +6,7 @@ using TraderAi.Services;
 
 namespace TraderAi.Tests;
 
-// Drives the real maintain-decide-advance tick with a no-op engine so only the dividend schedule moves,
-// and a fixed roll so every company passes its pay roll and its rate lands at the floor (0.01%) for
-// exact-amount assertions.
+// Drives the real maintain-decide-advance tick with a no-op engine so only the dividend-window behavior moves.
 public sealed class DividendTests : IDisposable
 {
     private readonly SqliteConnection connection;
@@ -27,7 +25,7 @@ public sealed class DividendTests : IDisposable
         context.Database.EnsureCreated();
     }
 
-    private MarketService Service() => Service(new FloorRoll());
+    private MarketService Service() => Service(new QueuedRoll(0d, 0d, 1d));
 
     private MarketService Service(Random roll) =>
         new(context, new MatchingEngine(context), new NoOpDecisionEngine(), new MarketCycleLock(), roll);
@@ -39,6 +37,8 @@ public sealed class DividendTests : IDisposable
         var market = await context.Markets.FirstAsync();
         var dueCycleId = market.CurrentCycleId!.Value;
         market.NextDividendCycleNumber = 1;
+        var company = await context.Companies.FirstAsync();
+        company.CashBalance = 0.10m;
         await context.SaveChangesAsync();
 
         var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
@@ -56,6 +56,15 @@ public sealed class DividendTests : IDisposable
         Assert.Equal(0.1m, dividend.Amount);
         Assert.Equal(dueCycleId, dividend.CreatedInCycleId);
 
+        await context.Entry(company).ReloadAsync();
+        Assert.Equal(0m, company.CashBalance);
+        var corporateMovement = await context.CorporateCashTransactions.SingleAsync();
+        Assert.Equal(CorporateCashTransactionType.DividendDeclared, corporateMovement.Type);
+        Assert.Equal(dividend.Amount, corporateMovement.Amount);
+        Assert.Equal(
+            corporateMovement.Amount,
+            await context.DividendPayouts.SumAsync(payout => payout.Amount));
+
         // Bob owns no shares, so he is never credited.
         await context.Entry(bob).ReloadAsync();
         Assert.Equal(5000m, bob.CurrentBalance);
@@ -67,6 +76,7 @@ public sealed class DividendTests : IDisposable
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var market = await context.Markets.FirstAsync();
         market.NextDividendCycleNumber = 1;
+        (await context.Companies.FirstAsync()).CashBalance = 0.10m;
         await context.SaveChangesAsync();
 
         var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
@@ -125,7 +135,15 @@ public sealed class DividendTests : IDisposable
         context.Industries.Add(industry);
         await context.SaveChangesAsync();
 
-        var company = new Company { Name = "Acme", IndustryId = industry.Id, IssuedSharesCount = 2_000_000, CreatedAt = now, UpdatedAt = now };
+        var company = new Company
+        {
+            Name = "Acme",
+            IndustryId = industry.Id,
+            IssuedSharesCount = 2_000_000,
+            CashBalance = 1_000_000m,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
         context.Companies.Add(company);
         var whale = new Participant
         {
@@ -153,6 +171,193 @@ public sealed class DividendTests : IDisposable
         var dividend = await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.Dividend);
         Assert.Equal(whale.Id, dividend.ParticipantId);
         Assert.Equal(1_000_000m, dividend.Amount);
+        await context.Entry(company).ReloadAsync();
+        Assert.Equal(0m, company.CashBalance);
+    }
+
+    [Fact]
+    public async Task OperatingIncomeUsesFullIssuedCapitalizationAndRoundsToCents()
+    {
+        await SeedSingleHolderAsync(
+            baselineCapitalization: 123_450m,
+            cashBalance: 0m,
+            price: 123.45m,
+            issuedSharesCount: 1000,
+            heldShares: 1);
+        var market = await context.Markets.SingleAsync();
+        var company = await context.Companies.SingleAsync();
+        var dueCycleId = market.CurrentCycleId!.Value;
+        var before = DateTime.UtcNow;
+
+        await Service(new QueuedRoll(1d, 0d, 0d)).StepCycleAsync();
+
+        var after = DateTime.UtcNow;
+        await context.Entry(company).ReloadAsync();
+        Assert.Equal(12.35m, company.CashBalance);
+        var income = await context.CorporateCashTransactions.SingleAsync();
+        Assert.Equal(CorporateCashTransactionType.OperatingIncome, income.Type);
+        Assert.Equal(company.Id, income.CompanyId);
+        Assert.Equal(12.35m, income.Amount);
+        Assert.Equal(dueCycleId, income.CreatedInCycleId);
+        Assert.InRange(income.CreatedAt, before, after);
+    }
+
+    [Fact]
+    public async Task OperatingIncomeIsCappedAtThePerCompanyCeiling()
+    {
+        await SeedSingleHolderAsync(
+            baselineCapitalization: 20_000_000_000m,
+            cashBalance: 0m,
+            price: 10_000m,
+            issuedSharesCount: 2_000_000,
+            heldShares: 1);
+        var company = await context.Companies.SingleAsync();
+
+        await Service(new QueuedRoll(1d, 0d, 0d)).StepCycleAsync();
+
+        await context.Entry(company).ReloadAsync();
+        Assert.Equal(1_000_000m, company.CashBalance);
+        var income = await context.CorporateCashTransactions.SingleAsync();
+        Assert.Equal(CorporateCashTransactionType.OperatingIncome, income.Type);
+        Assert.Equal(1_000_000m, income.Amount);
+    }
+
+    [Fact]
+    public async Task RoundedZeroOperatingIncomeCreatesNoLedgerMovement()
+    {
+        await SeedSingleHolderAsync(
+            baselineCapitalization: 0.01m,
+            cashBalance: 0m,
+            price: 0.01m,
+            issuedSharesCount: 1,
+            heldShares: 1);
+        var company = await context.Companies.SingleAsync();
+
+        await Service(new QueuedRoll(1d, 0d, 0d)).StepCycleAsync();
+
+        await context.Entry(company).ReloadAsync();
+        Assert.Equal(0m, company.CashBalance);
+        Assert.Empty(context.CorporateCashTransactions);
+    }
+
+    [Fact]
+    public async Task SameWindowIncomeCanFundDividendFromZeroIssuerCash()
+    {
+        var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 0m);
+        var company = await context.Companies.SingleAsync();
+
+        await Service(new QueuedRoll(0d, 0d, 0d, 0d)).StepCycleAsync();
+
+        await context.Entry(holder).ReloadAsync();
+        await context.Entry(company).ReloadAsync();
+        Assert.Equal(0.1m, holder.CurrentBalance);
+        Assert.Equal(9.9m, company.CashBalance);
+        var movements = await context.CorporateCashTransactions.OrderBy(row => row.Id).ToListAsync();
+        Assert.Collection(
+            movements,
+            income =>
+            {
+                Assert.Equal(CorporateCashTransactionType.OperatingIncome, income.Type);
+                Assert.Equal(10m, income.Amount);
+            },
+            dividend =>
+            {
+                Assert.Equal(CorporateCashTransactionType.DividendDeclared, dividend.Type);
+                Assert.Equal(0.1m, dividend.Amount);
+            });
+    }
+
+    [Fact]
+    public async Task DividendDecisionsForAllCompaniesPrecedeIncomeDecisions()
+    {
+        var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 100m);
+        var firstCompany = await context.Companies.SingleAsync();
+        var industry = await context.Industries.SingleAsync();
+        var cycle = await context.MarketCycles.SingleAsync();
+        var now = DateTime.UtcNow;
+        var secondCompany = new Company
+        {
+            Name = "Beta",
+            IndustryId = industry.Id,
+            IssuedSharesCount = 1000,
+            CashBalance = 100m,
+            LastDividendCapitalization = 200_000m,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        context.Companies.Add(secondCompany);
+        await context.SaveChangesAsync();
+        context.Holdings.Add(new Holding
+        {
+            ParticipantId = holder.Id,
+            CompanyId = secondCompany.Id,
+            Quantity = 10,
+            AverageCost = 200m,
+        });
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = secondCompany.Id,
+            Price = 200m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = now,
+        });
+        await context.SaveChangesAsync();
+
+        await Service(new QueuedRoll(1d, 0d, 0.2d, 0d, 0.8d, 1d)).StepCycleAsync();
+
+        await context.Entry(firstCompany).ReloadAsync();
+        await context.Entry(secondCompany).ReloadAsync();
+        var movements = await context.CorporateCashTransactions.ToListAsync();
+        var income = Assert.Single(movements, row => row.Type == CorporateCashTransactionType.OperatingIncome);
+        var dividend = Assert.Single(movements, row => row.Type == CorporateCashTransactionType.DividendDeclared);
+        Assert.Equal(firstCompany.Id, income.CompanyId);
+        Assert.Equal(402m, income.Amount);
+        Assert.Equal(secondCompany.Id, dividend.CompanyId);
+        Assert.Equal(2.16m, dividend.Amount);
+    }
+
+    [Fact]
+    public async Task ClosedAndUnpricedCompaniesReceiveNoOperatingIncome()
+    {
+        await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 0m);
+        var activeCompany = await context.Companies.SingleAsync();
+        var industry = await context.Industries.SingleAsync();
+        var cycle = await context.MarketCycles.SingleAsync();
+        var now = DateTime.UtcNow;
+        var closedCompany = new Company
+        {
+            Name = "Closed",
+            IndustryId = industry.Id,
+            IssuedSharesCount = 1000,
+            ClosedInCycleId = cycle.Id,
+            ClosedAt = now,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        var unpricedCompany = new Company
+        {
+            Name = "Unpriced",
+            IndustryId = industry.Id,
+            IssuedSharesCount = 1000,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        context.AddRange(closedCompany, unpricedCompany);
+        await context.SaveChangesAsync();
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = closedCompany.Id,
+            Price = 100m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = now,
+        });
+        await context.SaveChangesAsync();
+
+        await Service(new QueuedRoll(1d, 0d, 0d)).StepCycleAsync();
+
+        var income = await context.CorporateCashTransactions.SingleAsync();
+        Assert.Equal(activeCompany.Id, income.CompanyId);
+        Assert.Equal(CorporateCashTransactionType.OperatingIncome, income.Type);
     }
 
     [Fact]
@@ -163,7 +368,7 @@ public sealed class DividendTests : IDisposable
         var company = await context.Companies.FirstAsync();
 
         // A 0.5 roll clears the 0.75 stable chance but would miss the 0.25 volatile one; then the rate floors.
-        await Service(new QueuedRoll(0.5d, 0d)).StepCycleAsync();
+        await Service(new QueuedRoll(0.5d, 0d, 1d)).StepCycleAsync();
 
         await context.Entry(holder).ReloadAsync();
         Assert.Equal(0.1m, holder.CurrentBalance);
@@ -174,6 +379,48 @@ public sealed class DividendTests : IDisposable
     }
 
     [Fact]
+    public async Task DividendIsReducedToAvailableIssuerCashAndPublishesNews()
+    {
+        var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 0.04m);
+        var company = await context.Companies.FirstAsync();
+
+        await Service().StepCycleAsync();
+
+        await context.Entry(holder).ReloadAsync();
+        Assert.Equal(0.04m, holder.CurrentBalance);
+        await context.Entry(company).ReloadAsync();
+        Assert.Equal(0m, company.CashBalance);
+
+        var dividend = await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.Dividend);
+        Assert.Equal(0.04m, dividend.Amount);
+        Assert.Equal(0.04m, await context.DividendPayouts.SumAsync(payout => payout.Amount));
+        Assert.Equal(0.04m, (await context.CorporateCashTransactions.SingleAsync()).Amount);
+
+        var news = await context.NewsPosts.SingleAsync(post => post.TargetCompanyId == company.Id);
+        Assert.Contains("reduced", news.Title, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(NewsImpactScope.None, news.Scope);
+    }
+
+    [Fact]
+    public async Task ZeroIssuerCashSkipsDividendAndPublishesNews()
+    {
+        var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 0m);
+        var company = await context.Companies.FirstAsync();
+
+        await Service().StepCycleAsync();
+
+        await context.Entry(holder).ReloadAsync();
+        Assert.Equal(0m, holder.CurrentBalance);
+        Assert.False(await context.MoneyTransactions.AnyAsync(money => money.Type == MoneyTransactionType.Dividend));
+        Assert.Empty(context.DividendPayouts);
+        Assert.Empty(context.CorporateCashTransactions);
+
+        var news = await context.NewsPosts.SingleAsync(post => post.TargetCompanyId == company.Id);
+        Assert.Contains("skipped", news.Title, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(NewsImpactScope.None, news.Scope);
+    }
+
+    [Fact]
     public async Task VolatileCapitalizationSkipsOnTheSameMidRollButStillRefreshesTheBaseline()
     {
         // Baseline is half of current capitalisation, a 100% move, so the company is volatile and rolls at 25%.
@@ -181,11 +428,12 @@ public sealed class DividendTests : IDisposable
         var company = await context.Companies.FirstAsync();
 
         // The same 0.5 roll misses the 0.25 volatile chance, so nothing pays — but the baseline still refreshes.
-        await Service(new QueuedRoll(0.5d)).StepCycleAsync();
+        await Service(new QueuedRoll(0.5d, 0.5d)).StepCycleAsync();
 
         await context.Entry(holder).ReloadAsync();
         Assert.Equal(0m, holder.CurrentBalance);
         Assert.False(await context.MoneyTransactions.AnyAsync(money => money.Type == MoneyTransactionType.Dividend));
+        Assert.False(await context.CorporateCashTransactions.AnyAsync());
 
         await context.Entry(company).ReloadAsync();
         Assert.Equal(100_000m, company.LastDividendCapitalization);
@@ -193,7 +441,12 @@ public sealed class DividendTests : IDisposable
 
     // A market due to pay this cycle with one company priced at 100 over 1000 issued shares (capitalisation
     // 100,000) and a single 10-share holder starting at zero cash.
-    private async Task<Participant> SeedSingleHolderAsync(decimal? baselineCapitalization)
+    private async Task<Participant> SeedSingleHolderAsync(
+        decimal? baselineCapitalization,
+        decimal cashBalance = 0.10m,
+        decimal price = 100m,
+        int issuedSharesCount = 1000,
+        int heldShares = 10)
     {
         var now = DateTime.UtcNow;
         var cycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
@@ -208,7 +461,8 @@ public sealed class DividendTests : IDisposable
         {
             Name = "Acme",
             IndustryId = industry.Id,
-            IssuedSharesCount = 1000,
+            IssuedSharesCount = issuedSharesCount,
+            CashBalance = cashBalance,
             LastDividendCapitalization = baselineCapitalization,
             CreatedAt = now,
             UpdatedAt = now,
@@ -228,8 +482,20 @@ public sealed class DividendTests : IDisposable
         context.Participants.Add(holder);
         await context.SaveChangesAsync();
 
-        context.Holdings.Add(new Holding { ParticipantId = holder.Id, CompanyId = company.Id, Quantity = 10, AverageCost = 100m });
-        context.PriceSnapshots.Add(new PriceSnapshot { CompanyId = company.Id, Price = 100m, CreatedInCycleId = cycle.Id, CreatedAt = now });
+        context.Holdings.Add(new Holding
+        {
+            ParticipantId = holder.Id,
+            CompanyId = company.Id,
+            Quantity = heldShares,
+            AverageCost = price,
+        });
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = company.Id,
+            Price = price,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = now,
+        });
         market.CurrentCycleId = cycle.Id;
         market.NextDividendCycleNumber = 1;
         await context.SaveChangesAsync();
@@ -242,22 +508,14 @@ public sealed class DividendTests : IDisposable
         connection.Dispose();
     }
 
-    // Returns the low end of every random draw: NextDouble 0 passes every pay roll and puts the dividend rate at
-    // its floor, and the next-interval Next() lands on its minimum, all deterministic.
-    private sealed class FloorRoll : Random
-    {
-        public override double NextDouble() => 0d;
-
-        public override int Next(int minValue, int maxValue) => minValue;
-    }
-
-    // Hands back the queued NextDouble values in order (0 once drained) so the dividend pay roll and rate can be
-    // scripted independently; Next() stays at its minimum, leaving the interval reschedule out of the sequence.
+    // Exhaustion fails exact draw-order tests instead of silently turning an unexpected draw into a success.
     private sealed class QueuedRoll(params double[] values) : Random
     {
         private readonly Queue<double> queue = new(values);
 
-        public override double NextDouble() => queue.Count > 0 ? queue.Dequeue() : 0d;
+        public override double NextDouble() => queue.Count > 0
+            ? queue.Dequeue()
+            : throw new InvalidOperationException("The scripted random sequence is exhausted.");
 
         public override int Next(int minValue, int maxValue) => minValue;
     }

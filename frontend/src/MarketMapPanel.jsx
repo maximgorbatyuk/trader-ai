@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { Panel } from './Panel'
 import { Treemap } from './Treemap'
+import { luldPresentation } from './marketAccounting'
 import { formatPct, TONE_WORD } from './treemapLayout'
 import { LatestNews } from './LatestNews'
 
@@ -117,13 +118,14 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
 
   const mapItems = visibleCompanies.map((company) => {
     const tone = toneOf(company.capChangePct)
-    const haltSuffix = company.isHalted ? ' · trading halted' : ''
+    const luld = luldPresentation(company.luldState)
+    const haltSuffix = luld.orderEntryDisabled ? ` · ${luld.label}` : ''
     return {
       id: company.id,
       label: company.name,
       value: company.capitalization,
       changePct: company.capChangePct,
-      halted: company.isHalted,
+      halted: luld.orderEntryDisabled ? `${luld.indicator} ${luld.label}` : null,
       title: `${company.name} · ${formatCompactMoney(company.capitalization)} cap · ${formatInt(company.issuedSharesCount)} shares · ${formatMoney(company.currentPrice)} · ${formatPct(company.capChangePct)}${haltSuffix}`,
       ariaLabel: `${company.name}, ${formatCompactMoney(company.capitalization)} capitalisation, ${formatInt(company.issuedSharesCount)} issued shares, ${formatMoney(company.currentPrice)}, ${TONE_WORD[tone]} ${formatPct(company.capChangePct)}${haltSuffix}. Open details.`,
     }

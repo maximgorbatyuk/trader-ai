@@ -55,6 +55,9 @@ public sealed class MarketImpactService(AppDbContext dbContext)
         bool applySectorSentiment)
     {
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        var priceBandByCompany = await dbContext.PriceBandStates
+            .Where(state => companyIds.Contains(state.CompanyId))
+            .ToDictionaryAsync(state => state.CompanyId);
         var companyStateById = await dbContext.Companies
             .Where(company => companyIds.Contains(company.Id))
             .ToDictionaryAsync(
@@ -109,6 +112,11 @@ public sealed class MarketImpactService(AppDbContext dbContext)
                 ? 1m + (effectivePercent / 100m)
                 : 1m - (effectivePercent / 100m);
             var newPrice = Round(price * factor);
+            if (priceBandByCompany.TryGetValue(companyId, out var priceBand)
+                && priceBand.ReferencePrice > 0m)
+            {
+                newPrice = Math.Clamp(newPrice, priceBand.LowerBandPrice, priceBand.UpperBandPrice);
+            }
             if (newPrice <= 0m)
             {
                 continue;
@@ -137,11 +145,16 @@ public sealed class MarketImpactService(AppDbContext dbContext)
         DateTime now)
     {
         var staleType = direction == NewsImpactDirection.Decrease ? OrderType.Buy : OrderType.Sell;
+        var affectedCompanyIds = await dbContext.PriceBandStates
+            .Where(state => state.State != LuldState.Normal)
+            .Select(state => state.CompanyId)
+            .ToListAsync();
 
         var orders = await dbContext.Orders
             .Where(order => order.ParticipantId != null
                 && order.Type == staleType
                 && companyIds.Contains(order.CompanyId)
+                && !affectedCompanyIds.Contains(order.CompanyId)
                 && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
             .ToListAsync();
 

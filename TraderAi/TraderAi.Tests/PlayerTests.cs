@@ -156,6 +156,7 @@ public sealed class PlayerTests : IDisposable
         var marketRow = await context.Markets.FirstAsync();
         var dueCycleId = marketRow.CurrentCycleId!.Value;
         marketRow.NextDividendCycleNumber = 1;
+        company.CashBalance = 0.20m;
         await context.SaveChangesAsync();
 
         await market.StepCycleAsync();
@@ -228,6 +229,7 @@ public sealed class PlayerTests : IDisposable
 
         var marketRow = await context.Markets.FirstAsync();
         marketRow.NextDividendCycleNumber = 2;
+        company.CashBalance = 0.20m;
         await context.SaveChangesAsync();
         var startingBalance = player.CurrentBalance;
 

@@ -138,6 +138,24 @@ public sealed class PlayerFundTests : IDisposable
         Assert.Equal(5_000m, fundParticipant.CurrentBalance);
     }
 
+    [Fact]
+    public async Task DepositCannotSpendUnsettledPlayerCash()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        var player = (await market.CreatePlayerAsync("Ada")).Player!;
+        await market.OpenPlayerFundAsync(4_000m, null);
+        player.CurrentBalance += 2_000m;
+        await context.SaveChangesAsync();
+
+        var result = await market.DepositToPlayerFundAsync(7_000m);
+
+        Assert.False(result.Success);
+        await context.Entry(player).ReloadAsync();
+        Assert.Equal(8_000m, player.CurrentBalance);
+        Assert.Equal(6_000m, player.SettledCashBalance);
+    }
+
     // Withdrawing moves cash back to the player.
     [Fact]
     public async Task WithdrawMovesCashFromFundToPlayer()
@@ -155,6 +173,26 @@ public sealed class PlayerFundTests : IDisposable
         var fund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
         var fundParticipant = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fund.ParticipantId);
         Assert.Equal(2_500m, fundParticipant.CurrentBalance);
+    }
+
+    [Fact]
+    public async Task WithdrawCannotSpendUnsettledFundCash()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        await market.CreatePlayerAsync("Ada");
+        await market.OpenPlayerFundAsync(4_000m, null);
+        var fund = await context.CollectiveFunds.SingleAsync();
+        var fundParticipant = await context.Participants.SingleAsync(participant => participant.Id == fund.ParticipantId);
+        fundParticipant.CurrentBalance += 2_000m;
+        await context.SaveChangesAsync();
+
+        var result = await market.WithdrawFromPlayerFundAsync(5_000m);
+
+        Assert.False(result.Success);
+        await context.Entry(fundParticipant).ReloadAsync();
+        Assert.Equal(6_000m, fundParticipant.CurrentBalance);
+        Assert.Equal(4_000m, fundParticipant.SettledCashBalance);
     }
 
     // A withdrawal can never dip into the cash owed back to members as returnable deposits.
@@ -179,6 +217,7 @@ public sealed class PlayerFundTests : IDisposable
             DepositAmount = 3_000m,
         });
         fundParticipant.CurrentBalance += 3_000m; // fund now holds 7,000, but 3,000 is owed back to the member.
+        fundParticipant.SettledCashBalance += 3_000m;
         await context.SaveChangesAsync();
 
         // Only 4,000 (7,000 − 3,000 owed) is withdrawable, so pulling the full balance is refused.
@@ -298,6 +337,7 @@ public sealed class PlayerFundTests : IDisposable
         var member = await AddTraderAsync(500m);
         await AddMembershipAsync(fund, member, deposit: 3_000m, joinedCycleId: 0);
         fundParticipant.CurrentBalance += 3_000m; // the member's deposit is now pooled: fund holds 7,000
+        fundParticipant.SettledCashBalance += 3_000m;
         await context.SaveChangesAsync();
 
         var result = await market.ClosePlayerFundAsync();
@@ -334,6 +374,132 @@ public sealed class PlayerFundTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Contains("cannot cover", result.Error);
+        Assert.Equal(CollectiveFundStatus.Active, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+    }
+
+    [Fact]
+    public async Task ClosingFundBlockedWhileTradeSettlementIsPending()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        var player = (await market.CreatePlayerAsync("Ada")).Player!;
+        await market.OpenPlayerFundAsync(4_000m, null);
+        var fund = await context.CollectiveFunds.SingleAsync();
+        var cycle = await context.MarketCycles.SingleAsync(cycle => cycle.Id == context.Markets.Single().CurrentCycleId);
+        var company = await context.Companies.FirstAsync();
+        var trade = new ShareTransaction
+        {
+            SellerId = fund.ParticipantId,
+            BuyerId = player.Id,
+            CompanyId = company.Id,
+            Quantity = 1,
+            Price = 100m,
+            TotalCost = 100m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        context.ShareTransactions.Add(trade);
+        context.SettlementInstructions.Add(new SettlementInstruction
+        {
+            ShareTransaction = trade,
+            SellerId = fund.ParticipantId,
+            BuyerId = player.Id,
+            CompanyId = company.Id,
+            Quantity = 1,
+            CashAmount = 100m,
+            TradeDayNumber = 1,
+            DueDayNumber = 2,
+            Status = SettlementStatus.Pending,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+
+        var result = await market.ClosePlayerFundAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("settlement", result.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(CollectiveFundStatus.Active, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+    }
+
+    [Fact]
+    public async Task ClosingFundBlockedWhileMarginLiabilityRemains()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        await market.CreatePlayerAsync("Ada");
+        await market.OpenPlayerFundAsync(4_000m, null);
+        var fund = await context.CollectiveFunds.SingleAsync();
+        context.MarginAccounts.Add(new MarginAccount
+        {
+            ParticipantId = fund.ParticipantId,
+            DebitBalance = 500m,
+            AccruedInterest = 25m,
+            InitialMarginRate = 0.50m,
+            MaintenanceMarginRate = 0.25m,
+            Status = MarginAccountStatus.Active,
+        });
+        await context.SaveChangesAsync();
+
+        var result = await market.ClosePlayerFundAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("margin", result.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(CollectiveFundStatus.Active, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+    }
+
+    [Fact]
+    public async Task ClosingFundBlockedWhileTermLoanRemainsOpen()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        await market.CreatePlayerAsync("Ada");
+        await market.OpenPlayerFundAsync(4_000m, null);
+        var fund = await context.CollectiveFunds.SingleAsync();
+        var cycleId = (await context.Markets.SingleAsync()).CurrentCycleId!.Value;
+        var bank = new Bank { Name = "Test bank", InterestRatePerCycle = 0.001m };
+        context.Banks.Add(bank);
+        await context.SaveChangesAsync();
+        context.Loans.Add(new Loan
+        {
+            BankId = bank.Id,
+            ParticipantId = fund.ParticipantId,
+            Principal = 500m,
+            RemainingPrincipal = 500m,
+            InterestRatePerCycle = 0.001m,
+            TermCycles = 10,
+            ScheduledInstallment = 50m,
+            Status = LoanStatus.Open,
+            OpenedInCycleId = cycleId,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+
+        var result = await market.ClosePlayerFundAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("loan", result.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(CollectiveFundStatus.Active, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal(LoanStatus.Open, (await context.Loans.AsNoTracking().SingleAsync()).Status);
+    }
+
+    [Fact]
+    public async Task ClosingFundBlockedUntilEconomicCashIsSettled()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        await market.CreatePlayerAsync("Ada");
+        await market.OpenPlayerFundAsync(4_000m, null);
+        var fund = await context.CollectiveFunds.SingleAsync();
+        var fundParticipant = await context.Participants.SingleAsync(participant => participant.Id == fund.ParticipantId);
+        fundParticipant.CurrentBalance += 100m;
+        await context.SaveChangesAsync();
+
+        var result = await market.ClosePlayerFundAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("settled", result.Error, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(CollectiveFundStatus.Active, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
     }
 
@@ -417,6 +583,7 @@ public sealed class PlayerFundTests : IDisposable
             RiskProfile = RiskProfile.Medium,
             InitialBalance = currentBalance,
             CurrentBalance = currentBalance,
+            SettledCashBalance = currentBalance,
             ReservedBalance = 0m,
             IsActive = true,
         };
@@ -435,6 +602,7 @@ public sealed class PlayerFundTests : IDisposable
             RiskProfile = RiskProfile.Medium,
             InitialBalance = 0m,
             CurrentBalance = balance,
+            SettledCashBalance = balance,
             ReservedBalance = 0m,
             IsActive = true,
         };
@@ -464,6 +632,7 @@ public sealed class PlayerFundTests : IDisposable
             RiskProfile = RiskProfile.Medium,
             InitialBalance = 0m,
             CurrentBalance = balance,
+            SettledCashBalance = balance,
             ReservedBalance = 0m,
             IsActive = true,
         };

@@ -14,9 +14,11 @@ public sealed class ParticipantWorthSnapshot
 
     public decimal HoldingsValue { get; set; }
 
-    // Open-loan liability (Σ RemainingPrincipal + Σ PastDueAmount) at snapshot time, so net worth can be
-    // charted as Balance + HoldingsValue − LoanLiability.
+    // Past-due principal stays inside remaining principal; net worth is Balance + HoldingsValue minus both
+    // explicit loan liability and margin liability.
     public decimal LoanLiability { get; set; }
+
+    public decimal MarginLiability { get; set; }
 
     public DateTime CreatedAt { get; set; }
 }

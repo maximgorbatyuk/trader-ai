@@ -36,7 +36,9 @@ public sealed class LoanServiceTests : IDisposable
         var refreshed = await context.Loans.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.Id);
         // interest = 10000 × 0.001 = 10; installment = 100; total 110 charged.
         Assert.Equal(9_900m, refreshed.RemainingPrincipal);
-        Assert.Equal(0m, refreshed.PastDueAmount);
+        Assert.Equal(0m, refreshed.PastDuePrincipal);
+        Assert.Equal(0m, refreshed.PastDueInterest);
+        Assert.Equal(0m, refreshed.AccruedFees);
 
         var buyer = await context.Participants.AsNoTracking().FirstAsync(candidate => candidate.Id == trader.Id);
         Assert.Equal(9_890m, buyer.CurrentBalance);
@@ -71,6 +73,7 @@ public sealed class LoanServiceTests : IDisposable
 
         var refreshed = await context.Participants.AsNoTracking().FirstAsync(candidate => candidate.Id == borrower.Id);
         Assert.Equal(51_000m, refreshed.CurrentBalance);
+        Assert.Equal(51_000m, refreshed.SettledCashBalance);
 
         var disbursement = await context.MoneyTransactions.AsNoTracking()
             .SingleAsync(money => money.Type == MoneyTransactionType.LoanDisbursement);
@@ -109,7 +112,7 @@ public sealed class LoanServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task MissedPaymentAccruesTenPercentFineIntoArrears()
+    public async Task MissedPaymentClassifiesArrearsWithoutCountingPrincipalTwice()
     {
         var (cycle, _) = await SeedAsync(price: 100m);
         var trader = await AddTraderAsync(currentBalance: 0m);
@@ -119,14 +122,48 @@ public sealed class LoanServiceTests : IDisposable
         await context.SaveChangesAsync();
 
         var refreshed = await context.Loans.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.Id);
-        // Nothing paid; the 110 due is carried at a 10% fine → 121 arrears, principal untouched.
+        // The missed installment stays inside remaining principal; only interest and the assessed fee add liability.
         Assert.Equal(10_000m, refreshed.RemainingPrincipal);
-        Assert.Equal(121m, refreshed.PastDueAmount);
+        Assert.Equal(100m, refreshed.PastDuePrincipal);
+        Assert.Equal(10m, refreshed.PastDueInterest);
+        Assert.Equal(11m, refreshed.AccruedFees);
+        Assert.Equal(10_021m, refreshed.TotalLiability);
 
-        var fine = await context.MoneyTransactions.AsNoTracking()
-            .SingleAsync(money => money.Type == MoneyTransactionType.LoanFine);
-        Assert.Equal(11m, fine.Amount);
-        Assert.Equal(loan.Id, fine.RelatedLoanId);
+        Assert.False(await context.MoneyTransactions.AsNoTracking()
+            .AnyAsync(money => money.Type == MoneyTransactionType.LoanFine));
+    }
+
+    [Fact]
+    public async Task LaterServicingPaysFeesInterestAndOverduePrincipalBeforeCurrentPrincipal()
+    {
+        var (cycle, _) = await SeedAsync(price: 100m);
+        var trader = await AddTraderAsync(currentBalance: 0m);
+        var loan = await AddLoanAsync(trader.Id, principal: 10_000m, termCycles: 100, cycle.Id);
+        var service = Service();
+
+        await service.ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        trader.CurrentBalance = 231m;
+        await service.ProcessForCycleAsync(cycle.Id, cycle.CycleNumber + 1, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Loans.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.Id);
+        Assert.Equal(9_800m, refreshed.RemainingPrincipal);
+        Assert.Equal(0m, refreshed.PastDuePrincipal);
+        Assert.Equal(0m, refreshed.PastDueInterest);
+        Assert.Equal(0m, refreshed.AccruedFees);
+        Assert.Equal(9_800m, refreshed.TotalLiability);
+
+        var bank = await context.Banks.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.BankId);
+        Assert.Equal(31m, bank.Balance);
+        Assert.Equal(11m, await context.MoneyTransactions.AsNoTracking()
+            .Where(money => money.Type == MoneyTransactionType.LoanFine)
+            .SumAsync(money => money.Amount));
+        Assert.Equal(20m, await context.MoneyTransactions.AsNoTracking()
+            .Where(money => money.Type == MoneyTransactionType.LoanInterest)
+            .SumAsync(money => money.Amount));
+        Assert.Equal(200m, await context.MoneyTransactions.AsNoTracking()
+            .Where(money => money.Type == MoneyTransactionType.LoanRepayment)
+            .SumAsync(money => money.Amount));
     }
 
     [Fact]
@@ -144,34 +181,11 @@ public sealed class LoanServiceTests : IDisposable
         var refreshedOlder = await context.Loans.AsNoTracking().FirstAsync(candidate => candidate.Id == older.Id);
         var refreshedNewer = await context.Loans.AsNoTracking().FirstAsync(candidate => candidate.Id == newer.Id);
         Assert.Equal(9_900m, refreshedOlder.RemainingPrincipal);
-        Assert.Equal(0m, refreshedOlder.PastDueAmount);
+        Assert.Equal(0m, refreshedOlder.PastDuePrincipal);
         Assert.Equal(10_000m, refreshedNewer.RemainingPrincipal);
-        Assert.Equal(121m, refreshedNewer.PastDueAmount);
-    }
-
-    [Fact]
-    public async Task OriginationSizesTheTermByLoanValueAgainstWorth()
-    {
-        var (cycle, company) = await SeedAsync(price: 100m);
-        // A margin fill left the buyer 200 in the red holding 1000 in shares (worth ≈ 800 before the loan credit).
-        var trader = await AddTraderAsync(currentBalance: -200m);
-        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
-
-        await Service().OriginateLoansForNegativeBalancesAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
-
-        var loan = await context.Loans.AsNoTracking().SingleAsync(candidate => candidate.ParticipantId == trader.Id);
-        Assert.Equal(230m, loan.Principal);
-        Assert.Equal(230m, loan.RemainingPrincipal);
-        // ratio = 230 / (0.40 × 800) = 0.71875 → term = 25 + 0.71875 × 175 ≈ 151.
-        Assert.Equal(151, loan.TermCycles);
-
-        var buyer = await context.Participants.AsNoTracking().FirstAsync(candidate => candidate.Id == trader.Id);
-        Assert.Equal(30m, buyer.CurrentBalance);
-
-        var disbursement = await context.MoneyTransactions.AsNoTracking()
-            .SingleAsync(money => money.Type == MoneyTransactionType.LoanDisbursement);
-        Assert.Equal(230m, disbursement.Amount);
-        Assert.Equal(loan.Id, disbursement.RelatedLoanId);
+        Assert.Equal(100m, refreshedNewer.PastDuePrincipal);
+        Assert.Equal(10m, refreshedNewer.PastDueInterest);
+        Assert.Equal(11m, refreshedNewer.AccruedFees);
     }
 
     [Fact]
@@ -181,7 +195,7 @@ public sealed class LoanServiceTests : IDisposable
         var player = await AddTraderAsync(currentBalance: 0m, type: ParticipantType.Player);
         await AddSharesAsync(player.Id, company.Id, count: 100, price: 100m);
         // Opened this cycle with a 10-cycle term → 10 cycles left (inside the 15-cycle window), already in arrears.
-        var loan = await AddLoanAsync(player.Id, principal: 5_000m, termCycles: 10, cycle.Id, pastDueAmount: 500m);
+        var loan = await AddLoanAsync(player.Id, principal: 5_000m, termCycles: 10, cycle.Id, pastDuePrincipal: 500m);
 
         await Service().ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -193,6 +207,24 @@ public sealed class LoanServiceTests : IDisposable
         // First distress listing is 20% below the 100 market price.
         Assert.Equal(80m, distressSell.LimitPrice);
         Assert.True(distressSell.Quantity > 0);
+    }
+
+    [Fact]
+    public async Task DistressSellIsFlooredToTheLowerBand()
+    {
+        var (cycle, company) = await SeedAsync(price: 100m);
+        // The 20% base discount would ask 80, but an active band floors the distress sell at 85.
+        await AddBandAsync(company.Id, reference: 100m, lower: 85m, upper: 110m);
+        var player = await AddTraderAsync(currentBalance: 0m, type: ParticipantType.Player);
+        await AddSharesAsync(player.Id, company.Id, count: 100, price: 100m);
+        await AddLoanAsync(player.Id, principal: 5_000m, termCycles: 10, cycle.Id, pastDuePrincipal: 500m);
+
+        await Service().ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var distressSell = await context.Orders.AsNoTracking()
+            .SingleAsync(order => order.ParticipantId == player.Id && order.Type == OrderType.Sell);
+        Assert.Equal(85m, distressSell.LimitPrice);
     }
 
     [Fact]
@@ -233,6 +265,61 @@ public sealed class LoanServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ManualRepaymentUsesUnreservedCashAndAllocatesFeesInterestThenPrincipal()
+    {
+        var (cycle, company) = await SeedAsync(price: 100m);
+        var trader = await AddTraderAsync(currentBalance: 200m);
+        var loan = await AddLoanAsync(
+            trader.Id,
+            principal: 10_000m,
+            termCycles: 100,
+            cycle.Id,
+            pastDuePrincipal: 100m,
+            pastDueInterest: 10m,
+            accruedFees: 11m);
+        trader.ReservedBalance = 50m;
+        context.Orders.Add(new Order
+        {
+            ParticipantId = trader.Id,
+            CompanyId = company.Id,
+            Type = OrderType.Buy,
+            Status = OrderStatus.Open,
+            Quantity = 1,
+            LimitPrice = 50m,
+            ReservedCashAmount = 50m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+
+        var result = await Service().RepayLoanAsync(loan.Id, amount: 150m, cycle.Id, DateTime.UtcNow);
+
+        Assert.True(result.Success);
+        var refreshed = await context.Loans.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.Id);
+        Assert.Equal(9_871m, refreshed.RemainingPrincipal);
+        Assert.Equal(0m, refreshed.PastDuePrincipal);
+        Assert.Equal(0m, refreshed.PastDueInterest);
+        Assert.Equal(0m, refreshed.AccruedFees);
+
+        var borrower = await context.Participants.AsNoTracking().FirstAsync(candidate => candidate.Id == trader.Id);
+        Assert.Equal(50m, borrower.CurrentBalance);
+        Assert.Equal(0m, borrower.AvailableBalance);
+
+        var bank = await context.Banks.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.BankId);
+        Assert.Equal(21m, bank.Balance);
+        Assert.Equal(11m, await context.MoneyTransactions.AsNoTracking()
+            .Where(money => money.Type == MoneyTransactionType.LoanFine)
+            .SumAsync(money => money.Amount));
+        Assert.Equal(10m, await context.MoneyTransactions.AsNoTracking()
+            .Where(money => money.Type == MoneyTransactionType.LoanInterest)
+            .SumAsync(money => money.Amount));
+        Assert.Equal(129m, await context.MoneyTransactions.AsNoTracking()
+            .Where(money => money.Type == MoneyTransactionType.LoanRepayment)
+            .SumAsync(money => money.Amount));
+    }
+
+    [Fact]
     public async Task RepayRejectedWhenAvailableCashIsInsufficient()
     {
         var (cycle, _) = await SeedAsync(price: 100m);
@@ -251,7 +338,14 @@ public sealed class LoanServiceTests : IDisposable
     {
         var (cycle, _) = await SeedAsync(price: 100m);
         var trader = await AddTraderAsync(currentBalance: 0m);
-        var loan = await AddLoanAsync(trader.Id, principal: 10_000m, termCycles: 100, cycle.Id, pastDueAmount: 250m);
+        var loan = await AddLoanAsync(
+            trader.Id,
+            principal: 10_000m,
+            termCycles: 100,
+            cycle.Id,
+            pastDuePrincipal: 100m,
+            pastDueInterest: 100m,
+            accruedFees: 50m);
 
         await LoanService.CloseOpenLoansForParticipantAsync(context, trader.Id, cycle.Id, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -260,7 +354,9 @@ public sealed class LoanServiceTests : IDisposable
         Assert.Equal(LoanStatus.Closed, refreshed.Status);
         Assert.Equal(LoanCloseReason.ParticipantDeparted, refreshed.CloseReason);
         Assert.Equal(0m, refreshed.RemainingPrincipal);
-        Assert.Equal(0m, refreshed.PastDueAmount);
+        Assert.Equal(0m, refreshed.PastDuePrincipal);
+        Assert.Equal(0m, refreshed.PastDueInterest);
+        Assert.Equal(0m, refreshed.AccruedFees);
     }
 
     private async Task<(MarketCycle Cycle, Company Company)> SeedAsync(decimal price)
@@ -296,11 +392,25 @@ public sealed class LoanServiceTests : IDisposable
             RiskProfile = RiskProfile.Medium,
             InitialBalance = currentBalance,
             CurrentBalance = currentBalance,
+            SettledCashBalance = currentBalance,
             IsActive = true,
         };
         context.Participants.Add(trader);
         await context.SaveChangesAsync();
         return trader;
+    }
+
+    private async Task AddBandAsync(int companyId, decimal reference, decimal lower, decimal upper)
+    {
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = companyId,
+            State = LuldState.Normal,
+            ReferencePrice = reference,
+            LowerBandPrice = lower,
+            UpperBandPrice = upper,
+        });
+        await context.SaveChangesAsync();
     }
 
     private async Task AddSharesAsync(int ownerId, int companyId, int count, decimal price)
@@ -315,7 +425,14 @@ public sealed class LoanServiceTests : IDisposable
         await context.SaveChangesAsync();
     }
 
-    private async Task<Loan> AddLoanAsync(int participantId, decimal principal, int termCycles, int openedInCycleId, decimal pastDueAmount = 0m)
+    private async Task<Loan> AddLoanAsync(
+        int participantId,
+        decimal principal,
+        int termCycles,
+        int openedInCycleId,
+        decimal pastDuePrincipal = 0m,
+        decimal pastDueInterest = 0m,
+        decimal accruedFees = 0m)
     {
         var bank = await context.Banks.FirstOrDefaultAsync();
         if (bank is null)
@@ -334,7 +451,9 @@ public sealed class LoanServiceTests : IDisposable
             InterestRatePerCycle = bank.InterestRatePerCycle,
             TermCycles = termCycles,
             ScheduledInstallment = decimal.Round(principal / termCycles, 2),
-            PastDueAmount = pastDueAmount,
+            PastDuePrincipal = pastDuePrincipal,
+            PastDueInterest = pastDueInterest,
+            AccruedFees = accruedFees,
             Status = LoanStatus.Open,
             OpenedInCycleId = openedInCycleId,
             CreatedAt = DateTime.UtcNow,

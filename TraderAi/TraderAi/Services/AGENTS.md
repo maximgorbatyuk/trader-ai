@@ -27,6 +27,7 @@ Do not reorder these phases without reviewing which prices, ratings, holdings, o
 - Per-cycle services are opt-in through their options and stage changes on the shared `AppDbContext` unless the orchestrator explicitly saves between phases.
 - Put tunable event chances, chance modifiers, and random magnitude bands in `RandomChanceRatesOptions`; do not introduce a private probability constant in a service.
 - Deterministic services must not draw random values. Randomized services preserve their documented draw order because tests use scripted `Random` queues.
+- In a dividend window, `MarketService` draws dividend decisions and rates for all priced companies by ascending ID before drawing independent operating-income decisions and rates in the same order.
 - Scale a probability threshold without adding a draw on unaffected branches. When a feature requires a new draw, update the service's draw-discipline comment and all affected scripted tests.
 - Use the shared price map and batch decision writes. Do not add per-trader latest-price queries or per-order `SaveChangesAsync` calls to the decision pass.
 
@@ -34,6 +35,7 @@ Do not reorder these phases without reviewing which prices, ratings, holdings, o
 
 - Ordinary order ageing, repricing, bankruptcy, exit, and automated decisions do not manage the human player.
 - Splits, reverse merges, volatility halts, and loan-distress liquidation are deliberate exceptions that may cancel or force action on player positions.
+- Automated cash-raising sells (bankruptcy fire-sales, loan-distress liquidation, fund cash raises) floor their ask at the company's active lower price band, because matching skips any order resting outside the band.
 - A player-managed collective fund is skipped by automated fund trading and fund-level automatic closure, while ordinary membership processing still applies.
 - A fund short on cash to repay a leaving member borrows the shortfall plus the configured buffer and pays in full that cycle instead of force-selling; the payout loan ignores the debt cap and, because loan servicing precedes fund processing, is first serviced the next cycle. Force-selling to fund a leave now runs only as the loans-disabled fallback.
 - Secondary participant sales may pay the configured trade fee; issuer-float sales do not. Loan interest is bank revenue, while principal repayment only reduces the liability.

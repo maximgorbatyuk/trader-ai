@@ -7,12 +7,15 @@ export const CASH_TONE = {
   Dividend: 'income',
   CollectiveFundDividend: 'income',
   LoanDisbursement: 'income',
+  MarginAdvance: 'income',
   Debit: 'spend',
   Bankruptcy: 'spend',
   CollectiveFund: 'spend',
   LoanInterest: 'spend',
   LoanRepayment: 'spend',
   LoanFine: 'spend',
+  MarginInterestPayment: 'spend',
+  MarginDebitRepayment: 'spend',
   FundAdvertisement: 'spend',
   TradeFee: 'fee',
   Reserve: 'reserve',
@@ -28,4 +31,49 @@ export const CASH_LABEL = {
   CollectiveFundDividend: 'Fund dividend',
   FundAdvertisement: 'Fund advertisement',
   TradeFee: 'Trade fee',
+  MarginAdvance: 'Margin advance',
+  MarginInterestPayment: 'Margin interest',
+  MarginDebitRepayment: 'Margin debit repayment',
+}
+
+const CORPORATE_CASH_MOVEMENT_PRESENTATION = {
+  PrimaryIssuance: {
+    label: 'Primary issuance',
+    direction: 'Credit',
+    sign: '+',
+    tone: 'up',
+  },
+  OperatingIncome: {
+    label: 'Operating income',
+    direction: 'Credit',
+    sign: '+',
+    tone: 'up',
+  },
+  DividendDeclared: {
+    label: 'Dividend paid',
+    direction: 'Debit',
+    sign: '−',
+    tone: 'down',
+  },
+  ClosureDistribution: {
+    label: 'Closure distribution',
+    direction: 'Debit',
+    sign: '−',
+    tone: 'down',
+  },
+}
+
+export function corporateCashMovementPresentation(type) {
+  const presentation = CORPORATE_CASH_MOVEMENT_PRESENTATION[type]
+  if (presentation) return presentation
+
+  const rawLabel = typeof type === 'string' ? type.trim().replace(/([a-z0-9])([A-Z])/g, '$1 $2') : ''
+  const label = rawLabel ? `${rawLabel[0].toUpperCase()}${rawLabel.slice(1).toLowerCase()}` : 'Corporate cash movement'
+
+  return {
+    label,
+    direction: 'Movement',
+    sign: '',
+    tone: 'neutral',
+  }
 }

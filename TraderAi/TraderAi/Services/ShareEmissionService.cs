@@ -150,6 +150,7 @@ public sealed class ShareEmissionService(
                     ParticipantId = eligible[index],
                     CompanyId = company.Id,
                     Quantity = grant,
+                    SettledQuantity = grant,
                     AverageCost = 0m,
                 });
                 remaining -= grant;

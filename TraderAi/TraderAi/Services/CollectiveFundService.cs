@@ -90,6 +90,7 @@ public sealed class CollectiveFundService(
     private Dictionary<int, List<OwnedHolding>> ownedByParticipant = null!;
     private Dictionary<int, List<Order>> openOrdersByParticipant = null!;
     private Dictionary<int, decimal> latestPriceByCompany = null!;
+    private Dictionary<int, PriceBandState> bandByCompany = null!;
     private Dictionary<(int ParticipantId, int CompanyId), int> available = null!;
 
     // Distinct dividend-payout cycle ids, most recent first (ids rise monotonically with cycles), and each fund
@@ -99,6 +100,8 @@ public sealed class CollectiveFundService(
 
     // Open loans a fund participant carries, so a wind-down can discharge them.
     private Dictionary<int, List<Loan>> openLoansByFundParticipant = null!;
+    private Dictionary<int, decimal> marginLiabilityByFundParticipant = null!;
+    private HashSet<int> pendingSettlementFundParticipantIds = null!;
 
     // Recent net-worth growth per fund id (fraction over the growth window; 0 when the fund lacks the history),
     // and the subset whose growth cleared the threshold. The first feeds fund scoring, the second the join
@@ -263,6 +266,7 @@ public sealed class CollectiveFundService(
             }
 
             memberParticipant.CurrentBalance += cut;
+            memberParticipant.SettledCashBalance += cut;
             distributed += cut;
             dbContext.MoneyTransactions.Add(new MoneyTransaction
             {
@@ -275,11 +279,13 @@ public sealed class CollectiveFundService(
         }
 
         fundOwner.CurrentBalance -= distributed;
+        fundOwner.SettledCashBalance -= distributed;
     }
 
     private async Task LoadStateAsync(int currentCycleId)
     {
         latestPriceByCompany = await LatestPriceByCompanyAsync();
+        bandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
 
         ownedByParticipant = (await dbContext.Holdings
                 .Where(holding => holding.Quantity > 0)
@@ -348,6 +354,19 @@ public sealed class CollectiveFundService(
                 .ToListAsync())
             .GroupBy(loan => loan.ParticipantId)
             .ToDictionary(group => group.Key, group => group.ToList());
+        marginLiabilityByFundParticipant = await dbContext.MarginAccounts
+            .Where(account => fundParticipantIds.Contains(account.ParticipantId))
+            .ToDictionaryAsync(account => account.ParticipantId, account => account.DebitBalance + account.AccruedInterest);
+        var pendingSettlements = await dbContext.SettlementInstructions
+            .Where(instruction => instruction.Status == SettlementStatus.Pending
+                && (fundParticipantIds.Contains(instruction.BuyerId)
+                    || (instruction.SellerId.HasValue && fundParticipantIds.Contains(instruction.SellerId.Value))))
+            .Select(instruction => new { instruction.BuyerId, instruction.SellerId })
+            .ToListAsync();
+        pendingSettlementFundParticipantIds = pendingSettlements
+            .SelectMany(instruction => new[] { instruction.BuyerId, instruction.SellerId ?? 0 })
+            .Where(fundParticipantIds.Contains)
+            .ToHashSet();
 
         await LoadFundGrowthAsync(currentCycleId, fundParticipantIds);
     }
@@ -375,7 +394,7 @@ public sealed class CollectiveFundService(
                 {
                     snapshot.ParticipantId,
                     snapshot.CreatedInCycleId,
-                    NetWorth = snapshot.Balance + snapshot.HoldingsValue - snapshot.LoanLiability,
+                    NetWorth = snapshot.Balance + snapshot.HoldingsValue - snapshot.LoanLiability - snapshot.MarginLiability,
                 })
                 .ToListAsync())
             .GroupBy(snapshot => snapshot.ParticipantId)
@@ -507,17 +526,19 @@ public sealed class CollectiveFundService(
 
         // Short on free cash: borrow the shortfall plus the buffer so the deposit clears now instead of the
         // member waiting cycles for forced sales to fund it. The debt then rides on the normal loan machinery.
-        if (fundParticipant.AvailableBalance < deposit && loanOptions.Value.Enabled)
+        if (TransferableCash(fundParticipant) < deposit && loanOptions.Value.Enabled)
         {
-            var borrowShortfall = deposit - fundParticipant.AvailableBalance;
+            var borrowShortfall = deposit - TransferableCash(fundParticipant);
             var principal = borrowShortfall * (1m + loanOptions.Value.LeavePayoutLoanBufferRate);
             await loanService.OriginateLoanAsync(fundParticipant, principal, FundNetWorth(fundParticipant), currentCycleId, now);
         }
 
-        if (fundParticipant.AvailableBalance >= deposit)
+        if (TransferableCash(fundParticipant) >= deposit)
         {
             fundParticipant.CurrentBalance -= deposit;
+            fundParticipant.SettledCashBalance -= deposit;
             member.CurrentBalance += deposit;
+            member.SettledCashBalance += deposit;
             AddFundTransaction(fundParticipant.Id, deposit, currentCycleId, now);
             AddFundTransaction(member.Id, deposit, currentCycleId, now);
             AddMembershipEvent(fund, member.Id, CollectiveFundMembershipEventType.Left, deposit, currentCycleId, now);
@@ -527,7 +548,7 @@ public sealed class CollectiveFundService(
 
         // Loans disabled: fall back to raising the shortfall by selling shares and waiting. Existing open sells
         // already bring in cash, so only list the part of the shortfall they do not cover.
-        var shortfall = deposit - fundParticipant.AvailableBalance;
+        var shortfall = deposit - TransferableCash(fundParticipant);
         var alreadyListed = PendingSaleValue(fundParticipant.Id);
         var stillToRaise = shortfall - alreadyListed;
         if (stillToRaise > 0m)
@@ -728,8 +749,9 @@ public sealed class CollectiveFundService(
         // A fund can now carry debt (from a leave-payout loan), so net worth subtracts the open-loan liability,
         // matching the participant worth definition and keeping the founder-close and scoring reads honest.
         var loanLiability = (openLoansByFundParticipant.GetValueOrDefault(fundParticipant.Id) ?? [])
-            .Sum(loan => loan.RemainingPrincipal + loan.PastDueAmount);
-        return fundParticipant.CurrentBalance + holdingsValue - loanLiability;
+            .Sum(loan => loan.TotalLiability);
+        var marginLiability = marginLiabilityByFundParticipant.GetValueOrDefault(fundParticipant.Id);
+        return fundParticipant.CurrentBalance + holdingsValue - loanLiability - marginLiability;
     }
 
     private decimal RecentDividends(int fundParticipantId)
@@ -793,6 +815,13 @@ public sealed class CollectiveFundService(
         var owned = ownedByParticipant.GetValueOrDefault(fundParticipant.Id) ?? [];
         if (owned.Count == 0)
         {
+            if (pendingSettlementFundParticipantIds.Contains(fundParticipant.Id)
+                || marginLiabilityByFundParticipant.GetValueOrDefault(fundParticipant.Id) > 0m
+                || fundParticipant.CurrentBalance != fundParticipant.SettledCashBalance)
+            {
+                return;
+            }
+
             FinalizeClose(fund, fundParticipant, currentCycleId, now);
             return;
         }
@@ -814,8 +843,20 @@ public sealed class CollectiveFundService(
         var members = membershipsByFundId[fund.Id];
         if (members.Count > 0)
         {
-            var share = Round(fundParticipant.AvailableBalance / members.Count);
-            foreach (var membership in members.ToList())
+            var orderedMembers = members.OrderBy(membership => membership.ParticipantId).ToList();
+            var payableMembers = orderedMembers
+                .Where(membership => participantsById.ContainsKey(membership.ParticipantId))
+                .ToList();
+            // With no live member account left there is no recipient, so normal close drops the orphaned balance.
+            var transferableCash = TransferableCash(fundParticipant);
+            var share = payableMembers.Count == 0
+                ? 0m
+                : Math.Floor((transferableCash / payableMembers.Count) * 100m) / 100m;
+            var residualCents = payableMembers.Count == 0
+                ? 0
+                : decimal.ToInt32(Math.Floor((transferableCash - (share * payableMembers.Count)) * 100m));
+            var payoutIndex = 0;
+            foreach (var membership in orderedMembers)
             {
                 // A member whose participant row left the market leaves a stale membership behind; just drop it,
                 // recording a zero-payout leave so the fund's history has no silent gap.
@@ -826,17 +867,22 @@ public sealed class CollectiveFundService(
                     continue;
                 }
 
-                if (share > 0m)
+                // Assigning indivisible cents in stable participant order keeps total payouts within fund cash.
+                var payout = share + (payoutIndex < residualCents ? 0.01m : 0m);
+                payoutIndex++;
+
+                if (payout > 0m)
                 {
-                    member.CurrentBalance += share;
-                    AddFundTransaction(member.Id, share, currentCycleId, now);
+                    member.CurrentBalance += payout;
+                    member.SettledCashBalance += payout;
+                    AddFundTransaction(member.Id, payout, currentCycleId, now);
                 }
 
-                AddMembershipEvent(fund, member.Id, CollectiveFundMembershipEventType.Left, share, currentCycleId, now);
+                AddMembershipEvent(fund, member.Id, CollectiveFundMembershipEventType.Left, payout, currentCycleId, now);
 
                 // A payout that barely dents the deposit (a zero payout dents nothing) is a devastating loss:
                 // flag the member so the market-exit service can offer a one-shot quit on its first shareless cycle.
-                if (membership.DepositAmount > 0m && share <= membership.DepositAmount * FundLossFlagFraction)
+                if (membership.DepositAmount > 0m && payout <= membership.DepositAmount * FundLossFlagFraction)
                 {
                     member.PendingFundLossExitRoll = true;
                 }
@@ -847,6 +893,7 @@ public sealed class CollectiveFundService(
 
         // Rounding dust below the per-member cent is dropped so the closed fund settles flat.
         fundParticipant.CurrentBalance = 0m;
+        fundParticipant.SettledCashBalance = 0m;
         fundParticipant.ReservedBalance = 0m;
         fundParticipant.IsActive = false;
         fund.Status = CollectiveFundStatus.Closed;
@@ -901,6 +948,7 @@ public sealed class CollectiveFundService(
         if (!participant.IsActive
             || participant.IsBankrupt
             || participant.CurrentBalance >= options.Value.JoinBalanceCeiling
+            || TransferableCash(participant) <= 0m
             || membershipByParticipantId.ContainsKey(participant.Id))
         {
             return;
@@ -944,6 +992,7 @@ public sealed class CollectiveFundService(
             RiskProfile = founder.RiskProfile,
             InitialBalance = 0m,
             CurrentBalance = 0m,
+            SettledCashBalance = 0m,
             ReservedBalance = 0m,
             IsActive = true,
         };
@@ -977,14 +1026,16 @@ public sealed class CollectiveFundService(
             CancelBuy(order, member, currentCycleId, now);
         }
 
-        var deposit = Round(member.CurrentBalance * ContributionFraction);
+        var deposit = Round(TransferableCash(member) * ContributionFraction);
         if (deposit <= 0m)
         {
             return;
         }
 
         member.CurrentBalance -= deposit;
+        member.SettledCashBalance -= deposit;
         fundParticipant.CurrentBalance += deposit;
+        fundParticipant.SettledCashBalance += deposit;
         AddFundTransaction(member.Id, deposit, currentCycleId, now);
         AddFundTransaction(fundParticipant.Id, deposit, currentCycleId, now);
         AddMembershipEvent(fund, member.Id, CollectiveFundMembershipEventType.Joined, deposit, currentCycleId, now);
@@ -1022,6 +1073,11 @@ public sealed class CollectiveFundService(
             }
 
             var sellPrice = Round(price * (1m - SaleDiscount));
+            if (bandByCompany.GetValueOrDefault(holding.CompanyId) is { } band)
+            {
+                sellPrice = band.FloorSellPrice(sellPrice);
+            }
+
             if (sellPrice <= 0m)
             {
                 continue;
@@ -1051,6 +1107,11 @@ public sealed class CollectiveFundService(
             }
 
             var sellPrice = Round(price * (1m - SaleDiscount));
+            if (bandByCompany.GetValueOrDefault(holding.CompanyId) is { } band)
+            {
+                sellPrice = band.FloorSellPrice(sellPrice);
+            }
+
             if (sellPrice <= 0m)
             {
                 continue;
@@ -1170,6 +1231,9 @@ public sealed class CollectiveFundService(
         PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
 
     private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+
+    private static decimal TransferableCash(Participant participant) =>
+        Math.Max(0m, Math.Min(participant.AvailableBalance, participant.SettledCashBalance));
 
     private readonly record struct OwnedHolding(int OwnerId, int CompanyId, int Quantity);
 }

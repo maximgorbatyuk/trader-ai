@@ -69,6 +69,10 @@ public sealed class TradeFeeTests : IDisposable
             .SingleAsync(money => money.Type == MoneyTransactionType.TradeFee);
         Assert.Equal(seed.Seller.Id, fee.ParticipantId);
         Assert.Equal(10m, fee.Amount);
+
+        await context.Entry(seed.Company).ReloadAsync();
+        Assert.Equal(0m, seed.Company.CashBalance);
+        Assert.Empty(context.CorporateCashTransactions);
     }
 
     [Fact]
@@ -86,6 +90,9 @@ public sealed class TradeFeeTests : IDisposable
         Assert.Equal(2000m, seed.Seller.CurrentBalance);
         Assert.Empty(context.Banks);
         Assert.Equal(0, await context.MoneyTransactions.CountAsync(money => money.Type == MoneyTransactionType.TradeFee));
+        await context.Entry(seed.Company).ReloadAsync();
+        Assert.Equal(0m, seed.Company.CashBalance);
+        Assert.Empty(context.CorporateCashTransactions);
     }
 
     [Fact]
@@ -111,6 +118,7 @@ public sealed class TradeFeeTests : IDisposable
         await context.SaveChangesAsync();
 
         await service.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 10, 100m);
+        var tradedCycleId = seed.Market.CurrentCycleId!.Value;
 
         var result = await service.AdvanceCycleAsync();
         Assert.Equal(1, result.FillCount);
@@ -119,6 +127,14 @@ public sealed class TradeFeeTests : IDisposable
         Assert.Equal(4000m, seed.Buyer.CurrentBalance);
         Assert.Empty(context.Banks);
         Assert.Equal(0, await context.MoneyTransactions.CountAsync(money => money.Type == MoneyTransactionType.TradeFee));
+
+        await context.Entry(seed.Company).ReloadAsync();
+        Assert.Equal(1000m, seed.Company.CashBalance);
+        var corporateMovement = await context.CorporateCashTransactions.SingleAsync();
+        Assert.Equal(seed.Company.Id, corporateMovement.CompanyId);
+        Assert.Equal(CorporateCashTransactionType.PrimaryIssuance, corporateMovement.Type);
+        Assert.Equal(1000m, corporateMovement.Amount);
+        Assert.Equal(tradedCycleId, corporateMovement.CreatedInCycleId);
     }
 
     private async Task<SeedResult> SeedAsync(decimal sellerCash, decimal buyerCash, int sellerShares, decimal sharePrice)

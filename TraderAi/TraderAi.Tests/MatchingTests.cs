@@ -25,14 +25,16 @@ public sealed class MatchingTests : IDisposable
         context = new AppDbContext(options);
         context.Database.EnsureCreated();
         var loanOptions = Options.Create(new LoanOptions { Enabled = true });
+        var marginService = new MarginService(context, Options.Create(new MarginOptions()));
         marketService = new MarketService(
             context,
-            new MatchingEngine(context),
+            new MatchingEngine(context, marginService: marginService),
             new DeterministicDecisionEngine(),
             new MarketCycleLock(),
             new Random(1),
             loanService: new LoanService(context, loanOptions),
-            loanOptions: loanOptions);
+            loanOptions: loanOptions,
+            marginService: marginService);
     }
 
     [Fact]
@@ -186,11 +188,10 @@ public sealed class MatchingTests : IDisposable
     [Fact]
     public async Task BuyOrderRejectedWhenCashIsInsufficient()
     {
-        // Worth is 400 cash, so the 40% cap is a 160 loan-principal ceiling. Buying 6 at 100 needs a 200
-        // shortfall funded by a 230 loan (200 × 1.15), which overshoots the ceiling.
+        // A 50% initial requirement gives 400 cash exactly 800 of buying power.
         var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 400m, sellerShares: 10, sharePrice: 100m);
 
-        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 6, 100m);
+        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 9, 100m);
 
         Assert.False(result.Success);
         Assert.Equal(0, await context.Orders.CountAsync());
@@ -220,10 +221,9 @@ public sealed class MatchingTests : IDisposable
     }
 
     [Fact]
-    public async Task BuyOrderAllowedIntoDebtWithinWorthFraction()
+    public async Task BuyOrderAllowedWithinInitialMarginBuyingPower()
     {
-        // Worth is 1000 cash, so the 40% cap is a 400 loan-principal ceiling. Reserving 1200 needs only a 230
-        // loan (200 shortfall × 1.15), well inside the cap; the reservation still shows a -200 available balance.
+        // At a 50% initial requirement, 1,000 cash provides 2,000 of total buying power.
         var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 1000m, sellerShares: 12, sharePrice: 100m);
 
         var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 12, 100m);
@@ -236,40 +236,32 @@ public sealed class MatchingTests : IDisposable
     }
 
     [Fact]
-    public async Task BuyOrderRejectedBeyondDebtAllowance()
+    public async Task BuyOrderRejectedBeyondInitialMarginBuyingPower()
     {
-        // Worth is 1000 cash → a 400 loan-principal ceiling. Reserving 1500 needs a 575 loan (500 shortfall ×
-        // 1.15), which overshoots the ceiling.
+        // A 50% initial requirement gives 1,000 cash exactly 2,000 of buying power.
         var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 1000m, sellerShares: 15, sharePrice: 100m);
 
-        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 15, 100m);
+        var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 21, 100m);
 
         Assert.False(result.Success);
         Assert.Equal(0, await context.Orders.CountAsync());
     }
 
     [Fact]
-    public async Task MarginFillOpensLoanAndKeepsBalanceNonNegative()
+    public async Task MarginFillIncreasesAccountDebitWithoutOpeningATermLoan()
     {
         var seed = await SeedAsync(sellerCash: 100000m, buyerCash: 1000m, sellerShares: 12, sharePrice: 100m);
 
-        // Buyer spends 1200 against 1000 cash: the 200 shortfall becomes a loan for 200 × 1.15 = 230, and the
-        // 30 cash buffer is left in the balance so it never goes negative.
+        // Buyer spends 1200 against 1000 cash: the 200 shortfall becomes account-level margin debit.
         await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 12, 100m);
         await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 12, 100m);
         await marketService.AdvanceCycleAsync();
 
         await context.Entry(seed.Buyer).ReloadAsync();
-        Assert.Equal(30m, seed.Buyer.CurrentBalance);
-
-        var loan = await context.Loans.SingleAsync(candidate => candidate.ParticipantId == seed.Buyer.Id);
-        Assert.Equal(LoanStatus.Open, loan.Status);
-        Assert.Equal(230m, loan.Principal);
-        Assert.Equal(230m, loan.RemainingPrincipal);
-
-        var disbursement = await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.LoanDisbursement);
-        Assert.Equal(230m, disbursement.Amount);
-        Assert.Equal(loan.Id, disbursement.RelatedLoanId);
+        Assert.Equal(0m, seed.Buyer.CurrentBalance);
+        Assert.Equal(200m, (await context.MarginAccounts.SingleAsync(candidate => candidate.ParticipantId == seed.Buyer.Id)).DebitBalance);
+        Assert.Empty(await context.Loans.ToListAsync());
+        Assert.Equal(200m, (await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.MarginAdvance)).Amount);
     }
 
     [Fact]
@@ -280,7 +272,16 @@ public sealed class MatchingTests : IDisposable
         // Orders rest while the company is open, then it is frozen before matching runs.
         await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 110m);
         await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 5, 100m);
-        seed.Company.TradingHaltedUntilCycleNumber = 1;
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = seed.Company.Id,
+            State = LuldState.TradingPause,
+            ReferencePrice = 100m,
+            LowerBandPrice = 95m,
+            UpperBandPrice = 105m,
+            PauseUntilCycleNumber = 151,
+            UpdatedInCycleId = (await context.MarketCycles.SingleAsync()).Id,
+        });
         await context.SaveChangesAsync();
 
         var result = await marketService.AdvanceCycleAsync();
@@ -293,13 +294,123 @@ public sealed class MatchingTests : IDisposable
     public async Task OrderRejectedForHaltedCompany()
     {
         var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
-        seed.Company.TradingHaltedUntilCycleNumber = 1;
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = seed.Company.Id,
+            State = LuldState.LimitState,
+            ReferencePrice = 100m,
+            LowerBandPrice = 95m,
+            UpperBandPrice = 105m,
+            LimitStateStartedCycleNumber = 1,
+            UpdatedInCycleId = (await context.MarketCycles.SingleAsync()).Id,
+        });
         await context.SaveChangesAsync();
 
         var result = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 110m);
 
         Assert.False(result.Success);
         Assert.Equal(0, await context.Orders.CountAsync());
+    }
+
+    [Fact]
+    public async Task OppositeOrderFromSameParticipantIsRejectedBeforeReservation()
+    {
+        var seed = await SeedAsync(sellerCash: 2_000m, buyerCash: 5_000m, sellerShares: 10, sharePrice: 100m);
+        var sell = await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 2, 100m);
+
+        var buy = await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Buy, 2, 110m);
+
+        Assert.True(sell.Success);
+        Assert.False(buy.Success);
+        Assert.Contains("open sell order", buy.Error, StringComparison.OrdinalIgnoreCase);
+        await context.Entry(seed.Seller).ReloadAsync();
+        Assert.Equal(0m, seed.Seller.ReservedBalance);
+        Assert.Single(await context.Orders.ToListAsync());
+    }
+
+    [Fact]
+    public async Task LegacySelfCrossCancelsNewerBuyAndReleasesReservationOnce()
+    {
+        var seed = await SeedAsync(sellerCash: 2_000m, buyerCash: 5_000m, sellerShares: 10, sharePrice: 100m);
+        var cycle = await context.MarketCycles.SingleAsync();
+        var sell = new Order
+        {
+            ParticipantId = seed.Seller.Id,
+            CompanyId = seed.Company.Id,
+            Type = OrderType.Sell,
+            Status = OrderStatus.Open,
+            Quantity = 5,
+            LimitPrice = 100m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow.AddSeconds(-1),
+            UpdatedAt = DateTime.UtcNow.AddSeconds(-1),
+        };
+        var buy = new Order
+        {
+            ParticipantId = seed.Seller.Id,
+            CompanyId = seed.Company.Id,
+            Type = OrderType.Buy,
+            Status = OrderStatus.Open,
+            Quantity = 5,
+            LimitPrice = 110m,
+            ReservedCashAmount = 550m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        seed.Seller.ReservedBalance = 550m;
+        context.Orders.AddRange(sell, buy);
+        await context.SaveChangesAsync();
+        var initialPriceCount = await context.PriceSnapshots.CountAsync();
+
+        var fillCount = await new MatchingEngine(context).RunAsync(cycle);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, fillCount);
+        Assert.Equal(OrderStatus.Open, sell.Status);
+        Assert.Equal(OrderStatus.Cancelled, buy.Status);
+        Assert.Equal(0m, buy.ReservedCashAmount);
+        Assert.Equal(0m, seed.Seller.ReservedBalance);
+        Assert.Empty(await context.ShareTransactions.ToListAsync());
+        Assert.Empty(await context.OrderFills.ToListAsync());
+        Assert.Equal(initialPriceCount, await context.PriceSnapshots.CountAsync());
+        var release = await context.MoneyTransactions.SingleAsync(transaction => transaction.Type == MoneyTransactionType.Release);
+        Assert.Equal(550m, release.Amount);
+    }
+
+    [Fact]
+    public async Task ClosedCompanyRejectsBuyAndSellOrders()
+    {
+        var seed = await SeedAsync(sellerCash: 2_000m, buyerCash: 5_000m, sellerShares: 10, sharePrice: 100m);
+        var cycle = await context.MarketCycles.SingleAsync();
+        seed.Company.ClosedInCycleId = cycle.Id;
+        await context.SaveChangesAsync();
+
+        var buy = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 1, 100m);
+        var sell = await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 1, 100m);
+
+        Assert.False(buy.Success);
+        Assert.False(sell.Success);
+        Assert.Contains("delisted", buy.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("delisted", sell.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(await context.Orders.ToListAsync());
+        Assert.Empty(await context.MarginAccounts.ToListAsync());
+    }
+
+    [Fact]
+    public async Task LegacyCycleWithoutTradingDayMatchesWithoutCreatingSettlementInstruction()
+    {
+        var seed = await SeedAsync(sellerCash: 1_000m, buyerCash: 5_000m, sellerShares: 10, sharePrice: 100m);
+        await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 1, 100m);
+        await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 1, 100m);
+        var settlement = new SettlementService(context, Options.Create(new SettlementOptions()));
+        var cycle = await context.MarketCycles.SingleAsync();
+
+        var fills = await new MatchingEngine(context, settlementService: settlement).RunAsync(cycle);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1, fills);
+        Assert.Empty(await context.SettlementInstructions.ToListAsync());
     }
 
     private async Task<SeedResult> SeedAsync(decimal sellerCash, decimal buyerCash, int sellerShares, decimal sharePrice)

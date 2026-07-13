@@ -121,12 +121,28 @@ function LoanDetail({ loan }) {
           <dt>Interest/cyc</dt>
           <dd className="num">{(loan.interestRatePerCycle * 100).toFixed(3)}%</dd>
         </div>
-        {loan.pastDueAmount > 0 ? (
-          <div>
-            <dt>Past due</dt>
-            <dd className="num tone-attention">{formatMoney(loan.pastDueAmount)}</dd>
-          </div>
-        ) : null}
+        <div>
+          <dt>Principal due</dt>
+          <dd className={`num${loan.pastDuePrincipal > 0 ? ' tone-attention' : ' muted-sub'}`}>
+            {formatMoney(loan.pastDuePrincipal)}
+          </dd>
+        </div>
+        <div>
+          <dt>Interest due</dt>
+          <dd className={`num${loan.pastDueInterest > 0 ? ' tone-attention' : ' muted-sub'}`}>
+            {formatMoney(loan.pastDueInterest)}
+          </dd>
+        </div>
+        <div>
+          <dt>Fees</dt>
+          <dd className={`num${loan.accruedFees > 0 ? ' tone-attention' : ' muted-sub'}`}>
+            {formatMoney(loan.accruedFees)}
+          </dd>
+        </div>
+        <div>
+          <dt>Total liability</dt>
+          <dd className="num">{formatMoney(loan.totalLiability)}</dd>
+        </div>
         <div>
           <dt>Status</dt>
           <dd>{loan.status}</dd>

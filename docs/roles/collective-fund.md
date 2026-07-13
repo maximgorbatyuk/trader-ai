@@ -7,17 +7,20 @@ A Collective Fund is a pooled automated trader created during the simulation. It
 - A fund is opened by an eligible Individual or AI Agent after the fund-opening window.
 - The founder becomes the first member.
 - The fund keeps the founder's temperament and risk profile from the moment it is created. Later changes to the founder do not change the fund's trading personality.
-- Members contribute most of their cash as deposits. The fund trades that pooled capital.
+- Members contribute most of their settled, unreserved cash as deposits. The fund trades that pooled capital.
 - An active fund buys and sells automatically like an automated trader, but keeps a cash buffer so it can return member deposits.
-- A fund can use the same debt allowance as other market participants, after accounting for its cash buffer.
+- A fund can use the same margin buying power as other market participants, after accounting for its cash buffer. Margin debit remains separate from any explicit term loan used for a member payout.
 - A fund can hold shares, receive dividends, and sell holdings.
+- Fund trades change its economic position immediately and settle on T+1. The managed-fund view separates settled and pending cash and shares.
+- Short selling is planned for later and is not implemented.
 - A fund passes part of its own dividend income through to members, divided by deposit size.
-- A fund has a member capacity. Once it reaches capacity it stops taking new members, and a fund found above capacity returns its most recently joined member's deposit and drops that member — one per cycle, by the standard leave rules — until it is back within capacity. The capacity applies to the player-managed fund as well.
+- A fund has a configurable member capacity, bounded by its configured maximum. Once it reaches capacity it stops taking new members, and a fund found above capacity returns its most recently joined member's deposit and drops that member — one per cycle, by the standard leave rules — until it is back within capacity. The capacity applies to the player-managed fund as well.
 - When several funds have room, joiners lean toward stronger funds — higher net worth, better recent dividend income, faster recent growth, and heavier advertised popularity — and toward funds with more room to spare. A joiner is drawn to a fund with a chance proportional to that strength rather than always to the single strongest, so members spread across good funds and a fund near its member cap attracts fewer newcomers.
-- A fund that is winding down stops buying. It cancels open buys, lists remaining holdings for sale, and closes once it no longer owns shares.
+- A fund that is winding down stops buying. It cancels open buys, lists remaining holdings for sale, and closes once it no longer owns shares, has no pending settlement, and has no margin liability.
 - When a fund is short on cash to return a leaving member's deposit, it borrows the shortfall plus a small buffer and pays the member in full the same cycle, then carries that loan. Only when lending is disabled does it fall back to selling shares at a discount and making the member wait.
+- Margin interest accrues once per trading day, sale proceeds repay margin liability first, and a maintenance deficiency can create forced-sale orders from settled holdings.
 - If only two members remain and one leaves, the whole fund winds down.
 - The founder can close a fund after severe loss from its peak value or after recent dividend starvation.
 - A fund that owns no shares and cannot afford the cheapest share for a long stretch also winds down.
-- When a fund closes, remaining cash is split between surviving members and the fund becomes inactive.
+- When a fund closes, remaining settled cash is split between surviving members and the fund becomes inactive.
 - A fund does not go bankrupt.

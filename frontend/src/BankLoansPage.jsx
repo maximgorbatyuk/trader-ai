@@ -95,6 +95,7 @@ function BankLoansPage() {
           ) : null}
 
           <Panel title="Bank loans" count={`${formatInt(total)}`} className="panel-holdings">
+            <p className="note note-sm">Explicit term loans only. Margin debit is shown on each trader&apos;s margin view.</p>
             <div className="roster-toolbar">
               <select
                 className="select select-sm"

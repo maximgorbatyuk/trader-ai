@@ -109,6 +109,12 @@ public sealed class CompanyLifecycleService(
 
         var capByCompany = await CapitalizationByCompanyAsync(liveCompanies);
         var riskStreakCompanyIds = await RiskStreakCompanyIdsAsync();
+        var pendingCompanyIds = (await dbContext.SettlementInstructions
+                .Where(instruction => instruction.Status == SettlementStatus.Pending)
+                .Select(instruction => instruction.CompanyId)
+                .Distinct()
+                .ToListAsync())
+            .ToHashSet();
 
         // A company is protected once it is a large enough slice of the whole market; the threshold scales with
         // total capitalisation rather than a fixed dollar figure. A degenerate zero-cap market protects nothing.
@@ -118,8 +124,10 @@ public sealed class CompanyLifecycleService(
             protectionThreshold > 0m && capByCompany.GetValueOrDefault(companyId) >= protectionThreshold;
 
         var qualifiers = liveCompanies
-            .Where(company => HasDeclineStreak(closesByCompany.GetValueOrDefault(company.Id))
+            .Where(company => !pendingCompanyIds.Contains(company.Id)
+                && (HasDeclineStreak(closesByCompany.GetValueOrDefault(company.Id))
                 || riskStreakCompanyIds.Contains(company.Id))
+            )
             .ToList();
 
         if (qualifiers.Count > 0)
@@ -143,7 +151,7 @@ public sealed class CompanyLifecycleService(
             // Pressure valve: the market is full and nothing failed on its own. Only sub-threshold companies are
             // removable, so a large-cap is never delisted just to make room; if all are protected, nothing happens.
             var removable = liveCompanies
-                .Where(company => !IsProtected(company.Id))
+                .Where(company => !IsProtected(company.Id) && !pendingCompanyIds.Contains(company.Id))
                 .ToList();
             if (removable.Count == 0)
             {
@@ -246,6 +254,7 @@ public sealed class CompanyLifecycleService(
         foreach (var holding in holdings)
         {
             holding.Quantity = 0;
+            holding.SettledQuantity = 0;
         }
 
         company.ClosedInCycleId = currentCycleId;
@@ -329,6 +338,7 @@ public sealed class CompanyLifecycleService(
             Name = name,
             IndustryId = industryId,
             IssuedSharesCount = shares,
+            CashBalance = 0m,
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
             UpdatedAt = now,

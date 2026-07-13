@@ -24,7 +24,7 @@ export function BankLoansTable({ loans, sortKey, sortDir, onToggleSort }) {
   }
 
   if (loans.length === 0) {
-    return <p className="note">No loans match the current filter.</p>
+    return <p className="note">No explicit term loans match the current filter.</p>
   }
 
   return (
@@ -35,7 +35,16 @@ export function BankLoansTable({ loans, sortKey, sortDir, onToggleSort }) {
             <th scope="col">Borrower</th>
             <th scope="col">Bank</th>
             {sortableHeader('principal', 'Remaining', 'Outstanding principal still to repay')}
-            {sortableHeader('pastDue', 'Past due', 'Arrears plus accrued missed-payment fines')}
+            {sortableHeader('pastDue', 'Principal due', 'Overdue principal not yet repaid')}
+            <th scope="col" className="ta-r">
+              Interest due
+            </th>
+            <th scope="col" className="ta-r">
+              Fees
+            </th>
+            <th scope="col" className="ta-r">
+              Total liability
+            </th>
             {sortableHeader('term', 'Term', 'Loan term in cycles')}
             <th scope="col" className="ta-r">
               Remaining
@@ -55,9 +64,16 @@ export function BankLoansTable({ loans, sortKey, sortDir, onToggleSort }) {
                 <span className="tag">{loan.bankName}</span>
               </td>
               <td className="num ta-r">{formatMoney(loan.remainingPrincipal)}</td>
-              <td className={`num ta-r${loan.pastDueAmount > 0 ? ' tone-attention' : ''}`}>
-                {formatMoney(loan.pastDueAmount)}
+              <td className={`num ta-r${loan.pastDuePrincipal > 0 ? ' tone-attention' : ' muted-sub'}`}>
+                {formatMoney(loan.pastDuePrincipal)}
               </td>
+              <td className={`num ta-r${loan.pastDueInterest > 0 ? ' tone-attention' : ' muted-sub'}`}>
+                {formatMoney(loan.pastDueInterest)}
+              </td>
+              <td className={`num ta-r${loan.accruedFees > 0 ? ' tone-attention' : ' muted-sub'}`}>
+                {formatMoney(loan.accruedFees)}
+              </td>
+              <td className="num ta-r">{formatMoney(loan.totalLiability)}</td>
               <td className="num ta-r">{formatInt(loan.termCycles)}</td>
               <td className="num ta-r">{loan.isClosed ? '—' : `${formatInt(loan.remainingTermCycles)} cyc`}</td>
               <td>

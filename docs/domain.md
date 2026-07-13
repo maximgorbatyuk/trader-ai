@@ -9,14 +9,15 @@ Share ownership is stored as one quantity-based holding per participant and comp
 
 ## Core Rules
 
-- The market runs in cycles.
+- The market runs in cycles. A complete cycle is atomic: if any phase fails, maintenance, decisions, matches, payouts, events, lifecycle changes, snapshots, archival, and cycle advancement all remain at the previous completed state.
 - Each cycle lets active participants place orders.
 - Orders stay open until they are fully filled or cancelled.
 - Orders can be partially filled.
 - An unfilled order is cancelled automatically once it has rested for too many cycles; cancelling a buy releases its reserved cash and cancelling a sell frees its shares to be listed again.
 - While unfilled, a stale order is re-priced toward the market on each later cycle so it has a chance to fill before that cancellation cap.
 - A holder that cannot afford any share for several consecutive cycles sells down its most valuable holding to raise cash.
-- Share owners are paid a dividend at a recurring interval: each company sets aside a small percentage of its total market value and shares it evenly across all its shares, credited straight to each owner's balance in proportion to its holding. A company pays when a window comes due only if it clears a chance that is high while its market value has been steady and low once it has swung sharply, and a stock split leaves what a holder collects unchanged.
+- Every 10–25 trading cycles, each active priced company independently tests for operating income and a dividend. Income comes from the simulated external economy and is credited before any same-window dividend is funded; see [Corporate cash](logic/corporate-cash.md) for the calculation and accounting rules.
+- Share owners can be paid a dividend in that window: each company calculates a proportional payout from capitalization and owned shares, then funds no more than its available issuer cash. A shortfall reduces or skips the payout and creates a Newswire item; a stock split leaves what a holder collects unchanged.
 - While the market runs, a news event is published automatically every fixed number of cycles; some carry market impact.
 - News events can also be created manually, with a chosen target and impact.
 - A news event with impact moves the share price of either a single company or every company in one or more industries, up or down, by a percentage of the current price (automated events up to 10%, manually created events up to 95%).
@@ -24,7 +25,7 @@ Share ownership is stored as one quantity-based holding per participant and comp
 - A science investigation is the upbeat counterpart: a small, local, positive shock that lifts 1–5 sectors by 0.5–5% each, growing likelier after a 50-cycle quiet window. Unlike a crisis or news move it only nudges price up and does not cancel any orders.
 - A wealthy trader can go bankrupt, though never during the market's first 500 cycles: after that window, once the market value of its share holdings (cash aside) stays at or above two billion, its chance of collapse rises 0.2% each cycle up to a 10% cap. A bankruptcy wipes the trader's cash and forces it to sell 65% of its holdings, listed 20% below the current price and dropping another 5% each cycle they go unsold until the target is met. It is reported in the newswire but moves no prices and cancels no other trader's orders.
 - Cash-strapped traders can pool into a collective fund, though never during the market's first 50 cycles. After that window, a trader holding under $500k has a small chance each cycle to join an existing fund or open a new one, and a long stretch unable to afford any share sharply raises those odds. When more than one fund has room, a joiner prefers the stronger one — larger, worth more, and paying more dividends of late. A member hands the fund 90% of its cash and stops bidding for itself (it may still sell shares it already owns), drawing instead a share of the fund's dividends sized by its deposit. The fund trades the pooled capital while keeping roughly a tenth of its worth liquid, returns a member's full deposit when they leave — selling shares to raise the cash if it must — and a member must leave once its own balance reaches one hundred million. A settled member may also grow restless: after twenty cycles anyone who did not found the fund can leave to chase a stronger one, at a chance nudged up for aggressive traders and down for conservative ones, rejoining the best available fund even if its returned cash would otherwise price it out. The founder, for its part, winds the fund down once it has clearly failed — its worth collapsed to a fraction of its all-time peak, or no dividend income across its recent payout cycles. When only a pair is left and one leaves, the fund sells everything and splits the proceeds evenly between the two, who then trade on their own again. A collective fund never goes bankrupt.
-- A human can join the market as a player: a hand-controlled trader that places and cancels its own orders and collects dividends like any owner, but that the market never manages on its own. Its orders are never re-priced, never cancelled for resting too long, and never cancelled by a crisis or a news event; it never goes bankrupt, never joins a collective fund, and is skipped by the automated decision pass. A market holds at most one player at a time, and a database reset clears it.
+- A human can join the market as a player: a hand-controlled trader that places and cancels its own orders and collects dividends like any owner, but that the market never manages on its own. Its orders are never re-priced, never cancelled for resting too long, and never cancelled by a crisis or a news event. Stock splits still cancel them; LULD price controls preserve them through a pause and reopening auction. The player never goes bankrupt, never joins a collective fund, and is skipped by the automated decision pass. A market holds at most one player at a time, and a database reset clears it.
 - At each completed cycle, a snapshot of the player's cash balance and the value of its holdings is recorded. Comparing the two most recent snapshots gives the player's money and worth changes over the last cycle, while measuring against its starting balance gives the overall change since it joined.
 - Any sharp move also clears the resting orders that were priced against the old level: a price drop (from a crisis or a news event) cancels the standing buy orders for the affected companies and releases their reserved cash, while a price rise cancels the standing sell orders and frees their shares to be listed again.
 - A buy order reserves cash when it is created.
@@ -33,9 +34,17 @@ Share ownership is stored as one quantity-based holding per participant and comp
 - A buy order can match a sell order when the buy price is greater than or equal to the sell price.
 - The execution price is the midpoint of the matched buy and sell limit prices.
 - A participant cannot sell shares they do not own.
+- Short selling, stock borrow, and buy-to-cover orders are planned for later and are not implemented.
 - A participant cannot create a buy order if they cannot reserve the required cash.
+- A participant cannot place an order opposite to its own open order for the same company. Legacy self-crosses are cancelled without a fill or price change.
+- Closed companies reject every new buy or sell order.
+- LULD excludes outside-band limits from continuous matching. Persistent pressure at a band moves the company through Limit State and Trading Pause without cancelling orders, then runs a deterministic reopening auction before returning to Normal.
 - When a fill uses less than the reserved price, the unused reserved cash for filled shares is released.
 - Remaining reserved cash stays with the unfilled part of the buy order.
+
+A fill changes economic cash, holdings, and price immediately, then a settlement instruction delivers settled cash and shares on the next trading day. Primary issuance credits the company's corporate cash at that settlement boundary. See [Trade settlement](logic/settlement.md) and [Corporate cash](logic/corporate-cash.md).
+
+Margin debit is a revolving participant liability, separate from explicit term loans. It accrues interest once per trading day, is repaid from sale proceeds before free cash, and can create a maintenance call with forced-sale orders. Term loans retain their own repayment and arrears schedule. See [Margin accounts](logic/margin.md) and [Bank loans](logic/bank-loans.md).
 
 ## Models
 
@@ -50,6 +59,7 @@ Fields:
 - Type (Individual, Company, AIAgent, CollectiveFund, Player)
 - InitialBalance
 - CurrentBalance
+- SettledCashBalance
 - ReservedBalance
 - Temperament (Aggressive, Balanced, Conservative)
 - RiskProfile (High, Medium, Low)
@@ -60,6 +70,7 @@ Notes:
 - Individual and AI agent participants can trade.
 - Company participants can own shares and take part in the market if needed.
 - A player participant is a human-controlled trader; it trades by hand, and the market never manages its orders automatically.
+- Current balance is economic cash; settled cash separates completed delivery from pending T+1 cash.
 - Available cash is `CurrentBalance - ReservedBalance`.
 - Temperament and risk profile guide trading decisions.
 
@@ -73,12 +84,14 @@ Fields:
 - Name
 - IndustryId
 - IssuedSharesCount
+- CashBalance
 - CreatedAt
 - UpdatedAt
 
 Notes:
 
 - Issued shares are divided between quantity-based participant holdings and the issuer's implicit unsold float.
+- Corporate cash receives settled primary proceeds and simulated operating income, then funds dividends; secondary trades do not affect it. See [Corporate cash](logic/corporate-cash.md).
 - The company price can be read from the latest price snapshot.
 - Every company belongs to exactly one industry.
 
@@ -106,6 +119,7 @@ Fields:
 - ParticipantId
 - CompanyId
 - Quantity
+- SettledQuantity
 - AverageCost
 
 Notes:
@@ -113,7 +127,7 @@ Notes:
 - A participant has at most one holding per company.
 - The issuer's unsold shares are not a holding; that float is the issued supply minus the shares participants hold.
 - A buy blends its execution price into the average cost; a sell leaves the average cost of the remaining shares unchanged.
-- Ownership changes only through a completed share transaction.
+- Economic quantity changes through a completed share transaction; settled quantity changes when its settlement instruction is due.
 
 ### MarketCycle
 
@@ -123,6 +137,7 @@ Fields:
 
 - ID
 - CycleNumber
+- TradingDayId
 - Status (Planned, Running, Completed, Failed)
 - StartedAt
 - CompletedAt
@@ -130,6 +145,7 @@ Fields:
 Notes:
 
 - Participants make trading decisions during a cycle.
+- A cycle belongs to one numbered trading day; the separate break does not create a trading cycle.
 - The market matches orders during the cycle.
 - A cycle can create many share transactions.
 - A cycle can create many money transactions.
@@ -144,7 +160,7 @@ Fields:
 - ParticipantId
 - CompanyId
 - Type (Buy, Sell)
-- Status (Open, PartiallyFilled, Filled)
+- Status (Open, PartiallyFilled, Filled, Cancelled)
 - Quantity
 - FilledQuantity
 - LimitPrice
@@ -184,7 +200,7 @@ Notes:
 - A large order can have many fills.
 - The execution price is the midpoint of the two matched orders' limit prices.
 - A fill creates one share transaction.
-- A fill creates money transactions for cash settlement.
+- A fill creates immediate economic money transactions and one T+1 settlement instruction.
 
 ### MoneyTransaction
 
@@ -232,7 +248,7 @@ Notes:
 - A share transaction moves share ownership from seller to buyer.
 - The seller may be the issuing company rather than a participant; in that case no seller cash is credited.
 - A share transaction is created from an order fill.
-- Money movement is recorded by money transactions.
+- Economic money movement is recorded by money transactions, while its delivery status is recorded by the linked settlement instruction.
 
 ### PriceSnapshot
 
@@ -250,6 +266,7 @@ Fields:
 Notes:
 
 - The latest snapshot is the current company price.
+- Historical retention always leaves the newest snapshot for each company in the live set, even when it is older than the normal retention window.
 - A snapshot can be created after a share transaction.
 - A snapshot can also be created at the end of a cycle.
 
@@ -263,6 +280,7 @@ Fields:
 - Name
 - Status (NotStarted, Running, Paused, Completed)
 - CurrentCycleId
+- CurrentTradingDayId
 - CreatedAt
 - UpdatedAt
 
@@ -271,6 +289,133 @@ Notes:
 - The market contains companies, participants, holdings, orders, share transactions, money transactions, and cycles.
 - The market controls when cycles start and finish.
 - The market owns the order-matching rules.
+
+### TradingDay
+
+A trading day groups 210 active market cycles and the following break under one day number.
+
+Fields:
+
+- ID
+- DayNumber
+- State (Trading, Break)
+- OpenedInCycleId
+- ClosedInCycleId
+
+Notes:
+
+- T+1 settlement and daily margin interest use trading-day boundaries rather than raw elapsed time.
+- The break has a countdown but no additional market cycle.
+
+### SettlementInstruction
+
+A settlement instruction is the pending or completed delivery obligation created by one share transaction.
+
+Fields:
+
+- ID
+- ShareTransactionId
+- BuyerId
+- SellerId
+- CompanyId
+- Quantity
+- CashAmount
+- TradeDayNumber
+- DueDayNumber
+- Status (Pending, Settled)
+- CreatedInCycleId
+- SettledInCycleId
+- CreatedAt
+- SettledAt
+
+Notes:
+
+- Economic cash and quantity change on the trade date; settled balances change on the due trading day.
+- Primary issuance has no participant seller and credits company cash at settlement.
+- Margin advances and repayments carried by the instruction keep economic and settled cash reconcilable.
+
+### MarginAccount
+
+A margin account holds one participant's revolving securities-financing liability.
+
+Fields:
+
+- ID
+- ParticipantId
+- DebitBalance
+- AccruedInterest
+- InitialMarginRate
+- MaintenanceMarginRate
+- Status (Active, UnderCall, Closed)
+- LastInterestAccruedTradingDayId
+
+Notes:
+
+- Margin debit and accrued interest are separate from explicit term loans.
+- Buying power uses account equity and the initial requirement; maintenance standing determines whether a call is needed.
+
+### MarginCall
+
+A margin call records a margin account's maintenance deficiency.
+
+Fields:
+
+- ID
+- MarginAccountId
+- OpenedInTradingDayId
+- OpenedInCycleId
+- ClosedInTradingDayId
+- AccountEquity
+- MaintenanceRequirement
+- Deficiency
+- Status (Open, Satisfied)
+- CreatedAt
+- ClosedAt
+
+Notes:
+
+- An open call can create discounted sell orders from settled holdings.
+- The call is satisfied when account equity again meets maintenance.
+
+### CorporateCashTransaction
+
+A corporate cash transaction is append-only evidence for an issuer cash credit or debit.
+
+Fields:
+
+- ID
+- CompanyId
+- Type (PrimaryIssuance, OperatingIncome, DividendDeclared, ClosureDistribution)
+- Amount
+- CreatedInCycleId
+- CreatedAt
+
+Notes:
+
+- Primary issuance credits company cash after T+1 settlement.
+- Operating income credits company cash from the simulated external economy during a dividend window.
+- A funded dividend debits company cash by exactly the amount allocated to participants.
+
+### PriceBandState
+
+A price-band state stores one company's current LULD control state.
+
+Fields:
+
+- CompanyId
+- State (Normal, LimitState, TradingPause, Reopening)
+- LimitDirection (Upper, Lower)
+- ReferencePrice
+- LowerBandPrice
+- UpperBandPrice
+- LimitStateStartedCycleNumber
+- PauseUntilCycleNumber
+- UpdatedInCycleId
+
+Notes:
+
+- The rolling reference and band determine which limits are eligible for continuous matching.
+- State transitions preserve resting orders and lead to a deterministic reopening auction after a trading pause.
 
 ### NewsPost
 

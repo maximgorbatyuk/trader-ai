@@ -32,3 +32,40 @@ test('maps the latest 48 industry sentiment snapshots', async () => {
 
   assert.deepEqual(recentSentimentValues?.(snapshots), Array.from({ length: 48 }, (_, index) => index - 23))
 })
+
+test('rejects a buy above margin buying power before submission', async () => {
+  const { tradeOrderEligibility } = await loadModel()
+
+  assert.deepEqual(
+    tradeOrderEligibility?.({
+      side: 'Buy',
+      quantity: 21,
+      price: 100,
+      ownedShares: 0,
+      buyingPower: 2_000,
+      luldState: 'Normal',
+    }),
+    { eligible: false, reason: 'Insufficient margin buying power.' },
+  )
+})
+
+test('rejects new orders during every non-normal LULD state', async () => {
+  const { tradeOrderEligibility } = await loadModel()
+
+  for (const state of ['LimitState', 'TradingPause', 'Reopening']) {
+    assert.deepEqual(
+      tradeOrderEligibility?.({
+        side: 'Buy',
+        quantity: 1,
+        price: 100,
+        ownedShares: 0,
+        buyingPower: 1_000,
+        luldState: state,
+      }),
+      {
+        eligible: false,
+        reason: `Order entry is disabled during ${{ LimitState: 'Limit State', TradingPause: 'Trading Pause', Reopening: 'Reopening' }[state]}.`,
+      },
+    )
+  }
+})

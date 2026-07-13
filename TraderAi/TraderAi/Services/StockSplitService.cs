@@ -40,6 +40,12 @@ public sealed class StockSplitService(
         }
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        var pendingCompanyIds = (await dbContext.SettlementInstructions
+                .Where(instruction => instruction.Status == SettlementStatus.Pending)
+                .Select(instruction => instruction.CompanyId)
+                .Distinct()
+                .ToListAsync())
+            .ToHashSet();
 
         var companies = await dbContext.Companies
             .Where(company => company.ClosedInCycleId == null)
@@ -47,6 +53,11 @@ public sealed class StockSplitService(
             .ToListAsync();
         foreach (var company in companies)
         {
+            if (pendingCompanyIds.Contains(company.Id))
+            {
+                continue;
+            }
+
             if (!latestPriceByCompany.TryGetValue(company.Id, out var price))
             {
                 continue;
@@ -81,6 +92,7 @@ public sealed class StockSplitService(
         foreach (var holding in holdings)
         {
             holding.Quantity *= SplitRatio;
+            holding.SettledQuantity *= SplitRatio;
             holding.AverageCost = Round(holding.AverageCost / SplitRatio);
         }
 
@@ -148,6 +160,7 @@ public sealed class StockSplitService(
         foreach (var holding in holdings)
         {
             holding.Quantity /= SplitRatio;
+            holding.SettledQuantity /= SplitRatio;
             holding.AverageCost = Round(holding.AverageCost * SplitRatio);
             ownedAfter += holding.Quantity;
         }
