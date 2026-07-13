@@ -97,7 +97,7 @@ Keep the original Markdown structure and content order. Preserve:
 - frontmatter position;
 - blank-line separation and whitespace-sensitive regions.
 
-Do not reorder sections, lists, sentences, clauses, examples, or table rows. Do not merge or split content except for grammatical adjustments that are strictly necessary to express the same sentence in Russian without changing the Markdown structure.
+Do not reorder sections, lists, sentences, clauses, examples, or table rows. Do not merge or split sections, paragraphs, list items, table cells, sentences, or other content units.
 
 ## Required Workflow
 
