@@ -10,6 +10,7 @@ namespace TraderAi.Tests;
 // Drives the bankruptcy roll with a scripted Random so the wealth ramp and the forced sell-down are forced
 // deterministically. The gate consumes one draw per share-wealthy trader (in id order); a trader that
 // fires then draws once more to pick its headline template. A trader below the wealth line draws nothing.
+// A loan default skips the gate draw entirely and takes only the headline pick.
 public sealed class BankruptcyServiceTests : IDisposable
 {
     private readonly SqliteConnection connection;
@@ -285,6 +286,61 @@ public sealed class BankruptcyServiceTests : IDisposable
         Assert.Equal(0, await context.CrisisEvents.CountAsync());
     }
 
+    [Fact]
+    public async Task LoanFeeReachingPrincipalBankruptsBorrowerDeterministically()
+    {
+        // A low cycle number keeps the trader inside the opening protection window, proving the loan default
+        // fires regardless of it. The Individual type is the human player, included by design.
+        var (_, cycle, company) = await SeedAsync(price: 100m, cycleNumber: 10);
+        var trader = await AddTraderAsync(currentBalance: 0m);
+        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+        var loan = await AddOpenLoanAsync(trader.Id, remainingPrincipal: 200m, cycle.Id, accruedFees: 200m);
+
+        // No probability draw is taken on the deterministic path; the single int picks the newswire headline.
+        await Service(enabled: true, new ScriptedRandom([], [0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var bankruptcy = await context.Bankruptcies.AsNoTracking().SingleAsync();
+        Assert.Equal(trader.Id, bankruptcy.ParticipantId);
+
+        var refreshed = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == trader.Id);
+        Assert.True(refreshed.IsBankrupt);
+        Assert.False(refreshed.IsActive);
+        Assert.Equal(0m, refreshed.CurrentBalance);
+
+        var refreshedLoan = await context.Loans.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.Id);
+        Assert.Equal(LoanStatus.Closed, refreshedLoan.Status);
+        Assert.Equal(LoanCloseReason.ParticipantDeparted, refreshedLoan.CloseReason);
+
+        // The collapse lists the forced sell-down: 65% of the ten held shares (seven) at the 20% base discount.
+        var sell = await context.Orders.AsNoTracking()
+            .SingleAsync(order => order.ParticipantId == trader.Id && order.Type == OrderType.Sell);
+        Assert.Equal(OrderStatus.Open, sell.Status);
+        Assert.Equal(7, sell.Quantity);
+        Assert.Equal(80m, sell.LimitPrice);
+    }
+
+    [Fact]
+    public async Task LoanFeeBelowPrincipalDoesNotDefault()
+    {
+        var (_, cycle, company) = await SeedAsync(price: 100m);
+        var trader = await AddTraderAsync(currentBalance: 0m);
+        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+        await AddOpenLoanAsync(trader.Id, remainingPrincipal: 200m, cycle.Id, accruedFees: 199m);
+
+        // Fees sit just below the loan value, so there is no deterministic default; the trader falls through to
+        // the probabilistic roll, which a 0.5 draw (well above the ~10% debt chance) does not clear.
+        await Service(enabled: true, new ScriptedRandom([0.5d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, await context.Bankruptcies.CountAsync());
+        var refreshed = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == trader.Id);
+        Assert.False(refreshed.IsBankrupt);
+        Assert.True(refreshed.IsActive);
+    }
+
     private async Task<Crisis> AddCrisisAsync(MarketCycle cycle)
     {
         var crisis = new Crisis
@@ -394,7 +450,7 @@ public sealed class BankruptcyServiceTests : IDisposable
         await context.SaveChangesAsync();
     }
 
-    private async Task<Loan> AddOpenLoanAsync(int participantId, decimal remainingPrincipal, int openedInCycleId)
+    private async Task<Loan> AddOpenLoanAsync(int participantId, decimal remainingPrincipal, int openedInCycleId, decimal accruedFees = 0m)
     {
         var bank = await context.Banks.FirstOrDefaultAsync();
         if (bank is null)
@@ -413,6 +469,7 @@ public sealed class BankruptcyServiceTests : IDisposable
             InterestRatePerCycle = bank.InterestRatePerCycle,
             TermCycles = 100,
             ScheduledInstallment = remainingPrincipal / 100m,
+            AccruedFees = accruedFees,
             Status = LoanStatus.Open,
             OpenedInCycleId = openedInCycleId,
             CreatedAt = DateTime.UtcNow,

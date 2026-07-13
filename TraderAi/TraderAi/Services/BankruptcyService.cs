@@ -125,13 +125,22 @@ public sealed class BankruptcyService(
                 continue;
             }
 
+            var openLoans = openLoansByParticipant.GetValueOrDefault(participant.Id) ?? [];
+
+            // A loan whose fines reached its principal is insolvent by rule, so it defaults deterministically,
+            // outside the quiet window and the probabilistic roll; the collapse below discharges it.
+            if (IsLoanDefaulted(participant, openLoans))
+            {
+                ExecuteBankruptcy(participant, owned, openForParticipant, openLoans, ShareWorth(owned, latestPriceByCompany), latestPriceByCompany, bandByCompany, available, currentCycleId, currentCycleNumber, now, activeCrisis);
+                continue;
+            }
+
             // Opening protection: no new bankruptcy, and no ramp, until the market clears its quiet window.
             if (currentCycleNumber <= QuietCycles)
             {
                 continue;
             }
 
-            var openLoans = openLoansByParticipant.GetValueOrDefault(participant.Id) ?? [];
             MaybeTrigger(participant, owned, openForParticipant, openLoans, latestPriceByCompany, bandByCompany, available, currentCycleId, currentCycleNumber, now, activeCrisis);
         }
     }
@@ -183,6 +192,32 @@ public sealed class BankruptcyService(
             return;
         }
 
+        ExecuteBankruptcy(participant, owned, openOrders, openLoans, shareWorth, latestPriceByCompany, bandByCompany, available, currentCycleId, currentCycleNumber, now, activeCrisis);
+    }
+
+    // A borrower defaults deterministically once any open loan's fines reach its principal; loan servicing caps
+    // fees there. Mirrors MaybeTrigger's eligibility so only working traders, never issuer companies, collapse.
+    private static bool IsLoanDefaulted(Participant participant, List<Loan> openLoans) =>
+        participant.IsActive
+        && (participant.Type == ParticipantType.Individual || participant.Type == ParticipantType.AIAgent)
+        && openLoans.Any(loan => loan.Principal > 0m && loan.AccruedFees >= loan.Principal);
+
+    // Wipes a collapsing trader: cancels its open orders, zeroes its cash, records the loss and a newswire item,
+    // discharges its loans, and lists the forced sell-down. Shared by the probabilistic roll and loan default.
+    private void ExecuteBankruptcy(
+        Participant participant,
+        IReadOnlyDictionary<int, int> owned,
+        List<Order> openOrders,
+        List<Loan> openLoans,
+        decimal shareWorth,
+        IReadOnlyDictionary<int, decimal> latestPriceByCompany,
+        IReadOnlyDictionary<int, PriceBandState> bandByCompany,
+        Dictionary<(int ParticipantId, int CompanyId), int> available,
+        int currentCycleId,
+        int currentCycleNumber,
+        DateTime now,
+        Crisis? activeCrisis)
+    {
         // Debt now lives in open loans (discharged below), not a negative balance, so the wipe simply loses the
         // cash on hand; clamping stays defensive.
         var cashLost = Math.Max(0m, participant.CurrentBalance);

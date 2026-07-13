@@ -10,6 +10,7 @@ The root `AGENTS.md` also applies here.
 - A closed company is soft-deleted through `ClosedInCycleId` and stays available to historical detail, news, and rating lookups. Live-company operations use explicit `ClosedInCycleId == null` filters; do not introduce a global query filter.
 - An `Auditor` is a standalone entity, never a `Participant`, because it must not inherit trading, balance, holding, loan, bankruptcy, exit, or fund behavior.
 - Participant net worth is cash plus current holding value minus open-loan liability. Keep API responses, decisions, snapshots, and lifecycle checks consistent with that definition.
+- A loan's `AccruedFees` is capped at its `Principal`, so debt never exceeds 100% of the loan value; a loan reaching that cap defaults the borrower into bankruptcy deterministically, outside the probabilistic bankruptcy roll and its quiet window.
 
 ## Persistence and history
 

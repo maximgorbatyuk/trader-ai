@@ -359,6 +359,29 @@ public sealed class LoanServiceTests : IDisposable
         Assert.Equal(0m, refreshed.AccruedFees);
     }
 
+    [Fact]
+    public async Task AccruedFeesAreCappedAtPrincipalAndNeverExceedIt()
+    {
+        var (cycle, _) = await SeedAsync(price: 100m);
+        var trader = await AddTraderAsync(currentBalance: 0m);
+        // Fees already near the loan value; the next unpaid cycle's fine would otherwise push them over 100%.
+        var loan = await AddLoanAsync(trader.Id, principal: 1_000m, termCycles: 100, cycle.Id, accruedFees: 990m);
+
+        var service = Service();
+        await service.ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var afterOne = await context.Loans.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.Id);
+        Assert.Equal(1_000m, afterOne.AccruedFees);
+
+        // A borrower who still cannot pay keeps missing payments, but the fee stays pinned at the loan value.
+        await service.ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var afterTwo = await context.Loans.AsNoTracking().FirstAsync(candidate => candidate.Id == loan.Id);
+        Assert.Equal(1_000m, afterTwo.AccruedFees);
+    }
+
     private async Task<(MarketCycle Cycle, Company Company)> SeedAsync(decimal price)
     {
         var now = DateTime.UtcNow;

@@ -189,6 +189,13 @@ public sealed class LoanService(
         {
             var fine = Round(unpaidDue * options.Value.MissedPaymentFineRate);
             loan.AccruedFees = Round(loan.AccruedFees + fine);
+
+            // The fine is the only liability that compounds, so cap it at the loan value: debt can never exceed
+            // 100% of principal, and reaching the cap is the deterministic default the bankruptcy pass acts on.
+            if (loan.AccruedFees > loan.Principal)
+            {
+                loan.AccruedFees = loan.Principal;
+            }
         }
 
         MaybeClose(loan, currentCycleId, now);
