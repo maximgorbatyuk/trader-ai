@@ -173,6 +173,34 @@ public sealed class MarginServiceTests : IDisposable
             .SumAsync(order => order.Quantity));
     }
 
+    // A forced margin-call sell must be executable, so its discounted ask is clamped onto the active band.
+    [Fact]
+    public async Task MarginForcedSaleIsClampedToTheActiveBand()
+    {
+        var seed = await SeedAsync(cash: 0m, shares: 100, price: 60m, participantType: ParticipantType.Player);
+        var account = await service.GetOrCreateAccountAsync(seed.Participant.Id, seed.Day.Id);
+        account.DebitBalance = 5_000m;
+        account.LastInterestAccruedTradingDayId = seed.Day.Id;
+        // The 5% forced-sale discount would ask 57, but the active band pulls the sell up to its lower edge.
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = seed.Company.Id,
+            State = LuldState.Normal,
+            ReferencePrice = 60m,
+            LowerBandPrice = 58m,
+            UpperBandPrice = 66m,
+            UpdatedInCycleId = seed.Cycle.Id,
+        });
+        await context.SaveChangesAsync();
+
+        await service.ProcessForTradingDayAsync(seed.Day.Id, seed.Cycle.Id, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var call = await context.MarginCalls.SingleAsync();
+        var order = await context.Orders.SingleAsync(candidate => candidate.RelatedMarginCallId == call.Id);
+        Assert.Equal(58m, order.LimitPrice);
+    }
+
     private async Task<(Participant Participant, Company Company, TradingDay Day, MarketCycle Cycle)> SeedAsync(
         decimal cash,
         int shares = 0,

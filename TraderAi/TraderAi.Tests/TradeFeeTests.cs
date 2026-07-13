@@ -186,6 +186,15 @@ public sealed class TradeFeeTests : IDisposable
             });
         }
 
+        // A listed company always carries a price snapshot; without one, order entry has no reference to bound against.
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = company.Id,
+            Price = sharePrice,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = now,
+        });
+
         market.CurrentCycleId = cycle.Id;
         await context.SaveChangesAsync();
 

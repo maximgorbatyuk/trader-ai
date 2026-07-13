@@ -61,15 +61,18 @@ public sealed class RuleBasedDecisionEngine(
 
     public IReadOnlyList<OrderIntent> Decide(DecisionContext context)
     {
-        // A company with an open order is excluded so the participant never stacks duplicate intents.
+        // A company with an open order is excluded so the participant never stacks duplicate intents; one with no
+        // resolvable price bounds is skipped entirely because a valid limit cannot be placed for it.
         var sellCandidates = context.Companies
-            .Where(quote => !context.CompaniesWithOpenOrders.Contains(quote.CompanyId)
+            .Where(quote => quote.Bounds is not null
+                && !context.CompaniesWithOpenOrders.Contains(quote.CompanyId)
                 && context.SharesOwnedByCompany.GetValueOrDefault(quote.CompanyId) > 0)
             .ToList();
 
         var buyCandidates = context.AvailableCash > 0m
             ? context.Companies
-                .Where(quote => !context.CompaniesWithOpenOrders.Contains(quote.CompanyId))
+                .Where(quote => quote.Bounds is not null
+                    && !context.CompaniesWithOpenOrders.Contains(quote.CompanyId))
                 .ToList()
             : [];
 
@@ -337,7 +340,7 @@ public sealed class RuleBasedDecisionEngine(
             return null;
         }
 
-        var sellLimit = Round(quote.Price * (1m - RandomOffset()));
+        var sellLimit = PickLimitPrice(quote, OrderType.Sell);
         return sellLimit > 0m
             ? new OrderIntent(OrderType.Sell, quote.CompanyId, quantity, sellLimit)
             : null;
@@ -345,7 +348,7 @@ public sealed class RuleBasedDecisionEngine(
 
     private OrderIntent? BuildBuy(DecisionContext context, CompanyQuote quote)
     {
-        var buyLimit = Round(quote.Price * (1m + RandomOffset()));
+        var buyLimit = PickLimitPrice(quote, OrderType.Buy);
         if (buyLimit <= 0m)
         {
             return null;
@@ -358,6 +361,43 @@ public sealed class RuleBasedDecisionEngine(
         return quantity >= 1
             ? new OrderIntent(OrderType.Buy, quote.CompanyId, quantity, buyLimit)
             : null;
+    }
+
+    // Pricing draws, in order: one draw decides inside-band versus a waiting outer segment (OutsideBandOrder
+    // chance), then one draw places the price — the 1-5% market offset clamped to the active band, or a uniform
+    // point across the outer segments. Both sides may use either outer segment.
+    private decimal PickLimitPrice(CompanyQuote quote, OrderType type)
+    {
+        var bounds = quote.Bounds!;
+        if (random.NextDouble() < chanceRates.Value.EventTriggerChances.OutsideBandOrder)
+        {
+            return OuterSegmentPrice(bounds);
+        }
+
+        var inside = type == OrderType.Buy
+            ? Round(quote.Price * (1m + RandomOffset()))
+            : Round(quote.Price * (1m - RandomOffset()));
+        return Math.Clamp(inside, bounds.ActiveLowerPrice, bounds.ActiveUpperPrice);
+    }
+
+    // A single draw selects a cent-aligned position across the union of the lower waiting segment
+    // [allowedMin, activeLower) and the upper one (activeUpper, allowedMax], so every result rests strictly
+    // outside the active band yet inside the allowed range.
+    private decimal OuterSegmentPrice(OrderPriceBounds bounds)
+    {
+        var lowerCents = (int)Math.Round((bounds.ActiveLowerPrice - bounds.AllowedMinimumPrice) / 0.01m);
+        var upperCents = (int)Math.Round((bounds.AllowedMaximumPrice - bounds.ActiveUpperPrice) / 0.01m);
+        var totalCents = lowerCents + upperCents;
+        if (totalCents <= 0)
+        {
+            return bounds.ActiveLowerPrice;
+        }
+
+        var index = Math.Min(totalCents - 1, (int)((decimal)random.NextDouble() * totalCents));
+        var price = index < lowerCents
+            ? bounds.AllowedMinimumPrice + (index * 0.01m)
+            : bounds.ActiveUpperPrice + ((index - lowerCents + 1) * 0.01m);
+        return Round(price);
     }
 
     private decimal RandomOffset() =>

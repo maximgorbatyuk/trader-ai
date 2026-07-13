@@ -2,13 +2,14 @@
 
 Trader AI uses a deterministic Limit Up-Limit Down style state machine to prevent one company from continuously trading outside a rolling price band. It models the core price-band, pause, and reopening mechanics, not the complete venue and regulatory infrastructure of a real exchange.
 
-## Reference price and bands
+## Reference price, bands, and the allowed order range
 
 - The reference price is the arithmetic average of executed trade prices in the previous five minutes of active trading cycles, including the current cycle's position in that window.
-- When no trade exists in the window, the latest company price snapshot is the fallback reference.
-- The lower and upper bands default to 5% below and above the reference price and are rounded to cents.
-- Ordinary continuous matching considers only orders whose limit is inside the current band. Outside-band orders remain open and cancellable.
-- Direct price impacts such as news and crises are clamped to the active band. While a company is not in the normal state, stale-order cancellation is suppressed so its resting book is preserved.
+- When no trade exists in the window, the latest company price snapshot is the fallback reference. Without any reference at all, no order can be placed.
+- The executable band defaults to 15% below and 10% above the reference price, rounded to cents. Continuous matching only crosses orders whose limit rests inside this band.
+- Participants may submit a buy or a sell at any price in a wider allowed order range, 25% below to 15% above the reference. An order inside the allowed range but outside the executable band stays open and waits for the band to reach it; a price beyond the allowed range is rejected.
+- The band is rolling: it can move every active trading cycle as trades shift the reference, and it does not reset at a trading-day boundary. When the band moves, a waiting order the new band now contains becomes executable, one still inside the allowed range keeps waiting, and one left beyond the allowed range is cancelled and its reservation released.
+- Direct price impacts such as news and crises are clamped to the executable band. While a company is not in the normal state, stale-order cancellation is suppressed so its resting book is preserved.
 
 ## State sequence
 
@@ -36,7 +37,7 @@ Eligible orders then execute at that single price with the normal price-time pri
 
 - The top navigation shows **LULD: N affected** whenever at least one company is outside Normal.
 - A company detail page shows **Price control**, **Price band**, and a text banner for **Limit State**, **Trading Pause**, or **Reopening**. A trading pause also shows the remaining active trading seconds.
-- Company order books mark limits beyond the band as **Outside band** and show the current state with a text label and glyph.
+- Company order books mark an order **Waiting outside band** when it rests in the allowed range beyond the executable band, and **Outside allowed range** for the defensive case beyond it; neither can be executed against directly. Order entry shows the executable band and the allowed order range, warns when a limit will wait outside the band, and blocks a price beyond the allowed range.
 - Order forms explain why entry is disabled during Limit State, Trading Pause, and Reopening. Existing orders remain available for cancellation.
 - Entering Trading Pause publishes a company-specific Newswire item.
 

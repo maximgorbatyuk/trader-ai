@@ -285,7 +285,7 @@ public sealed class PlayerTests : IDisposable
         var market = Service(new FixedRoll(0d));
         var player = (await market.CreatePlayerAsync("Ada")).Player!;
         await GiveSharesAsync(company.Id, player.Id, 5, 100m);
-        var order = (await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Sell, 5, 120m)).Order!;
+        var order = (await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Sell, 5, 110m)).Order!;
         Assert.Equal(1, await context.Orders.CountAsync(sell =>
             sell.ParticipantId == player.Id && sell.Type == OrderType.Sell && sell.Status == OrderStatus.Open));
 
@@ -369,6 +369,60 @@ public sealed class PlayerTests : IDisposable
         Assert.True(result.Success);
         Assert.True(result.OrdersPlaced > 0);
         Assert.Equal(0, await context.Orders.CountAsync(order => order.ParticipantId == player.Id));
+    }
+
+    // Allowed-range entry: the wider participant range boundaries are inclusive for both sides at a $100 reference.
+    [Fact]
+    public async Task AllowedRangeBoundaryPricesAreAcceptedForBothSides()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new Random(1));
+        var player = (await market.CreatePlayerAsync("Ada")).Player!;
+        await GiveSharesAsync(company.Id, player.Id, 5, 100m);
+
+        var lowBuy = await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Buy, 1, 75m);
+        Assert.True(lowBuy.Success, lowBuy.Error);
+        await market.CancelPlayerOrderAsync(lowBuy.Order!.Id);
+
+        var highSell = await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Sell, 1, 115m);
+        Assert.True(highSell.Success, highSell.Error);
+    }
+
+    // Allowed-range entry: a price one cent beyond either boundary is rejected with the actionable message.
+    [Fact]
+    public async Task PricesOneCentBeyondTheAllowedRangeAreRejectedWithBothRanges()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new Random(1));
+        var player = (await market.CreatePlayerAsync("Ada")).Player!;
+        await GiveSharesAsync(company.Id, player.Id, 5, 100m);
+
+        var lowBuy = await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Buy, 1, 74.99m);
+        var highSell = await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Sell, 1, 115.01m);
+
+        Assert.False(lowBuy.Success);
+        Assert.Equal(
+            "Limit price must be between $75.00 and $115.00. The current executable band is $85.00–$110.00.",
+            lowBuy.Error);
+        Assert.False(highSell.Success);
+    }
+
+    // Allowed-range entry: a price inside the allowed range but outside the executable band is accepted and rests open.
+    [Fact]
+    public async Task InsideAllowedRangeButOutsideActiveBandIsAcceptedAndRestsOpen()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new Random(1));
+        var player = (await market.CreatePlayerAsync("Ada")).Player!;
+
+        var waiting = await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Buy, 1, 80m);
+
+        Assert.True(waiting.Success, waiting.Error);
+        Assert.Equal(OrderStatus.Open, waiting.Order!.Status);
+        Assert.Equal(80m, waiting.Order.LimitPrice);
     }
 
     private static async Task StepAsync(MarketService market, int times)

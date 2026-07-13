@@ -22,8 +22,9 @@ public sealed class PriceBandState
 
     public int UpdatedInCycleId { get; set; }
 
-    // Matching skips any order resting below the active lower band, so a forced sale that prices under it would
-    // never execute; this floors such an ask at the band. A band with no reference price yet imposes no floor.
-    public decimal FloorSellPrice(decimal price) =>
-        ReferencePrice > 0m && price < LowerBandPrice ? LowerBandPrice : price;
+    // Matching only crosses orders inside the active band, so a forced order that must execute is pulled onto the
+    // nearest band edge — up to the lower band, or down to the upper band. A band with no reference price yet
+    // imposes no clamp.
+    public decimal ClampToActiveBand(decimal price) =>
+        ReferencePrice > 0m ? Math.Clamp(price, LowerBandPrice, UpperBandPrice) : price;
 }

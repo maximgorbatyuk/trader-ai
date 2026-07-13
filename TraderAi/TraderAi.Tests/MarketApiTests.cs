@@ -193,6 +193,57 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task CompanyContractsExposeExecutableBandAndAllowedOrderRange()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int companyId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var company = await db.Companies.OrderBy(company => company.Id).FirstAsync();
+                var cycle = await db.MarketCycles.OrderByDescending(cycle => cycle.Id).FirstAsync();
+                companyId = company.Id;
+                var state = await db.PriceBandStates.FirstOrDefaultAsync(candidate => candidate.CompanyId == company.Id);
+                if (state is null)
+                {
+                    state = new PriceBandState { CompanyId = company.Id };
+                    db.PriceBandStates.Add(state);
+                }
+                state.State = LuldState.Normal;
+                state.ReferencePrice = 100m;
+                state.LowerBandPrice = 85m;
+                state.UpperBandPrice = 110m;
+                state.UpdatedInCycleId = cycle.Id;
+                await db.SaveChangesAsync();
+            }
+
+            using var companies = await client.GetFromJsonAsync<JsonDocument>("/companies");
+            var companyRow = companies!.RootElement.EnumerateArray().Single(row => row.GetProperty("id").GetInt32() == companyId);
+            Assert.Equal(85m, companyRow.GetProperty("lowerBandPrice").GetDecimal());
+            Assert.Equal(110m, companyRow.GetProperty("upperBandPrice").GetDecimal());
+            Assert.Equal(75m, companyRow.GetProperty("minimumOrderPrice").GetDecimal());
+            Assert.Equal(115m, companyRow.GetProperty("maximumOrderPrice").GetDecimal());
+
+            using var detail = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}");
+            Assert.Equal(85m, detail!.RootElement.GetProperty("lowerBandPrice").GetDecimal());
+            Assert.Equal(110m, detail.RootElement.GetProperty("upperBandPrice").GetDecimal());
+            Assert.Equal(75m, detail.RootElement.GetProperty("minimumOrderPrice").GetDecimal());
+            Assert.Equal(115m, detail.RootElement.GetProperty("maximumOrderPrice").GetDecimal());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AccountingDetailEndpointsPageFilterAndKeepMarginSeparateFromLoans()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");

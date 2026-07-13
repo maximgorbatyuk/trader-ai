@@ -95,7 +95,8 @@ public sealed class MarketService(
     BehaviorAuditService? behaviorAuditService = null,
     TradingClockService? tradingClockService = null,
     SettlementService? settlementService = null,
-    MarginService? marginService = null)
+    MarginService? marginService = null,
+    IOptions<VolatilityHaltOptions>? volatilityHaltOptions = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -108,6 +109,11 @@ public sealed class MarketService(
 
     private readonly IndustrySentimentOptions industrySentimentOptionValues =
         industrySentimentOptions?.Value ?? new IndustrySentimentOptions();
+
+    // Band/allowed-range percentages default to the built-in values so reduced-argument test constructors keep
+    // resolving order price bounds without wiring the volatility-halt options.
+    private readonly VolatilityHaltOptions volatilityHaltOptionValues =
+        volatilityHaltOptions?.Value ?? new VolatilityHaltOptions();
 
     // How far back the long-range price move is measured for the engine's extreme-move reactions.
     private const int LongRangeWindowCycles = 10;
@@ -403,11 +409,12 @@ public sealed class MarketService(
             .ToListAsync();
 
         var participantsById = await dbContext.Participants.ToDictionaryAsync(participant => participant.Id);
-        var luldAffectedCompanyIds = (await dbContext.PriceBandStates
-                .Where(state => state.State != LuldState.Normal)
-                .Select(state => state.CompanyId)
-                .ToListAsync())
+        var bandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
+        var luldAffectedCompanyIds = bandByCompany.Values
+            .Where(state => state.State != LuldState.Normal)
+            .Select(state => state.CompanyId)
             .ToHashSet();
+        var latestPriceByCompany = await LatestPriceByCompanyAsync();
 
         foreach (var order in openOrders)
         {
@@ -415,12 +422,25 @@ public sealed class MarketService(
             {
                 continue;
             }
+
+            var participant = participantsById[order.ParticipantId!.Value];
+            var bounds = BuildOrderPriceBounds(
+                bandByCompany.GetValueOrDefault(order.CompanyId),
+                latestPriceByCompany.GetValueOrDefault(order.CompanyId));
+
+            // Universal validity check: any participant order — the player's, a forced service's — resting beyond
+            // the current allowed range is cancelled and its reservation released; a forced service relists inside
+            // the band on its own next pass.
+            if (bounds is not null && !bounds.IsWithinAllowedRange(order.LimitPrice))
+            {
+                CancelOrder(order, participant, currentCycleId);
+                continue;
+            }
+
             if (order.RelatedLoanId is not null || order.RelatedMarginCallId is not null)
             {
                 continue;
             }
-
-            var participant = participantsById[order.ParticipantId!.Value];
 
             // The bankruptcy service owns the lifecycle of a bankrupt trader's forced-sale orders, so generic
             // ageing must not cancel or reprice them out from under it.
@@ -441,9 +461,9 @@ public sealed class MarketService(
             {
                 CancelOrder(order, participant, currentCycleId);
             }
-            else if (random.NextDouble() < RepriceChance(age))
+            else if (bounds is not null && random.NextDouble() < RepriceChance(age))
             {
-                Reprice(order, participant, currentCycleId);
+                Reprice(order, participant, bounds, currentCycleId);
             }
         }
 
@@ -565,36 +585,51 @@ public sealed class MarketService(
         order.UpdatedAt = DateTime.UtcNow;
     }
 
-    private void Reprice(Order order, Participant participant, int currentCycleId)
+    // A stale order is chased one RepriceStep toward the market and then clamped into the active band, so it can
+    // never compound past the band into the runaway limits the old unbounded step produced. A sell already inside
+    // or above the band steps down to cross sooner; one resting below the band climbs toward it. A buy mirrors
+    // that, stepping up unless it sits above the band. The result stays inside the active band, hence the allowed
+    // range too.
+    private void Reprice(Order order, Participant participant, OrderPriceBounds bounds, int currentCycleId)
     {
         var now = DateTime.UtcNow;
 
+        var stepDown = order.Type == OrderType.Sell
+            ? order.LimitPrice >= bounds.ActiveLowerPrice
+            : order.LimitPrice > bounds.ActiveUpperPrice;
+        var stepped = Round(order.LimitPrice * (stepDown ? 1m - RepriceStep : 1m + RepriceStep));
+        var newLimit = bounds.ClampToActiveBand(stepped);
+        if (newLimit == order.LimitPrice)
+        {
+            return;
+        }
+
         if (order.Type == OrderType.Sell)
         {
-            order.LimitPrice = Round(order.LimitPrice * (1m - RepriceStep));
+            order.LimitPrice = newLimit;
             order.UpdatedAt = now;
             return;
         }
 
-        // A higher bid needs more cash reserved on the unfilled quantity; if the trader cannot cover the
-        // top-up the order is left as-is and simply expires at the age cap.
-        var newLimit = Round(order.LimitPrice * (1m + RepriceStep));
-        var extraReservation = (newLimit - order.LimitPrice) * order.RemainingQuantity;
-        if (extraReservation > participant.AvailableBalance)
+        // A buy's reserved cash tracks its limit on the unfilled quantity: top up when the bid rises, release when
+        // it falls back toward the band. A rise the trader cannot fund leaves the order as-is to expire at the cap;
+        // a release always proceeds.
+        var delta = (newLimit - order.LimitPrice) * order.RemainingQuantity;
+        if (delta > 0m && delta > participant.AvailableBalance)
         {
             return;
         }
 
-        participant.ReservedBalance += extraReservation;
-        order.ReservedCashAmount += extraReservation;
+        participant.ReservedBalance += delta;
+        order.ReservedCashAmount += delta;
         order.LimitPrice = newLimit;
         order.UpdatedAt = now;
 
         dbContext.MoneyTransactions.Add(new MoneyTransaction
         {
             ParticipantId = participant.Id,
-            Type = MoneyTransactionType.Reserve,
-            Amount = extraReservation,
+            Type = delta >= 0m ? MoneyTransactionType.Reserve : MoneyTransactionType.Release,
+            Amount = Math.Abs(delta),
             RelatedOrderId = order.Id,
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
@@ -908,6 +943,50 @@ public sealed class MarketService(
     private async Task<IReadOnlyDictionary<int, decimal>> LatestPriceByCompanyAsync() =>
         await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
 
+    private OrderPriceBounds? BuildOrderPriceBounds(PriceBandState? band, decimal latestPrice) =>
+        OrderPriceBounds.Resolve(
+            band,
+            latestPrice,
+            volatilityHaltOptionValues.LowerBandPercent,
+            volatilityHaltOptionValues.UpperBandPercent,
+            volatilityHaltOptionValues.AllowedOrderLowerPercent,
+            volatilityHaltOptionValues.AllowedOrderUpperPercent);
+
+    // Single-company resolution for the interactive order path; the newest snapshot is the fallback reference
+    // when a company has no persisted band yet.
+    private async Task<OrderPriceBounds?> ResolveOrderPriceBoundsAsync(
+        int companyId,
+        IReadOnlyDictionary<int, decimal>? priceByCompany)
+    {
+        var band = await dbContext.PriceBandStates.FirstOrDefaultAsync(state => state.CompanyId == companyId);
+        var latestPrice = priceByCompany is not null && priceByCompany.TryGetValue(companyId, out var known)
+            ? known
+            : await dbContext.PriceSnapshots
+                .Where(snapshot => snapshot.CompanyId == companyId)
+                .OrderByDescending(snapshot => snapshot.Id)
+                .Select(snapshot => snapshot.Price)
+                .FirstOrDefaultAsync();
+        return BuildOrderPriceBounds(band, latestPrice);
+    }
+
+    // One band lookup per pass covers the whole automated decision batch, so no per-trader or per-order price-band
+    // query runs during it.
+    private async Task<Dictionary<int, OrderPriceBounds>> ResolveOrderPriceBoundsByCompanyAsync(
+        IReadOnlyDictionary<int, decimal> priceByCompany)
+    {
+        var bandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
+        var bounds = new Dictionary<int, OrderPriceBounds>();
+        foreach (var (companyId, price) in priceByCompany)
+        {
+            if (BuildOrderPriceBounds(bandByCompany.GetValueOrDefault(companyId), price) is { } resolved)
+            {
+                bounds[companyId] = resolved;
+            }
+        }
+
+        return bounds;
+    }
+
     private static int RandomDividendInterval(Random rng) =>
         rng.Next(MinDividendIntervalCycles, MaxDividendIntervalCycles + 1);
 
@@ -950,7 +1029,8 @@ public sealed class MarketService(
         int quantity,
         decimal limitPrice,
         IReadOnlyDictionary<int, decimal>? priceByCompany = null,
-        bool deferSave = false)
+        bool deferSave = false,
+        IReadOnlyDictionary<int, OrderPriceBounds>? boundsByCompany = null)
     {
         if (quantity <= 0)
         {
@@ -1017,6 +1097,23 @@ public sealed class MarketService(
             {
                 return PlaceOrderResult.Fail($"Order entry is disabled while the security is in {luldState}.");
             }
+        }
+
+        // Every participant order — the player's, an automated trader's deferred write — must rest inside the
+        // allowed range around the reference; matching still only crosses inside the narrower active band.
+        var bounds = boundsByCompany is not null && boundsByCompany.TryGetValue(companyId, out var passedBounds)
+            ? passedBounds
+            : await ResolveOrderPriceBoundsAsync(companyId, priceByCompany);
+        if (bounds is null)
+        {
+            return PlaceOrderResult.Fail("No reference price is available for this company yet.");
+        }
+
+        if (!bounds.IsWithinAllowedRange(limitPrice))
+        {
+            return PlaceOrderResult.Fail(
+                $"Limit price must be between ${bounds.AllowedMinimumPrice:F2} and ${bounds.AllowedMaximumPrice:F2}. "
+                + $"The current executable band is ${bounds.ActiveLowerPrice:F2}–${bounds.ActiveUpperPrice:F2}.");
         }
 
         if (marginService is not null && type == OrderType.Buy)
@@ -2016,6 +2113,14 @@ public sealed class MarketService(
                 group => (IReadOnlySet<int>)group.Select(order => order.CompanyId).ToHashSet());
 
         var priceByCompany = quotes.ToDictionary(quote => quote.CompanyId, quote => quote.Price);
+
+        // Bounds are resolved once for the whole batch and carried on the quote, so the pure engine prices against
+        // them and the deferred writes validate against the same map without any per-order band query.
+        var boundsByCompany = await ResolveOrderPriceBoundsByCompanyAsync(priceByCompany);
+        quotes = quotes
+            .Select(quote => quote with { Bounds = boundsByCompany.GetValueOrDefault(quote.CompanyId) })
+            .ToList();
+
         var loanLiabilityByParticipant = await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext);
         var fundStatusByParticipantId = await dbContext.CollectiveFunds
             .ToDictionaryAsync(fund => fund.ParticipantId, fund => fund.Status);
@@ -2073,7 +2178,8 @@ public sealed class MarketService(
                     intent.Quantity,
                     intent.LimitPrice,
                     priceByCompany,
-                    deferSave: true);
+                    deferSave: true,
+                    boundsByCompany: boundsByCompany);
 
                 if (result.Success)
                 {

@@ -95,6 +95,9 @@ public sealed class EventTriggerChances
     // Base per-cycle chance an industry's sentiment direction is revised.
     public double IndustrySentimentRevisionBase { get; set; } = 0.25;
 
+    // Chance an automated discretionary order is priced in a waiting outer segment rather than the active band.
+    public double OutsideBandOrder { get; set; } = 0.10;
+
     // Chance a science investigation also pushes the affected industry's sentiment upward.
     public double ScienceSentimentPush { get; set; } = 0.50;
 }

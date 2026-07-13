@@ -84,6 +84,11 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         Assert.Equal(500, floatOrder.Quantity);
         Assert.Equal(100m, floatOrder.LimitPrice);
 
+        // The issuer float lists at the listing reference, so it rests inside the executable band rather than the
+        // waiting outer range.
+        var bounds = OrderPriceBounds.FromReference(100m, 15m, 10m, 25m, 15m);
+        Assert.True(bounds.IsWithinActiveBand(floatOrder.LimitPrice));
+
         var snapshot = await context.PriceSnapshots.AsNoTracking().SingleAsync();
         Assert.Equal(100m, snapshot.Price);
         Assert.Equal(50_000m, snapshot.Capitalization);

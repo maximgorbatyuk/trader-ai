@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
 using TraderAi.Services;
@@ -9,20 +10,20 @@ public static class MarketEndpoints
 {
     public static void MapMarketEndpoints(this WebApplication app)
     {
-        app.MapGet("/companies", async (AppDbContext dbContext) =>
-            Results.Ok(await BuildCompanyResponsesAsync(dbContext)));
+        app.MapGet("/companies", async (AppDbContext dbContext, IOptions<VolatilityHaltOptions> haltOptions) =>
+            Results.Ok(await BuildCompanyResponsesAsync(dbContext, haltOptions.Value)));
 
         // Server-paged companies for the roster page: name search, industry filter, and sortable numeric
         // columns. The array endpoint above still feeds the dashboard map, which needs the whole set.
         app.MapGet("/companies/paged", async (
             int? page, int? pageSize, string? search, string? sort, string? sortDir, int? industryId,
-            AppDbContext dbContext) =>
+            AppDbContext dbContext, IOptions<VolatilityHaltOptions> haltOptions) =>
         {
             var size = Math.Clamp(pageSize ?? 20, 1, 100);
             var pageIndex = Math.Max(page ?? 1, 1);
             var descending = !string.Equals(sortDir, "asc", StringComparison.OrdinalIgnoreCase);
 
-            IEnumerable<CompanyResponse> companies = await BuildCompanyResponsesAsync(dbContext);
+            IEnumerable<CompanyResponse> companies = await BuildCompanyResponsesAsync(dbContext, haltOptions.Value);
             if (!string.IsNullOrWhiteSpace(search))
             {
                 var term = search.Trim().ToLowerInvariant();
@@ -51,9 +52,9 @@ public static class MarketEndpoints
                 desc ? source.OrderByDescending(key) : source.OrderBy(key);
         });
 
-        app.MapGet("/companies/{companyId:int}", async (int companyId, AppDbContext dbContext) =>
+        app.MapGet("/companies/{companyId:int}", async (int companyId, AppDbContext dbContext, IOptions<VolatilityHaltOptions> haltOptions) =>
         {
-            var detail = await BuildCompanyDetailAsync(dbContext, companyId);
+            var detail = await BuildCompanyDetailAsync(dbContext, companyId, haltOptions.Value);
             return detail is null
                 ? Results.NotFound(new { error = "Company not found." })
                 : Results.Ok(detail);
@@ -1626,7 +1627,9 @@ public static class MarketEndpoints
     private static async Task<Dictionary<int, string>> IndustryNameByIdAsync(AppDbContext dbContext) =>
         await dbContext.Industries.ToDictionaryAsync(industry => industry.Id, industry => industry.Name);
 
-    private static async Task<List<CompanyResponse>> BuildCompanyResponsesAsync(AppDbContext dbContext)
+    private static async Task<List<CompanyResponse>> BuildCompanyResponsesAsync(
+        AppDbContext dbContext,
+        VolatilityHaltOptions haltOptions)
     {
         // Delisted companies drop off the live roster and the dashboard map; they surface on the closed-companies
         // page and still resolve on their own detail route.
@@ -1641,25 +1644,46 @@ public static class MarketEndpoints
         var priceBandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
 
         return companies
-            .Select(company => new CompanyResponse(
-                company.Id,
-                company.Name,
-                company.IndustryId,
-                industryNameById.GetValueOrDefault(company.IndustryId),
-                company.IssuedSharesCount,
-                latestPriceByCompany.GetValueOrDefault(company.Id),
-                changeByCompany.GetValueOrDefault(company.Id),
-                latestRatingByCompany.TryGetValue(company.Id, out var rating) ? rating.ToString() : null,
-                priceBandByCompany.TryGetValue(company.Id, out var band) && band.State != LuldState.Normal,
-                band?.State.ToString() ?? LuldState.Normal.ToString(),
-                band?.LimitDirection?.ToString(),
-                band?.ReferencePrice,
-                band?.LowerBandPrice,
-                band?.UpperBandPrice,
-                band?.LimitStateStartedCycleNumber,
-                band?.PauseUntilCycleNumber))
+            .Select(company =>
+            {
+                priceBandByCompany.TryGetValue(company.Id, out var band);
+                var bounds = ResolveOrderPriceBounds(band, latestPriceByCompany.GetValueOrDefault(company.Id), haltOptions);
+                return new CompanyResponse(
+                    company.Id,
+                    company.Name,
+                    company.IndustryId,
+                    industryNameById.GetValueOrDefault(company.IndustryId),
+                    company.IssuedSharesCount,
+                    latestPriceByCompany.GetValueOrDefault(company.Id),
+                    changeByCompany.GetValueOrDefault(company.Id),
+                    latestRatingByCompany.TryGetValue(company.Id, out var rating) ? rating.ToString() : null,
+                    band is not null && band.State != LuldState.Normal,
+                    band?.State.ToString() ?? LuldState.Normal.ToString(),
+                    band?.LimitDirection?.ToString(),
+                    band?.ReferencePrice,
+                    band?.LowerBandPrice,
+                    band?.UpperBandPrice,
+                    bounds?.AllowedMinimumPrice,
+                    bounds?.AllowedMaximumPrice,
+                    band?.LimitStateStartedCycleNumber,
+                    band?.PauseUntilCycleNumber);
+            })
             .ToList();
     }
+
+    // Allowed-range prices are derived: reuse the persisted band as the reference when present, otherwise fall back
+    // to the latest price so a just-listed company still exposes a bound-aware range.
+    private static OrderPriceBounds? ResolveOrderPriceBounds(
+        PriceBandState? band,
+        decimal latestPrice,
+        VolatilityHaltOptions haltOptions) =>
+        OrderPriceBounds.Resolve(
+            band,
+            latestPrice,
+            haltOptions.LowerBandPercent,
+            haltOptions.UpperBandPercent,
+            haltOptions.AllowedOrderLowerPercent,
+            haltOptions.AllowedOrderUpperPercent);
 
     private static async Task<List<ParticipantResponse>> BuildParticipantResponsesAsync(
         AppDbContext dbContext,
@@ -1999,7 +2023,10 @@ public static class MarketEndpoints
             .FirstOrDefaultAsync();
     }
 
-    private static async Task<CompanyDetailResponse?> BuildCompanyDetailAsync(AppDbContext dbContext, int companyId)
+    private static async Task<CompanyDetailResponse?> BuildCompanyDetailAsync(
+        AppDbContext dbContext,
+        int companyId,
+        VolatilityHaltOptions haltOptions)
     {
         var company = await dbContext.Companies.FirstOrDefaultAsync(candidate => candidate.Id == companyId);
         if (company is null)
@@ -2041,6 +2068,7 @@ public static class MarketEndpoints
         var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
         var priceBand = await dbContext.PriceBandStates.FirstOrDefaultAsync(state => state.CompanyId == companyId);
         var isHalted = priceBand?.State is not null and not LuldState.Normal;
+        var orderBounds = ResolveOrderPriceBounds(priceBand, currentPrice, haltOptions);
         var remainingPauseCycles = priceBand?.PauseUntilCycleNumber is int pauseUntil
             ? Math.Max(0, pauseUntil - currentCycleNumber)
             : 0;
@@ -2070,6 +2098,8 @@ public static class MarketEndpoints
             priceBand?.ReferencePrice,
             priceBand?.LowerBandPrice,
             priceBand?.UpperBandPrice,
+            orderBounds?.AllowedMinimumPrice,
+            orderBounds?.AllowedMaximumPrice,
             priceBand?.LimitStateStartedCycleNumber,
             priceBand?.PauseUntilCycleNumber,
             remainingPauseCycles,
@@ -2567,6 +2597,8 @@ public sealed record CompanyResponse(
     decimal? ReferencePrice,
     decimal? LowerBandPrice,
     decimal? UpperBandPrice,
+    decimal? MinimumOrderPrice,
+    decimal? MaximumOrderPrice,
     int? LimitStateStartedCycleNumber,
     int? PauseUntilCycleNumber);
 
@@ -2615,6 +2647,8 @@ public sealed record CompanyDetailResponse(
     decimal? ReferencePrice,
     decimal? LowerBandPrice,
     decimal? UpperBandPrice,
+    decimal? MinimumOrderPrice,
+    decimal? MaximumOrderPrice,
     int? LimitStateStartedCycleNumber,
     int? PauseUntilCycleNumber,
     int RemainingPauseCycles,

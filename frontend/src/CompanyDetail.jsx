@@ -233,10 +233,18 @@ export function CompanyDetail({ companyId }) {
             </dd>
           </div>
           <div className="stat">
-            <dt>Price band</dt>
+            <dt>Executable band</dt>
             <dd className="num">
               {detail.lowerBandPrice != null && detail.upperBandPrice != null
                 ? `${formatMoney(detail.lowerBandPrice)}–${formatMoney(detail.upperBandPrice)}`
+                : '—'}
+            </dd>
+          </div>
+          <div className="stat">
+            <dt>Allowed order range</dt>
+            <dd className="num">
+              {detail.minimumOrderPrice != null && detail.maximumOrderPrice != null
+                ? `${formatMoney(detail.minimumOrderPrice)}–${formatMoney(detail.maximumOrderPrice)}`
                 : '—'}
             </dd>
           </div>
@@ -278,6 +286,8 @@ export function CompanyDetail({ companyId }) {
           luldState={detail.luldState}
           lowerBandPrice={detail.lowerBandPrice}
           upperBandPrice={detail.upperBandPrice}
+          minimumOrderPrice={detail.minimumOrderPrice}
+          maximumOrderPrice={detail.maximumOrderPrice}
           onPlaced={loadAll}
         />
       ) : null}
@@ -351,14 +361,14 @@ function CorporateCashMovementsPanel({ movements, page, onPage }) {
 
 // Trade the company as the player or, if the player runs a fund, through the fund. Buy/Sell reveal the shared
 // order form; a placed order refreshes the page so the new order and balances show at once.
-function TradePanel({ companyId, currentPrice, player, playerOwned, fundOwned, luldState, lowerBandPrice, upperBandPrice, onPlaced }) {
+function TradePanel({ companyId, currentPrice, player, playerOwned, fundOwned, luldState, lowerBandPrice, upperBandPrice, minimumOrderPrice, maximumOrderPrice, onPlaced }) {
   const [side, setSide] = useState('none')
   const fund =
     player.fundParticipantId != null
       ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance, margin: player.fundMargin }
       : null
   const canSell = playerOwned > 0 || fundOwned > 0
-  const company = { id: companyId, currentPrice, luldState, lowerBandPrice, upperBandPrice }
+  const company = { id: companyId, currentPrice, luldState, lowerBandPrice, upperBandPrice, minimumOrderPrice, maximumOrderPrice }
 
   return (
     <Panel title="Trade" className="panel-orders-list">

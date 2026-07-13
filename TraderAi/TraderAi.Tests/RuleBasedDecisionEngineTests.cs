@@ -69,7 +69,7 @@ public sealed class RuleBasedDecisionEngineTests
         var context = new DecisionContext(
             NewParticipant(availableCash: 50_000m, temperament, riskProfile),
             AvailableCash: 50_000m,
-            [new CompanyQuote(1, Price: 100m, PriceChangePct: 0.10m, NetShareDemand: 1000)],
+            [new CompanyQuote(1, Price: 100m, PriceChangePct: 0.10m, NetShareDemand: 1000, Bounds: Bounds(100m))],
             new Dictionary<int, int>(),
             new HashSet<int>(),
             crisisActive);
@@ -103,21 +103,114 @@ public sealed class RuleBasedDecisionEngineTests
         Assert.Empty(CollectIntents(context));
     }
 
+    // Draw order per built order: decision roll, then the inside/outside roll, then the price-position draw. A
+    // roll that does not clear the OutsideBandOrder chance keeps the buy inside the band at the 1-5% market offset.
     [Fact]
-    public void BuyLimitSitsOneToFivePercentAboveMarket()
+    public void InsideBandBuySitsOneToFivePercentAboveMarketWhenTheOutsideRollDoesNotPass()
     {
-        var context = ContextFor(availableCash: 5000m, sharesOwned: 0, companyPrice: 100m);
+        var buy = EngineWith([0.05d, 0.50d, 0d])
+            .Decide(ContextFor(availableCash: 5000m, sharesOwned: 0, companyPrice: 100m, priceChangePct: 0.10m));
 
-        Assert.All(CollectIntents(context), intent => Assert.InRange(intent.LimitPrice, 101m, 105m));
+        Assert.Collection(buy, intent =>
+        {
+            Assert.Equal(OrderType.Buy, intent.Type);
+            Assert.Equal(101m, intent.LimitPrice);
+        });
     }
 
     [Fact]
-    public void SellLimitSitsOneToFivePercentBelowMarket()
+    public void InsideBandSellSitsOneToFivePercentBelowMarketWhenTheOutsideRollDoesNotPass()
     {
-        var context = ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m);
+        var sell = EngineWith([0.05d, 0.50d, 0d])
+            .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, priceChangePct: -0.10m));
 
-        Assert.All(CollectIntents(context), intent => Assert.InRange(intent.LimitPrice, 95m, 99m));
+        Assert.Collection(sell, intent =>
+        {
+            Assert.Equal(OrderType.Sell, intent.Type);
+            Assert.Equal(99m, intent.LimitPrice);
+        });
     }
+
+    [Fact]
+    public void OutsideRollPlacesABuyInTheLowerWaitingSegmentBelowTheBand()
+    {
+        var bounds = Bounds(100m);
+        var buy = EngineWith([0.05d, 0.05d, 0d])
+            .Decide(ContextFor(availableCash: 5000m, sharesOwned: 0, companyPrice: 100m, priceChangePct: 0.10m));
+
+        Assert.Collection(buy, intent =>
+        {
+            Assert.Equal(OrderType.Buy, intent.Type);
+            Assert.Equal(75m, intent.LimitPrice);
+            Assert.False(bounds.IsWithinActiveBand(intent.LimitPrice));
+            Assert.True(bounds.IsWithinAllowedRange(intent.LimitPrice));
+        });
+    }
+
+    [Fact]
+    public void OutsideRollPlacesASellInTheUpperWaitingSegmentAboveTheBand()
+    {
+        var bounds = Bounds(100m);
+        var sell = EngineWith([0.05d, 0.05d, 0.90d])
+            .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, priceChangePct: -0.10m));
+
+        Assert.Collection(sell, intent =>
+        {
+            Assert.Equal(OrderType.Sell, intent.Type);
+            Assert.True(intent.LimitPrice > bounds.ActiveUpperPrice);
+            Assert.True(bounds.IsWithinAllowedRange(intent.LimitPrice));
+        });
+    }
+
+    [Fact]
+    public void BothSidesCanRestInEitherWaitingSegment()
+    {
+        var bounds = Bounds(100m);
+
+        var buyLower = EngineWith([0.05d, 0.05d, 0d])
+            .Decide(ContextFor(availableCash: 5000m, sharesOwned: 0, companyPrice: 100m, priceChangePct: 0.10m));
+        var buyUpper = EngineWith([0.05d, 0.05d, 0.90d])
+            .Decide(ContextFor(availableCash: 5000m, sharesOwned: 0, companyPrice: 100m, priceChangePct: 0.10m));
+        var sellLower = EngineWith([0.05d, 0.05d, 0d])
+            .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, priceChangePct: -0.10m));
+        var sellUpper = EngineWith([0.05d, 0.05d, 0.90d])
+            .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, priceChangePct: -0.10m));
+
+        Assert.Equal(OrderType.Buy, buyLower.Single().Type);
+        Assert.True(buyLower.Single().LimitPrice < bounds.ActiveLowerPrice);
+        Assert.True(buyUpper.Single().LimitPrice > bounds.ActiveUpperPrice);
+        Assert.True(sellLower.Single().LimitPrice < bounds.ActiveLowerPrice);
+        Assert.True(sellUpper.Single().LimitPrice > bounds.ActiveUpperPrice);
+        Assert.All(
+            new[] { buyLower, buyUpper, sellLower, sellUpper },
+            intents => Assert.True(bounds.IsWithinAllowedRange(intents.Single().LimitPrice)));
+    }
+
+    [Fact]
+    public void NoGeneratedPriceEverLeavesTheAllowedRange()
+    {
+        var bounds = Bounds(100m);
+        var context = ContextFor(availableCash: 5000m, sharesOwned: 10, companyPrice: 100m);
+
+        Assert.All(CollectIntents(context), intent =>
+            Assert.True(bounds.IsWithinAllowedRange(intent.LimitPrice), $"price {intent.LimitPrice} left the allowed range"));
+    }
+
+    // One built order draws exactly three doubles — decision, inside/outside, position — and no integer draws.
+    [Fact]
+    public void APricedOrderExhaustsExactlyTheScriptedDrawOrder()
+    {
+        var random = new ScriptedRandom([0.05d, 0.50d, 0d], []);
+        var intents = new RuleBasedDecisionEngine(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), random)
+            .Decide(ContextFor(availableCash: 5000m, sharesOwned: 0, companyPrice: 100m, priceChangePct: 0.10m));
+
+        Assert.Single(intents);
+        Assert.Equal(3, random.DoubleDrawCount);
+        Assert.Equal(0, random.IntegerDrawCount);
+    }
+
+    private static RuleBasedDecisionEngine EngineWith(double[] doubles) =>
+        new(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), new ScriptedRandom(doubles, []));
 
     [Fact]
     public void WithNoSignalBothBuyingAndSellingStayReachable()
@@ -138,8 +231,8 @@ public sealed class RuleBasedDecisionEngineTests
             participant,
             AvailableCash: 50_000m,
             [
-                new CompanyQuote(1, Price: 100m, PriceChangePct: 0.10m, NetShareDemand: 1000),
-                new CompanyQuote(2, Price: 100m),
+                new CompanyQuote(1, Price: 100m, PriceChangePct: 0.10m, NetShareDemand: 1000, Bounds: Bounds(100m)),
+                new CompanyQuote(2, Price: 100m, Bounds: Bounds(100m)),
             ],
             new Dictionary<int, int>(),
             new HashSet<int>());
@@ -243,7 +336,7 @@ public sealed class RuleBasedDecisionEngineTests
         var positive = new RuleBasedDecisionEngine(
             new MaxTradeSizer(),
             Options.Create(new RandomChanceRatesOptions()),
-            new ScriptedRandom([0.10d, 0d], []))
+            new ScriptedRandom([0.10d, 0.50d, 0d], []))
             .Decide(ContextFor(availableCash: 1_000m, sharesOwned: 0, companyPrice: 100m, sectorSentiment: 1_000));
         var neutral = new RuleBasedDecisionEngine(
             new MaxTradeSizer(),
@@ -267,7 +360,7 @@ public sealed class RuleBasedDecisionEngineTests
         var negative = new RuleBasedDecisionEngine(
             new MaxTradeSizer(),
             Options.Create(new RandomChanceRatesOptions()),
-            new ScriptedRandom([0.10d, 0d], [0]))
+            new ScriptedRandom([0.10d, 0.50d, 0d], [0]))
             .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, sectorSentiment: -1_000));
         var neutral = new RuleBasedDecisionEngine(
             new MaxTradeSizer(),
@@ -291,7 +384,7 @@ public sealed class RuleBasedDecisionEngineTests
         var positiveAtLimit = new RuleBasedDecisionEngine(
             new MaxTradeSizer(),
             Options.Create(new RandomChanceRatesOptions()),
-            new ScriptedRandom([0.19d, 0d], []))
+            new ScriptedRandom([0.19d, 0.50d, 0d], []))
             .Decide(ContextFor(availableCash: 1_000m, sharesOwned: 0, companyPrice: 100m, sectorSentiment: 1_000));
         var positiveBeyondLimit = new RuleBasedDecisionEngine(
             new MaxTradeSizer(),
@@ -301,7 +394,7 @@ public sealed class RuleBasedDecisionEngineTests
         var negativeAtLimit = new RuleBasedDecisionEngine(
             new MaxTradeSizer(),
             Options.Create(new RandomChanceRatesOptions()),
-            new ScriptedRandom([0.19d, 0d], []))
+            new ScriptedRandom([0.19d, 0.50d, 0d], []))
             .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, sectorSentiment: -1_000));
         var negativeBeyondLimit = new RuleBasedDecisionEngine(
             new MaxTradeSizer(),
@@ -396,7 +489,7 @@ public sealed class RuleBasedDecisionEngineTests
         return new DecisionContext(
             participant,
             AvailableCash: 0m,
-            [new CompanyQuote(companyId, companyPrice)],
+            [new CompanyQuote(companyId, companyPrice, Bounds: Bounds(companyPrice))],
             new Dictionary<int, int> { [companyId] = sharesOwned },
             new HashSet<int>(),
             LoanLiability: loanLiability);
@@ -458,10 +551,15 @@ public sealed class RuleBasedDecisionEngineTests
         return new DecisionContext(
             NewParticipant(availableCash, temperament, riskProfile),
             availableCash,
-            [new CompanyQuote(companyId, companyPrice, priceChangePct, netShareDemand, longRangeChangePct, sectorSentiment)],
+            [new CompanyQuote(companyId, companyPrice, priceChangePct, netShareDemand, longRangeChangePct, sectorSentiment, Bounds(companyPrice))],
             holdings,
             new HashSet<int>(companiesWithOpenOrders ?? []));
     }
+
+    // Bounds for the approved -15%/+10% band and -25%/+15% allowed range, attached to every test quote so the
+    // engine treats the company as priceable.
+    private static OrderPriceBounds Bounds(decimal price) =>
+        OrderPriceBounds.FromReference(price, 15m, 10m, 25m, 15m);
 
     private static Participant NewParticipant(
         decimal availableCash,

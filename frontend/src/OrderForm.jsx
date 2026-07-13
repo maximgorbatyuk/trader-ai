@@ -4,6 +4,7 @@ import { formatInt, formatMoney } from './format'
 import { PercentButtons } from './PercentButtons'
 import { affordability } from './marginModel'
 import { luldPresentation } from './marketAccounting'
+import { classifyOrderPrice, orderPriceBounds, orderPricePresets } from './orderPriceRange'
 
 const QUANTITY_PRESETS = [
   { label: '10%', value: 0.1 },
@@ -14,14 +15,6 @@ const QUANTITY_PRESETS = [
 ]
 
 const ACTOR_ORDER_LABELS = { player: 'Place order as player', fund: 'Place order as managed fund' }
-
-const PRICE_PRESETS = [
-  { label: '−25%', value: -0.25 },
-  { label: '−10%', value: -0.1 },
-  { label: 'Original', value: 0 },
-  { label: '+10%', value: 0.1 },
-  { label: '+25%', value: 0.25 },
-]
 
 // Order entry for one company and side, scoped so only quantity and limit price are asked (the limit defaults to
 // the current price). Placing as the player is always offered; when the player also runs a fund, a second submit
@@ -38,6 +31,21 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
   const luld = luldPresentation(company.luldState)
   const luldDisabled = luld.orderEntryDisabled
   const luldReason = luldDisabled ? `${luld.indicator} Order entry disabled during ${luld.label}.` : null
+
+  // Where the typed limit rests against the server-provided band and allowed range. A waiting price still
+  // submits (it rests outside the band until the band moves); a price beyond the range or missing bounds blocks.
+  const bounds = orderPriceBounds(company)
+  const pricePresets = orderPricePresets(company)
+  const pricePlacement = classifyOrderPrice(limitPrice, bounds)
+  const priceBlocked = pricePlacement === 'outside' || pricePlacement === 'unavailable'
+  const priceNote =
+    pricePlacement === 'unavailable'
+      ? 'Order price bounds are unavailable right now, so orders cannot be placed.'
+      : pricePlacement === 'outside'
+        ? `Limit price must be between ${formatMoney(bounds.allowedMin)} and ${formatMoney(bounds.allowedMax)}.`
+        : pricePlacement === 'waiting'
+          ? 'This order will wait outside the executable band until the band moves.'
+          : null
 
   const actors = [
     { key: 'player', label: 'Player', id: player.id, balance: player.availableBalance ?? 0, buyingPower: player.margin?.buyingPower ?? player.availableBalance ?? 0, owned: playerMaxQuantity ?? 0 },
@@ -58,16 +66,16 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
     setQuantity(String(Math.ceil(max * fraction)))
   }
 
-  // Price presets nudge the limit off the company's current price; "Original" (value 0) snaps back to it.
-  function pickPrice(delta) {
-    if (company.currentPrice == null) return
-    setLimitPrice(String(Math.round(company.currentPrice * (1 + delta) * 100) / 100))
+  // Price presets snap the limit onto a bound: the allowed-range edges, the executable-band edges, or market.
+  function pickPrice(value) {
+    setLimitPrice(String(value))
   }
 
   function disabledFor(actor) {
     const qty = Number(quantity)
     const price = Number(limitPrice)
     if (luldDisabled || submittingActor != null || !(qty > 0) || !(price > 0)) return true
+    if (priceBlocked) return true
     if (!isSell && qty * price > actor.buyingPower) return true
     if (isSell && qty > actor.owned) return true
     return false
@@ -130,8 +138,8 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
         </div>
         <div className="field">
           <span>Limit price</span>
-          {company.currentPrice != null ? (
-            <PercentButtons options={PRICE_PRESETS} ariaLabel="Adjust price from the current price" onPick={pickPrice} />
+          {pricePresets.length > 0 ? (
+            <PercentButtons options={pricePresets} ariaLabel="Set price from the executable band or allowed range" onPick={pickPrice} />
           ) : null}
           <input
             className="select num"
@@ -165,6 +173,11 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
       {luldReason ? (
         <p className="note note-sm" role="status">
           {luldReason}
+        </p>
+      ) : null}
+      {priceNote ? (
+        <p className="note note-sm" role="status">
+          {priceNote}
         </p>
       ) : null}
       {actors.map((actor) => {

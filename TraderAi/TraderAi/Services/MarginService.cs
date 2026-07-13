@@ -211,6 +211,7 @@ public sealed class MarginService(AppDbContext dbContext, IOptions<MarginOptions
         await dbContext.SaveChangesAsync();
 
         var prices = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
+        var bandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
         foreach (var participant in participants)
         {
             var account = await dbContext.MarginAccounts.SingleAsync(candidate => candidate.ParticipantId == participant.Id);
@@ -285,6 +286,15 @@ public sealed class MarginService(AppDbContext dbContext, IOptions<MarginOptions
                 {
                     continue;
                 }
+
+                // A margin call must actually raise cash, so its ask is pulled onto the active band rather than
+                // resting outside it where matching would never cross.
+                var askPrice = Round(price * (1m - settings.ForcedSaleDiscountRate));
+                if (bandByCompany.GetValueOrDefault(holding.CompanyId) is { } band)
+                {
+                    askPrice = band.ClampToActiveBand(askPrice);
+                }
+
                 dbContext.Orders.Add(new Order
                 {
                     ParticipantId = participant.Id,
@@ -292,7 +302,7 @@ public sealed class MarginService(AppDbContext dbContext, IOptions<MarginOptions
                     Type = OrderType.Sell,
                     Status = OrderStatus.Open,
                     Quantity = quantity,
-                    LimitPrice = Round(price * (1m - settings.ForcedSaleDiscountRate)),
+                    LimitPrice = askPrice,
                     RelatedMarginCallId = call.Id,
                     CreatedInCycleId = currentCycleId,
                     CreatedAt = now,
