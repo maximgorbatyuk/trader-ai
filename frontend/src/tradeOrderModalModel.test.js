@@ -5,6 +5,22 @@ async function loadModel() {
   return import('./tradeOrderModalModel.js').catch(() => ({}))
 }
 
+const executableCompany = {
+  luldState: 'Normal',
+  lowerBandPrice: 90,
+  upperBandPrice: 110,
+  minimumOrderPrice: 80,
+  maximumOrderPrice: 120,
+}
+
+const availableOrder = {
+  actorId: 1,
+  orderParticipantId: 2,
+  remaining: 10,
+  price: 100,
+  company: executableCompany,
+}
+
 test('offers the approved quantity percentages', async () => {
   const { TRADE_QUANTITY_PRESETS } = await loadModel()
 
@@ -38,15 +54,79 @@ test('rejects a buy above margin buying power before submission', async () => {
 
   assert.deepEqual(
     tradeOrderEligibility?.({
+      ...availableOrder,
+      remaining: 30,
       side: 'Buy',
       quantity: 21,
-      price: 100,
       ownedShares: 0,
       buyingPower: 2_000,
-      luldState: 'Normal',
     }),
     { eligible: false, reason: 'Insufficient margin buying power.' },
   )
+})
+
+test('rejects opening an order without a selected actor', async () => {
+  const { tradeOrderAvailability } = await loadModel()
+
+  assert.deepEqual(tradeOrderAvailability?.({ ...availableOrder, actorId: null }), {
+    eligible: false,
+    reason: 'Select a player or managed fund to accept this order.',
+  })
+})
+
+test("rejects accepting the selected actor's own order", async () => {
+  const { tradeOrderAvailability } = await loadModel()
+
+  assert.deepEqual(tradeOrderAvailability?.({ ...availableOrder, orderParticipantId: 1 }), {
+    eligible: false,
+    reason: 'You cannot accept your own order.',
+  })
+})
+
+test('rejects an order with no remaining shares', async () => {
+  const { tradeOrderAvailability } = await loadModel()
+
+  assert.deepEqual(tradeOrderAvailability?.({ ...availableOrder, remaining: 0 }), {
+    eligible: false,
+    reason: 'This order has no remaining shares.',
+  })
+})
+
+test('rejects a quantity above the remaining order size', async () => {
+  const { tradeOrderEligibility } = await loadModel()
+
+  assert.deepEqual(
+    tradeOrderEligibility?.({
+      ...availableOrder,
+      side: 'Buy',
+      quantity: 11,
+      ownedShares: 0,
+      buyingPower: 2_000,
+    }),
+    { eligible: false, reason: 'Quantity exceeds the remaining order size.' },
+  )
+})
+
+test('rejects orders outside the executable price band', async () => {
+  const { tradeOrderAvailability } = await loadModel()
+
+  assert.deepEqual(tradeOrderAvailability?.({ ...availableOrder, price: 85 }), {
+    eligible: false,
+    reason: 'This order is waiting outside the executable price band.',
+  })
+  assert.deepEqual(tradeOrderAvailability?.({ ...availableOrder, price: 125 }), {
+    eligible: false,
+    reason: 'This order is outside the allowed price range.',
+  })
+})
+
+test('rejects an invalid order price when price bounds are unavailable', async () => {
+  const { tradeOrderAvailability } = await loadModel()
+
+  assert.deepEqual(tradeOrderAvailability?.({ ...availableOrder, price: 0, company: null }), {
+    eligible: false,
+    reason: 'This order has an invalid price.',
+  })
 })
 
 test('rejects new orders during every non-normal LULD state', async () => {
@@ -55,12 +135,12 @@ test('rejects new orders during every non-normal LULD state', async () => {
   for (const state of ['LimitState', 'TradingPause', 'Reopening']) {
     assert.deepEqual(
       tradeOrderEligibility?.({
+        ...availableOrder,
         side: 'Buy',
         quantity: 1,
-        price: 100,
         ownedShares: 0,
         buyingPower: 1_000,
-        luldState: state,
+        company: { ...executableCompany, luldState: state },
       }),
       {
         eligible: false,

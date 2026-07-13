@@ -7,7 +7,13 @@ import { PercentButtons } from './PercentButtons'
 import { affordability } from './marginModel'
 import { luldPresentation } from './marketAccounting'
 import { classifyOrderPrice, orderPriceBounds } from './orderPriceRange'
-import { recentPriceValues, recentSentimentValues, TRADE_QUANTITY_PRESETS, tradeOrderEligibility } from './tradeOrderModalModel'
+import {
+  recentPriceValues,
+  recentSentimentValues,
+  TRADE_QUANTITY_PRESETS,
+  tradeOrderAvailability,
+  tradeOrderEligibility,
+} from './tradeOrderModalModel'
 
 const BUY_FILTER_OPTIONS = [
   { value: 'owned', label: 'Owned' },
@@ -222,9 +228,16 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                   : !bounds.available && outsideBand
                     ? 'Outside band'
                     : null
-            const actionable = actor != null && !isOwn && !luldAffected && !outsideBand
-            const isBankrupt = !!bankruptParticipantIds?.has(order.participantId)
             const remaining = order.quantity - order.filledQuantity
+            const availability = tradeOrderAvailability({
+              actorId: actor?.id ?? null,
+              orderParticipantId: order.participantId,
+              remaining,
+              price: order.limitPrice,
+              company,
+            })
+            const actionable = availability.eligible
+            const isBankrupt = !!bankruptParticipantIds?.has(order.participantId)
             const companyName = companyNameById.get(order.companyId) ?? `#${order.companyId}`
             const issuedShares = companySharesById?.get(order.companyId) ?? null
             // Share of the whole company still on offer, shown only for sells (a bid can exceed the float, so
@@ -252,9 +265,23 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
               side === 'Sell'
                 ? `Buy ${remaining} ${companyName} shares at ${formatMoney(order.limitPrice)}`
                 : `Sell ${remaining} ${companyName} shares at ${formatMoney(order.limitPrice)}`
-            const rowClass = `book-row${actionable ? ' is-actionable' : ''}${isOwn ? ' is-own' : ''}${sellable ? ' is-sellable' : ''}`
+            const rowLabel = `Open order details. ${actionLabel}.${actionable ? '' : ` ${availability.reason}`}`
+            const rowClass = `book-row tbl-row-click${actionable ? ' is-actionable' : ''}${isOwn ? ' is-own' : ''}${sellable ? ' is-sellable' : ''}`
             return (
-              <tr key={order.id} className={rowClass}>
+              <tr
+                key={order.id}
+                className={rowClass}
+                role="button"
+                tabIndex={0}
+                aria-label={rowLabel}
+                onClick={() => onTrade(order)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onTrade(order)
+                  }
+                }}
+              >
                 <td className={`num ta-r tone-${tone}`}>
                   {formatMoney(order.limitPrice)}
                   {diffLabel ? (
@@ -317,7 +344,11 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                       className="btn"
                       aria-label={actionLabel}
                       title={side === 'Sell' ? 'Buy this offer' : 'Sell into this bid'}
-                      onClick={() => onTrade(order)}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onTrade(order)
+                      }}
+                      onKeyDown={(event) => event.stopPropagation()}
                     >
                       {side === 'Sell' ? 'Buy' : 'Sell'}
                     </button>
@@ -345,8 +376,16 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
   const takingSellOffer = order.type === 'Sell'
   const playerSide = takingSellOffer ? 'Buy' : 'Sell'
   const remaining = order.quantity - order.filledQuantity
-  const capacity = affordability(actor.availableBalance, actor.buyingPower, order.limitPrice)
-  const initialBuyQuantity = Math.min(remaining, capacity.marginShares)
+  const actorId = actor?.id ?? null
+  const availability = tradeOrderAvailability({
+    actorId,
+    orderParticipantId: order.participantId,
+    remaining,
+    price: order.limitPrice,
+    company,
+  })
+  const capacity = affordability(actor?.availableBalance ?? 0, actor?.buyingPower ?? 0, order.limitPrice)
+  const initialBuyQuantity = availability.eligible ? Math.min(remaining, capacity.marginShares) : 0
   const luld = luldPresentation(company?.luldState)
   // Selling into a bid needs the player's holding for this company; buying an offer does not (null = pending).
   const [ownedShares, setOwnedShares] = useState(takingSellOffer ? 0 : null)
@@ -402,11 +441,11 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
   // A sell can only offer shares the player holds, so seed the quantity with the most that both the holding
   // and the resting bid can absorb.
   useEffect(() => {
-    if (takingSellOffer) return undefined
+    if (takingSellOffer || !availability.eligible || actorId == null) return undefined
 
     let active = true
     api
-      .getHoldings(actor.id)
+      .getHoldings(actorId)
       .then((holdings) => {
         if (!active) return
         const holding = holdings.find((item) => item.companyId === order.companyId)
@@ -420,16 +459,20 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
     return () => {
       active = false
     }
-  }, [takingSellOffer, actor.id, order.companyId, remaining])
+  }, [takingSellOffer, availability.eligible, actorId, order.companyId, remaining])
 
   function onBackdropClick(event) {
     if (event.target === event.currentTarget) onClose()
   }
 
-  const loadingHoldings = !takingSellOffer && ownedShares === null
-  const noShares = !takingSellOffer && ownedShares === 0
-  const maxQuantity = takingSellOffer ? Math.min(remaining, capacity.marginShares) : Math.min(ownedShares ?? 0, remaining)
-  const noBuyingPower = takingSellOffer && maxQuantity === 0
+  const loadingHoldings = availability.eligible && !takingSellOffer && ownedShares === null
+  const noShares = availability.eligible && !takingSellOffer && ownedShares === 0
+  const maxQuantity = !availability.eligible
+    ? 0
+    : takingSellOffer
+      ? Math.min(remaining, capacity.marginShares)
+      : Math.min(ownedShares ?? 0, remaining)
+  const noBuyingPower = availability.eligible && takingSellOffer && maxQuantity === 0
   const quantityNumber = Number(quantity)
 
   // Fill the quantity from a percentage of the max the bid/offer and holding allow, rounding up.
@@ -437,14 +480,17 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
     setQuantity(String(Math.ceil(maxQuantity * fraction)))
   }
   const eligibility = tradeOrderEligibility({
+    actorId,
+    orderParticipantId: order.participantId,
+    remaining,
+    company,
     side: playerSide,
     quantity: quantityNumber,
     price: order.limitPrice,
     ownedShares,
-    buyingPower: actor.buyingPower,
-    luldState: company?.luldState,
+    buyingPower: actor?.buyingPower ?? 0,
   })
-  const validQuantity = eligibility.eligible && quantityNumber <= maxQuantity
+  const validQuantity = eligibility.eligible
   const total = (validQuantity ? quantityNumber : 0) * order.limitPrice
   const priceValues = recentPriceValues(priceHistory ?? [])
   const sentimentValues = recentSentimentValues(sentimentHistory ?? [])
@@ -466,12 +512,12 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
 
   async function handleSubmit(event) {
     event.preventDefault()
-    if (!validQuantity) return
+    if (!validQuantity || actorId == null) return
     setError(null)
     setSubmitting(true)
     try {
       await api.placeOrder({
-        participantId: actor.id,
+        participantId: actorId,
         companyId: order.companyId,
         type: playerSide,
         quantity: quantityNumber,
@@ -594,10 +640,16 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
               <dd>{companyName}</dd>
             </div>
             <div>
-              <dt>You</dt>
-              <dd className={`tone-${takingSellOffer ? 'up' : 'down'}`}>
-                <span aria-hidden="true">{takingSellOffer ? '▲' : '▼'} </span>
-                {playerSide}
+              <dt>{actor == null ? 'Actor' : 'You'}</dt>
+              <dd className={actor == null ? undefined : `tone-${takingSellOffer ? 'up' : 'down'}`}>
+                {actor == null ? (
+                  'Not selected'
+                ) : (
+                  <>
+                    <span aria-hidden="true">{takingSellOffer ? '▲' : '▼'} </span>
+                    {playerSide}
+                  </>
+                )}
               </dd>
             </div>
             <div>
@@ -610,20 +662,22 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
             </div>
           </dl>
 
-          {takingSellOffer ? (
+          {availability.eligible && takingSellOffer && actor != null ? (
             <p className="note note-sm">
               {formatMoney(actor.availableBalance)} available cash · {formatMoney(actor.buyingPower)} margin buying power ·{' '}
               {capacity.cashShares} cash / {capacity.marginShares} total shares at this limit
             </p>
           ) : null}
 
-          {luld.orderEntryDisabled ? (
+          {!availability.eligible ? (
             <p className="note note-sm" role="status">
-              {luld.indicator} {luld.label}: {luld.executionNote}
+              {luld.orderEntryDisabled && availability.reason.startsWith('Order entry')
+                ? `${luld.indicator} ${availability.reason} ${luld.executionNote}`
+                : availability.reason}
             </p>
           ) : null}
 
-          {noBuyingPower ? (
+          {!availability.eligible ? null : noBuyingPower ? (
             <p className="note note-sm">This actor has insufficient margin buying power for one share at this limit.</p>
           ) : loadingHoldings ? (
             <p className="note note-sm">Checking your holdings…</p>
@@ -657,15 +711,15 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
               {error}
             </p>
           ) : null}
-          {!loadingHoldings && !validQuantity && quantity !== '' ? (
+          {availability.eligible && !loadingHoldings && !validQuantity && quantity !== '' ? (
             <p className="note note-sm" role="status">{eligibility.reason}</p>
           ) : null}
 
           <footer className="modal-foot">
             <button type="button" className="btn" ref={closeRef} onClick={onClose}>
-              {noShares ? 'Close' : 'Cancel'}
+              {!availability.eligible || noShares || noBuyingPower ? 'Close' : 'Cancel'}
             </button>
-            {loadingHoldings || noShares || noBuyingPower ? null : (
+            {!availability.eligible || loadingHoldings || noShares || noBuyingPower ? null : (
               <button type="submit" className="btn btn-primary" disabled={submitting || !validQuantity}>
                 {submitting ? 'Placing…' : actor.kind === 'fund' ? 'Place order as managed fund' : 'Place order as player'}
               </button>
