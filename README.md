@@ -24,7 +24,7 @@ The market can also be hit by a crisis — a random shock, growing more likely t
 
 ![The Newswire feed: a crisis shows as a red alert and a science breakthrough as a green one, between ordinary headlines.](docs/images/market-events.png)
 
-Cash-strapped traders may instead pool into a collective fund, which trades as its own participant and is tagged with a green label in the Traders table. A member contributes most of its cash, stops bidding on its own, and earns a share of the fund's dividends; the fund returns that deposit when the member leaves, and once only two members remain and one departs it sells out and splits the proceeds between them. A member drops out of the Traders table while it belongs to a fund and returns once it leaves or the fund closes. A fund's page lists who has joined and when.
+Cash-strapped traders may instead pool into a collective fund, which trades as its own participant and is tagged with a green label in the Traders table. A member contributes most of its cash, stops bidding on its own, and earns a share of the fund's dividends. Voluntary departure is locked for seven trading days; one day before eligibility an AI fund raises its normal 10% cash buffer toward 15% so the returned deposit is less likely to require emergency borrowing. Once only two members remain and one departs, the fund sells out and splits the proceeds between them. A member drops out of the Traders table while it belongs to a fund and returns once it leaves or the fund closes. A fund's page lists who has joined and when.
 
 ![A collective fund's page: its green status tag and the Fund members who have joined, with the cycle each joined, deposits, and payouts.](docs/images/collective-fund.png)
 

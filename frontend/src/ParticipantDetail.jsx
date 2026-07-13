@@ -389,7 +389,7 @@ function MembersPanel({ members }) {
                 <th
                   scope="col"
                   className="ta-r"
-                  title="Cycles until the member becomes eligible to leave (negative), then cycles it has stayed past that point (positive). Founders never leave."
+                  title="Trading days until the member becomes eligible to leave (negative), then trading days past that point (positive). Founders never switch."
                 >
                   Leave in
                 </th>
@@ -425,17 +425,16 @@ function MembersPanel({ members }) {
   )
 }
 
-// A member's standing relative to switch-eligibility: a founder never leaves, a member still inside its locked
-// tenure counts down (negative), and one past the tenure shows how many cycles it has held on while rolling to
-// leave (zero or positive, flagged since it may go any cycle).
+// A member's standing relative to leave eligibility uses trading days so market pauses and intraday cycles do
+// not shorten the lock. Founders keep their label because they never switch away.
 function MemberLeaveCountdown({ member }) {
   if (member.isFounder) {
     return <span className="muted-sub">Founder</span>
   }
-  if (member.leaveCountdownCycles >= 0) {
-    return <span className="tag tag-flag">{formatSignedInt(member.leaveCountdownCycles)}</span>
+  if (member.leaveCountdownTradingDays >= 0) {
+    return <span className="tag tag-flag">{formatSignedInt(member.leaveCountdownTradingDays)}</span>
   }
-  return formatSignedInt(member.leaveCountdownCycles)
+  return formatSignedInt(member.leaveCountdownTradingDays)
 }
 
 function HoldingsPanel({ holdings }) {

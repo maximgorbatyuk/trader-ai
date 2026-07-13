@@ -417,9 +417,13 @@ public static class MarketEndpoints
                 desc ? source.OrderByDescending(key) : source.OrderBy(key);
         });
 
-        app.MapGet("/participants/{participantId:int}", async (int participantId, AppDbContext dbContext, MarginService marginService) =>
+        app.MapGet("/participants/{participantId:int}", async (
+            int participantId,
+            AppDbContext dbContext,
+            MarginService marginService,
+            IOptions<CollectiveFundOptions> fundOptions) =>
         {
-            var detail = await BuildParticipantDetailAsync(dbContext, marginService, participantId);
+            var detail = await BuildParticipantDetailAsync(dbContext, marginService, fundOptions.Value, participantId);
             return detail is null
                 ? Results.NotFound(new { error = "Participant not found." })
                 : Results.Ok(detail);
@@ -430,7 +434,8 @@ public static class MarketEndpoints
             UpdateParticipantProfileRequest request,
             MarketService marketService,
             AppDbContext dbContext,
-            MarginService marginService) =>
+            MarginService marginService,
+            IOptions<CollectiveFundOptions> fundOptions) =>
         {
             var updated = await marketService.UpdateParticipantProfileAsync(
                 participantId,
@@ -439,7 +444,7 @@ public static class MarketEndpoints
 
             return updated is null
                 ? Results.NotFound(new { error = "Participant not found." })
-                : Results.Ok(await BuildParticipantDetailAsync(dbContext, marginService, participantId));
+                : Results.Ok(await BuildParticipantDetailAsync(dbContext, marginService, fundOptions.Value, participantId));
         });
 
         app.MapGet("/participants/{participantId:int}/holdings", async (int participantId, AppDbContext dbContext) =>
@@ -2109,6 +2114,7 @@ public static class MarketEndpoints
     private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(
         AppDbContext dbContext,
         MarginService marginService,
+        CollectiveFundOptions fundOptions,
         int participantId)
     {
         var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
@@ -2127,7 +2133,7 @@ public static class MarketEndpoints
         CollectiveFundMemberResponse[] fundMembers = [];
         if (participant.Type == ParticipantType.CollectiveFund)
         {
-            (fundStatus, fundMembers) = await BuildCollectiveFundMembersAsync(dbContext, participantId);
+            (fundStatus, fundMembers) = await BuildCollectiveFundMembersAsync(dbContext, fundOptions, participantId);
         }
 
         // For an ordinary trader, surface the fund it has joined (if any) so its page can link there.
@@ -2360,6 +2366,7 @@ public static class MarketEndpoints
 
     private static async Task<(string? Status, CollectiveFundMemberResponse[] Members)> BuildCollectiveFundMembersAsync(
         AppDbContext dbContext,
+        CollectiveFundOptions fundOptions,
         int fundParticipantId)
     {
         var fund = await dbContext.CollectiveFunds.FirstOrDefaultAsync(candidate => candidate.ParticipantId == fundParticipantId);
@@ -2377,6 +2384,18 @@ public static class MarketEndpoints
             .ToDictionaryAsync(candidate => candidate.Id);
         var cycleNumberById = await dbContext.MarketCycles
             .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+        var joinedCycleIds = memberships.Select(member => member.JoinedInCycleId).Distinct().ToList();
+        var joinedTradingDayByCycleId = await (
+                from cycle in dbContext.MarketCycles
+                join day in dbContext.TradingDays on cycle.TradingDayId equals day.Id
+                where joinedCycleIds.Contains(cycle.Id)
+                select new { cycle.Id, day.DayNumber })
+            .ToDictionaryAsync(entry => entry.Id, entry => entry.DayNumber);
+        var currentTradingDayNumber = await (
+                from market in dbContext.Markets
+                join day in dbContext.TradingDays on market.CurrentTradingDayId equals day.Id
+                select (int?)day.DayNumber)
+            .FirstOrDefaultAsync() ?? 0;
 
         // What the fund has paid each member as pass-through dividends, kept separate from their own holdings' dividends.
         var payoutByMember = (await dbContext.MoneyTransactions
@@ -2401,7 +2420,9 @@ public static class MarketEndpoints
                     member.DepositAmount,
                     payoutByMember.GetValueOrDefault(member.ParticipantId),
                     member.IsLeaving,
-                    member.TenureCycles - CollectiveFundService.MinTenureToSwitchCycles,
+                    currentTradingDayNumber
+                        - joinedTradingDayByCycleId.GetValueOrDefault(member.JoinedInCycleId)
+                        - Math.Max(0, fundOptions.MinimumMembershipTradingDays),
                     member.ParticipantId == fund.FoundedByParticipantId);
             })
             .ToArray();
@@ -2852,10 +2873,9 @@ public sealed record CollectiveFundMemberResponse(
     decimal Deposit,
     decimal Payouts,
     bool IsLeaving,
-    // Cycles relative to switch-eligibility: negative while the member is still within its locked tenure (that
-    // many cycles remain before it may start leaving), zero or positive once past it (cycles survived while
-    // rolling to leave). Ignored for founders, who never switch away.
-    int LeaveCountdownCycles,
+    // Trading days relative to leave eligibility. Negative means the membership is still locked; zero or
+    // positive means the member may take its ordinary leave rolls. Founders never switch away.
+    int LeaveCountdownTradingDays,
     bool IsFounder);
 
 public sealed record UpdateParticipantProfileRequest(Temperament Temperament, RiskProfile RiskProfile);

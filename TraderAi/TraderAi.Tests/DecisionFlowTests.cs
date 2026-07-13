@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
 using TraderAi.Services;
@@ -145,6 +146,104 @@ public sealed class DecisionFlowTests : IDisposable
         Assert.Equal(0, await context.Orders.CountAsync());
     }
 
+    [Fact]
+    public async Task FundKeepsFifteenPercentWhenMemberCanLeaveNextTradingDay()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var currentCycle = await context.MarketCycles.SingleAsync();
+        var currentDay = new TradingDay { DayNumber = 20, State = TradingSessionState.Trading };
+        var joinedDay = new TradingDay { DayNumber = 14, State = TradingSessionState.Trading };
+        context.TradingDays.AddRange(currentDay, joinedDay);
+        await context.SaveChangesAsync();
+        currentCycle.TradingDayId = currentDay.Id;
+        currentCycle.TradingCycleNumber = 1;
+        currentDay.OpenedInCycleId = currentCycle.Id;
+        var joinedCycle = new MarketCycle
+        {
+            CycleNumber = 14,
+            TradingDayId = joinedDay.Id,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Completed,
+        };
+        context.MarketCycles.Add(joinedCycle);
+        await context.SaveChangesAsync();
+        joinedDay.OpenedInCycleId = joinedCycle.Id;
+        var market = await context.Markets.SingleAsync();
+        market.CurrentTradingDayId = currentDay.Id;
+
+        var fundParticipant = new Participant
+        {
+            Name = "Reserve Fund",
+            Type = ParticipantType.CollectiveFund,
+            Temperament = Temperament.Balanced,
+            RiskProfile = RiskProfile.Medium,
+            InitialBalance = 200m,
+            CurrentBalance = 200m,
+            SettledCashBalance = 200m,
+            IsActive = true,
+        };
+        var member = new Participant
+        {
+            Name = "Reserve Member",
+            Type = ParticipantType.Individual,
+            Temperament = Temperament.Balanced,
+            RiskProfile = RiskProfile.Medium,
+            CurrentBalance = 0m,
+            SettledCashBalance = 0m,
+            IsActive = true,
+        };
+        context.Participants.AddRange(fundParticipant, member);
+        await context.SaveChangesAsync();
+        var company = await context.Companies.FirstAsync();
+        context.Holdings.Add(new Holding
+        {
+            ParticipantId = fundParticipant.Id,
+            CompanyId = company.Id,
+            Quantity = 8,
+            SettledQuantity = 8,
+            AverageCost = 100m,
+        });
+        var fund = new CollectiveFund
+        {
+            ParticipantId = fundParticipant.Id,
+            FoundedByParticipantId = member.Id,
+            Status = CollectiveFundStatus.Active,
+            CreatedInCycleId = joinedCycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.CollectiveFunds.Add(fund);
+        await context.SaveChangesAsync();
+        context.CollectiveFundParticipants.Add(new CollectiveFundParticipant
+        {
+            CollectiveFundId = fund.Id,
+            ParticipantId = member.Id,
+            JoinedAt = DateTime.UtcNow,
+            JoinedInCycleId = joinedCycle.Id,
+            DepositAmount = 900m,
+        });
+        await context.SaveChangesAsync();
+
+        var engine = new CashCapturingDecisionEngine();
+        var marginOptions = Options.Create(new MarginOptions { Enabled = true });
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            engine,
+            new MarketCycleLock(),
+            new Random(1),
+            marginService: new MarginService(context, marginOptions),
+            collectiveFundOptions: Options.Create(new CollectiveFundOptions
+            {
+                MinimumMembershipTradingDays = 7,
+                CashBufferFraction = 0.10m,
+                PreLeaveCashBufferFraction = 0.15m,
+            }));
+
+        await service.GenerateDecisionsAsync();
+
+        Assert.Equal(50m, engine.AvailableCashByParticipantId[fundParticipant.Id]);
+    }
+
     public void Dispose()
     {
         context.Dispose();
@@ -158,6 +257,17 @@ public sealed class DecisionFlowTests : IDisposable
         public IReadOnlyList<OrderIntent> Decide(DecisionContext context)
         {
             LastQuotes = context.Companies.ToArray();
+            return [];
+        }
+    }
+
+    private sealed class CashCapturingDecisionEngine : IDecisionEngine
+    {
+        public Dictionary<int, decimal> AvailableCashByParticipantId { get; } = [];
+
+        public IReadOnlyList<OrderIntent> Decide(DecisionContext context)
+        {
+            AvailableCashByParticipantId[context.Participant.Id] = context.AvailableCash;
             return [];
         }
     }

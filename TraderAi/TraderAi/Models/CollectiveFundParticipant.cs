@@ -22,8 +22,7 @@ public sealed class CollectiveFundParticipant
     // Consecutive cycles the member has sat at or above the leave line; the leave chance ramps with it.
     public int LeaveRampCycles { get; set; }
 
-    // Cycles the member has belonged to this fund, incremented once per cycle; it must sit here a minimum tenure
-    // before it may leave to chase a better-performing fund.
+    // Retained for schema compatibility; leave eligibility now derives from the joined cycle's trading day.
     public int TenureCycles { get; set; }
 
     // Set once the member has decided to leave but the fund has not yet freed enough cash to return the deposit.

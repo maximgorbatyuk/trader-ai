@@ -96,7 +96,8 @@ public sealed class MarketService(
     TradingClockService? tradingClockService = null,
     SettlementService? settlementService = null,
     MarginService? marginService = null,
-    IOptions<VolatilityHaltOptions>? volatilityHaltOptions = null)
+    IOptions<VolatilityHaltOptions>? volatilityHaltOptions = null,
+    IOptions<CollectiveFundOptions>? collectiveFundOptions = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -109,6 +110,9 @@ public sealed class MarketService(
 
     private readonly IndustrySentimentOptions industrySentimentOptionValues =
         industrySentimentOptions?.Value ?? new IndustrySentimentOptions();
+
+    private readonly CollectiveFundOptions collectiveFundOptionValues =
+        collectiveFundOptions?.Value ?? new CollectiveFundOptions();
 
     // Band/allowed-range percentages default to the built-in values so reduced-argument test constructors keep
     // resolving order price bounds without wiring the volatility-halt options.
@@ -127,10 +131,6 @@ public sealed class MarketService(
 
     // After this many consecutive cycles unable to afford any share, a holder liquidates to raise cash.
     private const int CashStarvedLimitCycles = 5;
-
-    // A collective fund keeps roughly this share of its total worth liquid so it can return members' deposits,
-    // spending only the rest when it trades.
-    private const decimal CollectiveFundCashBufferFraction = 0.10m;
 
     // A fund advertisement is priced as a fraction of fund worth that falls the faster the fund has grown: a fund
     // flat or down over the window pays the dear fraction, one up by the growth cap or more pays the cheap
@@ -2136,6 +2136,7 @@ public sealed class MarketService(
                 .Select(member => member.ParticipantId)
                 .ToListAsync())
             .ToHashSet();
+        var preLeaveBufferFundParticipantIds = await PreLeaveBufferFundParticipantIdsAsync(market.CurrentTradingDayId);
 
         var ordersPlaced = 0;
 
@@ -2160,7 +2161,13 @@ public sealed class MarketService(
                 : await marginService.GetBuyingPowerAsync(trader.Id, priceByCompany);
             var context = new DecisionContext(
                 trader,
-                AvailableCashForDecisions(trader, memberParticipantIds, holdingsByOwner, priceByCompany, buyingPower),
+                AvailableCashForDecisions(
+                    trader,
+                    memberParticipantIds,
+                    preLeaveBufferFundParticipantIds,
+                    holdingsByOwner,
+                    priceByCompany,
+                    buyingPower),
                 quotes,
                 holdingsByOwner.GetValueOrDefault(trader.Id, NoHoldings),
                 openOrdersByParticipant.GetValueOrDefault(trader.Id, NoOpenOrders),
@@ -2193,11 +2200,11 @@ public sealed class MarketService(
     }
 
     // A fund member hands its buying to the fund — cash is zeroed so the engine can only sell its own shares.
-    // Everyone else may size into their remaining borrowing headroom on top of available cash; a fund still
-    // reserves a tenth of its worth liquid for deposit returns before that headroom applies.
+    // Automated fund buys stay within settled cash above the payout reserve so margin cannot consume that liquidity.
     private decimal AvailableCashForDecisions(
         Participant trader,
         IReadOnlySet<int> memberParticipantIds,
+        IReadOnlySet<int> preLeaveBufferFundParticipantIds,
         IReadOnlyDictionary<int, IReadOnlyDictionary<int, int>> holdingsByOwner,
         IReadOnlyDictionary<int, decimal> priceByCompany,
         decimal buyingPower)
@@ -2216,7 +2223,45 @@ public sealed class MarketService(
         }
 
         var totalWorth = trader.AvailableBalance + holdingsValue;
-        return Math.Max(0m, buyingPower - (CollectiveFundCashBufferFraction * totalWorth));
+        var bufferFraction = preLeaveBufferFundParticipantIds.Contains(trader.Id)
+            ? collectiveFundOptionValues.PreLeaveCashBufferFraction
+            : collectiveFundOptionValues.CashBufferFraction;
+        var cashReserve = Math.Clamp(bufferFraction, 0m, 1m) * totalWorth;
+        var settledCashAboveReserve = Math.Max(
+            0m,
+            Math.Min(trader.AvailableBalance, trader.SettledCashBalance) - cashReserve);
+        return Math.Min(buyingPower, settledCashAboveReserve);
+    }
+
+    private async Task<IReadOnlySet<int>> PreLeaveBufferFundParticipantIdsAsync(int? currentTradingDayId)
+    {
+        if (currentTradingDayId is not int dayId)
+        {
+            return new HashSet<int>();
+        }
+
+        var currentTradingDayNumber = await dbContext.TradingDays
+            .Where(day => day.Id == dayId)
+            .Select(day => (int?)day.DayNumber)
+            .FirstOrDefaultAsync();
+        if (currentTradingDayNumber is null)
+        {
+            return new HashSet<int>();
+        }
+
+        var eligibilityCutoffDay = currentTradingDayNumber.Value
+            + 1
+            - Math.Max(0, collectiveFundOptionValues.MinimumMembershipTradingDays);
+        return (await (
+                from membership in dbContext.CollectiveFundParticipants
+                join joinedCycle in dbContext.MarketCycles on membership.JoinedInCycleId equals joinedCycle.Id
+                join joinedDay in dbContext.TradingDays on joinedCycle.TradingDayId equals joinedDay.Id
+                join fund in dbContext.CollectiveFunds on membership.CollectiveFundId equals fund.Id
+                where membership.IsLeaving || joinedDay.DayNumber <= eligibilityCutoffDay
+                select fund.ParticipantId)
+            .Distinct()
+            .ToListAsync())
+            .ToHashSet();
     }
 
     private async Task<Market> ResetDemoMarketCoreAsync()

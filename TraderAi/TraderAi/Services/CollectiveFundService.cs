@@ -41,18 +41,10 @@ public sealed class CollectiveFundService(
     // A fund that owns nothing and cannot afford even the cheapest share for this many consecutive cycles unwinds.
     private const int MaxIdleCycles = 20;
 
-    // The slice of its cash a fund never spends (mirrors MarketService.CollectiveFundCashBufferFraction), so
-    // idleness is judged against what the fund would actually be able to deal with.
-    private const decimal CashBufferFraction = 0.10m;
-
     // A closing fund that hands a member a payout at or below this fraction of its deposit inflicted a
     // devastating loss; the member is flagged so the market-exit service can offer it a one-shot chance to quit.
     private const decimal FundLossFlagFraction = 0.20m;
 
-    // A non-founder member may leave to chase a better fund only after this tenure; each cycle past it, it rolls
-    // to switch at the base chance shifted by temperament (aggressive leaves more readily, conservative less).
-    // Public so the API can show each member how many cycles remain before it becomes switch-eligible.
-    public const int MinTenureToSwitchCycles = 50;
     private const double SwitchTemperamentDelta = 0.05;
 
     // The founder closes the fund once its net worth collapses to this fraction of its all-time peak, or once it
@@ -92,6 +84,8 @@ public sealed class CollectiveFundService(
     private Dictionary<int, decimal> latestPriceByCompany = null!;
     private Dictionary<int, PriceBandState> bandByCompany = null!;
     private Dictionary<(int ParticipantId, int CompanyId), int> available = null!;
+    private Dictionary<int, int> tradingDayNumberByCycleId = null!;
+    private int currentTradingDayNumber;
 
     // Distinct dividend-payout cycle ids, most recent first (ids rise monotonically with cycles), and each fund
     // participant's dividend receipts keyed by payout cycle id; both feed fund scoring and the founder close.
@@ -118,7 +112,7 @@ public sealed class CollectiveFundService(
     // peak worth, decaying advertised popularity, running the founder close, enforcing member capacity, detecting
     // fund growth, posting the growth newswire, or dropping a stale membership. In the member pass (fund id, then participant id order) each
     // member draws at most once — the forced-leave roll if it sits at or above the leave line, otherwise the
-    // switch roll if it is a non-founder past the minimum tenure, otherwise nothing. In the join pass (independent
+    // switch roll if it is a non-founder past the minimum trading-day tenure, otherwise nothing. In the join pass (independent
     // traders, id order) a switch-flagged member draws nothing, and every other eligible trader draws once; that
     // single draw both decides join-versus-open and, when it joins, positions the score-proportional fund pick.
     public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
@@ -167,6 +161,8 @@ public sealed class CollectiveFundService(
                 continue;
             }
 
+            PrepareForNextTradingDayLeave(fund, currentCycleId, now);
+
             foreach (var membership in membershipsByFundId[fund.Id].OrderBy(member => member.ParticipantId).ToList())
             {
                 if (fund.Status != CollectiveFundStatus.Active)
@@ -182,8 +178,6 @@ public sealed class CollectiveFundService(
                     RemoveMembership(fund, membership);
                     continue;
                 }
-
-                membership.TenureCycles++;
 
                 if (membership.IsLeaving)
                 {
@@ -343,6 +337,18 @@ public sealed class CollectiveFundService(
 
         funds = await dbContext.CollectiveFunds.ToListAsync();
         var memberships = await dbContext.CollectiveFundParticipants.ToListAsync();
+        var membershipCycleIds = memberships
+            .Select(member => member.JoinedInCycleId)
+            .Append(currentCycleId)
+            .Distinct()
+            .ToList();
+        tradingDayNumberByCycleId = await (
+                from cycle in dbContext.MarketCycles
+                join day in dbContext.TradingDays on cycle.TradingDayId equals day.Id
+                where membershipCycleIds.Contains(cycle.Id)
+                select new { cycle.Id, day.DayNumber })
+            .ToDictionaryAsync(entry => entry.Id, entry => entry.DayNumber);
+        currentTradingDayNumber = tradingDayNumberByCycleId.GetValueOrDefault(currentCycleId);
         membershipByParticipantId = memberships.ToDictionary(member => member.ParticipantId);
         membershipsByFundId = funds.ToDictionary(
             fund => fund.Id,
@@ -458,6 +464,12 @@ public sealed class CollectiveFundService(
 
     private async Task MaybeDecideLeave(CollectiveFund fund, CollectiveFundParticipant membership, Participant member, int currentCycleId, DateTime now)
     {
+        if (MembershipTradingDays(membership) < Math.Max(0, options.Value.MinimumMembershipTradingDays))
+        {
+            membership.LeaveRampCycles = 0;
+            return;
+        }
+
         // A member that has grown rich graduates out of the fund on the ramping leave roll and does not come back.
         if (member.CurrentBalance >= LeaveBalanceThreshold)
         {
@@ -476,8 +488,8 @@ public sealed class CollectiveFundService(
 
         membership.LeaveRampCycles = 0;
 
-        // Founders stay put; everyone else, once past the minimum tenure, rolls to leave and chase a better fund.
-        if (member.Id == fund.FoundedByParticipantId || membership.TenureCycles < MinTenureToSwitchCycles)
+        // Founders stay put; everyone else past the minimum trading-day tenure may roll to chase a better fund.
+        if (member.Id == fund.FoundedByParticipantId)
         {
             return;
         }
@@ -499,6 +511,50 @@ public sealed class CollectiveFundService(
             Temperament.Conservative => -SwitchTemperamentDelta,
             _ => 0.0,
         };
+
+    private int MembershipTradingDays(CollectiveFundParticipant membership)
+    {
+        var joinedTradingDayNumber = tradingDayNumberByCycleId.GetValueOrDefault(membership.JoinedInCycleId);
+        if (currentTradingDayNumber <= 0 || joinedTradingDayNumber <= 0)
+        {
+            return 0;
+        }
+
+        return Math.Max(0, currentTradingDayNumber - joinedTradingDayNumber);
+    }
+
+    private void PrepareForNextTradingDayLeave(CollectiveFund fund, int currentCycleId, DateTime now)
+    {
+        if (fund.IsPlayerManaged)
+        {
+            return;
+        }
+
+        var minimumTradingDays = Math.Max(0, options.Value.MinimumMembershipTradingDays);
+        var becomesEligibleNextDay = membershipsByFundId[fund.Id]
+            .Any(membership => !membership.IsLeaving
+                && MembershipTradingDays(membership) + 1 == minimumTradingDays);
+        if (!becomesEligibleNextDay)
+        {
+            return;
+        }
+
+        var fundParticipant = participantsById[fund.ParticipantId];
+        foreach (var order in OpenOrders(fundParticipant.Id).Where(order => order.Type == OrderType.Buy).ToList())
+        {
+            CancelBuy(order, fundParticipant, currentCycleId, now);
+        }
+
+        var targetCash = Math.Max(0m, FundNetWorth(fundParticipant)) * PreLeaveCashBufferFraction;
+        var shortfall = targetCash - TransferableCash(fundParticipant) - PendingSaleValue(fundParticipant.Id);
+        if (shortfall > 0m)
+        {
+            ListFundSellsForCash(fundParticipant, shortfall, currentCycleId, now);
+        }
+    }
+
+    private decimal PreLeaveCashBufferFraction =>
+        Math.Clamp(options.Value.PreLeaveCashBufferFraction, 0m, 1m);
 
     // Returns a leaving member's full deposit in the same cycle. When the fund is short on free cash it borrows
     // the shortfall (inflated by the payout buffer) and pays from that, so no member is ever left waiting on
@@ -779,7 +835,7 @@ public sealed class CollectiveFundService(
 
         var fundParticipant = participantsById[fund.ParticipantId];
         var ownsShares = (ownedByParticipant.GetValueOrDefault(fundParticipant.Id) ?? []).Count > 0;
-        var spendable = fundParticipant.AvailableBalance * (1m - CashBufferFraction);
+        var spendable = fundParticipant.AvailableBalance * (1m - Math.Clamp(options.Value.CashBufferFraction, 0m, 1m));
         var idle = !ownsShares && spendable < latestPriceByCompany.Values.Min();
 
         if (!idle)

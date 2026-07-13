@@ -1715,14 +1715,11 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
-    public async Task FundDetailReportsMemberLeaveCountdownAndFounder()
+    public async Task FundDetailReportsMemberLeaveCountdownInTradingDaysAndFounder()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
         var databasePath = Path.Combine(databaseDirectory, "app.db");
         Directory.CreateDirectory(databaseDirectory);
-
-        const int founderTenure = 60;
-        const int freshTenure = 5;
 
         try
         {
@@ -1736,8 +1733,47 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             {
                 var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 var now = DateTime.UtcNow;
-                var cycle = new MarketCycle { CycleNumber = 12, Status = CycleStatus.Running, StartedAt = now };
-                dbContext.MarketCycles.Add(cycle);
+                var founderDay = new TradingDay { DayNumber = 10, State = TradingSessionState.Trading };
+                var freshDay = new TradingDay { DayNumber = 14, State = TradingSessionState.Trading };
+                var currentDay = new TradingDay { DayNumber = 20, State = TradingSessionState.Trading };
+                dbContext.TradingDays.AddRange(founderDay, freshDay, currentDay);
+                await dbContext.SaveChangesAsync();
+                var founderCycle = new MarketCycle
+                {
+                    CycleNumber = 10,
+                    TradingDayId = founderDay.Id,
+                    TradingCycleNumber = 1,
+                    Status = CycleStatus.Completed,
+                };
+                var freshCycle = new MarketCycle
+                {
+                    CycleNumber = 14,
+                    TradingDayId = freshDay.Id,
+                    TradingCycleNumber = 1,
+                    Status = CycleStatus.Completed,
+                };
+                var currentCycle = new MarketCycle
+                {
+                    CycleNumber = 20,
+                    TradingDayId = currentDay.Id,
+                    TradingCycleNumber = 1,
+                    Status = CycleStatus.Running,
+                    StartedAt = now,
+                };
+                dbContext.MarketCycles.AddRange(founderCycle, freshCycle, currentCycle);
+                await dbContext.SaveChangesAsync();
+                founderDay.OpenedInCycleId = founderCycle.Id;
+                freshDay.OpenedInCycleId = freshCycle.Id;
+                currentDay.OpenedInCycleId = currentCycle.Id;
+                dbContext.Markets.Add(new Market
+                {
+                    Name = "Countdown Market",
+                    Status = MarketStatus.Running,
+                    CurrentCycleId = currentCycle.Id,
+                    CurrentTradingDayId = currentDay.Id,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                });
                 await dbContext.SaveChangesAsync();
 
                 var fundParticipant = new Participant
@@ -1778,7 +1814,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                     ParticipantId = fundParticipant.Id,
                     FoundedByParticipantId = founder.Id,
                     Status = CollectiveFundStatus.Active,
-                    CreatedInCycleId = cycle.Id,
+                    CreatedInCycleId = founderCycle.Id,
                     CreatedAt = now,
                 };
                 dbContext.CollectiveFunds.Add(fund);
@@ -1790,18 +1826,16 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                         CollectiveFundId = fund.Id,
                         ParticipantId = founder.Id,
                         JoinedAt = now,
-                        JoinedInCycleId = cycle.Id,
+                        JoinedInCycleId = founderCycle.Id,
                         DepositAmount = 9_000m,
-                        TenureCycles = founderTenure,
                     },
                     new CollectiveFundParticipant
                     {
                         CollectiveFundId = fund.Id,
                         ParticipantId = fresh.Id,
                         JoinedAt = now,
-                        JoinedInCycleId = cycle.Id,
+                        JoinedInCycleId = freshCycle.Id,
                         DepositAmount = 900m,
-                        TenureCycles = freshTenure,
                     });
                 await dbContext.SaveChangesAsync();
             }
@@ -1812,13 +1846,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             // The founder never switches away, so its row is flagged and its countdown is not shown to users.
             var founderMember = detail!.CollectiveFundMembers.Single(member => member.ParticipantId == founderId);
             Assert.True(founderMember.IsFounder);
-            Assert.Equal(founderTenure - CollectiveFundService.MinTenureToSwitchCycles, founderMember.LeaveCountdownCycles);
+            Assert.Equal(3, founderMember.LeaveCountdownTradingDays);
 
-            // A fresh joiner is still inside its locked tenure, so the countdown is negative.
+            // A fresh joiner is one trading day short of the configured seven-day tenure.
             var freshMember = detail.CollectiveFundMembers.Single(member => member.ParticipantId == freshId);
             Assert.False(freshMember.IsFounder);
-            Assert.Equal(freshTenure - CollectiveFundService.MinTenureToSwitchCycles, freshMember.LeaveCountdownCycles);
-            Assert.True(freshMember.LeaveCountdownCycles < 0);
+            Assert.Equal(-1, freshMember.LeaveCountdownTradingDays);
         }
         finally
         {
@@ -2297,7 +2330,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         string Name,
         decimal Deposit,
         bool IsLeaving,
-        int LeaveCountdownCycles,
+        int LeaveCountdownTradingDays,
         bool IsFounder);
 
     private sealed record MoneyTransactionDto(int Id, string Type, decimal Amount, int CreatedInCycleId);

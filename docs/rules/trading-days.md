@@ -43,6 +43,8 @@ Trading-day numbers are unique and increase one at a time. A trade executed at a
 
 Margin debit interest also uses the trading-day boundary and accrues at most once per day. It does not accrue once per cycle or during the break. See [Margin accounts](../logic/margin.md).
 
+Collective-fund membership uses the same boundary. A member that joins on Day N cannot voluntarily leave until Day N+7. On Day N+6 an AI-managed fund starts preparing for that possibility by moving from its ordinary 10% cash buffer toward a 15% buffer; sales placed for that preparation can settle when Day N+7 opens. See [Fund Member](../roles/fund-member.md) and [Collective Fund](../roles/collective-fund.md).
+
 Security-specific LULD durations count active trading cycles. A market-wide break or manual market pause therefore freezes a company's limit-state and trading-pause countdown along with the main clock. Security-specific LULD states do not stop the market-wide day clock while other securities continue to trade. See [LULD price controls](luld.md).
 
 ## Where to see it

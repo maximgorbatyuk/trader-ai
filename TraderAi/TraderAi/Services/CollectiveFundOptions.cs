@@ -7,6 +7,15 @@ public sealed class CollectiveFundOptions
     // Opt-in: collective funds stay off unless this is set to true.
     public bool Enabled { get; set; }
 
+    // Full trading days a member must remain in its fund before a voluntary leave decision is allowed.
+    public int MinimumMembershipTradingDays { get; set; } = 7;
+
+    // Share of fund worth kept liquid during ordinary automated trading.
+    public decimal CashBufferFraction { get; set; } = 0.10m;
+
+    // Higher liquid share used from the day before a member becomes leave-eligible until the payout risk ends.
+    public decimal PreLeaveCashBufferFraction { get; set; } = 0.15m;
+
     // Only traders whose cash sits below this line are candidates to pool into a fund. Raising it widens the
     // pool of would-be joiners; the default matches the value this lived at as a service constant.
     public decimal JoinBalanceCeiling { get; set; } = 500_000m;
