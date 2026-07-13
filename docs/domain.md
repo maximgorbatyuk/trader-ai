@@ -16,7 +16,8 @@ Share ownership is stored as one quantity-based holding per participant and comp
 - An unfilled order is cancelled automatically once it has rested for too many cycles; cancelling a buy releases its reserved cash and cancelling a sell frees its shares to be listed again.
 - While unfilled, a stale order is re-priced toward the market on each later cycle so it has a chance to fill before that cancellation cap.
 - A holder that cannot afford any share for several consecutive cycles sells down its most valuable holding to raise cash.
-- Share owners can be paid a dividend at a recurring interval: each company calculates a proportional payout from capitalization and owned shares, then funds no more than its available issuer cash. A shortfall reduces or skips the payout and creates a Newswire item; a stock split leaves what a holder collects unchanged.
+- Every 10–25 trading cycles, each active priced company independently tests for operating income and a dividend. Income comes from the simulated external economy and is credited before any same-window dividend is funded; see [Corporate cash](logic/corporate-cash.md) for the calculation and accounting rules.
+- Share owners can be paid a dividend in that window: each company calculates a proportional payout from capitalization and owned shares, then funds no more than its available issuer cash. A shortfall reduces or skips the payout and creates a Newswire item; a stock split leaves what a holder collects unchanged.
 - While the market runs, a news event is published automatically every fixed number of cycles; some carry market impact.
 - News events can also be created manually, with a chosen target and impact.
 - A news event with impact moves the share price of either a single company or every company in one or more industries, up or down, by a percentage of the current price (automated events up to 10%, manually created events up to 95%).
@@ -90,7 +91,7 @@ Fields:
 Notes:
 
 - Issued shares are divided between quantity-based participant holdings and the issuer's implicit unsold float.
-- Corporate cash receives settled primary proceeds and funds dividends; secondary trades do not affect it.
+- Corporate cash receives settled primary proceeds and simulated operating income, then funds dividends; secondary trades do not affect it. See [Corporate cash](logic/corporate-cash.md).
 - The company price can be read from the latest price snapshot.
 - Every company belongs to exactly one industry.
 
@@ -384,7 +385,7 @@ Fields:
 
 - ID
 - CompanyId
-- Type (PrimaryIssuance, DividendDeclared, ClosureDistribution)
+- Type (PrimaryIssuance, OperatingIncome, DividendDeclared, ClosureDistribution)
 - Amount
 - CreatedInCycleId
 - CreatedAt
@@ -392,6 +393,7 @@ Fields:
 Notes:
 
 - Primary issuance credits company cash after T+1 settlement.
+- Operating income credits company cash from the simulated external economy during a dividend window.
 - A funded dividend debits company cash by exactly the amount allocated to participants.
 
 ### PriceBandState

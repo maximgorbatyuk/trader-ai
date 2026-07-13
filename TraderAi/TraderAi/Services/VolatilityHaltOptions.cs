@@ -13,7 +13,7 @@ public sealed class VolatilityHaltOptions
 
     public int TradingPauseDurationSeconds { get; set; } = 300;
 
-    public decimal UpperBandPercent { get; set; } = 5m;
+    public decimal UpperBandPercent { get; set; } = 10m;
 
-    public decimal LowerBandPercent { get; set; } = 5m;
+    public decimal LowerBandPercent { get; set; } = 15m;
 }

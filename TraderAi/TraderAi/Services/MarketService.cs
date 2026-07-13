@@ -100,8 +100,7 @@ public sealed class MarketService(
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
 
-    // Dividend chance/rate values; falls back to the built-in defaults when the options are not injected (the
-    // reduced-argument constructor used by some tests), so the defaults match the values these once lived at.
+    // Company cash-window chance/rate values fall back to the built-in defaults for reduced-argument tests.
     private readonly RandomChanceRatesOptions chanceRateValues = chanceRates?.Value ?? new RandomChanceRatesOptions();
 
     // Loan settings, defaulted when not injected so the buffer/cap math still works in reduced-argument tests.
@@ -147,10 +146,8 @@ public sealed class MarketService(
     // is stable and low once it has moved sharply, so payouts thin out during volatile stretches.
     private const decimal CapitalizationStabilityThreshold = 0.05m;
 
-    // Anti-inflation ceiling on the total dividend cash one company injects per payout. Above it the effective
-    // yield compresses toward zero as the company grows, so dividend injection stops tracking an ever-rising
-    // market cap — the feedback loop that otherwise inflates prices without bound. Tunable.
-    private const decimal MaxDividendCashPerCompanyPerPayout = 1_000_000m;
+    // The shared ceiling prevents company income and dividends from scaling without bound with market cap.
+    private const decimal MaxCompanyCashPerWindow = 1_000_000m;
 
     // Forced-liquidation sells undercut the market by 1–5% so the order actually crosses.
     private const decimal MinSellOffset = 0.01m;
@@ -709,9 +706,8 @@ public sealed class MarketService(
         await PayDividendsAsync(currentCycle.Id, now);
     }
 
-    // Draw discipline for a scripted Random: companies are walked in ascending Id order, and each one with a
-    // price draws exactly one NextDouble for its pay-or-skip roll; a company that pays then draws one more for
-    // its rate. Skipped companies draw nothing further.
+    // Draw discipline for a scripted Random: every priced company draws its dividend roll/rate in ascending Id
+    // order before any company draws its independent income roll/rate in the same order.
     private async Task PayDividendsAsync(int currentCycleId, DateTime now)
     {
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
@@ -726,26 +722,50 @@ public sealed class MarketService(
             .OrderBy(company => company.Id)
             .ToListAsync();
 
-        // Each priced company rolls whether to pay this window and, if it pays, declares its own rate; every
-        // company's capitalisation baseline is refreshed either way so the next window measures from here.
-        var rateByCompany = new Dictionary<int, decimal>();
+        var capitalizationByCompany = companies.ToDictionary(
+            company => company.Id,
+            company => latestPriceByCompany[company.Id] * company.IssuedSharesCount);
+        var dividendRateByCompany = new Dictionary<int, decimal>();
         foreach (var company in companies)
         {
-            var capitalization = latestPriceByCompany[company.Id] * company.IssuedSharesCount;
-            if (RollPaysDividend(company.LastDividendCapitalization, capitalization))
+            var capitalization = capitalizationByCompany[company.Id];
+            if (RollCorporateCashEvent(company.LastDividendCapitalization, capitalization))
             {
-                rateByCompany[company.Id] = RandomDividendRate();
+                dividendRateByCompany[company.Id] = RandomCorporateCashRate();
+            }
+        }
+
+        foreach (var company in companies)
+        {
+            var capitalization = capitalizationByCompany[company.Id];
+            if (RollCorporateCashEvent(company.LastDividendCapitalization, capitalization))
+            {
+                var income = Math.Min(
+                    Round(capitalization * RandomCorporateCashRate()),
+                    MaxCompanyCashPerWindow);
+                if (income > 0m)
+                {
+                    company.CashBalance += income;
+                    dbContext.CorporateCashTransactions.Add(new CorporateCashTransaction
+                    {
+                        CompanyId = company.Id,
+                        Type = CorporateCashTransactionType.OperatingIncome,
+                        Amount = income,
+                        CreatedInCycleId = currentCycleId,
+                        CreatedAt = now,
+                    });
+                }
             }
 
             company.LastDividendCapitalization = capitalization;
         }
 
-        if (rateByCompany.Count == 0)
+        if (dividendRateByCompany.Count == 0)
         {
             return;
         }
 
-        var payingCompanyIds = rateByCompany.Keys.ToList();
+        var payingCompanyIds = dividendRateByCompany.Keys.ToList();
         var holdings = await dbContext.Holdings
             .Where(holding => holding.Quantity > 0 && payingCompanyIds.Contains(holding.CompanyId))
             .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
@@ -766,13 +786,13 @@ public sealed class MarketService(
                 .Select(holding => new
                 {
                     holding.ParticipantId,
-                    RawAmount = latestPriceByCompany[company.Id] * rateByCompany[company.Id] * holding.Quantity,
+                    RawAmount = latestPriceByCompany[company.Id] * dividendRateByCompany[company.Id] * holding.Quantity,
                 })
                 .Where(claim => claim.RawAmount > 0m)
                 .OrderBy(claim => claim.ParticipantId)
                 .ToList();
             var uncappedPool = claims.Sum(claim => claim.RawAmount);
-            var declaredPool = Math.Min(Round(uncappedPool), MaxDividendCashPerCompanyPerPayout);
+            var declaredPool = Math.Min(Round(uncappedPool), MaxCompanyCashPerWindow);
             if (declaredPool <= 0m)
             {
                 continue;
@@ -891,16 +911,15 @@ public sealed class MarketService(
     private static int RandomDividendInterval(Random rng) =>
         rng.Next(MinDividendIntervalCycles, MaxDividendIntervalCycles + 1);
 
-    private decimal RandomDividendRate()
+    private decimal RandomCorporateCashRate()
     {
         var bands = chanceRateValues.RandomMagnitudeBands;
         return bands.DividendRateMin + ((decimal)random.NextDouble() * (bands.DividendRateMax - bands.DividendRateMin));
     }
 
-    // A company pays with the high chance while its capitalisation has held within the stability band since the
-    // last window (and on its first window, when there is no baseline yet), and the low chance once it moved
-    // past the band — a proxy for skipping dividends during turbulent stretches. Always draws once.
-    private bool RollPaysDividend(decimal? baselineCapitalization, decimal capitalization)
+    // Each independent cash event is more likely while capitalisation stays within the stability band. The
+    // shared previous-window baseline is intentionally unchanged until both event decisions are complete.
+    private bool RollCorporateCashEvent(decimal? baselineCapitalization, decimal capitalization)
     {
         var stable = baselineCapitalization is not decimal baseline
             || baseline <= 0m

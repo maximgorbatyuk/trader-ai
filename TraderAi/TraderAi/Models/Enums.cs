@@ -82,6 +82,7 @@ public enum MarginCallStatus
 public enum CorporateCashTransactionType
 {
     PrimaryIssuance,
+    OperatingIncome,
     DividendDeclared,
     ClosureDistribution,
 }

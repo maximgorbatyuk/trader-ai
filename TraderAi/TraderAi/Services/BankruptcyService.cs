@@ -49,6 +49,7 @@ public sealed class BankruptcyService(
         }
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        var bandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
 
         var ownedByParticipant = (await dbContext.Holdings
                 .Where(holding => holding.Quantity > 0)
@@ -115,7 +116,7 @@ public sealed class BankruptcyService(
 
             if (participant.IsBankrupt)
             {
-                ContinueSellDown(participant, owned, openForParticipant, latestPriceByCompany, available, currentCycleId, now);
+                ContinueSellDown(participant, owned, openForParticipant, latestPriceByCompany, bandByCompany, available, currentCycleId, now);
                 continue;
             }
 
@@ -131,7 +132,7 @@ public sealed class BankruptcyService(
             }
 
             var openLoans = openLoansByParticipant.GetValueOrDefault(participant.Id) ?? [];
-            MaybeTrigger(participant, owned, openForParticipant, openLoans, latestPriceByCompany, available, currentCycleId, currentCycleNumber, now, activeCrisis);
+            MaybeTrigger(participant, owned, openForParticipant, openLoans, latestPriceByCompany, bandByCompany, available, currentCycleId, currentCycleNumber, now, activeCrisis);
         }
     }
 
@@ -141,6 +142,7 @@ public sealed class BankruptcyService(
         List<Order> openOrders,
         List<Loan> openLoans,
         IReadOnlyDictionary<int, decimal> latestPriceByCompany,
+        IReadOnlyDictionary<int, PriceBandState> bandByCompany,
         Dictionary<(int ParticipantId, int CompanyId), int> available,
         int currentCycleId,
         int currentCycleNumber,
@@ -251,7 +253,7 @@ public sealed class BankruptcyService(
             });
         }
 
-        ListForcedSells(participant, SellDownTarget(participant), owned, latestPriceByCompany, available, currentCycleId, now);
+        ListForcedSells(participant, SellDownTarget(participant), owned, latestPriceByCompany, bandByCompany, available, currentCycleId, now);
     }
 
     private void ContinueSellDown(
@@ -259,6 +261,7 @@ public sealed class BankruptcyService(
         IReadOnlyDictionary<int, int> owned,
         List<Order> openOrders,
         IReadOnlyDictionary<int, decimal> latestPriceByCompany,
+        IReadOnlyDictionary<int, PriceBandState> bandByCompany,
         Dictionary<(int ParticipantId, int CompanyId), int> available,
         int currentCycleId,
         DateTime now)
@@ -285,7 +288,7 @@ public sealed class BankruptcyService(
             participant.BankruptcyDiscountStep++;
         }
 
-        ListForcedSells(participant, remaining, owned, latestPriceByCompany, available, currentCycleId, now);
+        ListForcedSells(participant, remaining, owned, latestPriceByCompany, bandByCompany, available, currentCycleId, now);
     }
 
     private void ListForcedSells(
@@ -293,6 +296,7 @@ public sealed class BankruptcyService(
         int sharesToList,
         IReadOnlyDictionary<int, int> owned,
         IReadOnlyDictionary<int, decimal> latestPriceByCompany,
+        IReadOnlyDictionary<int, PriceBandState> bandByCompany,
         Dictionary<(int ParticipantId, int CompanyId), int> available,
         int currentCycleId,
         DateTime now)
@@ -324,6 +328,11 @@ public sealed class BankruptcyService(
             }
 
             var sellPrice = Round(price * (1m - discount));
+            if (bandByCompany.GetValueOrDefault(companyId) is { } band)
+            {
+                sellPrice = band.FloorSellPrice(sellPrice);
+            }
+
             if (sellPrice <= 0m)
             {
                 continue;

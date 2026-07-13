@@ -206,6 +206,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             int companyId;
             int participantId;
             int bankId;
+            int cycleNumber;
             using (var scope = configuredFactory.Services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -216,13 +217,16 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 companyId = company.Id;
                 participantId = participant.Id;
                 bankId = bank.Id;
+                cycleNumber = cycle.CycleNumber;
                 bank.Balance = 1_005m;
                 db.Loans.Add(new Loan { BankId = bank.Id, ParticipantId = participant.Id, Principal = 100m, RemainingPrincipal = 100m, InterestRatePerCycle = bank.InterestRatePerCycle, TermCycles = 10, ScheduledInstallment = 10m, Status = LoanStatus.Open, OpenedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow });
                 db.MarginAccounts.Add(new MarginAccount { ParticipantId = participant.Id, DebitBalance = 200m, AccruedInterest = 5m, InitialMarginRate = 0.50m, MaintenanceMarginRate = 0.25m, Status = MarginAccountStatus.Active });
+                var corporateCashCreatedAt = DateTime.UtcNow;
                 db.CorporateCashTransactions.AddRange(
-                    new CorporateCashTransaction { CompanyId = company.Id, Type = CorporateCashTransactionType.PrimaryIssuance, Amount = 10m, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow.AddSeconds(-2) },
-                    new CorporateCashTransaction { CompanyId = company.Id, Type = CorporateCashTransactionType.DividendDeclared, Amount = 20m, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow.AddSeconds(-1) },
-                    new CorporateCashTransaction { CompanyId = company.Id, Type = CorporateCashTransactionType.ClosureDistribution, Amount = 30m, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow });
+                    new CorporateCashTransaction { CompanyId = company.Id, Type = CorporateCashTransactionType.PrimaryIssuance, Amount = 10m, CreatedInCycleId = cycle.Id, CreatedAt = corporateCashCreatedAt.AddSeconds(-3) },
+                    new CorporateCashTransaction { CompanyId = company.Id, Type = CorporateCashTransactionType.DividendDeclared, Amount = 20m, CreatedInCycleId = cycle.Id, CreatedAt = corporateCashCreatedAt.AddSeconds(-2) },
+                    new CorporateCashTransaction { CompanyId = company.Id, Type = CorporateCashTransactionType.ClosureDistribution, Amount = 30m, CreatedInCycleId = cycle.Id, CreatedAt = corporateCashCreatedAt.AddSeconds(-1) },
+                    new CorporateCashTransaction { CompanyId = company.Id, Type = CorporateCashTransactionType.OperatingIncome, Amount = 40m, CreatedInCycleId = cycle.Id, CreatedAt = corporateCashCreatedAt });
                 var trades = Enumerable.Range(0, 3).Select(_ => new ShareTransaction { BuyerId = participant.Id, CompanyId = company.Id, Quantity = 1, Price = 10m, TotalCost = 10m, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }).ToArray();
                 db.ShareTransactions.AddRange(trades);
                 await db.SaveChangesAsync();
@@ -234,9 +238,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             }
 
             var corporatePage = await client.GetFromJsonAsync<PagedCorporateCashMovementsDto>($"/companies/{companyId}/corporate-cash-movements?page=1&pageSize=2");
-            Assert.Equal(3, corporatePage!.Total);
+            Assert.Equal(4, corporatePage!.Total);
             Assert.Equal(2, corporatePage.Items.Length);
-            Assert.Equal(30m, corporatePage.Items[0].Amount);
+            Assert.Equal("OperatingIncome", corporatePage.Items[0].Type);
+            Assert.Equal(40m, corporatePage.Items[0].Amount);
+            Assert.True(corporatePage.Items[0].Amount > 0m);
+            Assert.Equal(cycleNumber, corporatePage.Items[0].CreatedInCycleNumber);
             Assert.Equal(1, corporatePage.Page);
             Assert.Equal(2, corporatePage.PageSize);
 

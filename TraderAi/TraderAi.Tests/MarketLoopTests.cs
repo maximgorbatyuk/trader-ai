@@ -109,6 +109,7 @@ public sealed class MarketLoopTests : IDisposable
         await context.SaveChangesAsync();
         var currentCycle = await context.MarketCycles.SingleAsync(cycle => cycle.CycleNumber == 16);
         market.CurrentCycleId = currentCycle.Id;
+        market.NextDividendCycleNumber = currentCycle.CycleNumber;
         buyer.ReservedBalance = 100m;
         var staleOrder = new Order
         {
@@ -125,13 +126,15 @@ public sealed class MarketLoopTests : IDisposable
         };
         context.Orders.Add(staleOrder);
         await context.SaveChangesAsync();
+        var companyCashBefore = company.CashBalance;
+        var random = new CountingCorporateCashRoll();
 
         var service = new MarketService(
             context,
             new MatchingEngine(context),
             new NoOpDecisionEngine(),
             new MarketCycleLock(),
-            new Random(1));
+            random);
 
         await Assert.ThrowsAsync<DbUpdateException>(() => service.RunCycleTickAsync());
 
@@ -139,12 +142,29 @@ public sealed class MarketLoopTests : IDisposable
         var persistedOrder = await context.Orders.SingleAsync(order => order.Id == staleOrder.Id);
         var persistedBuyer = await context.Participants.SingleAsync(participant => participant.Id == buyer.Id);
         var persistedMarket = await context.Markets.SingleAsync();
+        var persistedCurrentCycle = await context.MarketCycles.SingleAsync(cycle => cycle.Id == currentCycle.Id);
 
         Assert.Equal(OrderStatus.Open, persistedOrder.Status);
         Assert.Equal(100m, persistedOrder.ReservedCashAmount);
         Assert.Equal(100m, persistedBuyer.ReservedBalance);
         Assert.Equal(currentCycle.Id, persistedMarket.CurrentCycleId);
-        Assert.Equal(CycleStatus.Running, (await context.MarketCycles.SingleAsync(cycle => cycle.Id == currentCycle.Id)).Status);
+        Assert.Equal(CycleStatus.Running, persistedCurrentCycle.Status);
+        Assert.Null(persistedCurrentCycle.CompletedAt);
+        Assert.Equal(4, random.NextDoubleCalls);
+        Assert.Equal(companyCashBefore, await context.Companies
+            .Where(candidate => candidate.Id == company.Id)
+            .Select(candidate => candidate.CashBalance)
+            .SingleAsync());
+        Assert.Empty(await context.CorporateCashTransactions
+            .Where(transaction => transaction.Type == CorporateCashTransactionType.OperatingIncome)
+            .ToListAsync());
+        Assert.Empty(await context.CorporateCashTransactions
+            .Where(transaction => transaction.Type == CorporateCashTransactionType.DividendDeclared)
+            .ToListAsync());
+        Assert.Empty(await context.MoneyTransactions
+            .Where(transaction => transaction.Type == MoneyTransactionType.Dividend)
+            .ToListAsync());
+        Assert.Empty(await context.DividendPayouts.ToListAsync());
         Assert.Empty(await context.MoneyTransactions.ToListAsync());
         Assert.Empty(await context.ShareTransactions.ToListAsync());
         Assert.Empty(await context.ParticipantWorthSnapshots.ToListAsync());
@@ -344,5 +364,20 @@ public sealed class MarketLoopTests : IDisposable
     {
         context.Dispose();
         connection.Dispose();
+    }
+
+    private sealed class CountingCorporateCashRoll : Random
+    {
+        private readonly Queue<double> values = new([0d, 0d, 0d, 1d]);
+
+        public int NextDoubleCalls { get; private set; }
+
+        public override double NextDouble()
+        {
+            NextDoubleCalls++;
+            return values.Dequeue();
+        }
+
+        public override int Next(int minValue, int maxValue) => minValue;
     }
 }

@@ -158,6 +158,25 @@ public sealed class BankruptcyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ForcedSaleIsFlooredToTheLowerBand()
+    {
+        var (_, cycle, company) = await SeedAsync(price: 100m);
+        // The 20% base discount would ask 80, but an active band floors participant sells at 85.
+        await AddBandAsync(company.Id, reference: 100m, lower: 85m, upper: 110m);
+        var trader = await AddTraderAsync(currentBalance: 0m, bankrupt: true, ownedAtStart: 10, discountStep: 0);
+        await AddSharesAsync(trader.Id, company.Id, count: 10, price: 100m);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var sell = await context.Orders.AsNoTracking()
+            .SingleAsync(order => order.ParticipantId == trader.Id && order.Type == OrderType.Sell && order.Status == OrderStatus.Open);
+        Assert.Equal(7, sell.Quantity);
+        Assert.Equal(85m, sell.LimitPrice);
+    }
+
+    [Fact]
     public async Task SellDownCompletesAndClearsTheBankruptFlag()
     {
         var (_, cycle, company) = await SeedAsync(price: 100m);
@@ -347,6 +366,19 @@ public sealed class BankruptcyServiceTests : IDisposable
         context.Participants.Add(trader);
         await context.SaveChangesAsync();
         return trader;
+    }
+
+    private async Task AddBandAsync(int companyId, decimal reference, decimal lower, decimal upper)
+    {
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = companyId,
+            State = LuldState.Normal,
+            ReferencePrice = reference,
+            LowerBandPrice = lower,
+            UpperBandPrice = upper,
+        });
+        await context.SaveChangesAsync();
     }
 
     private async Task AddSharesAsync(int ownerId, int companyId, int count, decimal price)

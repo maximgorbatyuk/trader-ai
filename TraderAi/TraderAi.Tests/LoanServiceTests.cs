@@ -210,6 +210,24 @@ public sealed class LoanServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task DistressSellIsFlooredToTheLowerBand()
+    {
+        var (cycle, company) = await SeedAsync(price: 100m);
+        // The 20% base discount would ask 80, but an active band floors the distress sell at 85.
+        await AddBandAsync(company.Id, reference: 100m, lower: 85m, upper: 110m);
+        var player = await AddTraderAsync(currentBalance: 0m, type: ParticipantType.Player);
+        await AddSharesAsync(player.Id, company.Id, count: 100, price: 100m);
+        await AddLoanAsync(player.Id, principal: 5_000m, termCycles: 10, cycle.Id, pastDuePrincipal: 500m);
+
+        await Service().ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var distressSell = await context.Orders.AsNoTracking()
+            .SingleAsync(order => order.ParticipantId == player.Id && order.Type == OrderType.Sell);
+        Assert.Equal(85m, distressSell.LimitPrice);
+    }
+
+    [Fact]
     public async Task RepayInFullClosesTheLoan()
     {
         var (cycle, _) = await SeedAsync(price: 100m);
@@ -380,6 +398,19 @@ public sealed class LoanServiceTests : IDisposable
         context.Participants.Add(trader);
         await context.SaveChangesAsync();
         return trader;
+    }
+
+    private async Task AddBandAsync(int companyId, decimal reference, decimal lower, decimal upper)
+    {
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = companyId,
+            State = LuldState.Normal,
+            ReferencePrice = reference,
+            LowerBandPrice = lower,
+            UpperBandPrice = upper,
+        });
+        await context.SaveChangesAsync();
     }
 
     private async Task AddSharesAsync(int ownerId, int companyId, int count, decimal price)

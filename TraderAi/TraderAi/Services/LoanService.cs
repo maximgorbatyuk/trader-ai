@@ -219,6 +219,7 @@ public sealed class LoanService(
         }
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        var bandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
 
         var ownedByParticipant = (await dbContext.Holdings
                 .Where(holding => holding.Quantity > 0 && distressedIds.Contains(holding.ParticipantId))
@@ -290,7 +291,7 @@ public sealed class LoanService(
                 continue;
             }
 
-            ListDistressSells(participant, trackingLoan, cashNeeded, ownedByParticipant.GetValueOrDefault(participantId) ?? [], latestPriceByCompany, available, currentCycleId, now);
+            ListDistressSells(participant, trackingLoan, cashNeeded, ownedByParticipant.GetValueOrDefault(participantId) ?? [], latestPriceByCompany, bandByCompany, available, currentCycleId, now);
         }
     }
 
@@ -300,6 +301,7 @@ public sealed class LoanService(
         decimal cashNeeded,
         IReadOnlyDictionary<int, int> owned,
         IReadOnlyDictionary<int, decimal> latestPriceByCompany,
+        IReadOnlyDictionary<int, PriceBandState> bandByCompany,
         Dictionary<(int ParticipantId, int CompanyId), int> available,
         int currentCycleId,
         DateTime now)
@@ -329,6 +331,11 @@ public sealed class LoanService(
             }
 
             var sellPrice = Round(price * (1m - discount));
+            if (bandByCompany.GetValueOrDefault(companyId) is { } band)
+            {
+                sellPrice = band.FloorSellPrice(sellPrice);
+            }
+
             if (sellPrice <= 0m)
             {
                 continue;

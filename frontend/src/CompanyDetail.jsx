@@ -11,6 +11,7 @@ import { NewsModal } from './NewsModal'
 import { OrderForm } from './OrderForm'
 import { TradeModal } from './TradeModal'
 import { Pager } from './TableControls'
+import { corporateCashMovementPresentation } from './cashMovements'
 import { luldPresentation } from './marketAccounting'
 
 const POLL_INTERVAL_MS = 2500
@@ -326,18 +327,12 @@ function CorporateCashMovementsPanel({ movements, page, onPage }) {
               </thead>
               <tbody>
                 {items.map((movement) => {
-                  const credit = movement.type === 'PrimaryIssuance'
-                  const label =
-                    movement.type === 'PrimaryIssuance'
-                      ? 'Primary issuance'
-                      : movement.type === 'DividendDeclared'
-                        ? 'Dividend paid'
-                        : 'Closure distribution'
+                  const presentation = corporateCashMovementPresentation(movement.type)
                   return (
                     <tr key={movement.id}>
-                      <th scope="row">{label}</th>
-                      <td className={`num ta-r tone-${credit ? 'up' : 'down'}`}>
-                        <span aria-label={credit ? 'Credit' : 'Debit'}>{credit ? '+ ' : '− '}</span>
+                      <th scope="row">{presentation.label}</th>
+                      <td className={`num ta-r tone-${presentation.tone}`}>
+                        <span aria-label={presentation.direction}>{presentation.sign} </span>
                         {formatMoney(movement.amount)}
                       </td>
                       <td className="num ta-r">{formatInt(movement.createdInCycleNumber || movement.createdInCycleId)}</td>

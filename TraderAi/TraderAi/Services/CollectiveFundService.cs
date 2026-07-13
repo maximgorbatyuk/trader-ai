@@ -90,6 +90,7 @@ public sealed class CollectiveFundService(
     private Dictionary<int, List<OwnedHolding>> ownedByParticipant = null!;
     private Dictionary<int, List<Order>> openOrdersByParticipant = null!;
     private Dictionary<int, decimal> latestPriceByCompany = null!;
+    private Dictionary<int, PriceBandState> bandByCompany = null!;
     private Dictionary<(int ParticipantId, int CompanyId), int> available = null!;
 
     // Distinct dividend-payout cycle ids, most recent first (ids rise monotonically with cycles), and each fund
@@ -284,6 +285,7 @@ public sealed class CollectiveFundService(
     private async Task LoadStateAsync(int currentCycleId)
     {
         latestPriceByCompany = await LatestPriceByCompanyAsync();
+        bandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
 
         ownedByParticipant = (await dbContext.Holdings
                 .Where(holding => holding.Quantity > 0)
@@ -1071,6 +1073,11 @@ public sealed class CollectiveFundService(
             }
 
             var sellPrice = Round(price * (1m - SaleDiscount));
+            if (bandByCompany.GetValueOrDefault(holding.CompanyId) is { } band)
+            {
+                sellPrice = band.FloorSellPrice(sellPrice);
+            }
+
             if (sellPrice <= 0m)
             {
                 continue;
@@ -1100,6 +1107,11 @@ public sealed class CollectiveFundService(
             }
 
             var sellPrice = Round(price * (1m - SaleDiscount));
+            if (bandByCompany.GetValueOrDefault(holding.CompanyId) is { } band)
+            {
+                sellPrice = band.FloorSellPrice(sellPrice);
+            }
+
             if (sellPrice <= 0m)
             {
                 continue;

@@ -23,7 +23,7 @@ public sealed class AccountingReconciliationTests : IDisposable
     }
 
     [Fact]
-    public async Task PrimaryIssuanceSettlesAndFundsDividendWithoutBreakingConservation()
+    public async Task PrimaryIssuanceOperatingIncomeAndDividendReconcile()
     {
         var seed = await TestMarketSeed.SeedAccountingScenarioAsync(context);
         var settlement = Settlement();
@@ -56,10 +56,21 @@ public sealed class AccountingReconciliationTests : IDisposable
         var dividendDebit = await context.CorporateCashTransactions
             .Where(transaction => transaction.Type == CorporateCashTransactionType.DividendDeclared)
             .SumAsync(transaction => transaction.Amount);
+        var primaryIssuanceCredits = await context.CorporateCashTransactions
+            .Where(transaction => transaction.Type == CorporateCashTransactionType.PrimaryIssuance)
+            .SumAsync(transaction => transaction.Amount);
+        var operatingIncomeCredits = await context.CorporateCashTransactions
+            .Where(transaction => transaction.Type == CorporateCashTransactionType.OperatingIncome)
+            .SumAsync(transaction => transaction.Amount);
         var participantCredits = await context.MoneyTransactions
             .Where(transaction => transaction.Type == MoneyTransactionType.Dividend)
             .SumAsync(transaction => transaction.Amount);
         var payoutLines = await context.DividendPayouts.SumAsync(payout => payout.Amount);
+        Assert.True(operatingIncomeCredits > 0m);
+        Assert.True(dividendDebit > 0m);
+        Assert.Equal(
+            primaryIssuanceCredits + operatingIncomeCredits - dividendDebit,
+            seed.Company.CashBalance);
         Assert.Equal(dividendDebit, participantCredits);
         Assert.Equal(dividendDebit, payoutLines);
         Assert.Equal(initialCash, await ConservedCashAsync());
@@ -375,7 +386,16 @@ public sealed class AccountingReconciliationTests : IDisposable
             .Where(loan => loan.Status == LoanStatus.Open)
             .SumAsync(loan => loan.RemainingPrincipal);
         var marginDebit = await context.MarginAccounts.SumAsync(account => account.DebitBalance);
-        return participantCash + issuerCash + bankCash + pendingPrimary - loanPrincipal - marginDebit;
+        var externalOperatingIncome = await context.CorporateCashTransactions
+            .Where(transaction => transaction.Type == CorporateCashTransactionType.OperatingIncome)
+            .SumAsync(transaction => transaction.Amount);
+        return participantCash
+            + issuerCash
+            + bankCash
+            + pendingPrimary
+            - loanPrincipal
+            - marginDebit
+            - externalOperatingIncome;
     }
 
     private async Task AssertPendingDeltasReconcileAsync()
