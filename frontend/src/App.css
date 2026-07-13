@@ -1733,6 +1733,11 @@
 
 /* Trade dialog: the order price leads as a headline with a small percent badge versus the market. */
 .trade-quote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3) var(--s-5);
   margin-bottom: var(--s-3);
 }
 
@@ -1743,6 +1748,19 @@
 
 .trade-quote .quote {
   margin-bottom: 0;
+}
+
+.trade-gain {
+  text-align: right;
+}
+
+.trade-gain-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--t-xl);
+  font-weight: 700;
+  line-height: 1;
 }
 
 /* Clickable order rows: the player takes the opposite side of a resting order. */

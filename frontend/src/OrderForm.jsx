@@ -118,6 +118,11 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
     if (!disabledFor(actors[0])) submitFor(actors[0])
   }
 
+  // The order's gross value (buy cost or sell proceeds); shown on the submit label once both inputs are set.
+  const orderQuantity = Number(quantity)
+  const orderPrice = Number(limitPrice)
+  const orderTotal = orderQuantity > 0 && orderPrice > 0 ? orderQuantity * orderPrice : null
+
   return (
     <form className="modal-section player-section" onSubmit={onFormSubmit}>
       <span className="map-stat-label">{isSell ? 'Sell shares' : 'Buy shares'}</span>
@@ -202,7 +207,11 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
             disabled={disabledFor(actor)}
             onClick={actor.key === 'player' ? undefined : () => submitFor(actor)}
           >
-            {submittingActor === actor.key ? 'Placing…' : ACTOR_ORDER_LABELS[actor.key]}
+            {submittingActor === actor.key
+              ? 'Placing…'
+              : orderTotal != null
+                ? `${ACTOR_ORDER_LABELS[actor.key]} · ${formatMoney(orderTotal)}`
+                : ACTOR_ORDER_LABELS[actor.key]}
           </button>
         ))}
       </div>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from './api'
-import { formatMoney, toneOf } from './format'
+import { formatMoney, formatSigned, toneOf } from './format'
 import { LineChart } from './LineChart'
 import { Panel } from './Panel'
 import { PercentButtons } from './PercentButtons'
@@ -389,6 +389,8 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
   const luld = luldPresentation(company?.luldState)
   // Selling into a bid needs the player's holding for this company; buying an offer does not (null = pending).
   const [ownedShares, setOwnedShares] = useState(takingSellOffer ? 0 : null)
+  // Weighted-average price the actor paid per held share, used to show the realized gain/loss on a sell.
+  const [averageCost, setAverageCost] = useState(null)
   const [quantity, setQuantity] = useState(takingSellOffer && initialBuyQuantity > 0 ? String(initialBuyQuantity) : '')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
@@ -451,6 +453,7 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
         const holding = holdings.find((item) => item.companyId === order.companyId)
         const owned = holding ? holding.shares : 0
         setOwnedShares(owned)
+        setAverageCost(holding && holding.shares > 0 ? holding.costBasis / holding.shares : null)
         setQuantity(owned > 0 ? String(Math.min(owned, remaining)) : '')
       })
       .catch(() => {
@@ -492,6 +495,12 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
   })
   const validQuantity = eligibility.eligible
   const total = (validQuantity ? quantityNumber : 0) * order.limitPrice
+  // When selling into a bid, weigh the average price paid for the shares being sold against the order's
+  // proceeds so the realized gain or loss on this lot reads directly.
+  const sellQuantity = validQuantity ? quantityNumber : 0
+  const soldCostBasis = !takingSellOffer && averageCost != null && sellQuantity > 0 ? averageCost * sellQuantity : null
+  const estimatedGain = soldCostBasis != null ? total - soldCostBasis : null
+  const gainGlyph = estimatedGain == null ? '' : estimatedGain > 0 ? '▲' : estimatedGain < 0 ? '▼' : '◆'
   const priceValues = recentPriceValues(priceHistory ?? [])
   const sentimentValues = recentSentimentValues(sentimentHistory ?? [])
   const priceChange = priceValues.length >= 2 ? priceValues.at(-1) - priceValues.at(0) : 0
@@ -570,16 +579,27 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
 
         <form className="modal-body" onSubmit={handleSubmit}>
           <div className="trade-quote">
-            <span className="map-stat-label">Order price</span>
-            <div className="quote">
-              <span className="quote-last num">{formatMoney(order.limitPrice)}</span>
-              {diffLabel ? (
-                <span className={`quote-change num tone-${diffTone}`} title="Order price versus current market price">
-                  <span aria-hidden="true">{diffGlyph} </span>
-                  {diffLabel} vs market
-                </span>
-              ) : null}
+            <div className="trade-quote-main">
+              <span className="map-stat-label">Order price</span>
+              <div className="quote">
+                <span className="quote-last num">{formatMoney(order.limitPrice)}</span>
+                {diffLabel ? (
+                  <span className={`quote-change num tone-${diffTone}`} title="Order price versus current market price">
+                    <span aria-hidden="true">{diffGlyph} </span>
+                    {diffLabel} vs market
+                  </span>
+                ) : null}
+              </div>
             </div>
+            {soldCostBasis != null ? (
+              <div className="trade-gain">
+                <span className="map-stat-label">Est. gain/loss</span>
+                <div className={`trade-gain-value num tone-${toneOf(estimatedGain)}`} title="Order proceeds minus what you paid for these shares">
+                  <span aria-hidden="true">{gainGlyph} </span>
+                  {formatSigned(estimatedGain)}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="trade-charts">
@@ -660,6 +680,12 @@ function TradeOrderModal({ order, actor, companyName, currentPrice, company, onC
               <dt>Total</dt>
               <dd className="num">{formatMoney(total)}</dd>
             </div>
+            {soldCostBasis != null ? (
+              <div>
+                <dt>Cost basis</dt>
+                <dd className="num">{formatMoney(soldCostBasis)}</dd>
+              </div>
+            ) : null}
           </dl>
 
           {availability.eligible && takingSellOffer && actor != null ? (
