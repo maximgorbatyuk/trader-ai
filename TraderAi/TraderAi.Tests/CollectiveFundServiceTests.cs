@@ -353,6 +353,48 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task OnlyOneMemberLeavesPerTradingDayAndTheNextWaitsForTheFollowingDay()
+    {
+        var (_, dayTwentyCycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);
+        var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 13, cycleNumber: 100);
+        var (fund, _) = await AddFundAsync(balance: 200_000m);
+
+        // Two members both sit above the leave line and cleared the tenure gate, so both want out the same day.
+        var firstLeaver = await AddTraderAsync(currentBalance: LeaveThreshold);
+        await AddMembershipAsync(fund, firstLeaver, deposit: 90_000m, joinedCycle.Id);
+        var secondLeaver = await AddTraderAsync(currentBalance: LeaveThreshold);
+        await AddMembershipAsync(fund, secondLeaver, deposit: 90_000m, joinedCycle.Id);
+
+        // Two below-the-line members keep the fund above the pair-close floor so a departure does not unwind it.
+        foreach (var _ in Enumerable.Range(0, 2))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, dayTwentyCycle.Id);
+        }
+
+        // Day 20: only the lowest-id leaver draws and departs; the throttle skips everyone else, so the single
+        // 0.0 fires the first member's ramp-1 roll and no further draw is taken this day.
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(dayTwentyCycle.Id, dayTwentyCycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == firstLeaver.Id));
+        var held = await context.CollectiveFundParticipants.AsNoTracking()
+            .SingleAsync(member => member.ParticipantId == secondLeaver.Id);
+        Assert.False(held.IsLeaving);
+        Assert.Equal(20, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).LastVoluntaryLeaveTradingDayNumber);
+
+        // Day 21: the slot has reset with the new trading day, so the second leaver now departs on its own roll.
+        var dayTwentyOneCycle = await AddCycleForTradingDayAsync(dayNumber: 21, cycleNumber: 601);
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(dayTwentyOneCycle.Id, dayTwentyOneCycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == secondLeaver.Id));
+        Assert.Equal(21, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).LastVoluntaryLeaveTradingDayNumber);
+    }
+
+    [Fact]
     public async Task MemberCannotLeaveBeforeConfiguredTradingDayTenure()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);

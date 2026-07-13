@@ -179,6 +179,13 @@ public sealed class CollectiveFundService(
                     continue;
                 }
 
+                // A fund releases at most one voluntary leaver per trading day; once the day's leaver has been
+                // repaid, everyone else waits for a later day. Administrative removals above already bypass this.
+                if (VoluntaryLeaveUsedThisTradingDay(fund))
+                {
+                    continue;
+                }
+
                 if (membership.IsLeaving)
                 {
                     await AdvanceLeave(fund, membership, member, currentCycleId, now);
@@ -186,6 +193,13 @@ public sealed class CollectiveFundService(
                 else
                 {
                     await MaybeDecideLeave(fund, membership, member, currentCycleId, now);
+                }
+
+                // A departure that actually completed drops the membership row; that spends the fund's single
+                // voluntary-leave slot for this trading day. A member merely flagged and still waiting does not.
+                if (currentTradingDayNumber > 0 && !membershipsByFundId[fund.Id].Contains(membership))
+                {
+                    fund.LastVoluntaryLeaveTradingDayNumber = currentTradingDayNumber;
                 }
             }
         }
@@ -522,6 +536,11 @@ public sealed class CollectiveFundService(
 
         return Math.Max(0, currentTradingDayNumber - joinedTradingDayNumber);
     }
+
+    // True once this fund has already repaid a voluntary leaver on the current trading day. Inert when trading
+    // days are not tracked (day number zero), so the throttle never blocks in that setup.
+    private bool VoluntaryLeaveUsedThisTradingDay(CollectiveFund fund) =>
+        currentTradingDayNumber > 0 && fund.LastVoluntaryLeaveTradingDayNumber == currentTradingDayNumber;
 
     private void PrepareForNextTradingDayLeave(CollectiveFund fund, int currentCycleId, DateTime now)
     {
