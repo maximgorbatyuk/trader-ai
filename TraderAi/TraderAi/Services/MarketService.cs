@@ -126,7 +126,7 @@ public sealed class MarketService(
     // chased toward the market by RepriceStep with a probability that climbs the longer it stays
     // unfilled (see RepriceChance), so a stubborn order is cut more aggressively before the cap.
     private const int OrderMaxAgeCycles = 15;
-    private const int OrderRepriceFromAge = 3;
+    private const int OrderRepriceFromAge = 1;
     private const decimal RepriceStep = 0.10m;
 
     // After this many consecutive cycles unable to afford any share, a holder liquidates to raise cash.

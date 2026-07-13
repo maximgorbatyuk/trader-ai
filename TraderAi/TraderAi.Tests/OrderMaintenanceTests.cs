@@ -60,8 +60,8 @@ public sealed class OrderMaintenanceTests : IDisposable
 
         var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
 
-        // Four ticks brings the order to age 3, where the first reprice fires; still under the cancel cap.
-        await StepAsync(market, 4);
+        // Two ticks brings the order to age 1, where the first reprice now fires; still under the cancel cap.
+        await StepAsync(market, 2);
 
         var order = await context.Orders.FindAsync(placed.Order!.Id);
         Assert.Equal(OrderStatus.Open, order!.Status);
@@ -116,7 +116,7 @@ public sealed class OrderMaintenanceTests : IDisposable
 
         var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
 
-        // Ages 3-6 carry a 0.5 chance, so a 0.6 roll never clears it through age 6.
+        // Ages 1-6 carry a 0.5 chance, so a 0.6 roll never clears it through age 6.
         await StepAsync(market, 7);
         var order = await context.Orders.FindAsync(placed.Order!.Id);
         Assert.Equal(100m, order!.LimitPrice);
@@ -137,7 +137,7 @@ public sealed class OrderMaintenanceTests : IDisposable
 
         var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
 
-        // A 0.8 roll clears neither the 0.5 (ages 3-6) nor the 0.7 (ages 7-12) band, so nothing reprices.
+        // A 0.8 roll clears neither the 0.5 (ages 1-6) nor the 0.7 (ages 7-12) band, so nothing reprices.
         await StepAsync(market, 13);
         var order = await context.Orders.FindAsync(placed.Order!.Id);
         Assert.Equal(100m, order!.LimitPrice);
@@ -190,9 +190,9 @@ public sealed class OrderMaintenanceTests : IDisposable
         var company = await context.Companies.FirstAsync();
         var market = Service(new FixedRoll(0d));
 
-        // 80 rests below the 85 lower band but inside the 75-115 allowed range.
+        // 80 rests below the 85 lower band but inside the 75-115 allowed range; the age-1 reprice climbs it in.
         var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 80m);
-        await StepAsync(market, 4);
+        await StepAsync(market, 2);
 
         var order = await context.Orders.FindAsync(placed.Order!.Id);
         Assert.Equal(OrderStatus.Open, order!.Status);
