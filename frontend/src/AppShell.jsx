@@ -4,7 +4,7 @@ import './App.css'
 import { api } from './api'
 import { formatInt, formatMoney } from './format'
 import { Footer, TopBar } from './Chrome'
-import { createTradingClock, formatTradingClock, interpolateTradingClock } from './tradingClock'
+import { createTradingClock, formatTradingClock, interpolateTradingClock, shouldKeepTradingClock } from './tradingClock'
 
 const SHELL_POLL_INTERVAL_MS = 1500
 const WORTH_GLYPH = { up: '▲', down: '▼' }
@@ -65,7 +65,10 @@ export function AppShell() {
       const [marketData, playerData] = await Promise.all([api.getMarket(), api.getPlayer()])
       const receivedAtMs = Date.now()
       setMarket(marketData)
-      setTradingClockSnapshot(createTradingClock(marketData, receivedAtMs))
+      setTradingClockSnapshot((previous) => {
+        const next = createTradingClock(marketData, receivedAtMs)
+        return shouldKeepTradingClock(previous, next) ? previous : next
+      })
       setClockNowMs(receivedAtMs)
       setPlayer(playerData)
       setConnected(true)

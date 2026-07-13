@@ -1,6 +1,6 @@
 import { formatInt } from './format'
 
-const ACTIVITY_WINDOW = 48
+const ACTIVITY_WINDOW = 300
 
 // Orders-placed-per-cycle summary and chart. The first cycle can hold a large backlog, so the chart shows a
 // recent window to keep the scale readable while the total stays all-time.
@@ -51,8 +51,9 @@ function ActivityChart({ points }) {
   const last = points.at(-1)
 
   const indexed = points.map((point, index) => ({ point, index }))
-  // Label even cycle numbers only so they never overlap, always keeping the most recent one.
-  const xLabels = indexed.filter(({ point, index }) => point.cycleNumber % 2 === 0 || index === count - 1)
+  // Sample labels to a fixed count so a wide window (up to 300 cycles) never overlaps, always keeping the most recent one.
+  const labelStep = Math.max(1, Math.ceil(count / 12))
+  const xLabels = indexed.filter(({ index }) => index % labelStep === 0 || index === count - 1)
   const dividendLines = indexed.filter(({ point }) => point.paidDividend)
 
   return (
@@ -82,7 +83,7 @@ function ActivityChart({ points }) {
               </text>
             </g>
           ))}
-          {indexed.map(({ index }) => (
+          {xLabels.map(({ index }) => (
             <line
               key={`v-${index}`}
               className="chart-gridline"

@@ -93,3 +93,21 @@ test('returns no clock until the server supplies the complete trading-clock cont
   assert.equal(createTradingClock?.({ status: 'Running', tradingDayNumber: 1 }, 1_000), null)
   assert.equal(formatTradingClock?.(null), null)
 })
+
+test('keeps the running countdown within a phase but re-syncs across phase boundaries', async () => {
+  const { createTradingClock, shouldKeepTradingClock } = await loadClock()
+  const previous = createTradingClock?.(tradingMarket, 1_000)
+
+  // Same running phase, later cycle and lower remaining seconds: keep interpolating the existing snapshot.
+  const laterInSamePhase = createTradingClock?.(
+    { ...tradingMarket, tradingCycleNumber: 90, remainingTradingCycles: 120, remainingPhaseSeconds: 240 },
+    5_000,
+  )
+  assert.equal(shouldKeepTradingClock?.(previous, laterInSamePhase), true)
+
+  // A new trading day, the Trading/Break switch, or a market state change each force a re-sync.
+  assert.equal(shouldKeepTradingClock?.(previous, createTradingClock?.({ ...tradingMarket, tradingDayNumber: 8 }, 5_000)), false)
+  assert.equal(shouldKeepTradingClock?.(previous, createTradingClock?.({ ...tradingMarket, tradingSessionState: 'Break' }, 5_000)), false)
+  assert.equal(shouldKeepTradingClock?.(previous, createTradingClock?.({ ...tradingMarket, status: 'Paused' }, 5_000)), false)
+  assert.equal(shouldKeepTradingClock?.(null, laterInSamePhase), false)
+})

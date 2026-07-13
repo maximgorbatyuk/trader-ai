@@ -4,6 +4,18 @@ export function holdingCompanyIdSet(holdings) {
   return new Set(holdings.filter((holding) => holding.shares > 0).map((holding) => holding.companyId))
 }
 
+// Per-company position for the active actor, keyed by company id: shares held and the weighted-average price
+// paid, so the order book can show the gain or loss of selling a holding into a resting bid.
+export function holdingByCompany(holdings) {
+  const byCompany = new Map()
+  for (const holding of holdings) {
+    if (holding.shares > 0) {
+      byCompany.set(holding.companyId, { shares: holding.shares, averageCost: holding.costBasis / holding.shares })
+    }
+  }
+  return byCompany
+}
+
 // Resolves the participant the order book trades as: the player, or their managed fund when the fund is
 // selected. Null when the fund is selected but none exists yet, which leaves the book read-only.
 export function resolveActor(player, actorKind) {

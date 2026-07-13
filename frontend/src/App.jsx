@@ -6,7 +6,7 @@ import { CompanyModal } from './CompanyModal'
 import { PlayerPanel } from './PlayerPanel'
 import { MarketMapPanel } from './MarketMapPanel'
 import { OrderBookPanel } from './OrderBook'
-import { emptyActorHintFor, holdingCompanyIdSet, resolveActor } from './actor'
+import { emptyActorHintFor, holdingByCompany, holdingCompanyIdSet, resolveActor } from './actor'
 
 const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
@@ -25,6 +25,7 @@ function App() {
   const [player, setPlayer] = useState(null)
   const [playerHoldingCompanyIds, setPlayerHoldingCompanyIds] = useState(() => new Set())
   const [actorHoldingCompanyIds, setActorHoldingCompanyIds] = useState(() => new Set())
+  const [actorHoldingByCompany, setActorHoldingByCompany] = useState(() => new Map())
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
 
   const loadAll = useCallback(async () => {
@@ -53,19 +54,16 @@ function App() {
         const playerHeld = holdingCompanyIdSet(holdings)
         setPlayerHoldingCompanyIds(playerHeld)
 
-        // The order book trades as the selected actor, so its "owned" set follows the fund when the fund is
-        // selected; the map keeps the player's own set above.
+        // The order book trades as the selected actor, so its "owned" set and cost basis follow the fund when
+        // the fund is selected; the map keeps the player's own set above.
         const activeId = actorKind === 'fund' ? playerData.fundParticipantId : playerData.id
-        if (activeId == null) {
-          setActorHoldingCompanyIds(new Set())
-        } else if (activeId === playerData.id) {
-          setActorHoldingCompanyIds(playerHeld)
-        } else {
-          setActorHoldingCompanyIds(holdingCompanyIdSet(await api.getHoldings(activeId)))
-        }
+        const activeHoldings = activeId == null ? [] : activeId === playerData.id ? holdings : await api.getHoldings(activeId)
+        setActorHoldingCompanyIds(holdingCompanyIdSet(activeHoldings))
+        setActorHoldingByCompany(holdingByCompany(activeHoldings))
       } else {
         setPlayerHoldingCompanyIds(new Set())
         setActorHoldingCompanyIds(new Set())
+        setActorHoldingByCompany(new Map())
       }
     } catch {
       // Keep the last known state when a refresh fails; the shell surfaces the offline status.
@@ -148,6 +146,7 @@ function App() {
                     companyById={companyById}
                     actor={actor}
                     actorHoldingCompanyIds={actorHoldingCompanyIds}
+                    actorHoldingByCompany={actorHoldingByCompany}
                     emptyActorHint={emptyActorHint}
                     onSelectCompany={setMapModalCompanyId}
                     onTraded={loadAll}

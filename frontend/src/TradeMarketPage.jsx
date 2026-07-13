@@ -7,7 +7,7 @@ import { MarketMapPanel } from './MarketMapPanel'
 import { OrdersActivity } from './OrdersActivity'
 import { LatestNews } from './LatestNews'
 import { OrderBookPanel } from './OrderBook'
-import { emptyActorHintFor, holdingCompanyIdSet, resolveActor } from './actor'
+import { emptyActorHintFor, holdingByCompany, holdingCompanyIdSet, resolveActor } from './actor'
 
 const POLL_INTERVAL_MS = 1500
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
@@ -30,6 +30,7 @@ function TradeMarketPage() {
   const [player, setPlayer] = useState(null)
   const [playerHoldingCompanyIds, setPlayerHoldingCompanyIds] = useState(() => new Set())
   const [actorHoldingCompanyIds, setActorHoldingCompanyIds] = useState(() => new Set())
+  const [actorHoldingByCompany, setActorHoldingByCompany] = useState(() => new Map())
   const [active, setActive] = useState('map')
   const tabRefs = useRef({})
 
@@ -56,16 +57,13 @@ function TradeMarketPage() {
         setPlayerHoldingCompanyIds(playerHeld)
 
         const activeId = actorKind === 'fund' ? playerData.fundParticipantId : playerData.id
-        if (activeId == null) {
-          setActorHoldingCompanyIds(new Set())
-        } else if (activeId === playerData.id) {
-          setActorHoldingCompanyIds(playerHeld)
-        } else {
-          setActorHoldingCompanyIds(holdingCompanyIdSet(await api.getHoldings(activeId)))
-        }
+        const activeHoldings = activeId == null ? [] : activeId === playerData.id ? holdings : await api.getHoldings(activeId)
+        setActorHoldingCompanyIds(holdingCompanyIdSet(activeHoldings))
+        setActorHoldingByCompany(holdingByCompany(activeHoldings))
       } else {
         setPlayerHoldingCompanyIds(new Set())
         setActorHoldingCompanyIds(new Set())
+        setActorHoldingByCompany(new Map())
       }
     } catch {
       // Keep the last known state when a refresh fails; the shell surfaces the offline status.
@@ -187,6 +185,7 @@ function TradeMarketPage() {
           companyById={companyById}
           actor={actor}
           actorHoldingCompanyIds={actorHoldingCompanyIds}
+          actorHoldingByCompany={actorHoldingByCompany}
           emptyActorHint={emptyActorHint}
           onSelectCompany={onSelectCompany}
           onTraded={loadAll}

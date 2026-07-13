@@ -48,6 +48,7 @@ export function OrderBookPanel({
   companyById,
   actor,
   actorHoldingCompanyIds,
+  actorHoldingByCompany,
   emptyActorHint,
   onSelectCompany,
   onTraded,
@@ -160,6 +161,7 @@ export function OrderBookPanel({
           companyById={companyById}
           actor={actor}
           actorHoldingCompanyIds={actorHoldingCompanyIds}
+          actorHoldingByCompany={actorHoldingByCompany}
           onSelectCompany={onSelectCompany}
           onTrade={setTradeOrder}
         />
@@ -180,10 +182,13 @@ export function OrderBookPanel({
   )
 }
 
-function OrderSide({ side, tone, orders, participantNameById, bankruptParticipantIds, companyNameById, companyPriceById, companySharesById, companyById, actor, actorHoldingCompanyIds, onSelectCompany, onTrade }) {
+function OrderSide({ side, tone, orders, participantNameById, bankruptParticipantIds, companyNameById, companyPriceById, companySharesById, companyById, actor, actorHoldingCompanyIds, actorHoldingByCompany, onSelectCompany, onTrade }) {
   if (orders.length === 0) {
     return <p className="note note-sm">No {side.toLowerCase()} orders.</p>
   }
+
+  // Gain/loss only applies to bids the actor can sell into; a resting sell offer has no cost basis for the actor.
+  const showGainLoss = side === 'Buy'
 
   return (
     <div className="tbl-scroll">
@@ -199,6 +204,11 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
             <th scope="col" className="ta-r">
               Quantity
             </th>
+            {showGainLoss ? (
+              <th scope="col" className="ta-r">
+                Gain/loss
+              </th>
+            ) : null}
             <th scope="col">Company</th>
             <th scope="col">Trader</th>
             <th scope="col">Action</th>
@@ -260,6 +270,15 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
             const diffTone = percentDiff == null || percentDiff === 0 ? 'flat' : percentDiff > 0 ? 'up' : 'down'
             // A bid the actor can sell into: they hold shares of its company and it is not their own order.
             const sellable = side === 'Buy' && actionable && !!actorHoldingCompanyIds?.has(order.companyId)
+            // Realized gain/loss from selling the shares the actor holds into this bid: the most both the
+            // holding and the bid can absorb, valued at the bid price minus the weighted-average price paid.
+            const holding = actorHoldingByCompany?.get(order.companyId)
+            const sellableQuantity = holding ? Math.min(holding.shares, remaining) : 0
+            const sellGainLoss =
+              sellable && holding && sellableQuantity > 0
+                ? sellableQuantity * (order.limitPrice - holding.averageCost)
+                : null
+            const gainGlyph = sellGainLoss == null ? '' : sellGainLoss > 0 ? '▲' : sellGainLoss < 0 ? '▼' : '◆'
             // The actor takes the opposite side: buy a resting sell offer, sell into a resting buy order.
             const actionLabel =
               side === 'Sell'
@@ -308,6 +327,18 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                     </span>
                   ) : null}
                 </td>
+                {showGainLoss ? (
+                  <td className="num ta-r">
+                    {sellGainLoss != null ? (
+                      <span className={`num tone-${toneOf(sellGainLoss)}`} title="Gain or loss from selling your shares into this bid">
+                        <span aria-hidden="true">{gainGlyph} </span>
+                        {formatSigned(sellGainLoss)}
+                      </span>
+                    ) : (
+                      <span className="muted-sub">—</span>
+                    )}
+                  </td>
+                ) : null}
                 <td>
                   <button
                     type="button"

@@ -24,6 +24,20 @@ export function createTradingClock(market, receivedAtMs = Date.now()) {
   }
 }
 
+// While the market runs, the local countdown should keep an existing snapshot and interpolate it down rather
+// than re-seed on every poll: the server's remaining seconds is a per-cycle step value, so re-seeding snaps the
+// smooth countdown back up at each cycle. Re-sync only at a phase boundary — a new trading day or the
+// Trading/Break switch — matching the natural loop and trade-day starts. When the market is not running there is
+// nothing to interpolate, so a fresh snapshot each poll keeps a paused or manually stepped clock accurate.
+export function shouldKeepTradingClock(previous, next) {
+  if (!previous || !next || next.marketStatus !== 'Running') return false
+  return (
+    previous.marketStatus === next.marketStatus &&
+    previous.tradingDayNumber === next.tradingDayNumber &&
+    previous.tradingSessionState === next.tradingSessionState
+  )
+}
+
 export function interpolateTradingClock(snapshot, nowMs = Date.now()) {
   if (!snapshot) return null
 
