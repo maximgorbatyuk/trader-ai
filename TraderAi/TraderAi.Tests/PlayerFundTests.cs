@@ -50,13 +50,13 @@ public sealed class PlayerFundTests : IDisposable
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var market = Service(new FixedRoll(0d));
-        var player = (await market.CreatePlayerAsync("Ada")).Player!; // FixedRoll pins the balance to 10,000.
+        var player = (await market.CreatePlayerAsync("Ada")).Player!; // FixedRoll pins the balance to 100,000.
 
         var result = await market.OpenPlayerFundAsync(4_000m, null);
 
         Assert.True(result.Success);
         await context.Entry(player).ReloadAsync();
-        Assert.Equal(6_000m, player.CurrentBalance);
+        Assert.Equal(96_000m, player.CurrentBalance);
 
         var fund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
         Assert.True(fund.IsPlayerManaged);
@@ -132,7 +132,7 @@ public sealed class PlayerFundTests : IDisposable
 
         Assert.True(result.Success);
         await context.Entry(player).ReloadAsync();
-        Assert.Equal(5_000m, player.CurrentBalance);
+        Assert.Equal(95_000m, player.CurrentBalance);
         var fund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
         var fundParticipant = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fund.ParticipantId);
         Assert.Equal(5_000m, fundParticipant.CurrentBalance);
@@ -148,12 +148,12 @@ public sealed class PlayerFundTests : IDisposable
         player.CurrentBalance += 2_000m;
         await context.SaveChangesAsync();
 
-        var result = await market.DepositToPlayerFundAsync(7_000m);
+        var result = await market.DepositToPlayerFundAsync(97_000m);
 
         Assert.False(result.Success);
         await context.Entry(player).ReloadAsync();
-        Assert.Equal(8_000m, player.CurrentBalance);
-        Assert.Equal(6_000m, player.SettledCashBalance);
+        Assert.Equal(98_000m, player.CurrentBalance);
+        Assert.Equal(96_000m, player.SettledCashBalance);
     }
 
     // Withdrawing moves cash back to the player.
@@ -169,7 +169,7 @@ public sealed class PlayerFundTests : IDisposable
 
         Assert.True(result.Success);
         await context.Entry(player).ReloadAsync();
-        Assert.Equal(7_500m, player.CurrentBalance);
+        Assert.Equal(97_500m, player.CurrentBalance);
         var fund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
         var fundParticipant = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fund.ParticipantId);
         Assert.Equal(2_500m, fundParticipant.CurrentBalance);
@@ -295,8 +295,8 @@ public sealed class PlayerFundTests : IDisposable
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var market = Service(new FixedRoll(0d));
-        var player = (await market.CreatePlayerAsync("Ada")).Player!; // FixedRoll pins the balance to 10,000.
-        await market.OpenPlayerFundAsync(4_000m, null); // player 6,000, fund 4,000
+        var player = (await market.CreatePlayerAsync("Ada")).Player!; // FixedRoll pins the balance to 100,000.
+        await market.OpenPlayerFundAsync(4_000m, null); // player 96,000, fund 4,000
         var fund = await context.CollectiveFunds.SingleAsync();
         var company = await context.Companies.FirstAsync();
         context.Holdings.Add(new Holding { ParticipantId = fund.ParticipantId, CompanyId = company.Id, Quantity = 5, AverageCost = 80m });
@@ -312,7 +312,7 @@ public sealed class PlayerFundTests : IDisposable
         Assert.Equal(0m, fundParticipant.CurrentBalance);
 
         await context.Entry(player).ReloadAsync();
-        Assert.Equal(10_000m, player.CurrentBalance); // seed cash returned in full
+        Assert.Equal(100_000m, player.CurrentBalance); // seed cash returned in full
 
         var playerHolding = await context.Holdings.AsNoTracking()
             .FirstAsync(holding => holding.ParticipantId == player.Id && holding.CompanyId == company.Id);
@@ -331,7 +331,7 @@ public sealed class PlayerFundTests : IDisposable
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var market = Service(new FixedRoll(0d));
         var player = (await market.CreatePlayerAsync("Ada")).Player!;
-        await market.OpenPlayerFundAsync(4_000m, null); // player 6,000, fund 4,000
+        await market.OpenPlayerFundAsync(4_000m, null); // player 96,000, fund 4,000
         var fund = await context.CollectiveFunds.SingleAsync();
         var fundParticipant = await context.Participants.FirstAsync(participant => participant.Id == fund.ParticipantId);
         var member = await AddTraderAsync(500m);
@@ -346,7 +346,7 @@ public sealed class PlayerFundTests : IDisposable
         await context.Entry(member).ReloadAsync();
         Assert.Equal(3_500m, member.CurrentBalance); // 500 + 3,000 deposit back
         await context.Entry(player).ReloadAsync();
-        Assert.Equal(10_000m, player.CurrentBalance); // 6,000 + (7,000 − 3,000) residual
+        Assert.Equal(100_000m, player.CurrentBalance); // 96,000 + (7,000 − 3,000) residual
         Assert.Equal(0, await context.CollectiveFundParticipants.CountAsync());
         Assert.Equal(CollectiveFundStatus.Closed, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
 

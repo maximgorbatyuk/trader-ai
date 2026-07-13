@@ -305,7 +305,7 @@ public sealed class IndustrySentimentPersistenceTests : IClassFixture<WebApplica
         }
 
         var companies = Enumerable.Range(0, 100)
-            .Select(_ => new SeededCompany(random.Next(20, 301), random.Next(100, 1001)))
+            .Select(_ => new SeededCompany(random.Next(20, 301), random.Next(1000, 10001)))
             .ToArray();
 
         random.Next(10, 26);

@@ -160,8 +160,8 @@ public sealed class MarketService(
     private const decimal MaxSellOffset = 0.05m;
 
     // A joining human player starts with a whole-dollar balance drawn from this range.
-    private const int PlayerMinBalance = 10_000;
-    private const int PlayerMaxBalance = 200_000;
+    private const int PlayerMinBalance = 100_000;
+    private const int PlayerMaxBalance = 400_000;
 
     public Task<Market?> GetMarketAsync() => dbContext.Markets.FirstOrDefaultAsync();
 
@@ -2331,8 +2331,8 @@ public sealed class MarketService(
         // Tunable size of the generated demo market; bump these to grow the simulation.
         const int companyCount = 100;
         const int participantCount = 300;
-        const int minShares = 100;
-        const int maxShares = 1000;
+        const int minShares = 1000;
+        const int maxShares = 10000;
         const int minPrice = 20;
         const int maxPrice = 300;
 

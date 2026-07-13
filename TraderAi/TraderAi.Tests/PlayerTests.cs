@@ -45,7 +45,7 @@ public sealed class PlayerTests : IDisposable
         Assert.Equal("Ada", player.Name);
         Assert.Equal(0m, player.ReservedBalance);
         Assert.Equal(player.InitialBalance, player.CurrentBalance);
-        Assert.InRange(player.InitialBalance, 10000m, 200000m);
+        Assert.InRange(player.InitialBalance, 100000m, 400000m);
         Assert.Equal(decimal.Truncate(player.InitialBalance), player.InitialBalance);
     }
 
