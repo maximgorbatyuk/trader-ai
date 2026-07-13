@@ -10,6 +10,11 @@ public sealed class Company
 
     public int IssuedSharesCount { get; set; }
 
+    // Corporate cash is separate from participant balances so primary proceeds can fund later payouts.
+    public decimal CashBalance { get; set; }
+
+    public PriceBandState? PriceBandState { get; set; }
+
     // Capitalisation recorded at this company's most recent dividend window, the baseline the next window's
     // stability test compares against. Refreshed every window; null until the first one.
     public decimal? LastDividendCapitalization { get; set; }
@@ -28,11 +33,6 @@ public sealed class Company
     public int? ClosedInCycleId { get; set; }
 
     public DateTime? ClosedAt { get; set; }
-
-    // Volatility halt: while the current cycle number is at or below this, the company is frozen — matching
-    // skips it and no new orders may be placed. Stores a cycle number (not an id) so the freeze can name a
-    // future cycle that has no row yet. Null when the company has never been, or is no longer, halted.
-    public int? TradingHaltedUntilCycleNumber { get; set; }
 
     public DateTime CreatedAt { get; set; }
 

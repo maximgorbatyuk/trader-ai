@@ -13,15 +13,25 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<MarketCycle> MarketCycles => Set<MarketCycle>();
 
+    public DbSet<TradingDay> TradingDays => Set<TradingDay>();
+
+    public DbSet<TradingBreakCycle> TradingBreakCycles => Set<TradingBreakCycle>();
+
     public DbSet<Order> Orders => Set<Order>();
 
     public DbSet<OrderFill> OrderFills => Set<OrderFill>();
 
     public DbSet<ShareTransaction> ShareTransactions => Set<ShareTransaction>();
 
+    public DbSet<SettlementInstruction> SettlementInstructions => Set<SettlementInstruction>();
+
     public DbSet<MoneyTransaction> MoneyTransactions => Set<MoneyTransaction>();
 
     public DbSet<DividendPayout> DividendPayouts => Set<DividendPayout>();
+
+    public DbSet<CorporateCashTransaction> CorporateCashTransactions => Set<CorporateCashTransaction>();
+
+    public DbSet<PriceBandState> PriceBandStates => Set<PriceBandState>();
 
     public DbSet<PriceSnapshot> PriceSnapshots => Set<PriceSnapshot>();
 
@@ -75,6 +85,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<Loan> Loans => Set<Loan>();
 
+    public DbSet<MarginAccount> MarginAccounts => Set<MarginAccount>();
+
+    public DbSet<MarginCall> MarginCalls => Set<MarginCall>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<NewsPost>()
@@ -121,6 +135,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<MarketCycle>()
             .HasIndex(cycle => cycle.CycleNumber)
             .IsUnique();
+
+        modelBuilder.Entity<TradingDay>()
+            .HasIndex(day => day.DayNumber)
+            .IsUnique();
+
+        modelBuilder.Entity<MarketCycle>()
+            .HasIndex(cycle => new { cycle.TradingDayId, cycle.TradingCycleNumber })
+            .IsUnique()
+            .HasFilter("TradingDayId > 0");
+
+        modelBuilder.Entity<TradingBreakCycle>()
+            .HasIndex(cycle => new { cycle.TradingDayId, cycle.IsActive });
 
         // Worth snapshots are read back per trader in cycle order to chart total worth over time.
         modelBuilder.Entity<ParticipantWorthSnapshot>()
@@ -184,9 +210,19 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<Loan>()
             .HasIndex(loan => new { loan.BankId, loan.Status });
 
+        modelBuilder.Entity<MarginAccount>()
+            .HasIndex(account => account.ParticipantId)
+            .IsUnique();
+
+        modelBuilder.Entity<MarginCall>()
+            .HasIndex(call => new { call.MarginAccountId, call.Status });
+
         // Loan-distress sells and loan-linked transactions are looked up by the loan they belong to.
         modelBuilder.Entity<Order>()
             .HasIndex(order => new { order.RelatedLoanId, order.Status });
+
+        modelBuilder.Entity<Order>()
+            .HasIndex(order => new { order.RelatedMarginCallId, order.Status });
 
         modelBuilder.Entity<MoneyTransaction>()
             .HasIndex(transaction => transaction.RelatedLoanId);
@@ -203,6 +239,46 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<DividendPayout>()
             .HasIndex(payout => payout.CreatedInCycleId);
+
+        modelBuilder.Entity<CorporateCashTransaction>()
+            .HasOne<Company>()
+            .WithMany()
+            .HasForeignKey(transaction => transaction.CompanyId);
+
+        modelBuilder.Entity<CorporateCashTransaction>()
+            .HasIndex(transaction => new { transaction.CompanyId, transaction.Id });
+
+        modelBuilder.Entity<CorporateCashTransaction>()
+            .ToTable(table => table.HasCheckConstraint(
+                "CK_CorporateCashTransactions_Amount_Positive",
+                "CAST(Amount AS NUMERIC) > 0"));
+
+        modelBuilder.Entity<PriceBandState>()
+            .HasKey(state => state.CompanyId);
+
+        modelBuilder.Entity<Company>()
+            .HasOne(company => company.PriceBandState)
+            .WithOne(state => state.Company)
+            .HasForeignKey<PriceBandState>(state => state.CompanyId);
+
+        modelBuilder.Entity<SettlementInstruction>()
+            .HasOne(instruction => instruction.ShareTransaction)
+            .WithOne(transaction => transaction.SettlementInstruction)
+            .HasForeignKey<SettlementInstruction>(instruction => instruction.ShareTransactionId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<SettlementInstruction>()
+            .HasIndex(instruction => instruction.ShareTransactionId)
+            .IsUnique();
+
+        modelBuilder.Entity<SettlementInstruction>()
+            .HasIndex(instruction => new { instruction.Status, instruction.DueDayNumber });
+
+        modelBuilder.Entity<SettlementInstruction>()
+            .HasIndex(instruction => new { instruction.BuyerId, instruction.Status, instruction.DueDayNumber });
+
+        modelBuilder.Entity<SettlementInstruction>()
+            .HasIndex(instruction => new { instruction.SellerId, instruction.Status, instruction.DueDayNumber });
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {

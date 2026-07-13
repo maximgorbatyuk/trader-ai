@@ -59,6 +59,37 @@ public static class MarketEndpoints
                 : Results.Ok(detail);
         });
 
+        app.MapGet("/companies/{companyId:int}/corporate-cash-movements", async (
+            int companyId, int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            if (!await dbContext.Companies.AnyAsync(company => company.Id == companyId))
+            {
+                return Results.NotFound(new { error = "Company not found." });
+            }
+
+            var size = Math.Clamp(pageSize ?? 10, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var query = dbContext.CorporateCashTransactions.Where(transaction => transaction.CompanyId == companyId);
+            var total = await query.CountAsync();
+            var rows = await query
+                .OrderByDescending(transaction => transaction.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+            var items = rows
+                .Select(transaction => new CorporateCashMovementResponse(
+                    transaction.Id,
+                    transaction.Type.ToString(),
+                    transaction.Amount,
+                    transaction.CreatedInCycleId,
+                    cycleNumbersById.GetValueOrDefault(transaction.CreatedInCycleId),
+                    transaction.CreatedAt))
+                .ToArray();
+
+            return Results.Ok(new PagedCorporateCashMovementsResponse(items, total, pageIndex, size));
+        });
+
         app.MapGet("/companies/{companyId:int}/shareholders", async (int companyId, AppDbContext dbContext) =>
         {
             // AverageCost is the weighted-average price the owner paid, so cost basis is quantity times it.
@@ -114,6 +145,7 @@ public static class MarketEndpoints
             var limit = Math.Clamp(take ?? 10, 1, 100);
             var transactions = await dbContext.ShareTransactions
                 .Where(transaction => transaction.CompanyId == companyId)
+                .Include(transaction => transaction.SettlementInstruction)
                 .OrderByDescending(transaction => transaction.Id)
                 .Take(limit)
                 .ToListAsync();
@@ -281,7 +313,10 @@ public static class MarketEndpoints
             return Results.Ok(new PagedAuditsResponse(items, total, pageIndex, size));
         });
 
-        app.MapGet("/market", async (MarketService marketService, AppDbContext dbContext) =>
+        app.MapGet("/market", async (
+            MarketService marketService,
+            TradingClockService tradingClockService,
+            AppDbContext dbContext) =>
         {
             var market = await marketService.GetMarketAsync();
             if (market is null)
@@ -289,17 +324,13 @@ public static class MarketEndpoints
                 return Results.Ok<MarketResponse?>(null);
             }
 
-            var lastDividendTotal = await LastDividendTotalAsync(dbContext);
-            var currentCycleNumber = market.CurrentCycleId is int cycleId
-                ? await dbContext.MarketCycles
-                    .Where(cycle => cycle.Id == cycleId)
-                    .Select(cycle => (int?)cycle.CycleNumber)
-                    .FirstOrDefaultAsync()
-                : null;
-            return Results.Ok<MarketResponse?>(ToMarketResponse(market, lastDividendTotal, currentCycleNumber));
+            return Results.Ok<MarketResponse?>(await BuildMarketResponseAsync(market, dbContext, tradingClockService));
         });
 
-        app.MapPost("/market/seed", async (MarketService marketService) =>
+        app.MapPost("/market/seed", async (
+            MarketService marketService,
+            TradingClockService tradingClockService,
+            AppDbContext dbContext) =>
         {
             if (await marketService.GetMarketAsync() is not null)
             {
@@ -307,45 +338,55 @@ public static class MarketEndpoints
             }
 
             var market = await marketService.SeedDemoMarketAsync();
-            return Results.Ok(ToMarketResponse(market));
+            return Results.Ok(await BuildMarketResponseAsync(market, dbContext, tradingClockService));
         });
 
-        app.MapPost("/market/reset", async (MarketService marketService) =>
+        app.MapPost("/market/reset", async (
+            MarketService marketService,
+            TradingClockService tradingClockService,
+            AppDbContext dbContext) =>
         {
             var market = await marketService.ResetDemoMarketAsync();
-            return Results.Ok(ToMarketResponse(market));
+            return Results.Ok(await BuildMarketResponseAsync(market, dbContext, tradingClockService));
         });
 
-        app.MapPost("/market/pause", async (MarketService marketService) =>
+        app.MapPost("/market/pause", async (
+            MarketService marketService,
+            TradingClockService tradingClockService,
+            AppDbContext dbContext) =>
         {
             var market = await marketService.SetStatusAsync(MarketStatus.Paused);
             return market is null
                 ? Results.NotFound(new { error = "No market exists." })
-                : Results.Ok(ToMarketResponse(market));
+                : Results.Ok(await BuildMarketResponseAsync(market, dbContext, tradingClockService));
         });
 
-        app.MapPost("/market/start", async (MarketService marketService) =>
+        app.MapPost("/market/start", async (
+            MarketService marketService,
+            TradingClockService tradingClockService,
+            AppDbContext dbContext) =>
         {
             var market = await marketService.SetStatusAsync(MarketStatus.Running);
             return market is null
                 ? Results.NotFound(new { error = "No market exists." })
-                : Results.Ok(ToMarketResponse(market));
+                : Results.Ok(await BuildMarketResponseAsync(market, dbContext, tradingClockService));
         });
 
-        app.MapGet("/participants", async (AppDbContext dbContext) =>
-            Results.Ok(await BuildParticipantResponsesAsync(dbContext)));
+        app.MapGet("/participants", async (AppDbContext dbContext, MarginService marginService) =>
+            Results.Ok(await BuildParticipantResponsesAsync(dbContext, marginService)));
 
         // Server-paged traders for the roster page: name search, type filter, and sortable numeric columns.
         // The array endpoint above still feeds the dashboard, which sums trader cash across the whole set.
         app.MapGet("/participants/paged", async (
             int? page, int? pageSize, string? search, string? sort, string? sortDir, string? type,
-            AppDbContext dbContext) =>
+            AppDbContext dbContext,
+            MarginService marginService) =>
         {
             var size = Math.Clamp(pageSize ?? 20, 1, 100);
             var pageIndex = Math.Max(page ?? 1, 1);
             var descending = !string.Equals(sortDir, "asc", StringComparison.OrdinalIgnoreCase);
 
-            IEnumerable<ParticipantResponse> participants = await BuildParticipantResponsesAsync(dbContext);
+            IEnumerable<ParticipantResponse> participants = await BuildParticipantResponsesAsync(dbContext, marginService);
             if (!string.IsNullOrWhiteSpace(search))
             {
                 var term = search.Trim().ToLowerInvariant();
@@ -365,7 +406,7 @@ public static class MarketEndpoints
                 "shares" => Order(filtered, participant => participant.SharesOwned, descending),
                 "balance" => Order(filtered, participant => participant.CurrentBalance, descending),
                 "holdings" => Order(filtered, participant => participant.HoldingsValue, descending),
-                _ => Order(filtered, participant => participant.CurrentBalance + participant.HoldingsValue - participant.LoanLiability, descending),
+                _ => Order(filtered, participant => participant.TotalWorth, descending),
             };
 
             var items = ordered.Skip((pageIndex - 1) * size).Take(size).ToArray();
@@ -375,9 +416,9 @@ public static class MarketEndpoints
                 desc ? source.OrderByDescending(key) : source.OrderBy(key);
         });
 
-        app.MapGet("/participants/{participantId:int}", async (int participantId, AppDbContext dbContext) =>
+        app.MapGet("/participants/{participantId:int}", async (int participantId, AppDbContext dbContext, MarginService marginService) =>
         {
-            var detail = await BuildParticipantDetailAsync(dbContext, participantId);
+            var detail = await BuildParticipantDetailAsync(dbContext, marginService, participantId);
             return detail is null
                 ? Results.NotFound(new { error = "Participant not found." })
                 : Results.Ok(detail);
@@ -387,7 +428,8 @@ public static class MarketEndpoints
             int participantId,
             UpdateParticipantProfileRequest request,
             MarketService marketService,
-            AppDbContext dbContext) =>
+            AppDbContext dbContext,
+            MarginService marginService) =>
         {
             var updated = await marketService.UpdateParticipantProfileAsync(
                 participantId,
@@ -396,7 +438,7 @@ public static class MarketEndpoints
 
             return updated is null
                 ? Results.NotFound(new { error = "Participant not found." })
-                : Results.Ok(await BuildParticipantDetailAsync(dbContext, participantId));
+                : Results.Ok(await BuildParticipantDetailAsync(dbContext, marginService, participantId));
         });
 
         app.MapGet("/participants/{participantId:int}/holdings", async (int participantId, AppDbContext dbContext) =>
@@ -405,7 +447,13 @@ public static class MarketEndpoints
             // quantity times it.
             var sharesByCompany = await dbContext.Holdings
                 .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
-                .Select(holding => new { holding.CompanyId, Shares = holding.Quantity, CostBasis = holding.Quantity * holding.AverageCost })
+                .Select(holding => new
+                {
+                    holding.CompanyId,
+                    Shares = holding.Quantity,
+                    SettledShares = holding.SettledQuantity,
+                    CostBasis = holding.Quantity * holding.AverageCost,
+                })
                 .ToListAsync();
 
             var companyNameById = await dbContext.Companies
@@ -421,6 +469,8 @@ public static class MarketEndpoints
                         holding.CompanyId,
                         companyNameById.GetValueOrDefault(holding.CompanyId, $"#{holding.CompanyId}"),
                         holding.Shares,
+                        holding.SettledShares,
+                        holding.Shares - holding.SettledShares,
                         currentPrice,
                         currentPrice * holding.Shares,
                         holding.CostBasis);
@@ -590,11 +640,59 @@ public static class MarketEndpoints
             var limit = Math.Clamp(take ?? 10, 1, 100);
             var transactions = await dbContext.ShareTransactions
                 .Where(transaction => transaction.SellerId == participantId || transaction.BuyerId == participantId)
+                .Include(transaction => transaction.SettlementInstruction)
                 .OrderByDescending(transaction => transaction.Id)
                 .Take(limit)
                 .ToListAsync();
 
             return Results.Ok(transactions.Select(ToShareTransactionResponse).ToArray());
+        });
+
+        app.MapGet("/participants/{participantId:int}/settlements", async (
+            int participantId,
+            string? status,
+            int? page,
+            int? pageSize,
+            AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var query = dbContext.SettlementInstructions
+                .Where(instruction => instruction.BuyerId == participantId || instruction.SellerId == participantId);
+            if (!string.Equals(status, "all", StringComparison.OrdinalIgnoreCase))
+            {
+                var requested = string.Equals(status, "settled", StringComparison.OrdinalIgnoreCase)
+                    ? SettlementStatus.Settled
+                    : SettlementStatus.Pending;
+                query = query.Where(instruction => instruction.Status == requested);
+            }
+
+            var total = await query.CountAsync();
+            var instructions = await query
+                .OrderBy(instruction => instruction.DueDayNumber)
+                .ThenBy(instruction => instruction.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+            var companyIds = instructions.Select(instruction => instruction.CompanyId).Distinct().ToList();
+            var companyNames = await dbContext.Companies
+                .Where(company => companyIds.Contains(company.Id))
+                .ToDictionaryAsync(company => company.Id, company => company.Name);
+
+            var items = instructions.Select(instruction => new SettlementInstructionResponse(
+                instruction.Id,
+                instruction.ShareTransactionId,
+                instruction.BuyerId == participantId ? "Buy" : "Sell",
+                instruction.CompanyId,
+                companyNames.GetValueOrDefault(instruction.CompanyId, $"#{instruction.CompanyId}"),
+                instruction.Quantity,
+                instruction.CashAmount,
+                instruction.TradeDayNumber,
+                instruction.DueDayNumber,
+                instruction.Status.ToString(),
+                instruction.CreatedAt,
+                instruction.SettledAt)).ToArray();
+            return Results.Ok(new PagedSettlementInstructionsResponse(items, total, pageIndex, size));
         });
 
         app.MapGet("/participants/{participantId:int}/money-transactions", async (int participantId, int? take, AppDbContext dbContext) =>
@@ -704,7 +802,10 @@ public static class MarketEndpoints
                         loan.RemainingPrincipal,
                         loan.InterestRatePerCycle,
                         loan.TermCycles,
-                        loan.PastDueAmount,
+                        loan.PastDuePrincipal,
+                        loan.PastDueInterest,
+                        loan.AccruedFees,
+                        loan.TotalLiability,
                         loan.Status.ToString()),
                 dividendLines.Count == 0
                     ? null
@@ -736,7 +837,8 @@ public static class MarketEndpoints
                     snapshot.Balance,
                     snapshot.HoldingsValue,
                     snapshot.LoanLiability,
-                    snapshot.Balance + snapshot.HoldingsValue - snapshot.LoanLiability,
+                    snapshot.MarginLiability,
+                    snapshot.Balance + snapshot.HoldingsValue - snapshot.LoanLiability - snapshot.MarginLiability,
                     snapshot.CreatedAt))
                 .ToArray();
 
@@ -819,10 +921,10 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
-        app.MapGet("/player", async (AppDbContext dbContext) =>
-            Results.Ok(await BuildPlayerResponseAsync(dbContext)));
+        app.MapGet("/player", async (AppDbContext dbContext, MarginService marginService) =>
+            Results.Ok(await BuildPlayerResponseAsync(dbContext, marginService)));
 
-        app.MapPost("/player", async (CreatePlayerRequest? request, MarketService marketService, AppDbContext dbContext) =>
+        app.MapPost("/player", async (CreatePlayerRequest? request, MarketService marketService, AppDbContext dbContext, MarginService marginService) =>
         {
             var result = await marketService.CreatePlayerAsync(request?.Name);
             if (!result.Success)
@@ -833,7 +935,7 @@ public static class MarketEndpoints
                     : Results.Conflict(new { error = result.Error });
             }
 
-            return Results.Ok(await BuildPlayerResponseAsync(dbContext));
+            return Results.Ok(await BuildPlayerResponseAsync(dbContext, marginService));
         });
 
         app.MapPost("/player/orders/{orderId:int}/cancel", async (int orderId, MarketService marketService) =>
@@ -844,7 +946,7 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
-        app.MapPost("/player/fund", async (OpenPlayerFundRequest request, MarketService marketService, AppDbContext dbContext) =>
+        app.MapPost("/player/fund", async (OpenPlayerFundRequest request, MarketService marketService, AppDbContext dbContext, MarginService marginService) =>
         {
             var result = await marketService.OpenPlayerFundAsync(request.SeedAmount, request.Name);
             if (!result.Success)
@@ -855,30 +957,30 @@ public static class MarketEndpoints
                     : Results.BadRequest(new { error = result.Error });
             }
 
-            return Results.Ok(await BuildPlayerResponseAsync(dbContext));
+            return Results.Ok(await BuildPlayerResponseAsync(dbContext, marginService));
         });
 
-        app.MapPost("/player/fund/deposit", async (PlayerFundCashRequest request, MarketService marketService, AppDbContext dbContext) =>
+        app.MapPost("/player/fund/deposit", async (PlayerFundCashRequest request, MarketService marketService, AppDbContext dbContext, MarginService marginService) =>
         {
             var result = await marketService.DepositToPlayerFundAsync(request.Amount);
             return result.Success
-                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext, marginService))
                 : Results.BadRequest(new { error = result.Error });
         });
 
-        app.MapPost("/player/fund/withdraw", async (PlayerFundCashRequest request, MarketService marketService, AppDbContext dbContext) =>
+        app.MapPost("/player/fund/withdraw", async (PlayerFundCashRequest request, MarketService marketService, AppDbContext dbContext, MarginService marginService) =>
         {
             var result = await marketService.WithdrawFromPlayerFundAsync(request.Amount);
             return result.Success
-                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext, marginService))
                 : Results.BadRequest(new { error = result.Error });
         });
 
-        app.MapPost("/player/fund/close", async (MarketService marketService, AppDbContext dbContext) =>
+        app.MapPost("/player/fund/close", async (MarketService marketService, AppDbContext dbContext, MarginService marginService) =>
         {
             var result = await marketService.ClosePlayerFundAsync();
             return result.Success
-                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext, marginService))
                 : Results.BadRequest(new { error = result.Error });
         });
 
@@ -895,11 +997,11 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
-        app.MapPost("/funds/{id:int}/advertise", async (int id, MarketService marketService, AppDbContext dbContext) =>
+        app.MapPost("/funds/{id:int}/advertise", async (int id, MarketService marketService, AppDbContext dbContext, MarginService marginService) =>
         {
             var result = await marketService.AdvertiseFundAsync(id);
             return result.Success
-                ? Results.Ok(await BuildPlayerResponseAsync(dbContext))
+                ? Results.Ok(await BuildPlayerResponseAsync(dbContext, marginService))
                 : Results.BadRequest(new { error = result.Error });
         });
 
@@ -963,6 +1065,7 @@ public static class MarketEndpoints
         {
             var limit = Math.Clamp(take ?? 50, 1, 500);
             var transactions = await dbContext.ShareTransactions
+                .Include(transaction => transaction.SettlementInstruction)
                 .OrderByDescending(transaction => transaction.Id)
                 .Take(limit)
                 .ToListAsync();
@@ -1396,7 +1499,9 @@ public static class MarketEndpoints
             IOrderedQueryable<Loan> ordered = sort switch
             {
                 "principal" => descending ? query.OrderByDescending(loan => loan.RemainingPrincipal) : query.OrderBy(loan => loan.RemainingPrincipal),
-                "pastDue" => descending ? query.OrderByDescending(loan => loan.PastDueAmount) : query.OrderBy(loan => loan.PastDueAmount),
+                "pastDue" => descending
+                    ? query.OrderByDescending(loan => loan.PastDuePrincipal + loan.PastDueInterest + loan.AccruedFees)
+                    : query.OrderBy(loan => loan.PastDuePrincipal + loan.PastDueInterest + loan.AccruedFees),
                 "term" => descending ? query.OrderByDescending(loan => loan.TermCycles) : query.OrderBy(loan => loan.TermCycles),
                 _ => descending ? query.OrderByDescending(loan => loan.Id) : query.OrderBy(loan => loan.Id),
             };
@@ -1483,8 +1588,10 @@ public static class MarketEndpoints
             loan.InterestRatePerCycle,
             interestPerCycle,
             loan.ScheduledInstallment,
-            loan.PastDueAmount,
-            loan.RemainingPrincipal + loan.PastDueAmount,
+            loan.PastDuePrincipal,
+            loan.PastDueInterest,
+            loan.AccruedFees,
+            loan.TotalLiability,
             loan.TermCycles,
             openedNumber,
             dueNumber,
@@ -1531,7 +1638,7 @@ public static class MarketEndpoints
         var changeByCompany = await PriceChangePctByCompanyAsync(dbContext);
         var industryNameById = await IndustryNameByIdAsync(dbContext);
         var latestRatingByCompany = await LatestRatingByCompanyAsync(dbContext);
-        var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+        var priceBandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
 
         return companies
             .Select(company => new CompanyResponse(
@@ -1543,11 +1650,20 @@ public static class MarketEndpoints
                 latestPriceByCompany.GetValueOrDefault(company.Id),
                 changeByCompany.GetValueOrDefault(company.Id),
                 latestRatingByCompany.TryGetValue(company.Id, out var rating) ? rating.ToString() : null,
-                company.TradingHaltedUntilCycleNumber is int haltedUntil && haltedUntil >= currentCycleNumber))
+                priceBandByCompany.TryGetValue(company.Id, out var band) && band.State != LuldState.Normal,
+                band?.State.ToString() ?? LuldState.Normal.ToString(),
+                band?.LimitDirection?.ToString(),
+                band?.ReferencePrice,
+                band?.LowerBandPrice,
+                band?.UpperBandPrice,
+                band?.LimitStateStartedCycleNumber,
+                band?.PauseUntilCycleNumber))
             .ToList();
     }
 
-    private static async Task<List<ParticipantResponse>> BuildParticipantResponsesAsync(AppDbContext dbContext)
+    private static async Task<List<ParticipantResponse>> BuildParticipantResponsesAsync(
+        AppDbContext dbContext,
+        MarginService marginService)
     {
         var participants = await dbContext.Participants.OrderBy(participant => participant.Id).ToListAsync();
 
@@ -1558,51 +1674,40 @@ public static class MarketEndpoints
                 .ToListAsync())
             .ToHashSet();
 
-        var holdingsByOwner = (await dbContext.Holdings
-                .Where(holding => holding.Quantity > 0)
-                .Select(holding => new { OwnerId = holding.ParticipantId, holding.CompanyId, Count = holding.Quantity })
-                .ToListAsync())
-            .GroupBy(entry => entry.OwnerId)
-            .ToList();
-
-        var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
-
-        var sharesOwnedByParticipant = holdingsByOwner.ToDictionary(
-            group => group.Key,
-            group => group.Sum(holding => holding.Count));
-
-        // Distinct companies a trader holds shares in — one group per company after the owner+company grouping.
-        var companiesOwnedByParticipant = holdingsByOwner.ToDictionary(
-            group => group.Key,
-            group => group.Count());
-
-        // Estimated market value of a trader's shares: each holding valued at its company's latest price.
-        var holdingsValueByParticipant = holdingsByOwner.ToDictionary(
-            group => group.Key,
-            group => group.Sum(holding => holding.Count * latestPriceByCompany.GetValueOrDefault(holding.CompanyId)));
-
-        var loanLiabilityByParticipant = await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext);
-
-        return participants
+        var eligibleParticipants = participants
             .Where(participant => !memberParticipantIds.Contains(participant.Id))
-            // A closed fund lives on as an inactive, zeroed-out row; keep it off the live roster and surface it
-            // on the Closed Funds page instead. Only funds are dropped here — bankrupt traders stay listed.
+            // Closed fund participants remain as inactive history rows and belong only on the Closed Funds page.
             .Where(participant => participant.Type != ParticipantType.CollectiveFund || participant.IsActive)
-            .Select(participant => new ParticipantResponse(
-                participant.Id,
-                participant.Name,
-                participant.Type.ToString(),
-                participant.Temperament.ToString(),
-                participant.RiskProfile.ToString(),
-                participant.CurrentBalance,
-                participant.ReservedBalance,
-                participant.AvailableBalance,
-                sharesOwnedByParticipant.GetValueOrDefault(participant.Id),
-                companiesOwnedByParticipant.GetValueOrDefault(participant.Id),
-                holdingsValueByParticipant.GetValueOrDefault(participant.Id),
-                loanLiabilityByParticipant.GetValueOrDefault(participant.Id),
-                participant.IsActive,
-                participant.IsBankrupt))
+            .ToList();
+        var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+        var valuationByParticipant = await BuildParticipantValuationsAsync(
+            dbContext, marginService, eligibleParticipants, latestPriceByCompany);
+
+        return eligibleParticipants.Select(participant =>
+            {
+                var valuation = valuationByParticipant[participant.Id];
+                return new ParticipantResponse(
+                    participant.Id,
+                    participant.Name,
+                    participant.Type.ToString(),
+                    participant.Temperament.ToString(),
+                    participant.RiskProfile.ToString(),
+                    participant.CurrentBalance,
+                    participant.SettledCashBalance,
+                    participant.CurrentBalance - participant.SettledCashBalance,
+                    participant.ReservedBalance,
+                    participant.AvailableBalance,
+                    valuation.SharesOwned,
+                    valuation.CompaniesOwned,
+                    valuation.HoldingsValue,
+                    valuation.LoanLiability,
+                    valuation.Margin.TotalLiability,
+                    valuation.TotalWorth,
+                    valuation.PendingSettlementCount,
+                    valuation.NextSettlementDueDayNumber,
+                    participant.IsActive,
+                    participant.IsBankrupt);
+            })
             .ToList();
     }
 
@@ -1934,7 +2039,11 @@ public static class MarketEndpoints
             : null;
 
         var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
-        var isHalted = company.TradingHaltedUntilCycleNumber is int haltedUntil && haltedUntil >= currentCycleNumber;
+        var priceBand = await dbContext.PriceBandStates.FirstOrDefaultAsync(state => state.CompanyId == companyId);
+        var isHalted = priceBand?.State is not null and not LuldState.Normal;
+        var remainingPauseCycles = priceBand?.PauseUntilCycleNumber is int pauseUntil
+            ? Math.Max(0, pauseUntil - currentCycleNumber)
+            : 0;
 
         return new CompanyDetailResponse(
             company.Id,
@@ -1945,6 +2054,7 @@ public static class MarketEndpoints
             currentPrice == 0m ? null : currentPrice,
             priceChangePct,
             currentPrice * company.IssuedSharesCount,
+            company.CashBalance,
             sharesHeldByIssuer,
             sharesOutstanding,
             shareholderCount,
@@ -1954,10 +2064,22 @@ public static class MarketEndpoints
             company.ClosedInCycleId != null,
             closedInCycleNumber,
             isHalted,
-            isHalted ? company.TradingHaltedUntilCycleNumber : null);
+            priceBand?.PauseUntilCycleNumber,
+            priceBand?.State.ToString() ?? LuldState.Normal.ToString(),
+            priceBand?.LimitDirection?.ToString(),
+            priceBand?.ReferencePrice,
+            priceBand?.LowerBandPrice,
+            priceBand?.UpperBandPrice,
+            priceBand?.LimitStateStartedCycleNumber,
+            priceBand?.PauseUntilCycleNumber,
+            remainingPauseCycles,
+            remainingPauseCycles * 2);
     }
 
-    private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(AppDbContext dbContext, int participantId)
+    private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(
+        AppDbContext dbContext,
+        MarginService marginService,
+        int participantId)
     {
         var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
         if (participant is null)
@@ -1965,13 +2087,11 @@ public static class MarketEndpoints
             return null;
         }
 
-        var sharesOwned = await dbContext.Holdings
-            .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
-            .SumAsync(holding => holding.Quantity);
-
-        var loanLiability = await dbContext.Loans
-            .Where(loan => loan.ParticipantId == participantId && loan.Status == LoanStatus.Open)
-            .SumAsync(loan => loan.RemainingPrincipal + loan.PastDueAmount);
+        var valuation = (await BuildParticipantValuationsAsync(
+            dbContext,
+            marginService,
+            [participant],
+            await LatestPriceByCompanyAsync(dbContext)))[participant.Id];
 
         string? fundStatus = null;
         CollectiveFundMemberResponse[] fundMembers = [];
@@ -2006,10 +2126,17 @@ public static class MarketEndpoints
             participant.RiskProfile.ToString(),
             participant.InitialBalance,
             participant.CurrentBalance,
+            participant.SettledCashBalance,
+            participant.CurrentBalance - participant.SettledCashBalance,
             participant.ReservedBalance,
             participant.AvailableBalance,
-            sharesOwned,
-            loanLiability,
+            valuation.SharesOwned,
+            valuation.HoldingsValue,
+            valuation.LoanLiability,
+            valuation.Margin,
+            valuation.TotalWorth,
+            valuation.PendingSettlementCount,
+            valuation.NextSettlementDueDayNumber,
             participant.IsActive,
             fundStatus,
             fundMembers,
@@ -2017,7 +2144,7 @@ public static class MarketEndpoints
             memberOfFundName);
     }
 
-    private static async Task<PlayerResponse?> BuildPlayerResponseAsync(AppDbContext dbContext)
+    private static async Task<PlayerResponse?> BuildPlayerResponseAsync(AppDbContext dbContext, MarginService marginService)
     {
         var player = await dbContext.Participants
             .FirstOrDefaultAsync(participant => participant.Type == ParticipantType.Player);
@@ -2026,22 +2153,9 @@ public static class MarketEndpoints
             return null;
         }
 
-        var holdings = await dbContext.Holdings
-            .Where(holding => holding.ParticipantId == player.Id && holding.Quantity > 0)
-            .Select(holding => new { holding.CompanyId, Shares = holding.Quantity })
-            .ToListAsync();
-
         var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
-        var sharesOwned = holdings.Sum(holding => holding.Shares);
-        var holdingsValue = holdings.Sum(holding =>
-            holding.Shares * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
-
-        var loanLiability = await dbContext.Loans
-            .Where(loan => loan.ParticipantId == player.Id && loan.Status == LoanStatus.Open)
-            .SumAsync(loan => loan.RemainingPrincipal + loan.PastDueAmount);
-
-        // Net worth subtracts loan debt; gross holdings value is reported separately.
-        var totalWorth = player.CurrentBalance + holdingsValue - loanLiability;
+        var playerValuation = (await BuildParticipantValuationsAsync(
+            dbContext, marginService, [player], latestPriceByCompany))[player.Id];
 
         // The two newest snapshots are cycles N and N−1; last-cycle deltas stay null until both exist.
         var recentSnapshots = await dbContext.ParticipantWorthSnapshots
@@ -2057,8 +2171,8 @@ public static class MarketEndpoints
             var latest = recentSnapshots[0];
             var prior = recentSnapshots[1];
             lastCycleMoneyChange = latest.Balance - prior.Balance;
-            lastCycleWorthChange = latest.Balance + latest.HoldingsValue - latest.LoanLiability
-                - (prior.Balance + prior.HoldingsValue - prior.LoanLiability);
+            lastCycleWorthChange = latest.Balance + latest.HoldingsValue - latest.LoanLiability - latest.MarginLiability
+                - (prior.Balance + prior.HoldingsValue - prior.LoanLiability - prior.MarginLiability);
         }
 
         // The player-managed fund (if any) rides along on the player response so the UI can trade through it and
@@ -2076,6 +2190,9 @@ public static class MarketEndpoints
         decimal? fundTotalWorth = null;
         decimal? fundWithdrawable = null;
         int? fundPopularityIndex = null;
+        MarginAccountResponse? fundMargin = null;
+        int? fundPendingSettlementCount = null;
+        int? fundNextSettlementDueDayNumber = null;
         if (managedFund is not null)
         {
             fundPopularityIndex = managedFund.PopularityIndex;
@@ -2083,12 +2200,8 @@ public static class MarketEndpoints
                 .FirstOrDefaultAsync(participant => participant.Id == managedFund.ParticipantId);
             if (fundParticipant is not null)
             {
-                var fundHoldings = await dbContext.Holdings
-                    .Where(holding => holding.ParticipantId == fundParticipant.Id && holding.Quantity > 0)
-                    .Select(holding => new { holding.CompanyId, Shares = holding.Quantity })
-                    .ToListAsync();
-                var fundHoldingsVal = fundHoldings.Sum(holding =>
-                    holding.Shares * latestPriceByCompany.GetValueOrDefault(holding.CompanyId));
+                var fundValuation = (await BuildParticipantValuationsAsync(
+                    dbContext, marginService, [fundParticipant], latestPriceByCompany))[fundParticipant.Id];
                 var memberDepositsOwed = await dbContext.CollectiveFundParticipants
                     .Where(member => member.CollectiveFundId == managedFund.Id)
                     .SumAsync(member => member.DepositAmount);
@@ -2097,9 +2210,14 @@ public static class MarketEndpoints
                 fundName = fundParticipant.Name;
                 fundCurrentBalance = fundParticipant.CurrentBalance;
                 fundAvailableBalance = fundParticipant.AvailableBalance;
-                fundHoldingsValue = fundHoldingsVal;
-                fundTotalWorth = fundParticipant.CurrentBalance + fundHoldingsVal;
-                fundWithdrawable = Math.Max(0m, fundParticipant.AvailableBalance - memberDepositsOwed);
+                fundHoldingsValue = fundValuation.HoldingsValue;
+                fundMargin = fundValuation.Margin;
+                fundTotalWorth = fundValuation.TotalWorth;
+                fundWithdrawable = Math.Max(
+                    0m,
+                    Math.Min(fundParticipant.AvailableBalance, fundParticipant.SettledCashBalance) - memberDepositsOwed);
+                fundPendingSettlementCount = fundValuation.PendingSettlementCount;
+                fundNextSettlementDueDayNumber = fundValuation.NextSettlementDueDayNumber;
             }
         }
 
@@ -2108,14 +2226,19 @@ public static class MarketEndpoints
             player.Name,
             player.InitialBalance,
             player.CurrentBalance,
+            player.SettledCashBalance,
+            player.CurrentBalance - player.SettledCashBalance,
             player.ReservedBalance,
             player.AvailableBalance,
-            sharesOwned,
-            holdingsValue,
-            loanLiability,
-            totalWorth,
+            playerValuation.SharesOwned,
+            playerValuation.HoldingsValue,
+            playerValuation.LoanLiability,
+            playerValuation.Margin,
+            playerValuation.TotalWorth,
+            playerValuation.PendingSettlementCount,
+            playerValuation.NextSettlementDueDayNumber,
             player.CurrentBalance - player.InitialBalance,
-            totalWorth - player.InitialBalance,
+            playerValuation.TotalWorth - player.InitialBalance,
             lastCycleMoneyChange,
             lastCycleWorthChange,
             player.IsActive,
@@ -2126,7 +2249,83 @@ public static class MarketEndpoints
             fundHoldingsValue,
             fundTotalWorth,
             fundWithdrawable,
-            fundPopularityIndex);
+            fundPopularityIndex,
+            fundMargin,
+            fundPendingSettlementCount,
+            fundNextSettlementDueDayNumber);
+    }
+
+    private static async Task<Dictionary<int, ParticipantValuation>> BuildParticipantValuationsAsync(
+        AppDbContext dbContext,
+        MarginService marginService,
+        IReadOnlyCollection<Participant> participants,
+        IReadOnlyDictionary<int, decimal> prices)
+    {
+        var participantIds = participants.Select(participant => participant.Id).ToHashSet();
+        var holdings = await dbContext.Holdings
+            .Where(holding => participantIds.Contains(holding.ParticipantId) && holding.Quantity > 0)
+            .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
+            .ToListAsync();
+        var holdingsByParticipant = holdings
+            .GroupBy(holding => holding.ParticipantId)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+        var loanLiabilityByParticipant = (await dbContext.Loans
+                .Where(loan => participantIds.Contains(loan.ParticipantId) && loan.Status == LoanStatus.Open)
+                .Select(loan => new { loan.ParticipantId, Liability = loan.RemainingPrincipal + loan.PastDueInterest + loan.AccruedFees })
+                .ToListAsync())
+            .GroupBy(loan => loan.ParticipantId)
+            .ToDictionary(group => group.Key, group => group.Sum(loan => loan.Liability));
+        var pendingSettlements = await dbContext.SettlementInstructions
+            .Where(instruction => instruction.Status == SettlementStatus.Pending
+                && (participantIds.Contains(instruction.BuyerId)
+                    || (instruction.SellerId != null && participantIds.Contains(instruction.SellerId.Value))))
+            .Select(instruction => new { instruction.BuyerId, instruction.SellerId, instruction.DueDayNumber })
+            .ToListAsync();
+        var holdingsValueByParticipant = participants.ToDictionary(
+            participant => participant.Id,
+            participant => (holdingsByParticipant.GetValueOrDefault(participant.Id) ?? [])
+                .Sum(holding => holding.Quantity * prices.GetValueOrDefault(holding.CompanyId)));
+        var marginMetricsByParticipant = await marginService.GetReadOnlyMetricsByParticipantAsync(
+            participants,
+            holdingsValueByParticipant);
+
+        var result = new Dictionary<int, ParticipantValuation>();
+        foreach (var participant in participants)
+        {
+            var participantHoldings = holdingsByParticipant.GetValueOrDefault(participant.Id) ?? [];
+            var sharesOwned = participantHoldings.Sum(holding => holding.Quantity);
+            var companiesOwned = participantHoldings.Select(holding => holding.CompanyId).Distinct().Count();
+            var holdingsValue = holdingsValueByParticipant[participant.Id];
+            var metrics = marginMetricsByParticipant[participant.Id];
+            var margin = new MarginAccountResponse(
+                metrics.DebitBalance,
+                metrics.AccruedInterest,
+                metrics.DebitBalance + metrics.AccruedInterest,
+                metrics.AccountEquity,
+                metrics.BuyingPower,
+                metrics.InitialMarginRate,
+                metrics.MaintenanceMarginRate,
+                metrics.InitialRequirement,
+                metrics.MaintenanceRequirement,
+                metrics.MaintenanceExcess,
+                metrics.Deficiency,
+                metrics.CallStatus);
+            var participantSettlements = pendingSettlements
+                .Where(instruction => instruction.BuyerId == participant.Id || instruction.SellerId == participant.Id)
+                .ToArray();
+            var loanLiability = loanLiabilityByParticipant.GetValueOrDefault(participant.Id);
+            result[participant.Id] = new ParticipantValuation(
+                sharesOwned,
+                companiesOwned,
+                holdingsValue,
+                loanLiability,
+                margin,
+                participant.CurrentBalance + holdingsValue - loanLiability - margin.TotalLiability,
+                participantSettlements.Length,
+                participantSettlements.Length == 0 ? null : participantSettlements.Min(instruction => instruction.DueDayNumber));
+        }
+
+        return result;
     }
 
     private static async Task<(string? Status, CollectiveFundMemberResponse[] Members)> BuildCollectiveFundMembersAsync(
@@ -2278,19 +2477,49 @@ public static class MarketEndpoints
         null,
         transaction.TotalCost,
         transaction.CreatedInCycleId,
-        transaction.CreatedAt);
+        transaction.CreatedAt,
+        transaction.SettlementInstruction?.TradeDayNumber,
+        transaction.SettlementInstruction?.DueDayNumber,
+        transaction.SettlementInstruction?.Status.ToString());
+
+    private static async Task<MarketResponse> BuildMarketResponseAsync(
+        Market market,
+        AppDbContext dbContext,
+        TradingClockService tradingClockService)
+    {
+        var lastDividendTotal = await LastDividendTotalAsync(dbContext);
+        var currentCycleNumber = market.CurrentCycleId is int cycleId
+            ? await dbContext.MarketCycles
+                .Where(cycle => cycle.Id == cycleId)
+                .Select(cycle => (int?)cycle.CycleNumber)
+                .FirstOrDefaultAsync()
+            : null;
+        var clock = await tradingClockService.GetStateAsync(market);
+        var luldAffectedCount = await dbContext.PriceBandStates.CountAsync(state => state.State != LuldState.Normal);
+        return ToMarketResponse(market, lastDividendTotal, currentCycleNumber, clock, luldAffectedCount);
+    }
 
     private static MarketResponse ToMarketResponse(
         Market market,
-        decimal lastDividendTotal = 0m,
-        int? currentCycleNumber = null) =>
+        decimal lastDividendTotal,
+        int? currentCycleNumber,
+        TradingClockState? clock,
+        int luldAffectedCount) =>
         new(
             market.Id,
             market.Name,
             market.Status.ToString(),
             market.CurrentCycleId,
             currentCycleNumber,
-            lastDividendTotal);
+            lastDividendTotal,
+            clock?.TradingDayNumber,
+            clock?.TradingSessionState.ToString(),
+            clock?.TradingCycleNumber,
+            clock?.RemainingTradingCycles,
+            clock?.RemainingPhaseSeconds,
+            clock?.TradingCycleSeconds,
+            clock?.NextStepMeaning,
+            luldAffectedCount);
 
     private static OrderResponse ToOrderResponse(Order order) => new(
         order.Id,
@@ -2304,6 +2533,16 @@ public static class MarketEndpoints
         order.LimitPrice,
         order.ReservedCashAmount,
         order.CreatedInCycleId);
+
+    private sealed record ParticipantValuation(
+        int SharesOwned,
+        int CompaniesOwned,
+        decimal HoldingsValue,
+        decimal LoanLiability,
+        MarginAccountResponse Margin,
+        decimal TotalWorth,
+        int PendingSettlementCount,
+        int? NextSettlementDueDayNumber);
 
     private sealed record IndustrySentimentHistoryRow(
         int IndustryId,
@@ -2322,7 +2561,14 @@ public sealed record CompanyResponse(
     decimal? CurrentPrice,
     decimal PriceChangePct,
     string? CurrentRating,
-    bool IsHalted);
+    bool IsHalted,
+    string LuldState,
+    string? LimitDirection,
+    decimal? ReferencePrice,
+    decimal? LowerBandPrice,
+    decimal? UpperBandPrice,
+    int? LimitStateStartedCycleNumber,
+    int? PauseUntilCycleNumber);
 
 public sealed record CompanyAttentionResponse(
     int CompanyId,
@@ -2353,6 +2599,7 @@ public sealed record CompanyDetailResponse(
     decimal? CurrentPrice,
     decimal PriceChangePct,
     decimal MarketCap,
+    decimal IssuerCash,
     int SharesHeldByIssuer,
     int SharesOutstanding,
     int ShareholderCount,
@@ -2362,7 +2609,30 @@ public sealed record CompanyDetailResponse(
     bool IsClosed,
     int? ClosedInCycleNumber,
     bool IsHalted,
-    int? HaltedUntilCycleNumber);
+    int? HaltedUntilCycleNumber,
+    string LuldState,
+    string? LimitDirection,
+    decimal? ReferencePrice,
+    decimal? LowerBandPrice,
+    decimal? UpperBandPrice,
+    int? LimitStateStartedCycleNumber,
+    int? PauseUntilCycleNumber,
+    int RemainingPauseCycles,
+    int RemainingPauseSeconds);
+
+public sealed record CorporateCashMovementResponse(
+    int Id,
+    string Type,
+    decimal Amount,
+    int CreatedInCycleId,
+    int CreatedInCycleNumber,
+    DateTime CreatedAt);
+
+public sealed record PagedCorporateCashMovementsResponse(
+    CorporateCashMovementResponse[] Items,
+    int Total,
+    int Page,
+    int PageSize);
 
 public sealed record ShareholderResponse(
     int OwnerId,
@@ -2444,7 +2714,9 @@ public sealed record LoanResponse(
     decimal InterestRatePerCycle,
     decimal InterestPerCycleAmount,
     decimal ScheduledInstallment,
-    decimal PastDueAmount,
+    decimal PastDuePrincipal,
+    decimal PastDueInterest,
+    decimal AccruedFees,
     decimal TotalLiability,
     int TermCycles,
     int OpenedInCycleNumber,
@@ -2480,7 +2752,15 @@ public sealed record MarketResponse(
     string Status,
     int? CurrentCycleId,
     int? CurrentCycleNumber,
-    decimal LastDividendTotal);
+    decimal LastDividendTotal,
+    int? TradingDayNumber,
+    string? TradingSessionState,
+    int? TradingCycleNumber,
+    int? RemainingTradingCycles,
+    int? RemainingPhaseSeconds,
+    int? TradingCycleSeconds,
+    string? NextStepMeaning,
+    int LuldAffectedCount);
 
 public sealed record ParticipantResponse(
     int Id,
@@ -2489,12 +2769,18 @@ public sealed record ParticipantResponse(
     string Temperament,
     string RiskProfile,
     decimal CurrentBalance,
+    decimal SettledCashBalance,
+    decimal UnsettledCashBalance,
     decimal ReservedBalance,
     decimal AvailableBalance,
     int SharesOwned,
     int CompaniesOwned,
     decimal HoldingsValue,
     decimal LoanLiability,
+    decimal MarginLiability,
+    decimal TotalWorth,
+    int PendingSettlementCount,
+    int? NextSettlementDueDayNumber,
     bool IsActive,
     bool IsBankrupt);
 
@@ -2506,10 +2792,17 @@ public sealed record ParticipantDetailResponse(
     string RiskProfile,
     decimal InitialBalance,
     decimal CurrentBalance,
+    decimal SettledCashBalance,
+    decimal UnsettledCashBalance,
     decimal ReservedBalance,
     decimal AvailableBalance,
     int SharesOwned,
+    decimal HoldingsValue,
     decimal LoanLiability,
+    MarginAccountResponse Margin,
+    decimal TotalWorth,
+    int PendingSettlementCount,
+    int? NextSettlementDueDayNumber,
     bool IsActive,
     string? CollectiveFundStatus,
     CollectiveFundMemberResponse[] CollectiveFundMembers,
@@ -2551,12 +2844,17 @@ public sealed record PlayerResponse(
     string Name,
     decimal InitialBalance,
     decimal CurrentBalance,
+    decimal SettledCashBalance,
+    decimal UnsettledCashBalance,
     decimal ReservedBalance,
     decimal AvailableBalance,
     int SharesOwned,
     decimal HoldingsValue,
     decimal LoanLiability,
+    MarginAccountResponse Margin,
     decimal TotalWorth,
+    int PendingSettlementCount,
+    int? NextSettlementDueDayNumber,
     decimal OverallMoneyChange,
     decimal OverallWorthChange,
     decimal? LastCycleMoneyChange,
@@ -2569,7 +2867,24 @@ public sealed record PlayerResponse(
     decimal? FundHoldingsValue,
     decimal? FundTotalWorth,
     decimal? FundWithdrawable,
-    int? FundPopularityIndex);
+    int? FundPopularityIndex,
+    MarginAccountResponse? FundMargin,
+    int? FundPendingSettlementCount,
+    int? FundNextSettlementDueDayNumber);
+
+public sealed record MarginAccountResponse(
+    decimal DebitBalance,
+    decimal AccruedInterest,
+    decimal TotalLiability,
+    decimal AccountEquity,
+    decimal BuyingPower,
+    decimal InitialMarginRate,
+    decimal MaintenanceMarginRate,
+    decimal InitialRequirement,
+    decimal MaintenanceRequirement,
+    decimal MaintenanceExcess,
+    decimal Deficiency,
+    string? CallStatus);
 
 public sealed record PlaceOrderRequest(int ParticipantId, int CompanyId, OrderType Type, int Quantity, decimal LimitPrice);
 
@@ -2594,6 +2909,8 @@ public sealed record HoldingResponse(
     int CompanyId,
     string CompanyName,
     int Shares,
+    int SettledShares,
+    int PendingShares,
     decimal CurrentPrice,
     decimal MarketValue,
     decimal CostBasis);
@@ -2644,7 +2961,10 @@ public sealed record MoneyTransactionLoanInfo(
     decimal RemainingPrincipal,
     decimal InterestRatePerCycle,
     int TermCycles,
-    decimal PastDueAmount,
+    decimal PastDuePrincipal,
+    decimal PastDueInterest,
+    decimal AccruedFees,
+    decimal TotalLiability,
     string Status);
 
 public sealed record DividendPayoutLineResponse(int CompanyId, string? CompanyName, decimal Amount);
@@ -2663,7 +2983,30 @@ public sealed record ShareTransactionResponse(
     decimal? MarketPriceBefore,
     decimal TotalCost,
     int CreatedInCycleId,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    int? TradeDayNumber,
+    int? DueDayNumber,
+    string? SettlementStatus);
+
+public sealed record SettlementInstructionResponse(
+    int Id,
+    int ShareTransactionId,
+    string Side,
+    int CompanyId,
+    string CompanyName,
+    int Quantity,
+    decimal CashAmount,
+    int TradeDayNumber,
+    int DueDayNumber,
+    string Status,
+    DateTime CreatedAt,
+    DateTime? SettledAt);
+
+public sealed record PagedSettlementInstructionsResponse(
+    SettlementInstructionResponse[] Items,
+    int Total,
+    int Page,
+    int PageSize);
 
 public sealed record PriceSnapshotResponse(int Id, int CompanyId, decimal Price, decimal? Capitalization, int CreatedInCycleId, DateTime CreatedAt);
 
@@ -2673,6 +3016,7 @@ public sealed record ParticipantWorthPointResponse(
     decimal Balance,
     decimal HoldingsValue,
     decimal LoanLiability,
+    decimal MarginLiability,
     decimal TotalWorth,
     DateTime CreatedAt);
 

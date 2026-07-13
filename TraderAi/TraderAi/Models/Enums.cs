@@ -61,6 +61,49 @@ public enum MoneyTransactionType
     LoanFine,
     TradeFee,
     FundAdvertisement,
+    MarginAdvance,
+    MarginInterestPayment,
+    MarginDebitRepayment,
+}
+
+public enum MarginAccountStatus
+{
+    Active,
+    UnderCall,
+    Closed,
+}
+
+public enum MarginCallStatus
+{
+    Open,
+    Satisfied,
+}
+
+public enum CorporateCashTransactionType
+{
+    PrimaryIssuance,
+    DividendDeclared,
+    ClosureDistribution,
+}
+
+public enum LuldState
+{
+    Normal,
+    LimitState,
+    TradingPause,
+    Reopening,
+}
+
+public enum PriceLimitDirection
+{
+    Upper,
+    Lower,
+}
+
+public enum SettlementStatus
+{
+    Pending,
+    Settled,
 }
 
 public enum LoanStatus
@@ -81,6 +124,12 @@ public enum MarketStatus
     Running,
     Paused,
     Completed,
+}
+
+public enum TradingSessionState
+{
+    Trading,
+    Break,
 }
 
 public enum NewsImpactScope

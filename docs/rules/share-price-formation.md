@@ -13,25 +13,30 @@ Each market cycle updates prices through a fixed sequence:
 5. Scheduled payouts and market events can add further price moves.
 6. The cycle closes and the next cycle begins.
 
+The complete sequence is one atomic database operation. If any phase fails, every change from the cycle is rolled back and the previous cycle remains current.
+
 If no trade, split, or impact event touches a company during a cycle, that company keeps its previous price.
 
 ## Initial Price
 
 When a demo market is seeded, each company receives an initial price and issued share supply. The full unsold float is listed as a company-originated sell order at that initial price, and the same price is recorded as the first price point.
 
-Company-originated float has no participant seller. When a trader buys from that float, the buyer receives shares and pays cash, but no trader receives the proceeds.
+Company-originated float has no participant seller. When a trader buys from that float, the buyer receives shares and pays cash, no trader receives the proceeds, and the issuer receives the primary proceeds on T+1 settlement.
 
 ## Matching Price
 
 Normal price formation happens through matched orders.
 
-For each company, open buy orders are matched against open sell orders:
+For each company in normal continuous trading, open inside-band buy orders are matched against open inside-band sell orders:
 
 - Buy orders have priority by higher limit price, then older order time.
 - Sell orders have priority by lower limit price, then older order time.
 - A match happens only when the best buy limit is greater than or equal to the best sell limit.
 - The matched quantity is the smaller remaining quantity of the two orders.
 - The execution price is the midpoint between the matched buy and sell limits, rounded to cents.
+- Orders owned by the same participant never match. New opposite-side interest is rejected before reservation, and a legacy self-cross is cancelled without a fill or price point.
+- Closed companies reject new orders and do not enter matching.
+- Orders whose limits are outside the active LULD band remain open and cancellable but do not enter continuous matching.
 
 Formula:
 
@@ -57,6 +62,8 @@ Resting automated orders can also move toward the market before matching:
 
 The human player's orders are not automatically aged or re-priced by ordinary maintenance.
 
+LULD price controls preserve participant and issuer orders. Persistent pressure at a price band pauses continuous matching through Limit State and Trading Pause, then eligible resting orders can execute at one deterministic reopening-auction price before normal matching resumes. See [LULD price controls](luld.md).
+
 ## Direct Price Moves
 
 Some events record a new price point without a trade.
@@ -69,6 +76,8 @@ News and crisis impacts move affected companies by a percentage of the current p
 new price = current price * (1 + impact percent)
 new price = current price * (1 - impact percent)
 ```
+
+The result is clamped to the company's active LULD band. While the company is in Limit State, Trading Pause, or Reopening, the direct impact does not clear its preserved resting orders.
 
 A downward shock can cancel ordinary standing buy orders for the affected companies. An upward shock can cancel ordinary standing sell orders. This lets the order book reform around the new price instead of immediately filling stale orders priced against the old level.
 
@@ -96,12 +105,16 @@ The split-adjusted price is recorded as a new price point. The unsold float is r
 
 Free-share emission does not directly write a new market price. It increases issued supply and grants new shares to eligible traders at zero cost, then lets normal trading absorb the added supply.
 
-Dividends also do not directly set price. They add cash to shareholders when a payout window is due. That extra cash can influence later orders, but no price point is written by the dividend itself.
+Dividends also do not directly set price. They transfer available issuer cash to shareholders when a payout window is due. That extra participant cash can influence later orders, but no price point is written by the dividend itself.
+
+T+1 settlement does not defer price formation. A fill records its price point and changes economic ownership on the trade date; only the settled cash and share quantities wait until the next trading day.
 
 Forced liquidation, bankruptcy sell-downs, and fund unwind sales do not directly set price either. They place sell orders at discounted limits; price changes only if those orders match.
 
 ## Current Price And Charts
 
-The current price shown for a company is the newest price point recorded for that company. Price charts show those recorded points in order.
+The current price shown for a company is the newest live price point recorded for that company. Price charts show those recorded points in order.
 
 Because a price point is created only by a trade or a direct price event, quiet cycles do not produce flat duplicate points for every company. A company with no activity simply carries forward its latest price until a new point is recorded.
+
+Historical retention moves older price points out of the live window but always keeps the newest point for each company as its current-price anchor. A quiet company therefore remains valued even when its last price is older than the normal chart window.

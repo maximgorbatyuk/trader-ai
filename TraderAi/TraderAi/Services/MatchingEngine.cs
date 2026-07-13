@@ -13,7 +13,11 @@ namespace TraderAi.Services;
 // When trade fees are enabled, a participant seller's proceeds are skimmed by TradeFeeOptions.FeeRate and
 // the fee accrues to the National bank's balance. Company-float (primary-issuance) sells carry no fee, so
 // the fee only ever touches secondary-market cash and the ledger stays reconciled.
-public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOptions>? tradeFeeOptions = null)
+public sealed class MatchingEngine(
+    AppDbContext dbContext,
+    IOptions<TradeFeeOptions>? tradeFeeOptions = null,
+    SettlementService? settlementService = null,
+    MarginService? marginService = null)
 {
     private readonly bool feeEnabled = tradeFeeOptions?.Value.Enabled ?? false;
     private readonly decimal feeRate = tradeFeeOptions?.Value.FeeRate ?? 0m;
@@ -26,23 +30,19 @@ public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOpti
     public async Task<int> RunAsync(MarketCycle cycle)
     {
         var now = DateTime.UtcNow;
+        var tradeDayNumber = settlementService is null || cycle.TradingDayId <= 0
+            ? (int?)null
+            : await settlementService.TradeDayNumberAsync(cycle);
         var participants = await dbContext.Participants.ToDictionaryAsync(participant => participant.Id);
 
         // Positions of everyone who might trade this cycle; buyers acquiring their first shares of a
         // company get a fresh row added on the fly.
         var holdings = await dbContext.Holdings.ToDictionaryAsync(holding => (holding.ParticipantId, holding.CompanyId));
 
-        // Issued-share counts value each fill's price snapshot at total capitalisation; splits do not run
-        // during matching, so a single up-front read stays correct for the whole pass.
-        var sharesByCompany = await dbContext.Companies.ToDictionaryAsync(company => company.Id, company => company.IssuedSharesCount);
+        // Companies stay tracked so primary fills can retain their proceeds without another query per match.
+        var companiesById = await dbContext.Companies.ToDictionaryAsync(company => company.Id);
 
-        // A company under a volatility halt is frozen this cycle: its resting orders neither cross nor move.
-        var haltedCompanyIds = (await dbContext.Companies
-                .Where(company => company.TradingHaltedUntilCycleNumber != null
-                    && company.TradingHaltedUntilCycleNumber >= cycle.CycleNumber)
-                .Select(company => company.Id)
-                .ToListAsync())
-            .ToHashSet();
+        var priceBandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
 
         var openOrders = await dbContext.Orders
             .Where(order => order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
@@ -58,13 +58,24 @@ public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOpti
 
         foreach (var companyOrders in openOrders.GroupBy(order => order.CompanyId))
         {
-            if (haltedCompanyIds.Contains(companyOrders.Key))
+            priceBandByCompany.TryGetValue(companyOrders.Key, out var priceBand);
+            if (priceBand?.State is LuldState.LimitState or LuldState.TradingPause)
             {
+                continue;
+            }
+
+            if (priceBand?.State == LuldState.Reopening)
+            {
+                fillCount += await RunReopeningAuctionAsync(
+                    companyOrders.ToList(), priceBand, cycle, tradeDayNumber,
+                    participants, holdings, companiesById, now);
+                VolatilityHaltService.ResetToNormal(priceBand, cycle.Id);
                 continue;
             }
 
             var buys = companyOrders
                 .Where(order => order.Type == OrderType.Buy && order.RemainingQuantity > 0)
+                .Where(order => IsInsideBand(order.LimitPrice, priceBand))
                 .OrderByDescending(order => order.LimitPrice)
                 .ThenBy(order => order.CreatedAt)
                 .ThenBy(order => order.Id)
@@ -72,6 +83,7 @@ public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOpti
 
             var sells = companyOrders
                 .Where(order => order.Type == OrderType.Sell && order.RemainingQuantity > 0)
+                .Where(order => IsInsideBand(order.LimitPrice, priceBand))
                 .OrderBy(order => order.LimitPrice)
                 .ThenBy(order => order.CreatedAt)
                 .ThenBy(order => order.Id)
@@ -91,13 +103,34 @@ public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOpti
                     break;
                 }
 
+                if (buy.ParticipantId is int buyerId && buyerId == sell.ParticipantId)
+                {
+                    var newerOrder = buy.CreatedAt > sell.CreatedAt
+                        || (buy.CreatedAt == sell.CreatedAt && buy.Id > sell.Id)
+                            ? buy
+                            : sell;
+                    CancelSelfCross(newerOrder, participants[buyerId], cycle.Id, now);
+                    if (ReferenceEquals(newerOrder, buy))
+                    {
+                        buyIndex++;
+                    }
+                    else
+                    {
+                        sellIndex++;
+                    }
+
+                    continue;
+                }
+
                 var matchQuantity = Math.Min(buy.RemainingQuantity, sell.RemainingQuantity);
 
                 // Crossing guarantees the midpoint sits at or below the buyer's limit and at or above the
                 // seller's, so the buyer's unused reservation is still refunded below.
                 var executionPrice = Round((buy.LimitPrice + sell.LimitPrice) / 2m);
 
-                ExecuteFill(buy, sell, matchQuantity, executionPrice, cycle, participants, holdings, sharesByCompany, now);
+                await ExecuteFillAsync(
+                    buy, sell, matchQuantity, executionPrice, cycle, tradeDayNumber,
+                    participants, holdings, companiesById, now);
                 fillCount++;
 
                 if (buy.RemainingQuantity == 0)
@@ -115,22 +148,129 @@ public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOpti
         return fillCount;
     }
 
+    private async Task<int> RunReopeningAuctionAsync(
+        IReadOnlyCollection<Order> orders,
+        PriceBandState state,
+        MarketCycle cycle,
+        int? tradeDayNumber,
+        IReadOnlyDictionary<int, Participant> participants,
+        Dictionary<(int ParticipantId, int CompanyId), Holding> holdings,
+        IReadOnlyDictionary<int, Company> companiesById,
+        DateTime now)
+    {
+        var eligible = orders
+            .Where(order => order.RemainingQuantity > 0 && IsInsideBand(order.LimitPrice, state))
+            .ToList();
+        var candidates = eligible
+            .Select(order => order.LimitPrice)
+            .Distinct()
+            .Select(price =>
+            {
+                var buyQuantity = eligible
+                    .Where(order => order.Type == OrderType.Buy && order.LimitPrice >= price)
+                    .Sum(order => order.RemainingQuantity);
+                var sellQuantity = eligible
+                    .Where(order => order.Type == OrderType.Sell && order.LimitPrice <= price)
+                    .Sum(order => order.RemainingQuantity);
+                return new
+                {
+                    Price = price,
+                    Executable = Math.Min(buyQuantity, sellQuantity),
+                    Imbalance = Math.Abs(buyQuantity - sellQuantity),
+                    Distance = Math.Abs(price - state.ReferencePrice),
+                };
+            })
+            .Where(candidate => candidate.Executable > 0)
+            .OrderByDescending(candidate => candidate.Executable)
+            .ThenBy(candidate => candidate.Imbalance)
+            .ThenBy(candidate => candidate.Distance)
+            .ThenBy(candidate => candidate.Price)
+            .FirstOrDefault();
+        if (candidates is null)
+        {
+            return 0;
+        }
+
+        var buys = eligible
+            .Where(order => order.Type == OrderType.Buy && order.LimitPrice >= candidates.Price)
+            .OrderByDescending(order => order.LimitPrice)
+            .ThenBy(order => order.CreatedAt)
+            .ThenBy(order => order.Id)
+            .ToList();
+        var sells = eligible
+            .Where(order => order.Type == OrderType.Sell && order.LimitPrice <= candidates.Price)
+            .OrderBy(order => order.LimitPrice)
+            .ThenBy(order => order.CreatedAt)
+            .ThenBy(order => order.Id)
+            .ToList();
+        var buyIndex = 0;
+        var sellIndex = 0;
+        var fills = 0;
+        while (buyIndex < buys.Count && sellIndex < sells.Count)
+        {
+            var buy = buys[buyIndex];
+            var sell = sells[sellIndex];
+            if (buy.ParticipantId is int buyerId && buyerId == sell.ParticipantId)
+            {
+                var newer = buy.CreatedAt > sell.CreatedAt || (buy.CreatedAt == sell.CreatedAt && buy.Id > sell.Id) ? buy : sell;
+                CancelSelfCross(newer, participants[buyerId], cycle.Id, now);
+                if (ReferenceEquals(newer, buy)) buyIndex++; else sellIndex++;
+                continue;
+            }
+
+            await ExecuteFillAsync(
+                buy, sell, Math.Min(buy.RemainingQuantity, sell.RemainingQuantity), candidates.Price,
+                cycle, tradeDayNumber, participants, holdings, companiesById, now);
+            fills++;
+            if (buy.RemainingQuantity == 0) buyIndex++;
+            if (sell.RemainingQuantity == 0) sellIndex++;
+        }
+        return fills;
+    }
+
+    private static bool IsInsideBand(decimal price, PriceBandState? state) =>
+        state is null || state.ReferencePrice <= 0m || (price >= state.LowerBandPrice && price <= state.UpperBandPrice);
+
+    private void CancelSelfCross(Order order, Participant participant, int cycleId, DateTime now)
+    {
+        if (order.Type == OrderType.Buy && order.ReservedCashAmount > 0m)
+        {
+            var release = order.ReservedCashAmount;
+            participant.ReservedBalance -= release;
+            order.ReservedCashAmount = 0m;
+            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            {
+                ParticipantId = participant.Id,
+                Type = MoneyTransactionType.Release,
+                Amount = release,
+                RelatedOrderId = order.Id,
+                CreatedInCycleId = cycleId,
+                CreatedAt = now,
+            });
+        }
+
+        order.Status = OrderStatus.Cancelled;
+        order.UpdatedAt = now;
+    }
+
     private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 
-    private void ExecuteFill(
+    private async Task ExecuteFillAsync(
         Order buy,
         Order sell,
         int quantity,
         decimal executionPrice,
         MarketCycle cycle,
+        int? tradeDayNumber,
         IReadOnlyDictionary<int, Participant> participants,
         Dictionary<(int ParticipantId, int CompanyId), Holding> holdings,
-        IReadOnlyDictionary<int, int> sharesByCompany,
+        IReadOnlyDictionary<int, Company> companiesById,
         DateTime now)
     {
         var buyer = participants[buy.ParticipantId!.Value];
         var seller = sell.ParticipantId is int sellerId ? participants[sellerId] : null;
         var companyId = buy.CompanyId;
+        var company = companiesById[companyId];
 
         var shareTransaction = new ShareTransaction
         {
@@ -157,6 +297,14 @@ public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOpti
         var spent = executionPrice * quantity;
         var reservationForFilled = buy.LimitPrice * quantity;
         var released = reservationForFilled - spent;
+
+        var buyerMarginAdvance = 0m;
+        if (marginService is not null)
+        {
+            var buyerAccount = await marginService.GetOrCreateAccountAsync(buyer.Id, cycle.TradingDayId > 0 ? cycle.TradingDayId : null);
+            buyerMarginAdvance = marginService.ApplyPurchase(
+                buyerAccount, buyer, spent, reservationForFilled, cycle.Id, now);
+        }
 
         buyer.CurrentBalance -= spent;
         buyer.ReservedBalance -= reservationForFilled;
@@ -187,12 +335,9 @@ public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOpti
             });
         }
 
-        // A company-originated offer has no participant seller, so the proceeds leave the participant
-        // economy (the issuing company is not modelled as holding cash) and no credit is recorded.
+        var sellerMarginAllocation = new MarginSaleAllocation(0m, 0m, spent);
         if (seller is not null)
         {
-            seller.CurrentBalance += spent;
-
             dbContext.MoneyTransactions.Add(new MoneyTransaction
             {
                 ParticipantId = seller.Id,
@@ -207,12 +352,13 @@ public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOpti
             // The seller keeps the full sale credit above and pays the fee as a separate debit, so the two
             // ledger rows net to the seller's actual balance change. Company-float sells (seller == null) are
             // primary issuance and carry no fee.
+            var fee = 0m;
             if (feeBank is not null)
             {
-                var fee = Round(spent * feeRate);
+                fee = Round(spent * feeRate);
                 if (fee > 0m)
                 {
-                    seller.CurrentBalance -= fee;
+                    seller.SettledCashBalance -= fee;
                     feeBank.Balance += fee;
 
                     dbContext.MoneyTransactions.Add(new MoneyTransaction
@@ -227,6 +373,53 @@ public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOpti
                     });
                 }
             }
+
+            var netProceeds = spent - fee;
+            if (marginService is null)
+            {
+                seller.CurrentBalance += netProceeds;
+            }
+            else
+            {
+                var sellerAccount = await marginService.GetOrCreateAccountAsync(
+                    seller.Id, cycle.TradingDayId > 0 ? cycle.TradingDayId : null);
+                sellerMarginAllocation = marginService.ApplySaleProceeds(
+                    sellerAccount, seller, netProceeds, cycle.Id, now);
+                if (sellerMarginAllocation.InterestPaid > 0m)
+                {
+                    feeBank ??= await ResolveFeeBankAsync();
+                    feeBank.Balance += sellerMarginAllocation.InterestPaid;
+                }
+            }
+        }
+        else if (settlementService is null)
+        {
+            if (spent <= 0m)
+            {
+                throw new InvalidOperationException("Primary issuance proceeds must be positive.");
+            }
+
+            company.CashBalance += spent;
+            dbContext.CorporateCashTransactions.Add(new CorporateCashTransaction
+            {
+                CompanyId = company.Id,
+                Type = CorporateCashTransactionType.PrimaryIssuance,
+                Amount = spent,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = now,
+            });
+        }
+
+        if (settlementService is not null && tradeDayNumber is int settledTradeDayNumber)
+        {
+            settlementService.StageInstruction(
+                shareTransaction,
+                settledTradeDayNumber,
+                cycle.Id,
+                now,
+                buyerMarginAdvance,
+                sellerMarginAllocation.InterestPaid,
+                sellerMarginAllocation.DebitPaid);
         }
 
         dbContext.OrderFills.Add(new OrderFill
@@ -244,7 +437,7 @@ public sealed class MatchingEngine(AppDbContext dbContext, IOptions<TradeFeeOpti
         {
             CompanyId = companyId,
             Price = executionPrice,
-            Capitalization = executionPrice * sharesByCompany.GetValueOrDefault(companyId),
+            Capitalization = executionPrice * company.IssuedSharesCount,
             SourceShareTransaction = shareTransaction,
             CreatedInCycleId = cycle.Id,
             CreatedAt = now,

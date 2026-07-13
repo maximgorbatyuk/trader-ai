@@ -14,6 +14,8 @@ public sealed class Participant
 
     public decimal CurrentBalance { get; set; }
 
+    public decimal SettledCashBalance { get; set; }
+
     public decimal ReservedBalance { get; set; }
 
     public Temperament Temperament { get; set; }

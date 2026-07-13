@@ -4,12 +4,13 @@ import './App.css'
 import { api } from './api'
 import { formatInt, formatMoney } from './format'
 import { Footer, TopBar } from './Chrome'
+import { createTradingClock, formatTradingClock, interpolateTradingClock } from './tradingClock'
 
 const SHELL_POLL_INTERVAL_MS = 1500
 const WORTH_GLYPH = { up: '▲', down: '▼' }
 const ACTOR_TABS = [
   { key: 'player', label: 'Player' },
-  { key: 'fund', label: 'Fund' },
+  { key: 'fund', label: 'Managed fund' },
 ]
 
 const sideLinkClass = ({ isActive }) => `side-link${isActive ? ' is-active' : ''}`
@@ -53,6 +54,8 @@ export function AppShell() {
   const [ready, setReady] = useState(false)
   const [pending, setPending] = useState(false)
   const [actionError, setActionError] = useState(null)
+  const [tradingClockSnapshot, setTradingClockSnapshot] = useState(null)
+  const [clockNowMs, setClockNowMs] = useState(() => Date.now())
   // Whether the player trades and reads stats as themselves or through their managed fund; shared with the
   // dashboard tabs and the order book so one switch drives all three surfaces.
   const [actorKind, setActorKind] = useState('player')
@@ -60,7 +63,10 @@ export function AppShell() {
   const load = useCallback(async () => {
     try {
       const [marketData, playerData] = await Promise.all([api.getMarket(), api.getPlayer()])
+      const receivedAtMs = Date.now()
       setMarket(marketData)
+      setTradingClockSnapshot(createTradingClock(marketData, receivedAtMs))
+      setClockNowMs(receivedAtMs)
       setPlayer(playerData)
       setConnected(true)
     } catch {
@@ -78,6 +84,15 @@ export function AppShell() {
       clearInterval(intervalId)
     }
   }, [load])
+
+  useEffect(() => {
+    if (tradingClockSnapshot?.marketStatus !== 'Running' || tradingClockSnapshot.remainingPhaseSeconds <= 0) {
+      return undefined
+    }
+
+    const intervalId = setInterval(() => setClockNowMs(Date.now()), 1_000)
+    return () => clearInterval(intervalId)
+  }, [tradingClockSnapshot])
 
   const runAction = useCallback(
     async (action) => {
@@ -101,6 +116,7 @@ export function AppShell() {
 
   const worthTone = player ? worthToneOf(player.lastCycleWorthChange) : null
   const marketActive = market?.status === 'Running'
+  const tradingClock = formatTradingClock(interpolateTradingClock(tradingClockSnapshot, clockNowMs))
   const showFund = actorKind === 'fund'
   const hasFund = player?.fundParticipantId != null
 
@@ -217,6 +233,7 @@ export function AppShell() {
           ready={ready}
           market={market}
           pending={pending}
+          tradingClock={tradingClock}
           runAction={runAction}
           resetMarket={resetMarket}
         />

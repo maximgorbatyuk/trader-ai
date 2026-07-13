@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from './api'
-import { formatInt } from './format'
 
 const REPOSITORY_URL = 'https://github.com/maximgorbatyuk/trader-ai'
 const FOOTER_LINK_GROUPS = [
@@ -24,7 +23,7 @@ const STATUS_TONE = {
 
 // Shared top navbar rendered by the app shell on every page: brand, market controls, and the
 // cycle/status/connection badges. The market state and control actions are owned by the shell and passed in.
-export function TopBar({ connected, ready, market, pending, runAction, resetMarket }) {
+export function TopBar({ connected, ready, market, pending, tradingClock, runAction, resetMarket }) {
   return (
     <header className="topbar">
       <Link className="brand" to="/" aria-label="Trader AI dashboard">
@@ -38,9 +37,20 @@ export function TopBar({ connected, ready, market, pending, runAction, resetMark
       </Link>
       <div className="topbar-status">
         {market ? (
-          <Controls market={market} pending={pending} runAction={runAction} resetMarket={resetMarket} />
+          <Controls
+            market={market}
+            pending={pending}
+            nextStepTitle={tradingClock?.nextStepTitle}
+            runAction={runAction}
+            resetMarket={resetMarket}
+          />
         ) : null}
-        {market ? <CycleBadge cycleNumber={market.currentCycleNumber} /> : null}
+        {tradingClock ? <TradingClockBadges clock={tradingClock} /> : null}
+        {market?.luldAffectedCount > 0 ? (
+          <span className="cycle-badge" role="status">
+            <span className="cycle-badge-value">LULD: {market.luldAffectedCount} affected</span>
+          </span>
+        ) : null}
         {market ? <StatusBadge status={market.status} /> : null}
         <ConnPill connected={connected} ready={ready} />
       </div>
@@ -48,9 +58,10 @@ export function TopBar({ connected, ready, market, pending, runAction, resetMark
   )
 }
 
-function Controls({ market, pending, runAction, resetMarket }) {
+function Controls({ market, pending, nextStepTitle, runAction, resetMarket }) {
   const running = market.status === 'Running'
   const [confirmingReset, setConfirmingReset] = useState(false)
+  const stepTitle = nextStepTitle ?? 'Run one decision-and-match trading cycle'
 
   useEffect(() => {
     if (!confirmingReset) return undefined
@@ -74,7 +85,7 @@ function Controls({ market, pending, runAction, resetMarket }) {
       <button
         className="btn"
         disabled={pending || running}
-        title={running ? 'Stop the loop to step a cycle by hand' : 'Run one decision-and-match cycle'}
+        title={running ? `Pause the loop to step by hand. ${stepTitle}` : stepTitle}
         onClick={() => runAction(api.stepCycle)}
       >
         Step once
@@ -112,16 +123,18 @@ function ConnPill({ connected, ready }) {
   )
 }
 
-// Null until the market has run its first cycle, so the badge stays hidden rather than showing "#—".
-function CycleBadge({ cycleNumber }) {
-  if (cycleNumber == null) return null
-
+function TradingClockBadges({ clock }) {
   return (
-    <span className="cycle-badge" role="status" aria-label={`Current cycle ${cycleNumber}`}>
-      <span className="cycle-badge-label" aria-hidden="true">
-        Cycle
-      </span>
-      <span className="cycle-badge-value">#{formatInt(cycleNumber)}</span>
+    <span
+      className="topbar-status"
+      role="group"
+      aria-label={`${clock.dayPhaseLabel}; ${clock.cycleLabel}; ${clock.timeLabel}`}
+    >
+      {[clock.dayPhaseLabel, clock.cycleLabel, clock.timeLabel].map((label) => (
+        <span className="cycle-badge" key={label}>
+          <span className="cycle-badge-value">{label}</span>
+        </span>
+      ))}
     </span>
   )
 }

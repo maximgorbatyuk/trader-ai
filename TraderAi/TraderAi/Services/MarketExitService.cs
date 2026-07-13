@@ -38,6 +38,7 @@ public sealed class MarketExitService(
     private Dictionary<int, List<OwnedHolding>> ownedByParticipant = null!;
     private Dictionary<int, List<Order>> openBuyOrdersByParticipant = null!;
     private HashSet<int> fundMemberIds = null!;
+    private HashSet<int> pendingSettlementParticipantIds = null!;
     private HashSet<string> takenNames = null!;
 
     // Draw discipline for a scripted Random in tests: no draws in the max-worth ratchet; at most one NextDouble()
@@ -126,6 +127,7 @@ public sealed class MarketExitService(
         && !participant.IsBankrupt
         && participant.Type is ParticipantType.Individual or ParticipantType.AIAgent
         && !fundMemberIds.Contains(participant.Id)
+        && !pendingSettlementParticipantIds.Contains(participant.Id)
         && participant.CurrentBalance < StarvationBalanceLine
         && owned.Count == 0
         && participant.CannotBuyCycles >= StarvationDroughtCycles;
@@ -188,6 +190,7 @@ public sealed class MarketExitService(
             RiskProfile = riskProfile,
             InitialBalance = balance,
             CurrentBalance = balance,
+            SettledCashBalance = balance,
             ReservedBalance = 0m,
             IsActive = true,
             JoinedInCycleId = currentCycleId,
@@ -242,6 +245,16 @@ public sealed class MarketExitService(
         fundMemberIds = (await dbContext.CollectiveFundParticipants
                 .Select(member => member.ParticipantId)
                 .ToListAsync())
+            .ToHashSet();
+
+        var pendingSettlementParties = await dbContext.SettlementInstructions
+                .Where(instruction => instruction.Status == SettlementStatus.Pending)
+                .Select(instruction => new { instruction.BuyerId, instruction.SellerId })
+                .ToListAsync();
+        pendingSettlementParticipantIds = pendingSettlementParties
+            .SelectMany(instruction => instruction.SellerId is int sellerId
+                ? new[] { instruction.BuyerId, sellerId }
+                : new[] { instruction.BuyerId })
             .ToHashSet();
 
         takenNames = (await dbContext.Participants

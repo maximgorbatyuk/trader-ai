@@ -6,6 +6,10 @@ public sealed class MarketCycle
 
     public int CycleNumber { get; set; }
 
+    public int TradingDayId { get; set; }
+
+    public int TradingCycleNumber { get; set; }
+
     public CycleStatus Status { get; set; }
 
     public DateTime? StartedAt { get; set; }

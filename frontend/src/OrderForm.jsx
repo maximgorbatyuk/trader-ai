@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { api } from './api'
 import { formatInt, formatMoney } from './format'
 import { PercentButtons } from './PercentButtons'
+import { affordability } from './marginModel'
+import { luldPresentation } from './marketAccounting'
 
 const QUANTITY_PRESETS = [
   { label: '10%', value: 0.1 },
@@ -11,7 +13,7 @@ const QUANTITY_PRESETS = [
   { label: '100%', value: 1 },
 ]
 
-const ACTOR_ORDER_LABELS = { player: 'Place order As Player', fund: 'Place order for Fund' }
+const ACTOR_ORDER_LABELS = { player: 'Place order as player', fund: 'Place order as managed fund' }
 
 const PRICE_PRESETS = [
   { label: '−25%', value: -0.25 },
@@ -33,12 +35,15 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
   const [confirmation, setConfirmation] = useState(null)
 
   const isSell = side === 'Sell'
+  const luld = luldPresentation(company.luldState)
+  const luldDisabled = luld.orderEntryDisabled
+  const luldReason = luldDisabled ? `${luld.indicator} Order entry disabled during ${luld.label}.` : null
 
   const actors = [
-    { key: 'player', label: 'Player', id: player.id, balance: player.availableBalance ?? 0, owned: playerMaxQuantity ?? 0 },
+    { key: 'player', label: 'Player', id: player.id, balance: player.availableBalance ?? 0, buyingPower: player.margin?.buyingPower ?? player.availableBalance ?? 0, owned: playerMaxQuantity ?? 0 },
   ]
   if (fund) {
-    actors.push({ key: 'fund', label: 'Fund', id: fund.id, balance: fund.availableBalance ?? 0, owned: fundMaxQuantity ?? 0 })
+    actors.push({ key: 'fund', label: 'Managed fund', id: fund.id, balance: fund.availableBalance ?? 0, buyingPower: fund.margin?.buyingPower ?? fund.availableBalance ?? 0, owned: fundMaxQuantity ?? 0 })
   }
   const hasFund = actors.length > 1
 
@@ -49,7 +54,7 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
 
   // Presets size against the player: sells at the player's holding, buys at what the player's cash covers.
   function pickQuantity(fraction) {
-    const max = isSell ? actors[0].owned : affordable(actors[0].balance)
+    const max = isSell ? actors[0].owned : affordable(actors[0].buyingPower)
     setQuantity(String(Math.ceil(max * fraction)))
   }
 
@@ -62,10 +67,19 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
   function disabledFor(actor) {
     const qty = Number(quantity)
     const price = Number(limitPrice)
-    if (submittingActor != null || !(qty > 0) || !(price > 0)) return true
-    // Selling more than an actor owns is always invalid; buys may draw on margin, so cash is not gated here.
+    if (luldDisabled || submittingActor != null || !(qty > 0) || !(price > 0)) return true
+    if (!isSell && qty * price > actor.buyingPower) return true
     if (isSell && qty > actor.owned) return true
     return false
+  }
+
+  function eligibilityReason(actor) {
+    const qty = Number(quantity)
+    const price = Number(limitPrice)
+    if (!(qty > 0) || !(price > 0)) return null
+    if (isSell && qty > actor.owned) return `${actor.label}: insufficient shares.`
+    if (!isSell && qty * price > actor.buyingPower) return `${actor.label}: insufficient margin buying power.`
+    return null
   }
 
   async function submitFor(actor) {
@@ -134,7 +148,12 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
       <p className="note note-sm">
         {actors
           .map((actor) =>
-            isSell ? `${actor.label}: ${formatInt(actor.owned)} owned` : `${actor.label}: ${formatInt(affordable(actor.balance))} affordable`,
+            isSell
+              ? `${actor.label}: ${formatInt(actor.owned)} owned`
+              : (() => {
+                  const capacity = affordability(actor.balance, actor.buyingPower, Number(limitPrice))
+                  return `${actor.label}: ${formatInt(capacity.cashShares)} cash · ${formatInt(capacity.marginShares)} with margin`
+                })(),
           )
           .join(' · ')}
       </p>
@@ -143,6 +162,19 @@ export function OrderForm({ player, fund, company, side, playerMaxQuantity, fund
           {error}
         </p>
       ) : null}
+      {luldReason ? (
+        <p className="note note-sm" role="status">
+          {luldReason}
+        </p>
+      ) : null}
+      {actors.map((actor) => {
+        const reason = eligibilityReason(actor)
+        return reason ? (
+          <p className="note note-sm" role="status" key={actor.key}>
+            {reason}
+          </p>
+        ) : null
+      })}
       {confirmation ? (
         <p className="note note-sm" role="status">
           {confirmation}

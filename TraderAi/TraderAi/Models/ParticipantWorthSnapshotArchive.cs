@@ -16,5 +16,7 @@ public sealed class ParticipantWorthSnapshotArchive
 
     public decimal LoanLiability { get; set; }
 
+    public decimal MarginLiability { get; set; }
+
     public DateTime CreatedAt { get; set; }
 }

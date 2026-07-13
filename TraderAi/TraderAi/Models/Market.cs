@@ -10,6 +10,8 @@ public sealed class Market
 
     public int? CurrentCycleId { get; set; }
 
+    public int? CurrentTradingDayId { get; set; }
+
     // Cycle number at which the next dividend is paid; rescheduled to a fresh interval after each payout.
     public int NextDividendCycleNumber { get; set; }
 

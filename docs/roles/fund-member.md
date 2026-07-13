@@ -9,9 +9,11 @@ A Fund Member is an Individual or AI Agent while it belongs to a Collective Fund
 - A trader can join only after the fund-opening window, unless it is completing a fund switch.
 - Low-balance traders are eligible to join or open funds, and a long inability to buy raises those chances.
 - Joining cancels the trader's open buy orders first.
-- The trader contributes most of its cash as a fund deposit.
+- The trader contributes most of its settled, unreserved cash as a fund deposit; unsettled sale proceeds stay outside the fund until settlement.
 - While membership lasts, the trader stops bidding for itself. The fund handles buying with pooled capital.
 - A member may still sell shares it already personally owns.
+- A member cannot sell shares it does not own; short selling is planned for later and is not implemented.
+- Its personal trades still use T+1 settlement, and any existing personal margin debit remains separate from the fund's account and explicit term loans.
 - A member receives its share of the fund's dividend pass-through, divided by deposit size.
 - A member also receives ordinary dividends on any shares it still personally holds.
 - A wealthy member must leave the fund once its own cash balance crosses the leave threshold. Its chance to leave rises the longer it stays above that line.

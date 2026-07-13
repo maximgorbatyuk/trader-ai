@@ -27,6 +27,8 @@ public sealed class Order
     // way it leaves a bankrupt trader's forced sales to their service owner.
     public int? RelatedLoanId { get; set; }
 
+    public int? RelatedMarginCallId { get; set; }
+
     public int CreatedInCycleId { get; set; }
 
     public DateTime CreatedAt { get; set; }

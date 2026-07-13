@@ -4,6 +4,7 @@ import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { LineChart } from './LineChart'
 import { OrderForm } from './OrderForm'
+import { luldPresentation } from './marketAccounting'
 import { RatingBadge } from './RatingBadge'
 
 const POLL_INTERVAL_MS = 1000
@@ -118,10 +119,11 @@ export function CompanyModal({ company, onClose }) {
     return null
   }
 
-  const isHalted = company.isHalted
+  const luld = luldPresentation(company.luldState)
+  const isHalted = luld.orderEntryDisabled
   const fund =
     player?.fundParticipantId != null
-      ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance }
+      ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance, margin: player.fundMargin }
       : null
   const capitalization = company.issuedSharesCount * (company.currentPrice ?? 0)
   // The trend line charts capitalisation, not price, so a stock split (price down, shares up, cap flat) does
@@ -196,8 +198,7 @@ export function CompanyModal({ company, onClose }) {
         <div className="modal-body">
           {isHalted ? (
             <p className="note" role="status">
-              Trading in this company is halted after a sharp price move. Open orders were cancelled and none can
-              be placed until it resumes.
+              {luld.indicator} {luld.label}. {luld.executionNote}
             </p>
           ) : null}
 

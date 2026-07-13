@@ -25,7 +25,7 @@ function formatTimestamp(value) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString()
 }
 
-// Full detail dialog for one settled trade, opened by clicking a row in a "Recent trades" table. Contributes
+// Full detail dialog for one executed trade, opened by clicking a row in a "Recent trades" table. Contributes
 // the dialog chrome (backdrop/Escape close, scroll lock, focus trap) around a stats grid; company name is
 // passed in because the share-transaction payload carries only the company id. When participantId is set the
 // header frames the trade from that trader's side (bought vs sold).
@@ -164,8 +164,15 @@ export function TradeModal({ trade, companyName, participantId, onClose }) {
               <dd className="num">{formatMoney(trade.totalCost)}</dd>
             </div>
             <div>
-              <dt>Cycle</dt>
-              <dd className="num">#{trade.createdInCycleId}</dd>
+              <dt>Trade day</dt>
+              <dd className="num">{trade.tradeDayNumber != null ? `Day ${formatInt(trade.tradeDayNumber)}` : '—'}</dd>
+            </div>
+            <div>
+              <dt>Settlement</dt>
+              <dd className="num">
+                {trade.dueDayNumber != null ? `Settles Day ${formatInt(trade.dueDayNumber)}` : '—'}
+                {trade.settlementStatus ? <span className="muted-sub"> · {trade.settlementStatus}</span> : null}
+              </dd>
             </div>
             <div>
               <dt>Executed</dt>

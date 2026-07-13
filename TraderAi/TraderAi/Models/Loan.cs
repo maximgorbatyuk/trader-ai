@@ -1,9 +1,9 @@
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace TraderAi.Models;
 
-// A borrower's debt as an explicit liability rather than a negative balance. Opened when a margin buy fills
-// for more cash than the buyer holds, it amortizes straight-line over a size-scaled term with per-cycle
-// interest; a missed or partial payment accrues a fine into PastDueAmount. The debt is the set of open loans,
-// so CurrentBalance is never left negative.
+// A borrower's explicit term debt, separate from revolving margin debit. It amortizes straight-line over a
+// size-scaled term; missed payments classify overdue principal, interest, and fees without duplicating liability.
 public sealed class Loan
 {
     public int Id { get; set; }
@@ -29,8 +29,15 @@ public sealed class Loan
     // Fixed straight-line principal charged per cycle: Principal / TermCycles.
     public decimal ScheduledInstallment { get; set; }
 
-    // Arrears plus accrued fines carried from missed or partial payments.
-    public decimal PastDueAmount { get; set; }
+    // This classifies the overdue part of RemainingPrincipal and therefore must not be added to it as new debt.
+    public decimal PastDuePrincipal { get; set; }
+
+    public decimal PastDueInterest { get; set; }
+
+    public decimal AccruedFees { get; set; }
+
+    [NotMapped]
+    public decimal TotalLiability => RemainingPrincipal + PastDueInterest + AccruedFees;
 
     // How many times a distress forced-sale has gone unsold and re-listed; each step deepens the discount.
     public int DistressDiscountStep { get; set; }

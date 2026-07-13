@@ -229,6 +229,10 @@ namespace TraderAi.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<decimal>("CashBalance")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime?>("ClosedAt")
                         .HasColumnType("TEXT");
 
@@ -257,9 +261,6 @@ namespace TraderAi.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT");
-
-                    b.Property<int?>("TradingHaltedUntilCycleNumber")
-                        .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("TEXT");
@@ -300,6 +301,39 @@ namespace TraderAi.Migrations
                     b.HasIndex("CompanyId", "CreatedInCycleId");
 
                     b.ToTable("CompanyRatings");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.CorporateCashTransaction", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CompanyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "Id");
+
+                    b.ToTable("CorporateCashTransactions", t =>
+                        {
+                            t.HasCheckConstraint("CK_CorporateCashTransactions_Amount_Positive", "CAST(Amount AS NUMERIC) > 0");
+                        });
                 });
 
             modelBuilder.Entity("TraderAi.Models.Crisis", b =>
@@ -453,6 +487,9 @@ namespace TraderAi.Migrations
                     b.Property<int>("Quantity")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("SettledQuantity")
+                        .HasColumnType("INTEGER");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CompanyId");
@@ -501,6 +538,10 @@ namespace TraderAi.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<decimal>("AccruedFees")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("BankId")
                         .HasColumnType("INTEGER");
 
@@ -529,7 +570,11 @@ namespace TraderAi.Migrations
                     b.Property<int>("ParticipantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<decimal>("PastDueAmount")
+                    b.Property<decimal>("PastDueInterest")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("PastDuePrincipal")
                         .HasPrecision(18, 2)
                         .HasColumnType("TEXT");
 
@@ -561,6 +606,93 @@ namespace TraderAi.Migrations
                     b.ToTable("Loans");
                 });
 
+            modelBuilder.Entity("TraderAi.Models.MarginAccount", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("AccruedInterest")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("DebitBalance")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("InitialMarginRate")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("LastInterestAccruedTradingDayId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("MaintenanceMarginRate")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("ParticipantId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ParticipantId")
+                        .IsUnique();
+
+                    b.ToTable("MarginAccounts");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.MarginCall", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("AccountEquity")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("ClosedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ClosedInTradingDayId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("Deficiency")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("MaintenanceRequirement")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("MarginAccountId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("OpenedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("OpenedInTradingDayId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MarginAccountId", "Status");
+
+                    b.ToTable("MarginCalls");
+                });
+
             modelBuilder.Entity("TraderAi.Models.Market", b =>
                 {
                     b.Property<int>("Id")
@@ -574,6 +706,9 @@ namespace TraderAi.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("CurrentCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("CurrentTradingDayId")
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("LastCompanyAppearanceCycleNumber")
@@ -626,10 +761,20 @@ namespace TraderAi.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("TradingCycleNumber")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("TradingDayId")
+                        .HasColumnType("INTEGER");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CycleNumber")
                         .IsUnique();
+
+                    b.HasIndex("TradingDayId", "TradingCycleNumber")
+                        .IsUnique()
+                        .HasFilter("TradingDayId > 0");
 
                     b.ToTable("MarketCycles");
                 });
@@ -858,6 +1003,9 @@ namespace TraderAi.Migrations
                     b.Property<int?>("RelatedLoanId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("RelatedMarginCallId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<decimal>("ReservedCashAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("TEXT");
@@ -878,6 +1026,8 @@ namespace TraderAi.Migrations
                     b.HasIndex("Status");
 
                     b.HasIndex("RelatedLoanId", "Status");
+
+                    b.HasIndex("RelatedMarginCallId", "Status");
 
                     b.HasIndex("ParticipantId", "CompanyId", "Type", "Status");
 
@@ -980,6 +1130,10 @@ namespace TraderAi.Migrations
                         .HasPrecision(18, 6)
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal>("SettledCashBalance")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Temperament")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -1024,6 +1178,10 @@ namespace TraderAi.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal>("MarginLiability")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("ParticipantId")
                         .HasColumnType("INTEGER");
 
@@ -1060,12 +1218,54 @@ namespace TraderAi.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal>("MarginLiability")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("ParticipantId")
                         .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
                     b.ToTable("ParticipantWorthSnapshotArchives");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.PriceBandState", b =>
+                {
+                    b.Property<int>("CompanyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("LimitDirection")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("LimitStateStartedCycleNumber")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("LowerBandPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("PauseUntilCycleNumber")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("ReferencePrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("UpdatedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("UpperBandPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("CompanyId");
+
+                    b.ToTable("PriceBandStates");
                 });
 
             modelBuilder.Entity("TraderAi.Models.PriceSnapshot", b =>
@@ -1236,6 +1436,79 @@ namespace TraderAi.Migrations
                     b.ToTable("SectorSentimentSnapshotArchives");
                 });
 
+            modelBuilder.Entity("TraderAi.Models.SettlementInstruction", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("BuyerId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("BuyerMarginAdvance")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("CashAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CompanyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("DueDayNumber")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("SellerId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("SellerMarginDebitRepayment")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("SellerMarginInterestPayment")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("SettledAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("SettledInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ShareTransactionId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("TradeDayNumber")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ShareTransactionId")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "DueDayNumber");
+
+                    b.HasIndex("BuyerId", "Status", "DueDayNumber");
+
+                    b.HasIndex("SellerId", "Status", "DueDayNumber");
+
+                    b.ToTable("SettlementInstructions");
+                });
+
             modelBuilder.Entity("TraderAi.Models.ShareEmission", b =>
                 {
                     b.Property<int>("Id")
@@ -1302,11 +1575,75 @@ namespace TraderAi.Migrations
                     b.ToTable("ShareTransactions");
                 });
 
+            modelBuilder.Entity("TraderAi.Models.TradingBreakCycle", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("DurationSeconds")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ElapsedSeconds")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("StartedAfterCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("TradingDayId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TradingDayId", "IsActive");
+
+                    b.ToTable("TradingBreakCycles");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.TradingDay", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("ClosedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("DayNumber")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("OpenedInCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DayNumber")
+                        .IsUnique();
+
+                    b.ToTable("TradingDays");
+                });
+
             modelBuilder.Entity("TraderAi.Models.CollectiveFundParticipant", b =>
                 {
                     b.HasOne("TraderAi.Models.CollectiveFund", null)
                         .WithMany("Members")
                         .HasForeignKey("CollectiveFundId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("TraderAi.Models.CorporateCashTransaction", b =>
+                {
+                    b.HasOne("TraderAi.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
@@ -1386,6 +1723,17 @@ namespace TraderAi.Migrations
                     b.Navigation("ShareTransaction");
                 });
 
+            modelBuilder.Entity("TraderAi.Models.PriceBandState", b =>
+                {
+                    b.HasOne("TraderAi.Models.Company", "Company")
+                        .WithOne("PriceBandState")
+                        .HasForeignKey("TraderAi.Models.PriceBandState", "CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
             modelBuilder.Entity("TraderAi.Models.PriceSnapshot", b =>
                 {
                     b.HasOne("TraderAi.Models.ShareTransaction", "SourceShareTransaction")
@@ -1419,9 +1767,25 @@ namespace TraderAi.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("TraderAi.Models.SettlementInstruction", b =>
+                {
+                    b.HasOne("TraderAi.Models.ShareTransaction", "ShareTransaction")
+                        .WithOne("SettlementInstruction")
+                        .HasForeignKey("TraderAi.Models.SettlementInstruction", "ShareTransactionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ShareTransaction");
+                });
+
             modelBuilder.Entity("TraderAi.Models.CollectiveFund", b =>
                 {
                     b.Navigation("Members");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.Company", b =>
+                {
+                    b.Navigation("PriceBandState");
                 });
 
             modelBuilder.Entity("TraderAi.Models.Crisis", b =>
@@ -1439,6 +1803,11 @@ namespace TraderAi.Migrations
             modelBuilder.Entity("TraderAi.Models.ScienceInvestigation", b =>
                 {
                     b.Navigation("Industries");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.ShareTransaction", b =>
+                {
+                    b.Navigation("SettlementInstruction");
                 });
 #pragma warning restore 612, 618
         }

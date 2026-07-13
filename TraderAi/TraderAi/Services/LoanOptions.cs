@@ -22,9 +22,6 @@ public sealed class LoanOptions
     // Loans created by the negative-balance migration use this fixed term.
     public int BackfillTermCycles { get; set; } = 100;
 
-    // A loan lends the fill shortfall plus this fraction as a cash buffer, left in the balance after the buy.
-    public decimal LoanCashBufferRate { get; set; } = 0.15m;
-
     // A missed or partial payment carries the unpaid amount to next cycle inflated by this fine rate.
     public decimal MissedPaymentFineRate { get; set; } = 0.10m;
 

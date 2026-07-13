@@ -12,18 +12,13 @@ public sealed record RepayLoanResult(bool Success, Loan? Loan, string? Error)
     public static RepayLoanResult Fail(string error) => new(false, null, error);
 }
 
-// Owns explicit debt as Loan rows so a participant's CurrentBalance is never left negative. It does three
-// things: originates a loan for the shortfall (plus a cash buffer) whenever a margin buy fills for more cash
-// than the buyer held; services every open loan once per cycle (installment + interest, oldest loan first,
-// with a fine into arrears on a shortfall); and, inside the final stretch of a loan's term, force-sells a
-// borrower still in arrears to raise cash. It is the deterministic member of the per-cycle service family —
-// no Random, nothing drawn — and stages changes on the shared context for the caller to save.
+// Owns explicit debt as Loan rows so a participant's CurrentBalance is never left negative. It originates,
+// services, and closes loans while keeping principal, interest, and fee accounting reconcilable.
 public sealed class LoanService(
     AppDbContext dbContext,
     IOptions<LoanOptions> options)
 {
-    // Mirrors MarketService.DebtLimitFraction: the term maps loan size against 40% of the borrower's worth, so a
-    // loan near the cap runs the full term and a small one runs the minimum.
+    // Scales explicit-loan terms against a stable fraction of borrower worth so larger obligations amortize longer.
     private const decimal DebtLimitFraction = 0.40m;
 
     // Forced distress-sale discount, mirroring BankruptcyService: start below market and deepen each unsold
@@ -33,83 +28,6 @@ public sealed class LoanService(
     private const decimal MaxDiscount = 0.95m;
 
     private Bank? bank;
-
-    // Turns each participant left with a negative balance by this cycle's matching into a loan for the shortfall
-    // plus the cash buffer, restoring CurrentBalance to a non-negative value. One loan per borrower per cycle.
-    public async Task OriginateLoansForNegativeBalancesAsync(int currentCycleId, int currentCycleNumber, DateTime now)
-    {
-        if (!options.Value.Enabled)
-        {
-            return;
-        }
-
-        var debtors = await dbContext.Participants
-            .Where(participant => participant.CurrentBalance < 0m)
-            .OrderBy(participant => participant.Id)
-            .ToListAsync();
-        if (debtors.Count == 0)
-        {
-            return;
-        }
-
-        var latestPriceByCompany = await LatestPriceByCompanyAsync();
-        var debtorIds = debtors.Select(debtor => debtor.Id).ToList();
-        var holdingsValueByParticipant = (await dbContext.Holdings
-                .Where(holding => holding.Quantity > 0 && debtorIds.Contains(holding.ParticipantId))
-                .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
-                .ToListAsync())
-            .GroupBy(holding => holding.ParticipantId)
-            .ToDictionary(
-                group => group.Key,
-                group => group.Sum(holding => holding.Quantity * latestPriceByCompany.GetValueOrDefault(holding.CompanyId)));
-
-        var loanBank = await ResolveBankAsync();
-        var created = new List<(Loan Loan, int ParticipantId)>();
-
-        foreach (var debtor in debtors)
-        {
-            var shortfall = -debtor.CurrentBalance;
-            var holdingsValue = holdingsValueByParticipant.GetValueOrDefault(debtor.Id);
-
-            // Worth just before the loan credit: the negative cash is offset by the shares the purchase bought,
-            // so this recovers the borrower's pre-purchase worth for the term mapping.
-            var grossWorth = debtor.CurrentBalance + holdingsValue;
-            var principal = Round(shortfall * (1m + options.Value.LoanCashBufferRate));
-            var termCycles = TermForLoan(principal, grossWorth);
-
-            var loan = new Loan
-            {
-                Bank = loanBank,
-                BankId = loanBank.Id,
-                ParticipantId = debtor.Id,
-                Principal = principal,
-                RemainingPrincipal = principal,
-                InterestRatePerCycle = loanBank.InterestRatePerCycle,
-                TermCycles = termCycles,
-                ScheduledInstallment = Round(principal / termCycles),
-                PastDueAmount = 0m,
-                DistressDiscountStep = 0,
-                Status = LoanStatus.Open,
-                OpenedInCycleId = currentCycleId,
-                CreatedAt = now,
-            };
-            dbContext.Loans.Add(loan);
-
-            // Credit the whole principal so the purchase's cash buffer stays in the balance after settlement.
-            debtor.CurrentBalance += principal;
-            created.Add((loan, debtor.Id));
-        }
-
-        // Save so each loan has an id to link its disbursement transaction to.
-        await dbContext.SaveChangesAsync();
-
-        foreach (var (loan, participantId) in created)
-        {
-            AddTransaction(participantId, MoneyTransactionType.LoanDisbursement, loan.Principal, loan.Id, currentCycleId, now);
-        }
-
-        await dbContext.SaveChangesAsync();
-    }
 
     // Originates one loan of an explicit principal for a single borrower and credits it to their balance, for a
     // caller that must honour a specific obligation rather than a negative balance left by matching (a collective
@@ -141,7 +59,9 @@ public sealed class LoanService(
             InterestRatePerCycle = loanBank.InterestRatePerCycle,
             TermCycles = termCycles,
             ScheduledInstallment = Round(roundedPrincipal / termCycles),
-            PastDueAmount = 0m,
+            PastDuePrincipal = 0m,
+            PastDueInterest = 0m,
+            AccruedFees = 0m,
             DistressDiscountStep = 0,
             Status = LoanStatus.Open,
             OpenedInCycleId = currentCycleId,
@@ -149,6 +69,7 @@ public sealed class LoanService(
         };
         dbContext.Loans.Add(loan);
         borrower.CurrentBalance += roundedPrincipal;
+        borrower.SettledCashBalance += roundedPrincipal;
 
         // Save so the loan has an id to link its disbursement transaction to.
         await dbContext.SaveChangesAsync();
@@ -221,9 +142,15 @@ public sealed class LoanService(
 
     private void ServiceLoan(Participant participant, Loan loan, Bank? bank, int currentCycleId, DateTime now)
     {
-        var interest = Round(loan.RemainingPrincipal * loan.InterestRatePerCycle);
-        var principalDue = Math.Min(loan.ScheduledInstallment, loan.RemainingPrincipal);
-        var totalDue = loan.PastDueAmount + interest + principalDue;
+        var currentInterest = Round(loan.RemainingPrincipal * loan.InterestRatePerCycle);
+        var currentPrincipal = Math.Min(
+            loan.ScheduledInstallment,
+            Math.Max(0m, loan.RemainingPrincipal - loan.PastDuePrincipal));
+        var totalDue = loan.AccruedFees
+            + loan.PastDueInterest
+            + currentInterest
+            + loan.PastDuePrincipal
+            + currentPrincipal;
         if (totalDue <= 0m)
         {
             MaybeClose(loan, currentCycleId, now);
@@ -232,46 +159,36 @@ public sealed class LoanService(
 
         var paid = Math.Min(Math.Max(0m, participant.CurrentBalance), totalDue);
         participant.CurrentBalance -= paid;
+        participant.SettledCashBalance -= paid;
+        var allocation = AllocatePayment(loan, paid, currentInterest, currentPrincipal);
+        loan.PastDueInterest = Round(loan.PastDueInterest + allocation.UnpaidCurrentInterest);
+        loan.PastDuePrincipal = Round(loan.PastDuePrincipal + allocation.UnpaidCurrentPrincipal);
 
-        // Cash covers interest first, then arrears, then this cycle's principal.
-        var interestPaid = Math.Min(paid, interest);
-        var afterInterest = paid - interestPaid;
-        var arrearsPaid = Math.Min(afterInterest, loan.PastDueAmount);
-        var principalPaid = afterInterest - arrearsPaid;
-        loan.RemainingPrincipal -= principalPaid;
-
-        if (interestPaid > 0m)
+        if (allocation.FeesPaid > 0m)
         {
-            AddTransaction(participant.Id, MoneyTransactionType.LoanInterest, interestPaid, loan.Id, currentCycleId, now);
-
-            // The interest leaves the borrower for the lender: the bank keeps it as revenue, mirroring how a
-            // trade fee accrues to the same balance. Principal repayment is not credited — it merely unwinds
-            // the money created at disbursement, so crediting it would fabricate cash in the bank.
-            if (bank is not null)
-            {
-                bank.Balance += interestPaid;
-            }
+            AddTransaction(participant.Id, MoneyTransactionType.LoanFine, allocation.FeesPaid, loan.Id, currentCycleId, now);
         }
 
-        var repayment = arrearsPaid + principalPaid;
-        if (repayment > 0m)
+        if (allocation.InterestPaid > 0m)
         {
-            AddTransaction(participant.Id, MoneyTransactionType.LoanRepayment, repayment, loan.Id, currentCycleId, now);
+            AddTransaction(participant.Id, MoneyTransactionType.LoanInterest, allocation.InterestPaid, loan.Id, currentCycleId, now);
         }
 
-        var unpaid = totalDue - paid;
-        if (unpaid > 0m)
+        if (allocation.PrincipalPaid > 0m)
         {
-            var fine = Round(unpaid * options.Value.MissedPaymentFineRate);
-            loan.PastDueAmount = Round(unpaid * (1m + options.Value.MissedPaymentFineRate));
-            if (fine > 0m)
-            {
-                AddTransaction(participant.Id, MoneyTransactionType.LoanFine, fine, loan.Id, currentCycleId, now);
-            }
+            AddTransaction(participant.Id, MoneyTransactionType.LoanRepayment, allocation.PrincipalPaid, loan.Id, currentCycleId, now);
         }
-        else
+
+        if (bank is not null)
         {
-            loan.PastDueAmount = 0m;
+            bank.Balance += allocation.FeesPaid + allocation.InterestPaid;
+        }
+
+        var unpaidDue = loan.AccruedFees + loan.PastDueInterest + loan.PastDuePrincipal;
+        if (unpaidDue > 0m)
+        {
+            var fine = Round(unpaidDue * options.Value.MissedPaymentFineRate);
+            loan.AccruedFees = Round(loan.AccruedFees + fine);
         }
 
         MaybeClose(loan, currentCycleId, now);
@@ -291,7 +208,7 @@ public sealed class LoanService(
         var distressedIds = loansByParticipant
             .Where(entry => participantsById.ContainsKey(entry.Key)
                 && entry.Value.Any(loan => loan.Status == LoanStatus.Open
-                    && loan.PastDueAmount > 0m
+                    && (loan.PastDuePrincipal > 0m || loan.PastDueInterest > 0m || loan.AccruedFees > 0m)
                     && RemainingTerm(loan, cycleNumberById, currentCycleNumber) <= options.Value.DistressWindowCycles))
             .Select(entry => entry.Key)
             .OrderBy(id => id)
@@ -367,7 +284,7 @@ public sealed class LoanService(
 
             var cashNeeded = loans
                 .Where(loan => loan.Status == LoanStatus.Open)
-                .Sum(loan => loan.RemainingPrincipal + loan.PastDueAmount);
+                .Sum(loan => loan.TotalLiability);
             if (cashNeeded <= 0m)
             {
                 continue;
@@ -442,8 +359,7 @@ public sealed class LoanService(
         }
     }
 
-    // Player-initiated repayment: an omitted or over-large amount closes the loan; cash goes to arrears first,
-    // then principal, never spending reserved cash. Saves and returns the updated loan.
+    // Player-initiated repayment never spends reserved cash and uses the same allocation order as servicing.
     public async Task<RepayLoanResult> RepayLoanAsync(int loanId, decimal? amount, int currentCycleId, DateTime now)
     {
         var loan = await dbContext.Loans.FirstOrDefaultAsync(candidate => candidate.Id == loanId);
@@ -463,7 +379,7 @@ public sealed class LoanService(
             return RepayLoanResult.Fail("Borrower not found.");
         }
 
-        var liability = loan.RemainingPrincipal + loan.PastDueAmount;
+        var liability = loan.TotalLiability;
         var requested = amount is decimal value ? Round(value) : liability;
         if (requested <= 0m)
         {
@@ -476,12 +392,32 @@ public sealed class LoanService(
             return RepayLoanResult.Fail("Insufficient available cash to repay the loan.");
         }
 
-        var arrearsPaid = Math.Min(pay, loan.PastDueAmount);
-        loan.PastDueAmount -= arrearsPaid;
-        loan.RemainingPrincipal -= pay - arrearsPaid;
+        var currentPrincipal = Math.Max(0m, loan.RemainingPrincipal - loan.PastDuePrincipal);
+        var allocation = AllocatePayment(loan, pay, currentInterest: 0m, currentPrincipal);
         participant.CurrentBalance -= pay;
+        participant.SettledCashBalance -= pay;
 
-        AddTransaction(participant.Id, MoneyTransactionType.LoanRepayment, pay, loan.Id, currentCycleId, now);
+        if (allocation.FeesPaid > 0m)
+        {
+            AddTransaction(participant.Id, MoneyTransactionType.LoanFine, allocation.FeesPaid, loan.Id, currentCycleId, now);
+        }
+
+        if (allocation.InterestPaid > 0m)
+        {
+            AddTransaction(participant.Id, MoneyTransactionType.LoanInterest, allocation.InterestPaid, loan.Id, currentCycleId, now);
+        }
+
+        if (allocation.PrincipalPaid > 0m)
+        {
+            AddTransaction(participant.Id, MoneyTransactionType.LoanRepayment, allocation.PrincipalPaid, loan.Id, currentCycleId, now);
+        }
+
+        var loanBank = await dbContext.Banks.FirstOrDefaultAsync(candidate => candidate.Id == loan.BankId);
+        if (loanBank is not null)
+        {
+            loanBank.Balance += allocation.FeesPaid + allocation.InterestPaid;
+        }
+
         MaybeClose(loan, currentCycleId, now);
 
         await dbContext.SaveChangesAsync();
@@ -500,20 +436,21 @@ public sealed class LoanService(
         }
     }
 
-    // Open-loan liability (Σ remaining principal + Σ arrears) per participant, for the debt cap, deleverage
-    // pressure, and worth snapshots.
+    // Past-due principal is already included in remaining principal, so only interest and fees add liability.
     public static async Task<Dictionary<int, decimal>> OpenLoanLiabilityByParticipantAsync(AppDbContext dbContext) =>
         (await dbContext.Loans
             .Where(loan => loan.Status == LoanStatus.Open)
-            .Select(loan => new { loan.ParticipantId, loan.RemainingPrincipal, loan.PastDueAmount })
+            .Select(loan => new { loan.ParticipantId, loan.RemainingPrincipal, loan.PastDueInterest, loan.AccruedFees })
             .ToListAsync())
         .GroupBy(loan => loan.ParticipantId)
-        .ToDictionary(group => group.Key, group => group.Sum(loan => loan.RemainingPrincipal + loan.PastDueAmount));
+        .ToDictionary(group => group.Key, group => group.Sum(loan => loan.RemainingPrincipal + loan.PastDueInterest + loan.AccruedFees));
 
     public static void MarkClosed(Loan loan, LoanCloseReason reason, int currentCycleId, DateTime now)
     {
         loan.RemainingPrincipal = 0m;
-        loan.PastDueAmount = 0m;
+        loan.PastDuePrincipal = 0m;
+        loan.PastDueInterest = 0m;
+        loan.AccruedFees = 0m;
         loan.Status = LoanStatus.Closed;
         loan.CloseReason = reason;
         loan.ClosedInCycleId = currentCycleId;
@@ -522,11 +459,49 @@ public sealed class LoanService(
 
     private void MaybeClose(Loan loan, int currentCycleId, DateTime now)
     {
-        if (loan.RemainingPrincipal <= 0m && loan.PastDueAmount <= 0m)
+        if (loan.TotalLiability <= 0m)
         {
             MarkClosed(loan, LoanCloseReason.PaidInFull, currentCycleId, now);
         }
     }
+
+    private static PaymentAllocation AllocatePayment(Loan loan, decimal payment, decimal currentInterest, decimal currentPrincipal)
+    {
+        var available = payment;
+        var feesPaid = TakePayment(ref available, loan.AccruedFees);
+        loan.AccruedFees -= feesPaid;
+
+        var overdueInterestPaid = TakePayment(ref available, loan.PastDueInterest);
+        loan.PastDueInterest -= overdueInterestPaid;
+        var currentInterestPaid = TakePayment(ref available, currentInterest);
+
+        var overduePrincipalPaid = TakePayment(ref available, loan.PastDuePrincipal);
+        loan.PastDuePrincipal -= overduePrincipalPaid;
+        loan.RemainingPrincipal -= overduePrincipalPaid;
+        var currentPrincipalPaid = TakePayment(ref available, currentPrincipal);
+        loan.RemainingPrincipal -= currentPrincipalPaid;
+
+        return new PaymentAllocation(
+            feesPaid,
+            overdueInterestPaid + currentInterestPaid,
+            overduePrincipalPaid + currentPrincipalPaid,
+            currentInterest - currentInterestPaid,
+            currentPrincipal - currentPrincipalPaid);
+    }
+
+    private static decimal TakePayment(ref decimal available, decimal due)
+    {
+        var paid = Math.Min(available, Math.Max(0m, due));
+        available -= paid;
+        return paid;
+    }
+
+    private readonly record struct PaymentAllocation(
+        decimal FeesPaid,
+        decimal InterestPaid,
+        decimal PrincipalPaid,
+        decimal UnpaidCurrentInterest,
+        decimal UnpaidCurrentPrincipal);
 
     private static int RemainingTerm(Loan loan, IReadOnlyDictionary<int, int> cycleNumberById, int currentCycleNumber)
     {

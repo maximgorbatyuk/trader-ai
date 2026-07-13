@@ -12,6 +12,9 @@ import { groupHoldingsByIndustry } from './industryHoldings'
 import { TradeModal } from './TradeModal'
 import { useClientTable } from './useClientTable'
 import { Pager } from './TableControls'
+import { SettlementsTable } from './SettlementsTable'
+import { cashSettlement, quantitySettlement } from './marketAccounting'
+import { maintenanceStanding } from './marginModel'
 
 const POLL_INTERVAL_MS = 2500
 const WORTH_HISTORY_POINTS = 64
@@ -40,6 +43,7 @@ export function ParticipantDetail({ participantId }) {
   const [companies, setCompanies] = useState([])
   const [worthHistory, setWorthHistory] = useState([])
   const [loans, setLoans] = useState([])
+  const [settlements, setSettlements] = useState([])
   const [loanStatus, setLoanStatus] = useState('active')
 
   // The profile selects are editable, so polling must not overwrite an unsaved edit.
@@ -54,7 +58,7 @@ export function ParticipantDetail({ participantId }) {
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, holdingsData, orderData, tradeData, cashData, companyData, worthData, loanData] = await Promise.all([
+      const [detailData, holdingsData, orderData, tradeData, cashData, companyData, worthData, loanData, settlementData] = await Promise.all([
         api.getParticipant(participantId),
         api.getHoldings(participantId),
         api.getParticipantOrders(participantId, 100),
@@ -63,6 +67,7 @@ export function ParticipantDetail({ participantId }) {
         api.getCompanies(),
         api.getParticipantWorthHistory(participantId),
         api.getParticipantLoans(participantId, { status: loanStatus }),
+        api.getParticipantSettlements(participantId),
       ])
 
       setDetail(detailData)
@@ -73,6 +78,7 @@ export function ParticipantDetail({ participantId }) {
       setCompanies(companyData)
       setWorthHistory(worthData ?? [])
       setLoans(loanData ?? [])
+      setSettlements(settlementData?.items ?? [])
       setLoadError(null)
 
       if (!dirtyRef.current && detailData) {
@@ -167,11 +173,11 @@ export function ParticipantDetail({ participantId }) {
         <dl className="statbar">
           <div className="stat">
             <dt>Total worth</dt>
-            <dd className="num">{formatMoney(detail.currentBalance + marketValue - detail.loanLiability)}</dd>
+            <dd className="num">{formatMoney(detail.totalWorth)}</dd>
           </div>
           <div className="stat">
-            <dt>Available</dt>
-            <dd className="num">{formatMoney(detail.availableBalance)}</dd>
+            <dt>Settled cash</dt>
+            <dd className="num">{formatMoney(detail.settledCashBalance)}</dd>
           </div>
           <div className="stat">
             <dt>Shares owned</dt>
@@ -183,10 +189,14 @@ export function ParticipantDetail({ participantId }) {
           </div>
           {detail.loanLiability > 0 ? (
             <div className="stat">
-              <dt>Loan debt</dt>
+              <dt>Explicit term-loan debt</dt>
               <dd className="num tone-down">−{formatMoney(detail.loanLiability)}</dd>
             </div>
           ) : null}
+          <div className="stat"><dt>Account equity</dt><dd className="num">{formatMoney(detail.margin?.accountEquity ?? 0)}</dd></div>
+          <div className="stat"><dt>Margin debit</dt><dd className="num">{formatMoney(detail.margin?.debitBalance ?? 0)}</dd></div>
+          <div className="stat"><dt>Margin interest</dt><dd className="num">{formatMoney(detail.margin?.accruedInterest ?? 0)}</dd></div>
+          <div className="stat"><dt>Buying power</dt><dd className="num">{formatMoney(detail.margin?.buyingPower ?? detail.availableBalance)}</dd></div>
           <div className="stat">
             <dt>Unrealized P/L</dt>
             <dd className={`num tone-${toneOf(holdingsPnl)}`}>{formatSigned(holdingsPnl)}</dd>
@@ -216,6 +226,12 @@ export function ParticipantDetail({ participantId }) {
       </div>
 
       <HoldingsPanel holdings={holdings} />
+
+      <MarginPanel margin={detail.margin} />
+
+      <Panel title="Pending settlements" count={`${formatInt(settlements.length)}`} className="panel-holdings">
+        <SettlementsTable settlements={settlements} />
+      </Panel>
 
       <IndustryHoldingsPanel holdings={holdings} companies={companies} />
 
@@ -298,9 +314,12 @@ function ProfilePanel({ form, dirty, saving, saveError, onChange, onSave }) {
 }
 
 function BankPanel({ detail, marketValue, costBasis, holdingsPnl }) {
+  const cash = cashSettlement(detail.currentBalance, detail.settledCashBalance)
   const rows = [
     { label: 'Initial balance', value: formatMoney(detail.initialBalance) },
-    { label: 'Current balance', value: formatMoney(detail.currentBalance) },
+    { label: 'Total cash', value: formatMoney(cash.total) },
+    { label: 'Settled cash', value: formatMoney(cash.settled) },
+    { label: 'Pending cash', value: formatMoney(cash.pending) },
     { label: 'Reserved', value: formatMoney(detail.reservedBalance) },
     { label: 'Available', value: formatMoney(detail.availableBalance) },
     { label: 'Holdings cost', value: formatMoney(costBasis) },
@@ -319,6 +338,27 @@ function BankPanel({ detail, marketValue, costBasis, holdingsPnl }) {
         <div className="kv-row kv-total">
           <dt>Unrealized P/L</dt>
           <dd className={`num tone-${toneOf(holdingsPnl)}`}>{formatSigned(holdingsPnl)}</dd>
+        </div>
+      </dl>
+    </Panel>
+  )
+}
+
+function MarginPanel({ margin }) {
+  const standing = maintenanceStanding(margin?.maintenanceExcess ?? 0)
+  const callOpen = margin?.callStatus === 'Open'
+  return (
+    <Panel title="Margin account" count={callOpen ? 'Call open' : 'Clear'} className="panel-bank">
+      <dl className="kv">
+        <div className="kv-row"><dt>Account equity</dt><dd className="num">{formatMoney(margin?.accountEquity ?? 0)}</dd></div>
+        <div className="kv-row"><dt>Buying power</dt><dd className="num">{formatMoney(margin?.buyingPower ?? 0)}</dd></div>
+        <div className="kv-row"><dt>Initial requirement</dt><dd className="num">{formatMoney(margin?.initialRequirement ?? 0)}</dd></div>
+        <div className="kv-row"><dt>Maintenance requirement</dt><dd className="num">{formatMoney(margin?.maintenanceRequirement ?? 0)}</dd></div>
+        <div className="kv-row"><dt>Maintenance excess</dt><dd className="num">{formatMoney(standing.excess)}</dd></div>
+        <div className="kv-row"><dt>Deficiency</dt><dd className="num tone-down">{formatMoney(standing.deficiency)}</dd></div>
+        <div className="kv-row kv-total">
+          <dt>Call status</dt>
+          <dd><span className={callOpen ? 'tag tag-flag' : 'tag'}>{callOpen ? '! Open' : '✓ Clear'}</span></dd>
         </div>
       </dl>
     </Panel>
@@ -412,7 +452,13 @@ function HoldingsPanel({ holdings }) {
               <tr>
                 <th scope="col">Company</th>
                 <th scope="col" className="ta-r">
-                  Shares
+                  Quantity
+                </th>
+                <th scope="col" className="ta-r">
+                  Settled
+                </th>
+                <th scope="col" className="ta-r">
+                  Pending
                 </th>
                 <th scope="col" className="ta-r">
                   Cost paid
@@ -428,12 +474,15 @@ function HoldingsPanel({ holdings }) {
             <tbody>
               {holdings.map((holding) => {
                 const pnl = holding.marketValue - holding.costBasis
+                const quantity = quantitySettlement(holding.shares, holding.settledShares)
                 return (
                   <tr key={holding.companyId}>
                     <th scope="row" className="cell-ellipsis">
                       {holding.companyName}
                     </th>
-                    <td className="num ta-r">{formatInt(holding.shares)}</td>
+                    <td className="num ta-r">{formatInt(quantity.economic)}</td>
+                    <td className="num ta-r">{formatInt(quantity.settled)}</td>
+                    <td className="num ta-r">{formatSignedInt(quantity.pending)}</td>
                     <td className="num ta-r">{formatMoney(holding.costBasis)}</td>
                     <td className="num ta-r">{formatMoney(holding.marketValue)}</td>
                     <td className={`num ta-r tone-${toneOf(pnl)}`}>{formatSigned(pnl)}</td>
@@ -587,7 +636,7 @@ function TradesPanel({ trades, participantId, companyName }) {
 
 function LoansPanel({ loans, status, onStatusChange }) {
   return (
-    <Panel title="Loans" count={status === 'all' ? 'All' : 'Active'} className="panel-holdings">
+    <Panel title="Explicit term loans" count={status === 'all' ? 'All' : 'Active'} className="panel-holdings">
       <div className="roster-toolbar">
         <select
           className="select select-sm"
@@ -600,7 +649,7 @@ function LoansPanel({ loans, status, onStatusChange }) {
         </select>
       </div>
       {loans.length === 0 ? (
-        <p className="note">{status === 'all' ? 'No loans.' : 'No active loans.'}</p>
+        <p className="note">{status === 'all' ? 'No explicit term loans.' : 'No active explicit term loans.'}</p>
       ) : (
         <div className="tbl-wrap">
           <table className="tbl">
@@ -617,7 +666,16 @@ function LoansPanel({ loans, status, onStatusChange }) {
                   Remaining
                 </th>
                 <th scope="col" className="ta-r">
-                  Past due
+                  Principal due
+                </th>
+                <th scope="col" className="ta-r">
+                  Interest due
+                </th>
+                <th scope="col" className="ta-r">
+                  Fees
+                </th>
+                <th scope="col" className="ta-r">
+                  Total
                 </th>
                 <th scope="col" className="ta-r">
                   Term left
@@ -637,9 +695,16 @@ function LoansPanel({ loans, status, onStatusChange }) {
                     <span className="muted-sub"> {(loan.interestRatePerCycle * 100).toFixed(3)}%</span>
                   </td>
                   <td className="num ta-r">{formatMoney(loan.remainingPrincipal)}</td>
-                  <td className={`num ta-r${loan.pastDueAmount > 0 ? ' tone-attention' : ''}`}>
-                    {formatMoney(loan.pastDueAmount)}
+                  <td className={`num ta-r${loan.pastDuePrincipal > 0 ? ' tone-attention' : ' muted-sub'}`}>
+                    {formatMoney(loan.pastDuePrincipal)}
                   </td>
+                  <td className={`num ta-r${loan.pastDueInterest > 0 ? ' tone-attention' : ' muted-sub'}`}>
+                    {formatMoney(loan.pastDueInterest)}
+                  </td>
+                  <td className={`num ta-r${loan.accruedFees > 0 ? ' tone-attention' : ' muted-sub'}`}>
+                    {formatMoney(loan.accruedFees)}
+                  </td>
+                  <td className="num ta-r">{formatMoney(loan.totalLiability)}</td>
                   <td className="num ta-r">{loan.isClosed ? '—' : `${formatInt(loan.remainingTermCycles)} cyc`}</td>
                   <td>
                     {loan.isClosed ? (

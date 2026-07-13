@@ -39,6 +39,18 @@ The countdown updates between server refreshes, freezes visibly when the market 
 
 ## Trading-day boundaries
 
-Trading-day numbers are unique and increase one at a time. Settlement rules such as T+1 use those day boundaries rather than raw cycle counts. Security-specific pauses do not pause the market-wide trading-day clock, while the market-wide break pauses trading in every security.
+Trading-day numbers are unique and increase one at a time. A trade executed at any point on Day N is due for T+1 settlement when Day N+1 opens; neither the one-minute break nor its thirty manual steps count as another day. Due instructions update settled cash and shares together at the new day boundary. See [Trade settlement](../logic/settlement.md).
+
+Margin debit interest also uses the trading-day boundary and accrues at most once per day. It does not accrue once per cycle or during the break. See [Margin accounts](../logic/margin.md).
+
+Security-specific LULD durations count active trading cycles. A market-wide break or manual market pause therefore freezes a company's limit-state and trading-pause countdown along with the main clock. Security-specific LULD states do not stop the market-wide day clock while other securities continue to trade. See [LULD price controls](luld.md).
+
+## Where to see it
+
+- The top navigation shows **Day N · Trading** or **Day N · Break**.
+- **Cycle X/210 · Y left** shows completed-day progress and cycles remaining. It remains at **Cycle 210/210 · 0 left** throughout the break.
+- The adjacent **MM:SS left** timer counts down the active trading phase or the separate break phase.
+- During a manual pause, both displayed countdowns remain frozen until the market resumes or advances with **Step once**.
+- Trader and player settlement tables show the trade day and due day calculated from this clock.
 
 Weekends, public holidays, extended-hours sessions, overnight orders, and a literal U.S. exchange timezone are outside this schedule.

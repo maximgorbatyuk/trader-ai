@@ -38,7 +38,7 @@ export function TradersTable({ participants, sortKey, sortDir, onToggleSort, onS
             {sortableHeader('shares', 'Shares')}
             {sortableHeader('balance', 'Current balance')}
             {sortableHeader('holdings', 'Holdings (est.)', 'Estimated market value of shares held')}
-            {sortableHeader('total', 'Total', 'Current balance plus holdings estimation, less loan debt')}
+            {sortableHeader('total', 'Total', 'Current balance plus holdings estimation, less explicit term-loan and margin liabilities')}
           </tr>
         </thead>
         <tbody>

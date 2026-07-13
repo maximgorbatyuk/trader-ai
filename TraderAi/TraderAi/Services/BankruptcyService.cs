@@ -98,6 +98,15 @@ public sealed class BankruptcyService(
 
         // Stable id order keeps the per-trader random draws reproducible for a scripted Random in tests.
         var participants = await dbContext.Participants.OrderBy(participant => participant.Id).ToListAsync();
+        var pendingSettlementParties = await dbContext.SettlementInstructions
+                .Where(instruction => instruction.Status == SettlementStatus.Pending)
+                .Select(instruction => new { instruction.BuyerId, instruction.SellerId })
+                .ToListAsync();
+        var pendingParticipantIds = pendingSettlementParties
+            .SelectMany(instruction => instruction.SellerId is int sellerId
+                ? new[] { instruction.BuyerId, sellerId }
+                : new[] { instruction.BuyerId })
+            .ToHashSet();
 
         foreach (var participant in participants)
         {
@@ -107,6 +116,11 @@ public sealed class BankruptcyService(
             if (participant.IsBankrupt)
             {
                 ContinueSellDown(participant, owned, openForParticipant, latestPriceByCompany, available, currentCycleId, now);
+                continue;
+            }
+
+            if (pendingParticipantIds.Contains(participant.Id))
+            {
                 continue;
             }
 
@@ -154,7 +168,7 @@ public sealed class BankruptcyService(
             wealthyProbability = 0.0;
         }
 
-        var loanLiability = openLoans.Sum(loan => loan.RemainingPrincipal + loan.PastDueAmount);
+        var loanLiability = openLoans.Sum(loan => loan.TotalLiability);
         var probability = wealthyProbability + DebtBankruptcyProbability(
             participant, shareWorth, loanLiability, chanceRates.Value.EventTriggerChances.BankruptcyPerDebtPercent);
         if (activeCrisis is not null)
@@ -198,6 +212,7 @@ public sealed class BankruptcyService(
         }
 
         participant.CurrentBalance = 0m;
+        participant.SettledCashBalance = 0m;
         participant.ReservedBalance = 0m;
         participant.IsActive = false;
         participant.IsBankrupt = true;

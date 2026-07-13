@@ -9,6 +9,9 @@ import { CASH_LABEL, CASH_TONE } from './cashMovements'
 import { MoneyTransactionModal } from './MoneyTransactionModal'
 import { IndustryHoldingsTable } from './IndustryHoldingsTable'
 import { groupHoldingsByIndustry } from './industryHoldings'
+import { maintenanceStanding } from './marginModel'
+import { SettlementsTable } from './SettlementsTable'
+import { cashSettlement, quantitySettlement } from './marketAccounting'
 
 const POLL_INTERVAL_MS = 1000
 const WORTH_HISTORY_POINTS = 64
@@ -17,7 +20,7 @@ const CHANGE_GLYPH = { up: '▲', down: '▼', flat: '◆' }
 const MEMBER_TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund', Player: 'Player' }
 const ACTOR_TABS = [
   { key: 'player', label: 'Player' },
-  { key: 'fund', label: "Player's Fund" },
+  { key: 'fund', label: 'Managed fund' },
 ]
 
 // A signed money delta rendered with a market tone plus a glyph, so the sign never rides on colour alone;
@@ -38,9 +41,8 @@ function ChangeAmount({ value }) {
 // The player subject reads straight off the player response; the fund subject is derived client-side from the
 // fund's participant detail, holdings, and worth history so the Fund tab shows the same balances and performance
 // figures as the Player tab without a dedicated endpoint.
-function fundSubjectOf(fundDetail, holdings, worthHistory) {
-  const holdingsValue = holdings.reduce((sum, holding) => sum + holding.marketValue, 0)
-  const totalWorth = fundDetail.currentBalance + holdingsValue - fundDetail.loanLiability
+function fundSubjectOf(fundDetail, worthHistory) {
+  const totalWorth = fundDetail.totalWorth
   let lastCycleMoneyChange = null
   let lastCycleWorthChange = null
   if (worthHistory.length >= 2) {
@@ -53,9 +55,12 @@ function fundSubjectOf(fundDetail, holdings, worthHistory) {
     name: fundDetail.name,
     initialBalance: fundDetail.initialBalance,
     currentBalance: fundDetail.currentBalance,
+    settledCashBalance: fundDetail.settledCashBalance,
+    unsettledCashBalance: fundDetail.unsettledCashBalance,
     reservedBalance: fundDetail.reservedBalance,
     availableBalance: fundDetail.availableBalance,
     loanLiability: fundDetail.loanLiability,
+    margin: fundDetail.margin,
     totalWorth,
     overallMoneyChange: fundDetail.currentBalance - fundDetail.initialBalance,
     overallWorthChange: totalWorth - fundDetail.initialBalance,
@@ -78,6 +83,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
   const [loanStatus, setLoanStatus] = useState('active')
   const [worthHistory, setWorthHistory] = useState([])
   const [cashMoves, setCashMoves] = useState([])
+  const [settlements, setSettlements] = useState([])
   const mountedRef = useRef(true)
 
   const refresh = useCallback(async () => {
@@ -92,13 +98,14 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
         : null
 
       if (activeId != null) {
-        const [holdingsData, orderData, attentionData, loanData, worthData, cashData, fundData] = await Promise.all([
+        const [holdingsData, orderData, attentionData, loanData, worthData, cashData, settlementData, fundData] = await Promise.all([
           api.getHoldings(activeId),
           api.getParticipantOrders(activeId, 20),
           api.getCompaniesAttention(activeId),
           api.getParticipantLoans(activeId, { status: loanStatus }),
           api.getParticipantWorthHistory(activeId),
           api.getParticipantMoneyTransactions(activeId, 20),
+          api.getParticipantSettlements(activeId),
           actorKind === 'fund' ? api.getParticipant(activeId) : Promise.resolve(null),
         ])
         if (!mountedRef.current) return
@@ -108,6 +115,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
         setLoans(loanData ?? [])
         setWorthHistory(worthData ?? [])
         setCashMoves(cashData ?? [])
+        setSettlements(settlementData?.items ?? [])
         setFundDetail(fundData)
       } else {
         setHoldings([])
@@ -116,6 +124,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
         setLoans([])
         setWorthHistory([])
         setCashMoves([])
+        setSettlements([])
         setFundDetail(null)
       }
       setPlayer(playerData)
@@ -169,6 +178,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
           onLoanStatusChange={setLoanStatus}
           worthHistory={worthHistory}
           cashMoves={cashMoves}
+          settlements={settlements}
           companies={companies}
           onSelectCompany={onSelectCompany}
           onRefresh={refresh}
@@ -182,7 +192,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
           <ManageFundSection player={player} onRefresh={refresh} />
           <ActorView
             key="fund"
-            subject={fundSubjectOf(fundDetail, holdings, worthHistory)}
+            subject={fundSubjectOf(fundDetail, worthHistory)}
             participantId={player.fundParticipantId}
             canCancelOrders
             members={fundDetail.collectiveFundMembers ?? []}
@@ -194,6 +204,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
             onLoanStatusChange={setLoanStatus}
             worthHistory={worthHistory}
             cashMoves={cashMoves}
+            settlements={settlements}
             companies={companies}
             onSelectCompany={onSelectCompany}
             onRefresh={refresh}
@@ -545,6 +556,7 @@ function ActorView({
   onLoanStatusChange,
   worthHistory,
   cashMoves,
+  settlements,
   companies,
   onSelectCompany,
   onRefresh,
@@ -552,6 +564,7 @@ function ActorView({
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
   const lastCycleMissing = subject.lastCycleMoneyChange == null || subject.lastCycleWorthChange == null
   const worthTone = typeof subject.lastCycleWorthChange === 'number' ? toneOf(subject.lastCycleWorthChange) : null
+  const cash = cashSettlement(subject.currentBalance, subject.settledCashBalance)
 
   return (
     <>
@@ -578,8 +591,16 @@ function ActorView({
             <dd className="num">{formatMoney(subject.initialBalance)}</dd>
           </div>
           <div className="kv-row">
-            <dt>Current balance</dt>
-            <dd className="num">{formatMoney(subject.currentBalance)}</dd>
+            <dt>Total cash</dt>
+            <dd className="num">{formatMoney(cash.total)}</dd>
+          </div>
+          <div className="kv-row kv-sub">
+            <dt>Settled cash</dt>
+            <dd className="num">{formatMoney(cash.settled)}</dd>
+          </div>
+          <div className="kv-row kv-sub">
+            <dt>Pending cash</dt>
+            <dd className="num">{formatMoney(cash.pending)}</dd>
           </div>
           <div className="kv-row kv-sub">
             <dt>Available</dt>
@@ -591,10 +612,14 @@ function ActorView({
           </div>
           {subject.loanLiability > 0 ? (
             <div className="kv-row kv-sub">
-              <dt>Loan debt</dt>
+              <dt>Explicit term-loan debt</dt>
               <dd className="num tone-down">−{formatMoney(subject.loanLiability)}</dd>
             </div>
           ) : null}
+          <div className="kv-row kv-sub"><dt>Account equity</dt><dd className="num">{formatMoney(subject.margin?.accountEquity ?? subject.totalWorth)}</dd></div>
+          <div className="kv-row kv-sub"><dt>Margin debit</dt><dd className="num">{formatMoney(subject.margin?.debitBalance ?? 0)}</dd></div>
+          <div className="kv-row kv-sub"><dt>Margin interest</dt><dd className="num">{formatMoney(subject.margin?.accruedInterest ?? 0)}</dd></div>
+          <div className="kv-row kv-sub"><dt>Buying power</dt><dd className="num">{formatMoney(subject.margin?.buyingPower ?? subject.availableBalance)}</dd></div>
           <div className="kv-row kv-total">
             <dt>Total worth</dt>
             <dd className="num">{formatMoney(subject.totalWorth)}</dd>
@@ -650,10 +675,12 @@ function ActorView({
         attention={attention}
         openOrders={openOrders}
         loans={loans}
+        margin={subject.margin}
         loanStatus={loanStatus}
         onLoanStatusChange={onLoanStatusChange}
         worthHistory={worthHistory}
         cashMoves={cashMoves}
+        settlements={settlements}
         companies={companies}
         onSelectCompany={onSelectCompany}
         onRefresh={onRefresh}
@@ -669,14 +696,16 @@ const BASE_TABS = [
   { key: 'orders', label: 'Open orders', hasCount: true },
   { key: 'worth', label: 'Total worth chart', hasCount: false },
   { key: 'cash', label: 'Cash movements', hasCount: false },
-  { key: 'loans', label: 'Loans', hasCount: true },
+  { key: 'settlements', label: 'Settlements', hasCount: true },
+  { key: 'loans', label: 'Term loans', hasCount: true },
+  { key: 'margin', label: 'Margin', hasCount: false },
 ]
 const MEMBERS_TAB = { key: 'members', label: 'Members', hasCount: true }
 
 // The actor's detail views behind one tab strip so the panel stays compact: the roster tabs carry a live count,
 // and arrow keys move focus between tabs (roving tabindex) to match the order-book tablist. The fund variant
 // appends a Members tab.
-function ActorTabs({ participantId, canCancelOrders, members, holdings, attention, openOrders, loans, loanStatus, onLoanStatusChange, worthHistory, cashMoves, companies, onSelectCompany, onRefresh }) {
+function ActorTabs({ participantId, canCancelOrders, members, holdings, attention, openOrders, loans, margin, loanStatus, onLoanStatusChange, worthHistory, cashMoves, settlements, companies, onSelectCompany, onRefresh }) {
   const tabs = members ? [...BASE_TABS, MEMBERS_TAB] : BASE_TABS
   const [activeKey, setActiveKey] = useState('assets')
   const tabRefs = useRef({})
@@ -688,6 +717,7 @@ function ActorTabs({ participantId, canCancelOrders, members, holdings, attentio
     attention: attention.length,
     orders: openOrders.length,
     loans: loans.length,
+    settlements: settlements.length,
     members: members?.length ?? 0,
   }
 
@@ -748,11 +778,35 @@ function ActorTabs({ participantId, canCancelOrders, members, holdings, attentio
         ) : null}
         {activeKey === 'worth' ? <WorthChartTab worthHistory={worthHistory} /> : null}
         {activeKey === 'cash' ? <CashMovesTab moves={cashMoves} participantId={participantId} /> : null}
+        {activeKey === 'settlements' ? (
+          <div className="modal-section player-section">
+            <SettlementsTable settlements={settlements} />
+          </div>
+        ) : null}
         {activeKey === 'loans' ? (
           <LoansSection loans={loans} status={loanStatus} onStatusChange={onLoanStatusChange} onRepaid={onRefresh} />
         ) : null}
+        {activeKey === 'margin' ? <MarginSection margin={margin} /> : null}
         {activeKey === 'members' ? <MembersSection members={members ?? []} /> : null}
       </div>
+    </div>
+  )
+}
+
+function MarginSection({ margin }) {
+  const standing = maintenanceStanding(margin?.maintenanceExcess ?? 0)
+  const callOpen = margin?.callStatus === 'Open'
+  return (
+    <div className="modal-section player-section">
+      <dl className="kv">
+        <div className="kv-row"><dt>Initial margin rate</dt><dd className="num">{((margin?.initialMarginRate ?? 0) * 100).toFixed(0)}%</dd></div>
+        <div className="kv-row"><dt>Maintenance rate</dt><dd className="num">{((margin?.maintenanceMarginRate ?? 0) * 100).toFixed(0)}%</dd></div>
+        <div className="kv-row"><dt>Initial requirement</dt><dd className="num">{formatMoney(margin?.initialRequirement ?? 0)}</dd></div>
+        <div className="kv-row"><dt>Maintenance requirement</dt><dd className="num">{formatMoney(margin?.maintenanceRequirement ?? 0)}</dd></div>
+        <div className="kv-row"><dt>Excess</dt><dd className="num">{formatMoney(standing.excess)}</dd></div>
+        <div className="kv-row"><dt>Deficiency</dt><dd className="num tone-down">{formatMoney(standing.deficiency)}</dd></div>
+        <div className="kv-row"><dt>Call status</dt><dd><span className={callOpen ? 'tag tag-flag' : 'tag'}>{callOpen ? '! Open' : '✓ Clear'}</span></dd></div>
+      </dl>
     </div>
   )
 }
@@ -849,15 +903,18 @@ function HoldingsSection({ holdings, onSelectCompany }) {
               <thead>
                 <tr>
                   <th scope="col">Company</th>
-                  <SortHeader label="Shares" columnKey="shares" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Quantity" columnKey="shares" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Settled" columnKey="settledShares" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Pending" columnKey="pendingShares" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   <SortHeader label="Cost paid" columnKey="costBasis" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   <SortHeader label="Value" columnKey="marketValue" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   <SortHeader label="P/L" columnKey="pnl" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                 </tr>
               </thead>
               <tbody>
-                {pageRows.map((holding) => (
-                  <tr key={holding.companyId}>
+                {pageRows.map((holding) => {
+                  const quantity = quantitySettlement(holding.shares, holding.settledShares)
+                  return <tr key={holding.companyId}>
                     <th scope="row">
                       {onSelectCompany ? (
                         <button
@@ -872,12 +929,14 @@ function HoldingsSection({ holdings, onSelectCompany }) {
                         <span className="cell-ellipsis">{holding.companyName}</span>
                       )}
                     </th>
-                    <td className="num ta-r">{formatInt(holding.shares)}</td>
+                    <td className="num ta-r">{formatInt(quantity.economic)}</td>
+                    <td className="num ta-r">{formatInt(quantity.settled)}</td>
+                    <td className="num ta-r">{formatSignedInt(quantity.pending)}</td>
                     <td className="num ta-r">{formatMoney(holding.costBasis)}</td>
                     <td className="num ta-r">{formatMoney(holding.marketValue)}</td>
                     <td className={`num ta-r tone-${toneOf(holding.pnl)}`}>{formatSigned(holding.pnl)}</td>
                   </tr>
-                ))}
+                })}
               </tbody>
             </table>
           </div>
@@ -1081,7 +1140,7 @@ function LoansSection({ loans, status, onStatusChange, onRepaid }) {
         </p>
       ) : null}
       {loans.length === 0 ? (
-        <p className="note note-sm">{status === 'all' ? 'No loans.' : 'No active loans.'}</p>
+        <p className="note note-sm">{status === 'all' ? 'No explicit term loans.' : 'No active explicit term loans.'}</p>
       ) : (
         <div className="tbl-wrap">
           <table className="tbl">
@@ -1098,7 +1157,16 @@ function LoansSection({ loans, status, onStatusChange, onRepaid }) {
                   Remain
                 </th>
                 <th scope="col" className="ta-r">
-                  Past due
+                  Principal due
+                </th>
+                <th scope="col" className="ta-r">
+                  Interest due
+                </th>
+                <th scope="col" className="ta-r">
+                  Fees
+                </th>
+                <th scope="col" className="ta-r">
+                  Total
                 </th>
                 <th scope="col" className="ta-r">
                   Term
@@ -1122,9 +1190,16 @@ function LoansSection({ loans, status, onStatusChange, onRepaid }) {
                       <span className="muted-sub"> {(loan.interestRatePerCycle * 100).toFixed(3)}%</span>
                     </td>
                     <td className="num ta-r">{formatMoney(loan.remainingPrincipal)}</td>
-                    <td className={`num ta-r${loan.pastDueAmount > 0 ? ' tone-attention' : ''}`}>
-                      {formatMoney(loan.pastDueAmount)}
+                    <td className={`num ta-r${loan.pastDuePrincipal > 0 ? ' tone-attention' : ' muted-sub'}`}>
+                      {formatMoney(loan.pastDuePrincipal)}
                     </td>
+                    <td className={`num ta-r${loan.pastDueInterest > 0 ? ' tone-attention' : ' muted-sub'}`}>
+                      {formatMoney(loan.pastDueInterest)}
+                    </td>
+                    <td className={`num ta-r${loan.accruedFees > 0 ? ' tone-attention' : ' muted-sub'}`}>
+                      {formatMoney(loan.accruedFees)}
+                    </td>
+                    <td className="num ta-r">{formatMoney(loan.totalLiability)}</td>
                     <td className="num ta-r">{loan.isClosed ? '—' : `${formatInt(loan.remainingTermCycles)} cyc`}</td>
                     <td className="ta-r">
                       {loan.isClosed ? (
