@@ -16,4 +16,10 @@ public sealed class VolatilityHaltOptions
     public decimal UpperBandPercent { get; set; } = 10m;
 
     public decimal LowerBandPercent { get; set; } = 15m;
+
+    // The allowed participant order range is wider than the executable band: an order may rest anywhere between
+    // reference -AllowedOrderLowerPercent and +AllowedOrderUpperPercent, waiting for the band to reach it.
+    public decimal AllowedOrderLowerPercent { get; set; } = 25m;
+
+    public decimal AllowedOrderUpperPercent { get; set; } = 15m;
 }

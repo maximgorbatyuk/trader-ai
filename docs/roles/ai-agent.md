@@ -6,10 +6,10 @@ An AI Agent is an automated trader role reserved for agent-like market participa
 
 - An AI Agent can buy, sell, hold shares, receive dividends, and use the same margin buying power as other automated traders. Margin debit is separate from explicit term loans.
 - Its decisions use temperament and risk profile in the same way as an Individual: risk affects how strongly it reacts to market signals, and temperament affects action frequency and order size.
-- It places at most one automated action per cycle: buy, sell, or wait.
+- It places at most one automated action per cycle: buy, sell, or wait. Like an Individual, it prices most orders inside the executable band and occasionally in the allowed range just outside it, always within the allowed order range. See [LULD price controls](../rules/luld.md).
 - It cannot sell shares it does not own or shares already committed to another open sell order.
 - Its fills change economic positions immediately and settle on T+1. Short selling is planned for later and is not implemented.
-- Its ordinary orders can be re-priced, cancelled for age, cancelled by price shocks, or cancelled by a stock split.
+- Its ordinary orders can be re-priced toward the executable band (clamped so an aged limit never compounds past it), cancelled for age or for resting beyond the allowed range after the band moves, cancelled by price shocks, or cancelled by a stock split.
 - LULD Limit State and Trading Pause preserve its resting orders for cancellation or the reopening auction.
 - It can become cash-starved and may sell part of its most valuable holding to raise cash.
 - It can join or open a collective fund when eligible. While it is a fund member, the fund-member rules apply.

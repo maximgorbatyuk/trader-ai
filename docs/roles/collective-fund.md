@@ -8,7 +8,7 @@ A Collective Fund is a pooled automated trader created during the simulation. It
 - The founder becomes the first member.
 - The fund keeps the founder's temperament and risk profile from the moment it is created. Later changes to the founder do not change the fund's trading personality.
 - Members contribute most of their settled, unreserved cash as deposits. The fund trades that pooled capital.
-- An active fund buys and sells automatically like an automated trader, but keeps a cash buffer so it can return member deposits.
+- An active fund buys and sells automatically like an automated trader, but keeps a cash buffer so it can return member deposits. Its ordinary discretionary orders follow the same band-aware pricing as an Individual, while its cash-raising and liquidation sells are clamped into the executable band so they can cross. See [LULD price controls](../rules/luld.md).
 - A fund can use the same margin buying power as other market participants, after accounting for its cash buffer. Margin debit remains separate from any explicit term loan used for a member payout.
 - A fund can hold shares, receive dividends, and sell holdings.
 - Fund trades change its economic position immediately and settle on T+1. The managed-fund view separates settled and pending cash and shares.

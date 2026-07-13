@@ -50,17 +50,19 @@ This means the market does not calculate one global clearing price from total de
 
 ## Order Prices
 
-Automated traders use the latest company price as their reference quote.
+Automated discretionary traders use the latest company price as their reference quote, biasing buys above and sells below it so ordinary orders have a chance to cross. The exact target, side, and quantity depend on recent price movement, long-range movement, order-book imbalance, available cash, holdings, debt pressure, temperament, and risk profile.
 
-Buy orders are usually placed above the latest price, and sell orders below it, so ordinary automated orders have a chance to cross. The exact target, side, and quantity depend on recent price movement, long-range movement, order-book imbalance, available cash, holdings, debt pressure, temperament, and risk profile.
+Every participant order — the player's and an automated one — must rest inside the allowed order range around the LULD reference, and a price beyond it is rejected. Continuous matching still only crosses orders inside the narrower executable band, so an order in the allowed range but outside the band waits until the band reaches it. See [LULD price controls](luld.md).
 
-Resting automated orders can also move toward the market before matching:
+Most automated discretionary orders are priced inside the executable band; roughly one in ten instead rests in one of the two waiting segments just outside it, on either side, so some interest sits ahead of the band. Both buys and sells may use either waiting segment. Forced orders that must execute — margin-call, bankruptcy, loan-distress, and fund cash-raising sells — are pulled onto the nearest band edge, and issuer float rests at the listing reference, so none of them deliberately wait outside the band.
 
-- A stale sell can lower its limit.
-- A stale buy can raise its limit if the trader can reserve the extra cash.
-- Very old automated orders can be cancelled.
+Resting automated orders can also move toward the market before matching, always clamped into the executable band so a stale order never compounds past it:
 
-The human player's orders are not automatically aged or re-priced by ordinary maintenance.
+- A sell steps toward the band to cross, or climbs toward it when it rests below.
+- A buy steps up toward the band, or down toward it when it rests above, reserving or releasing the cash difference.
+- Very old automated orders can be cancelled, and any participant order left beyond the allowed range after the band moves is cancelled with its reservation released.
+
+The human player's orders are not automatically aged or re-priced by ordinary maintenance, but they remain subject to the universal allowed-range validity check.
 
 LULD price controls preserve participant and issuer orders. Persistent pressure at a price band pauses continuous matching through Limit State and Trading Pause, then eligible resting orders can execute at one deterministic reopening-auction price before normal matching resumes. See [LULD price controls](luld.md).
 
@@ -109,7 +111,7 @@ Dividends also do not directly set price. They transfer available issuer cash to
 
 T+1 settlement does not defer price formation. A fill records its price point and changes economic ownership on the trade date; only the settled cash and share quantities wait until the next trading day.
 
-Forced liquidation, bankruptcy sell-downs, and fund unwind sales do not directly set price either. They place sell orders at discounted limits; price changes only if those orders match.
+Forced liquidation, bankruptcy sell-downs, and fund unwind sales do not directly set price either. They place sell orders at discounted limits clamped into the executable band so they can cross; price changes only if those orders match.
 
 ## Current Price And Charts
 

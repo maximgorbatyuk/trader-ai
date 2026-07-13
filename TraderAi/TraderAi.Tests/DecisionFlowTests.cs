@@ -111,6 +111,40 @@ public sealed class DecisionFlowTests : IDisposable
         Assert.Equal(0, Assert.Single(quotes, quote => quote.CompanyId == unmappedCompany.Id).SectorSentiment);
     }
 
+    // The batch resolves bounds once and hands them to the engine on the quote: the active band and the wider
+    // allowed range for a $100 reference.
+    [Fact]
+    public async Task GeneratedQuotesCarryResolvedOrderPriceBounds()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var decisionEngine = new QuoteCapturingDecisionEngine();
+        var service = new MarketService(context, new MatchingEngine(context), decisionEngine, new MarketCycleLock(), new Random(1));
+
+        await service.GenerateDecisionsAsync();
+
+        var bounds = Assert.Single(decisionEngine.LastQuotes!).Bounds;
+        Assert.NotNull(bounds);
+        Assert.Equal(85m, bounds!.ActiveLowerPrice);
+        Assert.Equal(110m, bounds.ActiveUpperPrice);
+        Assert.Equal(75m, bounds.AllowedMinimumPrice);
+        Assert.Equal(115m, bounds.AllowedMaximumPrice);
+    }
+
+    // Server-owned validation cannot be bypassed by a deferred automated write: an intent priced beyond the
+    // allowed range is dropped rather than persisted.
+    [Fact]
+    public async Task DeferredAutomatedOrderBeyondTheAllowedRangeIsRejected()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var service = new MarketService(context, new MatchingEngine(context), new FixedBuyIntentEngine(200m), new MarketCycleLock(), new Random(1));
+
+        var result = await service.GenerateDecisionsAsync();
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.OrdersPlaced);
+        Assert.Equal(0, await context.Orders.CountAsync());
+    }
+
     public void Dispose()
     {
         context.Dispose();
@@ -126,5 +160,15 @@ public sealed class DecisionFlowTests : IDisposable
             LastQuotes = context.Companies.ToArray();
             return [];
         }
+    }
+
+    // Emits one buy for the first company at a fixed price, ignoring signals, so the batch's own range validation
+    // is what decides whether the order survives.
+    private sealed class FixedBuyIntentEngine(decimal limitPrice) : IDecisionEngine
+    {
+        public IReadOnlyList<OrderIntent> Decide(DecisionContext context) =>
+            context.Companies.Count == 0
+                ? []
+                : [new OrderIntent(OrderType.Buy, context.Companies[0].CompanyId, 1, limitPrice)];
     }
 }

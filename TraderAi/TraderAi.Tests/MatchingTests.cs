@@ -157,7 +157,7 @@ public sealed class MatchingTests : IDisposable
         var secondBuyer = await AddParticipantAsync("Carol", cash: 5000m);
 
         var lowBuy = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 105m);
-        var highBuy = await marketService.PlaceOrderAsync(secondBuyer.Id, seed.Company.Id, OrderType.Buy, 5, 120m);
+        var highBuy = await marketService.PlaceOrderAsync(secondBuyer.Id, seed.Company.Id, OrderType.Buy, 5, 110m);
         await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 5, 100m);
 
         await marketService.AdvanceCycleAsync();
@@ -413,6 +413,32 @@ public sealed class MatchingTests : IDisposable
         Assert.Empty(await context.SettlementInstructions.ToListAsync());
     }
 
+    [Fact]
+    public async Task MatchingExcludesAValidWaitingOuterSellEvenWhenABidWouldCrossIt()
+    {
+        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = seed.Company.Id,
+            State = LuldState.Normal,
+            ReferencePrice = 100m,
+            LowerBandPrice = 85m,
+            UpperBandPrice = 110m,
+        });
+        await context.SaveChangesAsync();
+
+        // The sell rests at 80: inside the 75-115 allowed range but below the 85 active band, so it waits.
+        await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 5, 80m);
+        var buy = await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 100m);
+
+        var result = await marketService.AdvanceCycleAsync();
+
+        Assert.Equal(0, result.FillCount);
+        Assert.Empty(await context.ShareTransactions.ToListAsync());
+        var restingBuy = await context.Orders.FindAsync(buy.Order!.Id);
+        Assert.Equal(OrderStatus.Open, restingBuy!.Status);
+    }
+
     private async Task<SeedResult> SeedAsync(decimal sellerCash, decimal buyerCash, int sellerShares, decimal sharePrice)
     {
         var now = DateTime.UtcNow;
@@ -461,6 +487,15 @@ public sealed class MatchingTests : IDisposable
                 AverageCost = sharePrice,
             });
         }
+
+        // A listed company always carries a price snapshot; without one, order entry has no reference to bound against.
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = company.Id,
+            Price = sharePrice,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = now,
+        });
 
         market.CurrentCycleId = cycle.Id;
         await context.SaveChangesAsync();

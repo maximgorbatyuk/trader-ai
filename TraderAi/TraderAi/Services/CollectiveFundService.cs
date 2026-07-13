@@ -1075,7 +1075,7 @@ public sealed class CollectiveFundService(
             var sellPrice = Round(price * (1m - SaleDiscount));
             if (bandByCompany.GetValueOrDefault(holding.CompanyId) is { } band)
             {
-                sellPrice = band.FloorSellPrice(sellPrice);
+                sellPrice = band.ClampToActiveBand(sellPrice);
             }
 
             if (sellPrice <= 0m)
@@ -1109,7 +1109,7 @@ public sealed class CollectiveFundService(
             var sellPrice = Round(price * (1m - SaleDiscount));
             if (bandByCompany.GetValueOrDefault(holding.CompanyId) is { } band)
             {
-                sellPrice = band.FloorSellPrice(sellPrice);
+                sellPrice = band.ClampToActiveBand(sellPrice);
             }
 
             if (sellPrice <= 0m)

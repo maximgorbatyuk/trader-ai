@@ -6,6 +6,7 @@ import { Panel } from './Panel'
 import { PercentButtons } from './PercentButtons'
 import { affordability } from './marginModel'
 import { luldPresentation } from './marketAccounting'
+import { classifyOrderPrice, orderPriceBounds } from './orderPriceRange'
 import { recentPriceValues, recentSentimentValues, TRADE_QUANTITY_PRESETS, tradeOrderEligibility } from './tradeOrderModalModel'
 
 const BUY_FILTER_OPTIONS = [
@@ -203,10 +204,24 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
             const company = companyById?.get(order.companyId)
             const luld = luldPresentation(company?.luldState)
             const luldAffected = luld.orderEntryDisabled
-            const outsideBand =
-              typeof company?.lowerBandPrice === 'number' &&
-              typeof company?.upperBandPrice === 'number' &&
-              (order.limitPrice < company.lowerBandPrice || order.limitPrice > company.upperBandPrice)
+            const bounds = orderPriceBounds(company)
+            const placement = classifyOrderPrice(order.limitPrice, bounds)
+            // Any resting order outside the executable band cannot be crossed directly; the label distinguishes a
+            // valid waiting order from the defensive beyond-range case. Fall back to a band-only check when a
+            // company response predates the allowed-range fields.
+            const outsideBand = bounds.available
+              ? placement === 'waiting' || placement === 'outside'
+              : typeof company?.lowerBandPrice === 'number' &&
+                typeof company?.upperBandPrice === 'number' &&
+                (order.limitPrice < company.lowerBandPrice || order.limitPrice > company.upperBandPrice)
+            const bandStatusLabel =
+              placement === 'waiting'
+                ? 'Waiting outside band'
+                : placement === 'outside'
+                  ? 'Outside allowed range'
+                  : !bounds.available && outsideBand
+                    ? 'Outside band'
+                    : null
             const actionable = actor != null && !isOwn && !luldAffected && !outsideBand
             const isBankrupt = !!bankruptParticipantIds?.has(order.participantId)
             const remaining = order.quantity - order.filledQuantity
@@ -291,7 +306,7 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                       {isOwn ? 'You' : traderName(order.participantId, participantNameById)}
                     </span>
                     {side === 'Sell' && isBankrupt ? <span className="tag tag-bankrupt">Bankrupt</span> : null}
-                    {outsideBand ? <span className="tag tag-flag">Outside band</span> : null}
+                    {bandStatusLabel ? <span className="tag tag-flag">{bandStatusLabel}</span> : null}
                     {luldAffected ? <span className="tag tag-flag">{luld.indicator} {luld.label}</span> : null}
                   </span>
                 </td>

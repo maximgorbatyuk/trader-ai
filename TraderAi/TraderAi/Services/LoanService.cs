@@ -333,7 +333,7 @@ public sealed class LoanService(
             var sellPrice = Round(price * (1m - discount));
             if (bandByCompany.GetValueOrDefault(companyId) is { } band)
             {
-                sellPrice = band.FloorSellPrice(sellPrice);
+                sellPrice = band.ClampToActiveBand(sellPrice);
             }
 
             if (sellPrice <= 0m)
