@@ -1239,8 +1239,9 @@ public sealed class MarketService(
             await newsService.MaybeAddAutomatedNewsForCycleAsync(currentCycle, now, duringCrisis);
         }
 
-        // A crisis may also strike this cycle, driving its hit sectors down and cancelling their stale bids.
-        if (crisisService is not null)
+        // A crisis is rolled once per trading day, on its opening cycle; when it strikes it drives the hit
+        // sectors down and cancels their stale bids.
+        if (crisisService is not null && currentCycle.TradingCycleNumber == 1)
         {
             await crisisService.MaybeTriggerForCycleAsync(market, currentCycle, now);
         }

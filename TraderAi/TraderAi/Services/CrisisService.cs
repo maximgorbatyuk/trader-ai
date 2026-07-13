@@ -10,31 +10,36 @@ public sealed record TriggerCrisisResult(bool Triggered, IReadOnlyList<Crisis> C
     public static TriggerCrisisResult None() => new(false, []);
 }
 
-// Rolls the chance of a market crisis once per cycle advance and applies it when it fires. Two independent
+// Rolls the chance of a market crisis once per trading day and applies it when it fires. Two independent
 // shocks ramp up the longer the market goes without one: a local crisis (a few sectors) after a short quiet
 // stretch, and a rarer global crisis (a large share of sectors) after a long one. Each resets its own clock
-// when it fires. Called from inside the cycle advance, which already holds the lock and owns the save, so
-// this only stages changes on the shared context.
+// when it fires. Called from inside the cycle advance on the first cycle of each trading day, which already
+// holds the lock and owns the save, so this only stages changes on the shared context.
 public sealed class CrisisService(
     AppDbContext dbContext,
     IOptions<CrisisOptions> options,
     IOptions<RandomChanceRatesOptions> chanceRates,
     MarketImpactService marketImpact,
     Random random,
+    IOptions<TradingClockOptions> tradingClockOptions,
     IOptions<IndustrySentimentOptions>? industrySentimentOptions = null)
 {
     private readonly IndustrySentimentOptions industrySentimentOptionValues =
         industrySentimentOptions?.Value ?? new IndustrySentimentOptions();
 
-    // Local: no chance for the first 100 cycles since the last one, then the chance climbs by the configured step.
-    private const int LocalQuietCycles = 100;
+    // Elapsed cycles are converted to trading days against this length so the quiet windows and per-day step
+    // are measured in trading days rather than raw cycles.
+    private readonly int cyclesPerTradingDay = Math.Max(1, tradingClockOptions.Value.TradingCyclesPerDay);
+
+    // Local: no chance for the first 10 trading days since the last one, then the chance climbs by the configured step.
+    private const int LocalQuietDays = 10;
     private const int LocalMinIndustries = 1;
     private const int LocalMaxIndustries = 3;
     private const int LocalMinDurationCycles = 5;
     private const int LocalMaxDurationCycles = 15;
 
-    // Global: no chance for the first 250 cycles since the last one, then the chance climbs by the configured step.
-    private const int GlobalQuietCycles = 250;
+    // Global: no chance for the first 40 trading days since the last one, then the chance climbs by the configured step.
+    private const int GlobalQuietDays = 40;
     private const int GlobalMinDurationCycles = 15;
     private const int GlobalMaxDurationCycles = 25;
 
@@ -59,7 +64,7 @@ public sealed class CrisisService(
 
         // Global is checked first; a global shock already sweeps most sectors, so a local one is skipped the
         // same cycle to avoid stacking two crises in one tick.
-        if (ShouldTrigger(currentCycle.CycleNumber, market.LastGlobalCrisisCycleNumber, GlobalQuietCycles, chanceRates.Value.EventTriggerChances.GlobalCrisisStepPerCycle))
+        if (ShouldTrigger(currentCycle.CycleNumber, market.LastGlobalCrisisCycleNumber, GlobalQuietDays, chanceRates.Value.EventTriggerChances.GlobalCrisisStepPerTradingDay))
         {
             crisis = await TriggerAsync(CrisisScope.Global, currentCycle, now);
             if (crisis is not null)
@@ -67,7 +72,7 @@ public sealed class CrisisService(
                 market.LastGlobalCrisisCycleNumber = currentCycle.CycleNumber;
             }
         }
-        else if (ShouldTrigger(currentCycle.CycleNumber, market.LastLocalCrisisCycleNumber, LocalQuietCycles, chanceRates.Value.EventTriggerChances.LocalCrisisStepPerCycle))
+        else if (ShouldTrigger(currentCycle.CycleNumber, market.LastLocalCrisisCycleNumber, LocalQuietDays, chanceRates.Value.EventTriggerChances.LocalCrisisStepPerTradingDay))
         {
             crisis = await TriggerAsync(CrisisScope.Local, currentCycle, now);
             if (crisis is not null)
@@ -79,10 +84,10 @@ public sealed class CrisisService(
         return crisis is null ? TriggerCrisisResult.None() : new TriggerCrisisResult(true, [crisis]);
     }
 
-    private bool ShouldTrigger(int currentCycleNumber, int lastCrisisCycleNumber, int quietCycles, double stepPerCycle)
+    private bool ShouldTrigger(int currentCycleNumber, int lastCrisisCycleNumber, int quietDays, double stepPerTradingDay)
     {
-        var cyclesSince = currentCycleNumber - lastCrisisCycleNumber;
-        var probability = Math.Clamp((cyclesSince - quietCycles) * stepPerCycle, 0d, 1d);
+        var daysSince = (currentCycleNumber - lastCrisisCycleNumber) / cyclesPerTradingDay;
+        var probability = Math.Clamp((daysSince - quietDays) * stepPerTradingDay, 0d, 1d);
         // A draw is always consumed, even at zero chance, so a scripted Random in tests stays in lockstep.
         return random.NextDouble() < probability;
     }

@@ -65,11 +65,11 @@ public sealed class EventTriggerChances
     // Base per-cycle quit chance for a trader after a fund loss.
     public double ExitFundLoss { get; set; } = 0.25;
 
-    // Local-crisis trigger chance added per cycle once the local quiet window has passed.
-    public double LocalCrisisStepPerCycle { get; set; } = 0.03;
+    // Local-crisis trigger chance added per trading day once the local quiet window has passed.
+    public double LocalCrisisStepPerTradingDay { get; set; } = 0.03;
 
-    // Global-crisis trigger chance added per cycle once the global quiet window has passed.
-    public double GlobalCrisisStepPerCycle { get; set; } = 0.01;
+    // Global-crisis trigger chance added per trading day once the global quiet window has passed.
+    public double GlobalCrisisStepPerTradingDay { get; set; } = 0.01;
 
     // Science-investigation trigger chance added per cycle once the quiet window has passed.
     public double ScienceStepPerCycle { get; set; } = 0.03;

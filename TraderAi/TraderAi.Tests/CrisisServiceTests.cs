@@ -28,6 +28,10 @@ public sealed class CrisisServiceTests : IDisposable
         context.Database.EnsureCreated();
     }
 
+    // A short trading day keeps the seeded cycle numbers small; the service divides elapsed cycles by this to
+    // measure the crisis quiet windows and per-day step in trading days.
+    private const int CyclesPerTradingDay = 10;
+
     private CrisisService Service(bool enabled, Random random, IndustrySentimentOptions? sentimentOptions = null) =>
         new(
             context,
@@ -35,12 +39,13 @@ public sealed class CrisisServiceTests : IDisposable
             Options.Create(new RandomChanceRatesOptions()),
             new MarketImpactService(context),
             random,
+            Options.Create(new TradingClockOptions { TradingCyclesPerDay = CyclesPerTradingDay }),
             Options.Create(sentimentOptions ?? new IndustrySentimentOptions { Enabled = true }));
 
     [Fact]
     public async Task DisabledDoesNotTrigger()
     {
-        await SeedAsync(industryCount: 1, cycleNumber: 500);
+        await SeedAsync(industryCount: 1, dayNumber: 5);
         var (market, cycle) = await MarketAndCycleAsync();
 
         var result = await Service(enabled: false, new ScriptedRandom([], []))
@@ -53,11 +58,11 @@ public sealed class CrisisServiceTests : IDisposable
     [Fact]
     public async Task NoCrisisDuringTheQuietPeriod()
     {
-        await SeedAsync(industryCount: 1, cycleNumber: 50);
+        await SeedAsync(industryCount: 1, dayNumber: 5);
         var (market, cycle) = await MarketAndCycleAsync();
 
-        // Both scopes are still in their quiet window at cycle 50, so the chance is zero for each; the two
-        // queued draws are consumed by the global then local gate and never clear the bar.
+        // Both scopes are still in their quiet window at trading day 5, so the chance is zero for each; the
+        // two queued draws are consumed by the global then local gate and never clear the bar.
         var result = await Service(enabled: true, new ScriptedRandom([0d, 0d], []))
             .MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
 
@@ -68,7 +73,7 @@ public sealed class CrisisServiceTests : IDisposable
     [Fact]
     public async Task LocalCrisisDropsItsSectorCancelsBuyOrdersAndResetsTheClock()
     {
-        await SeedAsync(industryCount: 1, cycleNumber: 150);
+        await SeedAsync(industryCount: 1, dayNumber: 40);
         var (market, cycle) = await MarketAndCycleAsync();
         var company = await context.Companies.FirstAsync();
         var industry = await context.Industries.FirstAsync();
@@ -77,8 +82,8 @@ public sealed class CrisisServiceTests : IDisposable
         await context.SaveChangesAsync();
         var buyer = await AddBuyerWithOpenBuyOrderAsync(company.Id, cycle.Id);
 
-        // doubles: global gate (chance 0 at cycle 150 → no fire), local gate (chance 1.0 → fire), one impact
-        // draw → 5%. ints: industry count, one pick, three content picks, then the duration draw → 10.
+        // doubles: global gate (chance 0 at trading day 40 → no fire), local gate (chance 0.9 → fire), one
+        // impact draw → 5%. ints: industry count, one pick, three content picks, then the duration draw → 10.
         var random = new ScriptedRandom([0.5d, 0.0d, 0.0d], [1, 0, 0, 0, 0, 10]);
         var result = await Service(enabled: true, random).MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -103,14 +108,14 @@ public sealed class CrisisServiceTests : IDisposable
         Assert.Equal(0m, refreshedBuyer.ReservedBalance);
 
         var savedMarket = await context.Markets.AsNoTracking().FirstAsync();
-        Assert.Equal(150, savedMarket.LastLocalCrisisCycleNumber);
+        Assert.Equal(40 * CyclesPerTradingDay, savedMarket.LastLocalCrisisCycleNumber);
         Assert.Equal(0, savedMarket.LastGlobalCrisisCycleNumber);
     }
 
     [Fact]
     public async Task DisabledSentimentUsesTheBaseCrisisImpact()
     {
-        await SeedAsync(industryCount: 1, cycleNumber: 150);
+        await SeedAsync(industryCount: 1, dayNumber: 40);
         var (market, cycle) = await MarketAndCycleAsync();
         var company = await context.Companies.FirstAsync();
         var industry = await context.Industries.FirstAsync();
@@ -132,12 +137,12 @@ public sealed class CrisisServiceTests : IDisposable
     [Fact]
     public async Task GlobalCrisisHitsAShareOfAllIndustries()
     {
-        await SeedAsync(industryCount: 10, cycleNumber: 350);
+        await SeedAsync(industryCount: 10, dayNumber: 140);
         var (market, cycle) = await MarketAndCycleAsync();
 
-        // doubles: global gate (chance 1.0 → fire), affected-share draw (0 → the 30% floor → 3 of 10), then
-        // three impact draws. ints: three picks, three content picks, then the duration draw → 20. The local
-        // gate is never drawn because the global crisis already fired this cycle.
+        // doubles: global gate (chance 1.0 at trading day 140 → fire), affected-share draw (0 → the 30% floor
+        // → 3 of 10), then three impact draws. ints: three picks, three content picks, then the duration draw
+        // → 20. The local gate is never drawn because the global crisis already fired this day.
         var random = new ScriptedRandom([0.0d, 0.0d, 0.0d, 0.0d, 0.0d], [0, 0, 0, 0, 0, 0, 20]);
         var result = await Service(enabled: true, random).MaybeTriggerForCycleAsync(market, cycle, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -150,13 +155,13 @@ public sealed class CrisisServiceTests : IDisposable
         Assert.All(crisis.Industries, link => Assert.Equal(5m, link.ImpactPercent));
 
         var savedMarket = await context.Markets.AsNoTracking().FirstAsync();
-        Assert.Equal(350, savedMarket.LastGlobalCrisisCycleNumber);
+        Assert.Equal(140 * CyclesPerTradingDay, savedMarket.LastGlobalCrisisCycleNumber);
     }
 
     [Fact]
     public async Task GlobalCrisisStampsItsWindowAndOpensTheTimeline()
     {
-        await SeedAsync(industryCount: 10, cycleNumber: 350);
+        await SeedAsync(industryCount: 10, dayNumber: 140);
         var (market, cycle) = await MarketAndCycleAsync();
 
         // Same forced draws as the share-of-industries case (global fires, the 30% floor picks 3 of 10), then
@@ -166,7 +171,7 @@ public sealed class CrisisServiceTests : IDisposable
         await context.SaveChangesAsync();
 
         var crisis = Assert.Single(result.Crises);
-        Assert.Equal(350, crisis.TriggeredInCycleNumber);
+        Assert.Equal(140 * CyclesPerTradingDay, crisis.TriggeredInCycleNumber);
         Assert.Equal(20, crisis.DurationCycles);
         Assert.Equal(3, await context.CrisisEvents.CountAsync(row => row.Type == CrisisEventType.IndustryShock));
     }
@@ -174,7 +179,7 @@ public sealed class CrisisServiceTests : IDisposable
     [Fact]
     public async Task GetActiveCrisisTracksItsDurationWindow()
     {
-        await SeedAsync(industryCount: 1, cycleNumber: 200);
+        await SeedAsync(industryCount: 1, dayNumber: 1);
         context.Crises.Add(new Crisis
         {
             Title = "Shock",
@@ -244,11 +249,17 @@ public sealed class CrisisServiceTests : IDisposable
         return buyer;
     }
 
-    private async Task SeedAsync(int industryCount, int cycleNumber)
+    private async Task SeedAsync(int industryCount, int dayNumber)
     {
         var now = DateTime.UtcNow;
 
-        var cycle = new MarketCycle { CycleNumber = cycleNumber, Status = CycleStatus.Running, StartedAt = now };
+        var cycle = new MarketCycle
+        {
+            CycleNumber = dayNumber * CyclesPerTradingDay,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Running,
+            StartedAt = now,
+        };
         context.MarketCycles.Add(cycle);
 
         var market = new Market { Name = "Demo Market", Status = MarketStatus.Running, CreatedAt = now, UpdatedAt = now };
