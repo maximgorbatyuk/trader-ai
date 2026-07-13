@@ -106,6 +106,7 @@ public sealed class ShareEmissionServiceTests : IDisposable
 
         var holding = await context.Holdings.AsNoTracking().SingleAsync(h => h.ParticipantId == trader.Id);
         Assert.Equal(10, holding.Quantity);
+        Assert.Equal(10, holding.SettledQuantity);
         Assert.Equal(0m, holding.AverageCost);
 
         Assert.Equal(1010, (await context.Companies.AsNoTracking().FirstAsync()).IssuedSharesCount);

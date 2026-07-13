@@ -39,6 +39,8 @@ public sealed class DividendTests : IDisposable
         var market = await context.Markets.FirstAsync();
         var dueCycleId = market.CurrentCycleId!.Value;
         market.NextDividendCycleNumber = 1;
+        var company = await context.Companies.FirstAsync();
+        company.CashBalance = 0.10m;
         await context.SaveChangesAsync();
 
         var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
@@ -56,6 +58,15 @@ public sealed class DividendTests : IDisposable
         Assert.Equal(0.1m, dividend.Amount);
         Assert.Equal(dueCycleId, dividend.CreatedInCycleId);
 
+        await context.Entry(company).ReloadAsync();
+        Assert.Equal(0m, company.CashBalance);
+        var corporateMovement = await context.CorporateCashTransactions.SingleAsync();
+        Assert.Equal(CorporateCashTransactionType.DividendDeclared, corporateMovement.Type);
+        Assert.Equal(dividend.Amount, corporateMovement.Amount);
+        Assert.Equal(
+            corporateMovement.Amount,
+            await context.DividendPayouts.SumAsync(payout => payout.Amount));
+
         // Bob owns no shares, so he is never credited.
         await context.Entry(bob).ReloadAsync();
         Assert.Equal(5000m, bob.CurrentBalance);
@@ -67,6 +78,7 @@ public sealed class DividendTests : IDisposable
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var market = await context.Markets.FirstAsync();
         market.NextDividendCycleNumber = 1;
+        (await context.Companies.FirstAsync()).CashBalance = 0.10m;
         await context.SaveChangesAsync();
 
         var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
@@ -125,7 +137,15 @@ public sealed class DividendTests : IDisposable
         context.Industries.Add(industry);
         await context.SaveChangesAsync();
 
-        var company = new Company { Name = "Acme", IndustryId = industry.Id, IssuedSharesCount = 2_000_000, CreatedAt = now, UpdatedAt = now };
+        var company = new Company
+        {
+            Name = "Acme",
+            IndustryId = industry.Id,
+            IssuedSharesCount = 2_000_000,
+            CashBalance = 1_000_000m,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
         context.Companies.Add(company);
         var whale = new Participant
         {
@@ -153,6 +173,8 @@ public sealed class DividendTests : IDisposable
         var dividend = await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.Dividend);
         Assert.Equal(whale.Id, dividend.ParticipantId);
         Assert.Equal(1_000_000m, dividend.Amount);
+        await context.Entry(company).ReloadAsync();
+        Assert.Equal(0m, company.CashBalance);
     }
 
     [Fact]
@@ -171,6 +193,48 @@ public sealed class DividendTests : IDisposable
 
         await context.Entry(company).ReloadAsync();
         Assert.Equal(100_000m, company.LastDividendCapitalization);
+    }
+
+    [Fact]
+    public async Task DividendIsReducedToAvailableIssuerCashAndPublishesNews()
+    {
+        var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 0.04m);
+        var company = await context.Companies.FirstAsync();
+
+        await Service().StepCycleAsync();
+
+        await context.Entry(holder).ReloadAsync();
+        Assert.Equal(0.04m, holder.CurrentBalance);
+        await context.Entry(company).ReloadAsync();
+        Assert.Equal(0m, company.CashBalance);
+
+        var dividend = await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.Dividend);
+        Assert.Equal(0.04m, dividend.Amount);
+        Assert.Equal(0.04m, await context.DividendPayouts.SumAsync(payout => payout.Amount));
+        Assert.Equal(0.04m, (await context.CorporateCashTransactions.SingleAsync()).Amount);
+
+        var news = await context.NewsPosts.SingleAsync(post => post.TargetCompanyId == company.Id);
+        Assert.Contains("reduced", news.Title, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(NewsImpactScope.None, news.Scope);
+    }
+
+    [Fact]
+    public async Task ZeroIssuerCashSkipsDividendAndPublishesNews()
+    {
+        var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 0m);
+        var company = await context.Companies.FirstAsync();
+
+        await Service().StepCycleAsync();
+
+        await context.Entry(holder).ReloadAsync();
+        Assert.Equal(0m, holder.CurrentBalance);
+        Assert.False(await context.MoneyTransactions.AnyAsync(money => money.Type == MoneyTransactionType.Dividend));
+        Assert.Empty(context.DividendPayouts);
+        Assert.Empty(context.CorporateCashTransactions);
+
+        var news = await context.NewsPosts.SingleAsync(post => post.TargetCompanyId == company.Id);
+        Assert.Contains("skipped", news.Title, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(NewsImpactScope.None, news.Scope);
     }
 
     [Fact]
@@ -193,7 +257,7 @@ public sealed class DividendTests : IDisposable
 
     // A market due to pay this cycle with one company priced at 100 over 1000 issued shares (capitalisation
     // 100,000) and a single 10-share holder starting at zero cash.
-    private async Task<Participant> SeedSingleHolderAsync(decimal? baselineCapitalization)
+    private async Task<Participant> SeedSingleHolderAsync(decimal? baselineCapitalization, decimal cashBalance = 0.10m)
     {
         var now = DateTime.UtcNow;
         var cycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
@@ -209,6 +273,7 @@ public sealed class DividendTests : IDisposable
             Name = "Acme",
             IndustryId = industry.Id,
             IssuedSharesCount = 1000,
+            CashBalance = cashBalance,
             LastDividendCapitalization = baselineCapitalization,
             CreatedAt = now,
             UpdatedAt = now,

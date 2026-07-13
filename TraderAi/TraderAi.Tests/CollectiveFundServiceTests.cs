@@ -152,6 +152,28 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task JoinContributionUsesOnlySettledCash()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, _) = await AddFundAsync(balance: 50_000m);
+        var existing = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(fund, existing, deposit: 1_000m, cycle.Id);
+        var joiner = await AddTraderAsync(currentBalance: 100_000m);
+        joiner.SettledCashBalance = 10_000m;
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var membership = await context.CollectiveFundParticipants.AsNoTracking()
+            .SingleAsync(member => member.ParticipantId == joiner.Id);
+        Assert.Equal(9_000m, membership.DepositAmount);
+        Assert.Equal(1_000m, (await context.Participants.AsNoTracking()
+            .SingleAsync(participant => participant.Id == joiner.Id)).SettledCashBalance);
+    }
+
+    [Fact]
     public async Task FullFundIsNotJoined()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);
@@ -456,6 +478,28 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task MemberLeaveCannotUseUnsettledFundCash()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 90_000m);
+        fund.IsPlayerManaged = true;
+        fundParticipant.SettledCashBalance = 0m;
+        var leaver = await AddTraderAsync(currentBalance: 1_000m);
+        await AddMembershipAsync(fund, leaver, deposit: 90_000m, cycle.Id, isLeaving: true);
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true, new ScriptedRandom([], []), loansEnabled: false)
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.True(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == leaver.Id));
+        Assert.Equal(0m, (await context.Participants.AsNoTracking()
+            .SingleAsync(participant => participant.Id == fundParticipant.Id)).SettledCashBalance);
+        Assert.Equal(1_000m, (await context.Participants.AsNoTracking()
+            .SingleAsync(participant => participant.Id == leaver.Id)).CurrentBalance);
+    }
+
+    [Fact]
     public async Task LeaveFallsBackToSellingSharesWhenLoansDisabled()
     {
         var (_, cycle, company) = await SeedAsync(price: 100m);
@@ -512,6 +556,65 @@ public sealed class CollectiveFundServiceTests : IDisposable
         var refreshedFundParticipant = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fundParticipant.Id);
         Assert.False(refreshedFundParticipant.IsActive);
         Assert.Equal(0m, refreshedFundParticipant.CurrentBalance);
+    }
+
+    [Fact]
+    public async Task ClosingFundAllocatesResidualCentWithoutCreatingCash()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, _) = await AddFundAsync(status: CollectiveFundStatus.GoingToBeClosed, balance: 0.01m);
+        var firstMember = await AddTraderAsync(currentBalance: 600_000m);
+        var secondMember = await AddTraderAsync(currentBalance: 600_000m);
+        await AddMembershipAsync(fund, firstMember, deposit: 1m, cycle.Id);
+        await AddMembershipAsync(fund, secondMember, deposit: 1m, cycle.Id);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        await context.Entry(firstMember).ReloadAsync();
+        await context.Entry(secondMember).ReloadAsync();
+        Assert.Equal(600_000.01m, firstMember.CurrentBalance);
+        Assert.Equal(600_000m, secondMember.CurrentBalance);
+
+        var payouts = await context.CollectiveFundMembershipEvents.AsNoTracking()
+            .Where(membershipEvent => membershipEvent.CollectiveFundId == fund.Id
+                && membershipEvent.Type == CollectiveFundMembershipEventType.Left)
+            .OrderBy(membershipEvent => membershipEvent.ParticipantId)
+            .Select(membershipEvent => membershipEvent.Amount)
+            .ToListAsync();
+        Assert.Equal([0.01m, 0m], payouts);
+        Assert.Equal(0.01m, payouts.Sum());
+    }
+
+    [Fact]
+    public async Task ClosingFundExcludesStaleMembershipFromPayoutSplit()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, _) = await AddFundAsync(status: CollectiveFundStatus.GoingToBeClosed, balance: 1_000m);
+        var member = await AddTraderAsync(currentBalance: 600_000m);
+        await AddMembershipAsync(fund, member, deposit: 1_000m, cycle.Id);
+        context.CollectiveFundParticipants.Add(new CollectiveFundParticipant
+        {
+            CollectiveFundId = fund.Id,
+            ParticipantId = 999_999,
+            JoinedAt = DateTime.UtcNow,
+            JoinedInCycleId = cycle.Id,
+            DepositAmount = 1_000m,
+        });
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        await context.Entry(member).ReloadAsync();
+        Assert.Equal(601_000m, member.CurrentBalance);
+        var payouts = await context.CollectiveFundMembershipEvents.AsNoTracking()
+            .Where(membershipEvent => membershipEvent.CollectiveFundId == fund.Id)
+            .ToDictionaryAsync(membershipEvent => membershipEvent.ParticipantId, membershipEvent => membershipEvent.Amount);
+        Assert.Equal(1_000m, payouts[member.Id]);
+        Assert.Equal(0m, payouts[999_999]);
     }
 
     [Fact]
@@ -716,6 +819,94 @@ public sealed class CollectiveFundServiceTests : IDisposable
         var refreshedTwo = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == memberTwo.Id);
         Assert.True(refreshedOne.PendingFundLossExitRoll);
         Assert.True(refreshedTwo.PendingFundLossExitRoll);
+    }
+
+    [Fact]
+    public async Task ClosingFundWaitsForPendingSettlement()
+    {
+        var (_, cycle, company) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(status: CollectiveFundStatus.GoingToBeClosed, balance: 100m);
+        var member = await AddTraderAsync(currentBalance: 600_000m);
+        await AddMembershipAsync(fund, member, deposit: 100m, cycle.Id);
+        var trade = new ShareTransaction
+        {
+            SellerId = fundParticipant.Id,
+            BuyerId = member.Id,
+            CompanyId = company.Id,
+            Quantity = 1,
+            Price = 100m,
+            TotalCost = 100m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        context.ShareTransactions.Add(trade);
+        context.SettlementInstructions.Add(new SettlementInstruction
+        {
+            ShareTransaction = trade,
+            SellerId = fundParticipant.Id,
+            BuyerId = member.Id,
+            CompanyId = company.Id,
+            Quantity = 1,
+            CashAmount = 100m,
+            TradeDayNumber = 1,
+            DueDayNumber = 2,
+            Status = SettlementStatus.Pending,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(CollectiveFundStatus.GoingToBeClosed, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+        Assert.True(await context.CollectiveFundParticipants.AnyAsync(candidate => candidate.CollectiveFundId == fund.Id));
+    }
+
+    [Fact]
+    public async Task ClosingFundWaitsForMarginLiability()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(status: CollectiveFundStatus.GoingToBeClosed, balance: 100m);
+        var member = await AddTraderAsync(currentBalance: 600_000m);
+        await AddMembershipAsync(fund, member, deposit: 100m, cycle.Id);
+        context.MarginAccounts.Add(new MarginAccount
+        {
+            ParticipantId = fundParticipant.Id,
+            DebitBalance = 100m,
+            AccruedInterest = 5m,
+            InitialMarginRate = 0.50m,
+            MaintenanceMarginRate = 0.25m,
+            Status = MarginAccountStatus.Active,
+        });
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(CollectiveFundStatus.GoingToBeClosed, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+        Assert.True(await context.CollectiveFundParticipants.AnyAsync(candidate => candidate.CollectiveFundId == fund.Id));
+    }
+
+    [Fact]
+    public async Task ClosingFundWaitsUntilEconomicCashIsSettled()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(status: CollectiveFundStatus.GoingToBeClosed, balance: 100m);
+        fundParticipant.SettledCashBalance = 0m;
+        var member = await AddTraderAsync(currentBalance: 600_000m);
+        await AddMembershipAsync(fund, member, deposit: 100m, cycle.Id);
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(CollectiveFundStatus.GoingToBeClosed, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+        Assert.True(await context.CollectiveFundParticipants.AnyAsync(candidate => candidate.CollectiveFundId == fund.Id));
     }
 
     [Fact]
@@ -1333,6 +1524,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
             RiskProfile = riskProfile,
             InitialBalance = currentBalance,
             CurrentBalance = currentBalance,
+            SettledCashBalance = currentBalance,
             ReservedBalance = reserved,
             IsActive = true,
             CannotBuyCycles = cannotBuyCycles,
@@ -1358,6 +1550,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
             RiskProfile = RiskProfile.Medium,
             InitialBalance = 0m,
             CurrentBalance = balance,
+            SettledCashBalance = balance,
             ReservedBalance = 0m,
             IsActive = true,
         };
@@ -1448,6 +1641,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
             ParticipantId = ownerId,
             CompanyId = companyId,
             Quantity = count,
+            SettledQuantity = count,
             AverageCost = price,
         });
 

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,6 +18,277 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     public MarketApiTests(WebApplicationFactory<Program> factory)
     {
         this.factory = factory;
+    }
+
+    [Fact]
+    public async Task AccountingContractsShareValuationAndPendingSettlementSummary()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+            using var openedFund = await client.PostAsJsonAsync("/player/fund", new { seedAmount = 500m, name = "Ada Fund" });
+            using var openedFundJson = await JsonDocument.ParseAsync(await openedFund.Content.ReadAsStreamAsync());
+            var fundId = openedFundJson.RootElement.GetProperty("fundParticipantId").GetInt32();
+
+            int playerId;
+            decimal expectedPlayerWorth;
+            decimal expectedFundWorth;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var player = await db.Participants.SingleAsync(participant => participant.Type == ParticipantType.Player);
+                var fund = await db.Participants.SingleAsync(participant => participant.Id == fundId);
+                var company = await db.Companies.OrderBy(company => company.Id).FirstAsync();
+                var cycle = await db.MarketCycles.OrderByDescending(cycle => cycle.Id).FirstAsync();
+                var bank = await db.Banks.OrderBy(bank => bank.Id).FirstAsync();
+                var price = await db.PriceSnapshots
+                    .Where(snapshot => snapshot.CompanyId == company.Id)
+                    .OrderByDescending(snapshot => snapshot.Id)
+                    .Select(snapshot => snapshot.Price)
+                    .FirstAsync();
+
+                playerId = player.Id;
+                db.Holdings.Add(new Holding
+                {
+                    ParticipantId = player.Id,
+                    CompanyId = company.Id,
+                    Quantity = 10,
+                    SettledQuantity = 8,
+                    AverageCost = price,
+                });
+                db.Loans.Add(new Loan
+                {
+                    BankId = bank.Id,
+                    ParticipantId = player.Id,
+                    Principal = 100m,
+                    RemainingPrincipal = 100m,
+                    PastDueInterest = 5m,
+                    AccruedFees = 2m,
+                    InterestRatePerCycle = bank.InterestRatePerCycle,
+                    TermCycles = 10,
+                    ScheduledInstallment = 10m,
+                    Status = LoanStatus.Open,
+                    OpenedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                db.MarginAccounts.AddRange(
+                    new MarginAccount
+                    {
+                        ParticipantId = player.Id,
+                        DebitBalance = 50m,
+                        AccruedInterest = 3m,
+                        InitialMarginRate = 0.50m,
+                        MaintenanceMarginRate = 0.25m,
+                        Status = MarginAccountStatus.Active,
+                    },
+                    new MarginAccount
+                    {
+                        ParticipantId = fund.Id,
+                        DebitBalance = 25m,
+                        AccruedInterest = 1m,
+                        InitialMarginRate = 0.50m,
+                        MaintenanceMarginRate = 0.25m,
+                        Status = MarginAccountStatus.Active,
+                    });
+
+                var trades = new[]
+                {
+                    new ShareTransaction { BuyerId = player.Id, CompanyId = company.Id, Quantity = 1, Price = price, TotalCost = price, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow },
+                    new ShareTransaction { BuyerId = player.Id, CompanyId = company.Id, Quantity = 1, Price = price, TotalCost = price, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow },
+                };
+                db.ShareTransactions.AddRange(trades);
+                await db.SaveChangesAsync();
+                db.SettlementInstructions.AddRange(
+                    new SettlementInstruction { ShareTransactionId = trades[0].Id, BuyerId = player.Id, CompanyId = company.Id, Quantity = 1, CashAmount = price, TradeDayNumber = 1, DueDayNumber = 3, Status = SettlementStatus.Pending, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow },
+                    new SettlementInstruction { ShareTransactionId = trades[1].Id, BuyerId = player.Id, CompanyId = company.Id, Quantity = 1, CashAmount = price, TradeDayNumber = 1, DueDayNumber = 2, Status = SettlementStatus.Pending, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow });
+                await db.SaveChangesAsync();
+
+                expectedPlayerWorth = player.CurrentBalance + (10 * price) - 107m - 53m;
+                expectedFundWorth = fund.CurrentBalance - 26m;
+            }
+
+            using var playerJson = await client.GetFromJsonAsync<JsonDocument>("/player");
+            Assert.Equal(expectedPlayerWorth, playerJson!.RootElement.GetProperty("totalWorth").GetDecimal());
+            Assert.Equal(2, playerJson.RootElement.GetProperty("pendingSettlementCount").GetInt32());
+            Assert.Equal(2, playerJson.RootElement.GetProperty("nextSettlementDueDayNumber").GetInt32());
+            Assert.Equal(expectedFundWorth, playerJson.RootElement.GetProperty("fundTotalWorth").GetDecimal());
+
+            using var detailJson = await client.GetFromJsonAsync<JsonDocument>($"/participants/{playerId}");
+            Assert.Equal(expectedPlayerWorth, detailJson!.RootElement.GetProperty("totalWorth").GetDecimal());
+            Assert.True(detailJson.RootElement.GetProperty("holdingsValue").GetDecimal() > 0m);
+            Assert.Equal(2, detailJson.RootElement.GetProperty("pendingSettlementCount").GetInt32());
+            Assert.Equal(2, detailJson.RootElement.GetProperty("nextSettlementDueDayNumber").GetInt32());
+
+            using var participantsJson = await client.GetFromJsonAsync<JsonDocument>("/participants");
+            var playerRow = participantsJson!.RootElement.EnumerateArray().Single(row => row.GetProperty("id").GetInt32() == playerId);
+            var fundRow = participantsJson.RootElement.EnumerateArray().Single(row => row.GetProperty("id").GetInt32() == fundId);
+            Assert.Equal(expectedPlayerWorth, playerRow.GetProperty("totalWorth").GetDecimal());
+            Assert.Equal(expectedFundWorth, fundRow.GetProperty("totalWorth").GetDecimal());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task MarketAndCompanyContractsExposeLuldStateAndActiveCount()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int companyId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var company = await db.Companies.OrderBy(company => company.Id).FirstAsync();
+                var cycle = await db.MarketCycles.OrderByDescending(cycle => cycle.Id).FirstAsync();
+                companyId = company.Id;
+                var state = await db.PriceBandStates.FirstOrDefaultAsync(candidate => candidate.CompanyId == company.Id);
+                if (state is null)
+                {
+                    state = new PriceBandState { CompanyId = company.Id };
+                    db.PriceBandStates.Add(state);
+                }
+                state.State = LuldState.TradingPause;
+                state.LimitDirection = PriceLimitDirection.Upper;
+                state.ReferencePrice = 100m;
+                state.LowerBandPrice = 95m;
+                state.UpperBandPrice = 105m;
+                state.LimitStateStartedCycleNumber = 7;
+                state.PauseUntilCycleNumber = 157;
+                state.UpdatedInCycleId = cycle.Id;
+                await db.SaveChangesAsync();
+            }
+
+            using var companies = await client.GetFromJsonAsync<JsonDocument>("/companies");
+            var companyRow = companies!.RootElement.EnumerateArray().Single(row => row.GetProperty("id").GetInt32() == companyId);
+            Assert.Equal("TradingPause", companyRow.GetProperty("luldState").GetString());
+            Assert.Equal(95m, companyRow.GetProperty("lowerBandPrice").GetDecimal());
+            Assert.Equal(105m, companyRow.GetProperty("upperBandPrice").GetDecimal());
+
+            using var detail = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}");
+            Assert.Equal("Upper", detail!.RootElement.GetProperty("limitDirection").GetString());
+            Assert.Equal(100m, detail.RootElement.GetProperty("referencePrice").GetDecimal());
+            Assert.Equal(7, detail.RootElement.GetProperty("limitStateStartedCycleNumber").GetInt32());
+            Assert.Equal(157, detail.RootElement.GetProperty("pauseUntilCycleNumber").GetInt32());
+
+            using var market = await client.GetFromJsonAsync<JsonDocument>("/market");
+            Assert.Equal(1, market!.RootElement.GetProperty("luldAffectedCount").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AccountingDetailEndpointsPageFilterAndKeepMarginSeparateFromLoans()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int companyId;
+            int participantId;
+            int bankId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var company = await db.Companies.OrderBy(company => company.Id).FirstAsync();
+                var participant = await db.Participants.OrderBy(participant => participant.Id).FirstAsync();
+                var cycle = await db.MarketCycles.OrderByDescending(cycle => cycle.Id).FirstAsync();
+                var bank = await db.Banks.OrderBy(bank => bank.Id).FirstAsync();
+                companyId = company.Id;
+                participantId = participant.Id;
+                bankId = bank.Id;
+                bank.Balance = 1_005m;
+                db.Loans.Add(new Loan { BankId = bank.Id, ParticipantId = participant.Id, Principal = 100m, RemainingPrincipal = 100m, InterestRatePerCycle = bank.InterestRatePerCycle, TermCycles = 10, ScheduledInstallment = 10m, Status = LoanStatus.Open, OpenedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow });
+                db.MarginAccounts.Add(new MarginAccount { ParticipantId = participant.Id, DebitBalance = 200m, AccruedInterest = 5m, InitialMarginRate = 0.50m, MaintenanceMarginRate = 0.25m, Status = MarginAccountStatus.Active });
+                db.CorporateCashTransactions.AddRange(
+                    new CorporateCashTransaction { CompanyId = company.Id, Type = CorporateCashTransactionType.PrimaryIssuance, Amount = 10m, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow.AddSeconds(-2) },
+                    new CorporateCashTransaction { CompanyId = company.Id, Type = CorporateCashTransactionType.DividendDeclared, Amount = 20m, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow.AddSeconds(-1) },
+                    new CorporateCashTransaction { CompanyId = company.Id, Type = CorporateCashTransactionType.ClosureDistribution, Amount = 30m, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow });
+                var trades = Enumerable.Range(0, 3).Select(_ => new ShareTransaction { BuyerId = participant.Id, CompanyId = company.Id, Quantity = 1, Price = 10m, TotalCost = 10m, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }).ToArray();
+                db.ShareTransactions.AddRange(trades);
+                await db.SaveChangesAsync();
+                db.SettlementInstructions.AddRange(
+                    new SettlementInstruction { ShareTransactionId = trades[0].Id, BuyerId = participant.Id, CompanyId = company.Id, Quantity = 1, CashAmount = 10m, TradeDayNumber = 1, DueDayNumber = 2, Status = SettlementStatus.Pending, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow },
+                    new SettlementInstruction { ShareTransactionId = trades[1].Id, BuyerId = participant.Id, CompanyId = company.Id, Quantity = 1, CashAmount = 10m, TradeDayNumber = 1, DueDayNumber = 3, Status = SettlementStatus.Pending, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow },
+                    new SettlementInstruction { ShareTransactionId = trades[2].Id, BuyerId = participant.Id, CompanyId = company.Id, Quantity = 1, CashAmount = 10m, TradeDayNumber = 1, DueDayNumber = 1, Status = SettlementStatus.Settled, CreatedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow, SettledAt = DateTime.UtcNow });
+                await db.SaveChangesAsync();
+            }
+
+            var corporatePage = await client.GetFromJsonAsync<PagedCorporateCashMovementsDto>($"/companies/{companyId}/corporate-cash-movements?page=1&pageSize=2");
+            Assert.Equal(3, corporatePage!.Total);
+            Assert.Equal(2, corporatePage.Items.Length);
+            Assert.Equal(30m, corporatePage.Items[0].Amount);
+            Assert.Equal(1, corporatePage.Page);
+            Assert.Equal(2, corporatePage.PageSize);
+
+            var pendingPage = await client.GetFromJsonAsync<PagedSettlementsDto>($"/participants/{participantId}/settlements?status=pending&page=1&pageSize=1");
+            Assert.Equal(2, pendingPage!.Total);
+            Assert.Single(pendingPage.Items);
+            Assert.Equal(2, pendingPage.Items[0].DueDayNumber);
+            var settledPage = await client.GetFromJsonAsync<PagedSettlementsDto>($"/participants/{participantId}/settlements?status=settled&page=1&pageSize=10");
+            Assert.Equal(1, settledPage!.Total);
+            var allPage = await client.GetFromJsonAsync<PagedSettlementsDto>($"/participants/{participantId}/settlements?status=all&page=1&pageSize=10");
+            Assert.Equal(3, allPage!.Total);
+
+            using var banks = await client.GetFromJsonAsync<JsonDocument>("/banks");
+            var bankRow = banks!.RootElement.EnumerateArray().Single(row => row.GetProperty("id").GetInt32() == bankId);
+            Assert.Equal(1_005m, bankRow.GetProperty("balance").GetDecimal());
+            Assert.Equal(100m, bankRow.GetProperty("outstandingPrincipal").GetDecimal());
+            Assert.Equal(1, bankRow.GetProperty("openLoanCount").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PlayerAndParticipantContractsExposeAccountLevelMargin()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+
+            using var player = await client.GetFromJsonAsync<JsonDocument>("/player");
+            var root = player!.RootElement;
+            var margin = root.GetProperty("margin");
+            Assert.Equal(0m, margin.GetProperty("debitBalance").GetDecimal());
+            Assert.True(margin.GetProperty("buyingPower").GetDecimal() > 0m);
+
+            var participantId = root.GetProperty("id").GetInt32();
+            using var detail = await client.GetFromJsonAsync<JsonDocument>($"/participants/{participantId}");
+            Assert.Equal(
+                margin.GetProperty("accountEquity").GetDecimal(),
+                detail!.RootElement.GetProperty("margin").GetProperty("accountEquity").GetDecimal());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
     }
 
     [Fact]
@@ -108,6 +380,36 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task MarketResponseIncludesLogicalTradingClock()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            var market = await client.GetFromJsonAsync<MarketDto>("/market");
+
+            Assert.NotNull(market);
+            Assert.Equal(1, market.TradingDayNumber);
+            Assert.Equal("Trading", market.TradingSessionState);
+            Assert.Equal(1, market.TradingCycleNumber);
+            Assert.Equal(209, market.RemainingTradingCycles);
+            Assert.Equal(418, market.RemainingPhaseSeconds);
+            Assert.Equal(2, market.TradingCycleSeconds);
+            Assert.Equal("Advance one trading cycle", market.NextStepMeaning);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ResetSeedsMarketWhenDatabaseIsEmpty()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -178,6 +480,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
             await client.PostAsync("/cycles/tick", null);
             Assert.NotEmpty((await client.GetFromJsonAsync<ShareTransactionDto[]>("/transactions/shares"))!);
+            var corporateBeforeReset = await client.GetFromJsonAsync<PagedCorporateCashMovementsDto>(
+                $"/companies/{companySell.CompanyId}/corporate-cash-movements?page=1&pageSize=10");
+            Assert.Empty(corporateBeforeReset!.Items);
+            var settlementsBeforeReset = await client.GetFromJsonAsync<PagedSettlementsDto>(
+                $"/participants/{buyer.Id}/settlements?status=pending&page=1&pageSize=10");
+            Assert.Single(settlementsBeforeReset!.Items);
 
             using var resetResponse = await client.PostAsync("/market/reset", null);
             Assert.Equal(HttpStatusCode.OK, resetResponse.StatusCode);
@@ -198,6 +506,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Empty(transactions!);
             Assert.Single(activity!);
             Assert.Equal(100, openOrders!.Length);
+            var corporateAfterReset = await client.GetFromJsonAsync<PagedCorporateCashMovementsDto>(
+                $"/companies/{companySell.CompanyId}/corporate-cash-movements?page=1&pageSize=10");
+            Assert.Empty(corporateAfterReset!.Items);
+            var settlementsAfterReset = await client.GetFromJsonAsync<PagedSettlementsDto>(
+                $"/participants/{buyer.Id}/settlements?status=pending&page=1&pageSize=10");
+            Assert.Empty(settlementsAfterReset!.Items);
             Assert.All(openOrders, order =>
             {
                 Assert.Null(order.ParticipantId);
@@ -250,10 +564,11 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             // The buy fully fills and leaves the open list; the partially filled company sell stays open.
             var openAfterAdvance = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
             var allAfterAdvance = await client.GetFromJsonAsync<OrderDto[]>("/orders");
-            Assert.Equal(allAfterSeed.Length, openAfterAdvance!.Length);
-            Assert.Equal(allAfterSeed.Length + 1, allAfterAdvance!.Length);
+            Assert.Equal(
+                allAfterAdvance!.Count(order => order.Status is "Open" or "PartiallyFilled"),
+                openAfterAdvance!.Length);
             Assert.All(openAfterAdvance, order => Assert.True(order.Status is "Open" or "PartiallyFilled"));
-            Assert.Contains(allAfterAdvance, order => order.Type == "Buy" && order.Status == "Filled");
+            Assert.Contains(allAfterAdvance!, order => order.Type == "Buy" && order.Status == "Filled");
         }
         finally
         {
@@ -323,6 +638,67 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(companySell.CompanyId, holding.CompanyId);
             Assert.Equal(5, holding.Shares);
             Assert.False(string.IsNullOrWhiteSpace(holding.CompanyName));
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task TradeResponsesExposePendingTPlusOneSettlementAndReconciledActorBalances()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+            var companySell = (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!
+                .First(order => order.Type == "Sell");
+            var buyer = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!
+                .OrderByDescending(participant => participant.CurrentBalance)
+                .First();
+            const int quantity = 5;
+            var cash = companySell.LimitPrice * quantity;
+
+            await client.PostAsJsonAsync("/orders", new
+            {
+                participantId = buyer.Id,
+                companyId = companySell.CompanyId,
+                type = "Buy",
+                quantity,
+                limitPrice = companySell.LimitPrice,
+            });
+            await client.PostAsync("/cycles/tick", null);
+
+            var detail = await client.GetFromJsonAsync<ParticipantDetailDto>($"/participants/{buyer.Id}");
+            Assert.Equal(detail!.CurrentBalance - detail.SettledCashBalance, detail.UnsettledCashBalance);
+            Assert.Equal(-cash, detail.UnsettledCashBalance);
+
+            var holding = Assert.Single(
+                (await client.GetFromJsonAsync<HoldingDto[]>($"/participants/{buyer.Id}/holdings"))!);
+            Assert.Equal(quantity, holding.Shares);
+            Assert.Equal(0, holding.SettledShares);
+            Assert.Equal(quantity, holding.PendingShares);
+
+            var settlements = await client.GetFromJsonAsync<PagedSettlementsDto>(
+                $"/participants/{buyer.Id}/settlements?status=pending&page=1&pageSize=10");
+            var instruction = Assert.Single(settlements!.Items);
+            Assert.Equal("Buy", instruction.Side);
+            Assert.Equal(companySell.CompanyId, instruction.CompanyId);
+            Assert.Equal(cash, instruction.CashAmount);
+            Assert.Equal(1, instruction.TradeDayNumber);
+            Assert.Equal(2, instruction.DueDayNumber);
+
+            var trade = Assert.Single(
+                (await client.GetFromJsonAsync<ShareTransactionDto[]>($"/participants/{buyer.Id}/share-transactions"))!);
+            Assert.Equal(1, trade.TradeDayNumber);
+            Assert.Equal(2, trade.DueDayNumber);
+            Assert.Equal("Pending", trade.SettlementStatus);
         }
         finally
         {
@@ -613,6 +989,14 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(detail.IssuedSharesCount - quantity, detail.SharesHeldByIssuer);
             Assert.Equal(1, detail.ShareholderCount);
             Assert.Equal(price * detail.IssuedSharesCount, detail.MarketCap);
+            Assert.Equal(0m, detail.IssuerCash);
+
+            var movements = await client.GetFromJsonAsync<PagedCorporateCashMovementsDto>(
+                $"/companies/{companySell.CompanyId}/corporate-cash-movements?page=1&pageSize=10");
+            Assert.Empty(movements!.Items);
+            var settlements = await client.GetFromJsonAsync<PagedSettlementsDto>(
+                $"/participants/{buyer.Id}/settlements?status=pending&page=1&pageSize=10");
+            Assert.Single(settlements!.Items);
         }
         finally
         {
@@ -1385,6 +1769,102 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task LoanEndpointsExposeReconciledArrearsBreakdown()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int participantId;
+            int transactionId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 12, Status = CycleStatus.Running, StartedAt = now };
+                var bank = new Bank { Name = "National bank", InterestRatePerCycle = 0.001m };
+                var borrower = new Participant
+                {
+                    Name = "Borrower",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    InitialBalance = 20_000m,
+                    CurrentBalance = 20_000m,
+                    IsActive = true,
+                };
+                dbContext.AddRange(cycle, bank, borrower);
+                await dbContext.SaveChangesAsync();
+                participantId = borrower.Id;
+
+                dbContext.Markets.Add(new Market
+                {
+                    Name = "Demo",
+                    Status = MarketStatus.Running,
+                    CurrentCycleId = cycle.Id,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                });
+                var loan = new Loan
+                {
+                    BankId = bank.Id,
+                    ParticipantId = borrower.Id,
+                    Principal = 10_000m,
+                    RemainingPrincipal = 10_000m,
+                    InterestRatePerCycle = 0.001m,
+                    TermCycles = 100,
+                    ScheduledInstallment = 100m,
+                    PastDuePrincipal = 100m,
+                    PastDueInterest = 10m,
+                    AccruedFees = 11m,
+                    Status = LoanStatus.Open,
+                    OpenedInCycleId = cycle.Id,
+                    CreatedAt = now,
+                };
+                dbContext.Loans.Add(loan);
+                await dbContext.SaveChangesAsync();
+
+                var transaction = new MoneyTransaction
+                {
+                    ParticipantId = borrower.Id,
+                    Type = MoneyTransactionType.LoanFine,
+                    Amount = 11m,
+                    RelatedLoanId = loan.Id,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = now,
+                };
+                dbContext.MoneyTransactions.Add(transaction);
+                await dbContext.SaveChangesAsync();
+                transactionId = transaction.Id;
+            }
+
+            var loans = await client.GetFromJsonAsync<LoanDto[]>($"/participants/{participantId}/loans");
+            var loanResponse = Assert.Single(loans!);
+            Assert.Equal(100m, loanResponse.PastDuePrincipal);
+            Assert.Equal(10m, loanResponse.PastDueInterest);
+            Assert.Equal(11m, loanResponse.AccruedFees);
+            Assert.Equal(10_021m, loanResponse.TotalLiability);
+
+            var detail = await client.GetFromJsonAsync<MoneyTransactionDetailDto>(
+                $"/participants/{participantId}/money-transactions/{transactionId}");
+            Assert.NotNull(detail!.Loan);
+            Assert.Equal(100m, detail.Loan!.PastDuePrincipal);
+            Assert.Equal(10m, detail.Loan.PastDueInterest);
+            Assert.Equal(11m, detail.Loan.AccruedFees);
+            Assert.Equal(10_021m, detail.Loan.TotalLiability);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task MoneyTransactionDetailReturnsTheDividendCompanyBreakdown()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -1562,7 +2042,14 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         });
     }
 
-    private sealed record ParticipantDto(int Id, string Name, decimal CurrentBalance, decimal ReservedBalance, int SharesOwned);
+    private sealed record ParticipantDto(
+        int Id,
+        string Name,
+        decimal CurrentBalance,
+        decimal SettledCashBalance,
+        decimal UnsettledCashBalance,
+        decimal ReservedBalance,
+        int SharesOwned);
 
     private sealed record PlayerDto(int Id, int? FundParticipantId, decimal? FundCurrentBalance, int? FundPopularityIndex);
 
@@ -1577,11 +2064,24 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal? CurrentPrice,
         decimal PriceChangePct,
         decimal MarketCap,
+        decimal IssuerCash,
         int SharesHeldByIssuer,
         int SharesOutstanding,
         int ShareholderCount,
         string? CurrentRating,
         string? PreviousRating);
+
+    private sealed record CorporateCashMovementDto(
+        int Id,
+        string Type,
+        decimal Amount,
+        int CreatedInCycleNumber);
+
+    private sealed record PagedCorporateCashMovementsDto(
+        CorporateCashMovementDto[] Items,
+        int Total,
+        int Page,
+        int PageSize);
 
     private sealed record AuditorDto(int Id, string Name, string Description, int AuditCount);
 
@@ -1603,7 +2103,29 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal CostBasis,
         decimal PctOfIssued);
 
-    private sealed record ShareTransactionDto(int Id, int? SellerId, int BuyerId, int Quantity, decimal Price);
+    private sealed record ShareTransactionDto(
+        int Id,
+        int? SellerId,
+        int BuyerId,
+        int Quantity,
+        decimal Price,
+        int? TradeDayNumber,
+        int? DueDayNumber,
+        string? SettlementStatus);
+
+    private sealed record SettlementDto(
+        int Id,
+        int ShareTransactionId,
+        string Side,
+        int CompanyId,
+        string CompanyName,
+        int Quantity,
+        decimal CashAmount,
+        int TradeDayNumber,
+        int DueDayNumber,
+        string Status);
+
+    private sealed record PagedSettlementsDto(SettlementDto[] Items, int Total, int Page, int PageSize);
 
     private sealed record MoneyTransactionDetailDto(
         int Id,
@@ -1620,7 +2142,23 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
     private sealed record MoneyTransactionTradeDto(int ShareTransactionId, int CompanyId, string? CompanyName, int Quantity, decimal Price);
 
-    private sealed record MoneyTransactionLoanDto(int LoanId, decimal Principal, decimal RemainingPrincipal, string Status);
+    private sealed record MoneyTransactionLoanDto(
+        int LoanId,
+        decimal Principal,
+        decimal RemainingPrincipal,
+        decimal PastDuePrincipal,
+        decimal PastDueInterest,
+        decimal AccruedFees,
+        decimal TotalLiability,
+        string Status);
+
+    private sealed record LoanDto(
+        int Id,
+        decimal RemainingPrincipal,
+        decimal PastDuePrincipal,
+        decimal PastDueInterest,
+        decimal AccruedFees,
+        decimal TotalLiability);
 
     private sealed record DividendPayoutLineDto(int CompanyId, string? CompanyName, decimal Amount);
 
@@ -1673,6 +2211,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         int CompanyId,
         string CompanyName,
         int Shares,
+        int SettledShares,
+        int PendingShares,
         decimal CurrentPrice,
         decimal MarketValue,
         decimal CostBasis);
@@ -1685,6 +2225,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         string RiskProfile,
         decimal InitialBalance,
         decimal CurrentBalance,
+        decimal SettledCashBalance,
+        decimal UnsettledCashBalance,
         decimal ReservedBalance,
         decimal AvailableBalance,
         int SharesOwned,
@@ -1704,7 +2246,18 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
     private sealed record ActivityDto(int CycleNumber, int OrdersPlaced);
 
-    private sealed record MarketDto(int Id, string Name, string Status, int? CurrentCycleId);
+    private sealed record MarketDto(
+        int Id,
+        string Name,
+        string Status,
+        int? CurrentCycleId,
+        int? TradingDayNumber,
+        string? TradingSessionState,
+        int? TradingCycleNumber,
+        int? RemainingTradingCycles,
+        int? RemainingPhaseSeconds,
+        int? TradingCycleSeconds,
+        string? NextStepMeaning);
 
     private sealed record OrderDto(
         int Id,

@@ -77,4 +77,100 @@ internal static class TestMarketSeed
         market.CurrentCycleId = cycle.Id;
         await context.SaveChangesAsync();
     }
+
+    public static async Task<AccountingMarketSeed> SeedAccountingScenarioAsync(AppDbContext context)
+    {
+        var now = DateTime.UtcNow;
+        var day = new TradingDay
+        {
+            DayNumber = 1,
+            State = TradingSessionState.Trading,
+            OpenedInCycleId = 0,
+        };
+        context.TradingDays.Add(day);
+        await context.SaveChangesAsync();
+
+        var cycle = new MarketCycle
+        {
+            CycleNumber = 1,
+            TradingDayId = day.Id,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Running,
+            StartedAt = now,
+        };
+        var market = new Market
+        {
+            Name = "Accounting Market",
+            Status = MarketStatus.Running,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        var industry = new Industry { Name = "Accounting Industry" };
+        context.AddRange(cycle, market, industry);
+        await context.SaveChangesAsync();
+
+        var company = new Company
+        {
+            Name = "Accounting Company",
+            IndustryId = industry.Id,
+            IssuedSharesCount = 100,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        var seller = Participant("Accounting Seller", 1_000m, ParticipantType.Individual);
+        var buyer = Participant("Accounting Buyer", 5_000m, ParticipantType.Player);
+        var bank = new Bank
+        {
+            Name = "National bank",
+            InterestRatePerCycle = 0.001m,
+        };
+        context.AddRange(company, seller, buyer, bank);
+        await context.SaveChangesAsync();
+
+        context.Holdings.Add(new Holding
+        {
+            ParticipantId = seller.Id,
+            CompanyId = company.Id,
+            Quantity = 20,
+            SettledQuantity = 20,
+            AverageCost = 100m,
+        });
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = company.Id,
+            Price = 100m,
+            Capitalization = 10_000m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = now,
+        });
+        day.OpenedInCycleId = cycle.Id;
+        market.CurrentCycleId = cycle.Id;
+        market.CurrentTradingDayId = day.Id;
+        await context.SaveChangesAsync();
+
+        return new AccountingMarketSeed(market, day, cycle, company, seller, buyer, bank);
+    }
+
+    private static Participant Participant(string name, decimal cash, ParticipantType type) =>
+        new()
+        {
+            Name = name,
+            Type = type,
+            Temperament = Temperament.Balanced,
+            RiskProfile = RiskProfile.Medium,
+            InitialBalance = cash,
+            CurrentBalance = cash,
+            SettledCashBalance = cash,
+            IsActive = true,
+        };
 }
+
+internal sealed record AccountingMarketSeed(
+    Market Market,
+    TradingDay Day,
+    MarketCycle Cycle,
+    Company Company,
+    Participant Seller,
+    Participant Buyer,
+    Bank Bank);

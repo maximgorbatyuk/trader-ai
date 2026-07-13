@@ -74,6 +74,8 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         Assert.Equal(500, company.IssuedSharesCount);
         Assert.Equal(cycle.Id, company.CreatedInCycleId);
         Assert.Null(company.ClosedInCycleId);
+        Assert.Equal(0m, company.CashBalance);
+        Assert.Empty(context.CorporateCashTransactions);
 
         var floatOrder = await context.Orders.AsNoTracking().SingleAsync();
         Assert.Null(floatOrder.ParticipantId);
