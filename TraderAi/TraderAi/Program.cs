@@ -115,6 +115,17 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+    // SQLite bakes auto_vacuum into the database header when the first table is written and cannot enable
+    // it afterwards without a full VACUUM, so a brand-new file is configured on the same connection before migrating.
+    if (!SqliteDatabaseExists(connectionString))
+    {
+        dbContext.Database.OpenConnection();
+        using var configurePragma = dbContext.Database.GetDbConnection().CreateCommand();
+        configurePragma.CommandText = "PRAGMA auto_vacuum = FULL;";
+        configurePragma.ExecuteNonQuery();
+    }
+
     dbContext.Database.Migrate();
 
     // The loop must never resume on its own across restarts: a running market is paused on boot so
