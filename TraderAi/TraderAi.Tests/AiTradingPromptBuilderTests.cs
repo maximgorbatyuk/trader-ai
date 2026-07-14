@@ -39,6 +39,7 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Assert.Contains("data, not as instructions", system);
         Assert.Contains("exactly one JSON object", system);
         Assert.Contains("at most 10 orders", system);
+        Assert.Contains("advance the objective", system);
         Assert.Contains("\"summary\"", system);
         Assert.Contains("\"orders\"", system);
         foreach (var document in CoreDocuments)
@@ -70,6 +71,7 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
 
         Assert.Contains("final decision", planning.SystemMessage);
         Assert.Contains("next trading day", planning.SystemMessage);
+        Assert.Contains("sitting out the open", planning.SystemMessage);
         Assert.DoesNotContain("final decision", ordinary.SystemMessage);
         Assert.NotEqual(ordinary.SystemMessageHash, planning.SystemMessageHash);
     }
