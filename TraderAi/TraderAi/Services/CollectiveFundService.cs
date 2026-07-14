@@ -38,6 +38,10 @@ public sealed class CollectiveFundService(
     // Share of a fund's own dividend receipt that is passed straight through to its members, split by deposit.
     private const decimal DividendPassThroughFraction = 0.50m;
 
+    // The fund withholds this cut from each member's pass-through dividend as a management fee; the withheld
+    // amount stays in the fund's cash rather than reaching the member.
+    private const decimal DividendFeeFraction = 0.05m;
+
     // A fund that owns nothing and cannot afford even the cheapest share for this many consecutive cycles unwinds.
     private const int MaxIdleCycles = 20;
 
@@ -267,7 +271,11 @@ public sealed class CollectiveFundService(
                 continue;
             }
 
-            var cut = Round(pool * member.DepositAmount / totalDeposit);
+            var gross = Round(pool * member.DepositAmount / totalDeposit);
+
+            // The fund keeps a fee cut of each member's pass-through dividend; only the net leaves the fund's cash,
+            // so the withheld fee stays behind in the fund's balance without a separate transfer.
+            var cut = Round(gross * (1m - DividendFeeFraction));
             if (cut <= 0m)
             {
                 continue;

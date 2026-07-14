@@ -521,7 +521,7 @@ Fields:
 Notes:
 
 - The fund trades the pooled cash like any participant while keeping part of its worth liquid so it can return deposits on demand.
-- The fund's own dividends are partly passed through to its members in proportion to their deposits.
+- The fund's own dividends are partly passed through to its members in proportion to their deposits, less a 5% management fee the fund keeps.
 - A fund that is winding down only sells; once it holds nothing its cash is split evenly among the remaining members and it closes.
 
 ### CollectiveFundParticipant

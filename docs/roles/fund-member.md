@@ -14,7 +14,7 @@ A Fund Member is an Individual or AI Agent while it belongs to a Collective Fund
 - A member may still sell shares it already personally owns.
 - A member cannot sell shares it does not own; short selling is planned for later and is not implemented.
 - Its personal trades still use T+1 settlement, and any existing personal margin debit remains separate from the fund's account and explicit term loans.
-- A member receives its share of the fund's dividend pass-through, divided by deposit size.
+- A member receives its share of the fund's dividend pass-through, divided by deposit size and net of a 5% fund management fee.
 - A member also receives ordinary dividends on any shares it still personally holds.
 - A member cannot voluntarily leave during its first seven trading days in the fund. A member that joins on Day N first becomes eligible on Day N+7; intraday cycles, breaks, and market pauses do not shorten that period.
 - A wealthy member may start leaving after that safe period once its own cash balance crosses the leave threshold. Its chance to leave rises the longer it stays above that line.

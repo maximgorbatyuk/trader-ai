@@ -845,14 +845,15 @@ public sealed class CollectiveFundServiceTests : IDisposable
             .DistributeDividendToMembersAsync(fundParticipant, payout: 1_000m, cycle.Id, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
-        // Half of the 1,000 receipt (500) is shared 1:3 by deposit.
+        // Half of the 1,000 receipt (500) is shared 1:3 by deposit, then each member's cut loses the 5% fund fee.
         var refreshedOne = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == memberOne.Id);
         var refreshedTwo = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == memberTwo.Id);
-        Assert.Equal(125m, refreshedOne.CurrentBalance);
-        Assert.Equal(375m, refreshedTwo.CurrentBalance);
+        Assert.Equal(118.75m, refreshedOne.CurrentBalance);
+        Assert.Equal(356.25m, refreshedTwo.CurrentBalance);
 
+        // The fund retains the un-passed half plus the withheld fees (6.25 + 18.75).
         var refreshedFund = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fundParticipant.Id);
-        Assert.Equal(500m, refreshedFund.CurrentBalance);
+        Assert.Equal(525m, refreshedFund.CurrentBalance);
 
         // Member payouts carry their own transaction type so they can be totalled separately from share dividends.
         Assert.Equal(2, await context.MoneyTransactions.CountAsync(transaction => transaction.Type == MoneyTransactionType.CollectiveFundDividend));
