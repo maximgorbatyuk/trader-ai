@@ -91,6 +91,8 @@ builder.Services.AddSingleton<AiTraderRuntimeState>();
 builder.Services.AddSingleton<AiPromptDocumentationProvider>();
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<AiProviderClient>();
+builder.Services.AddScoped<AiMarketSnapshotBuilder>();
+builder.Services.AddScoped<AiTradingPromptBuilder>();
 builder.Services.AddScoped<AiTraderConfigurationService>();
 builder.Services.AddOptions<RandomChanceRatesOptions>()
     .Bind(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName))

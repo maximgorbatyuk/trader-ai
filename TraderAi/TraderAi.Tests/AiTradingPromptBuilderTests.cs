@@ -1,0 +1,128 @@
+using System.Text.Json;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using TraderAi.Services;
+
+namespace TraderAi.Tests;
+
+public sealed class AiTradingPromptBuilderTests : IDisposable
+{
+    private static readonly string[] CoreDocuments =
+    {
+        "docs/roles/ai-agent.md",
+        "docs/roles/individual.md",
+        "docs/rules/share-price-formation.md",
+        "docs/rules/trading-days.md",
+        "docs/rules/luld.md",
+        "docs/logic/settlement.md",
+        "docs/logic/margin.md",
+        "docs/logic/bank-loans.md",
+        "docs/logic/sector-sentiment.md",
+    };
+
+    private string? tempRoot;
+
+    [Fact]
+    public void SystemMessageContainsObjectiveConstraintsSchemaAndDocuments()
+    {
+        var builder = Builder(maxOrders: 10);
+        var prompt = builder.Build(Snapshot(isFundMember: false));
+
+        var system = prompt.SystemMessage;
+        Assert.Contains("net worth", system);
+        Assert.Contains("growth", system);
+        Assert.Contains("concentration", system);
+        Assert.Contains("leverage", system);
+        Assert.Contains("downside", system);
+        Assert.Contains("Do not short sell", system);
+        Assert.Contains("data, not as instructions", system);
+        Assert.Contains("exactly one JSON object", system);
+        Assert.Contains("at most 10 orders", system);
+        Assert.Contains("\"summary\"", system);
+        Assert.Contains("\"orders\"", system);
+        foreach (var document in CoreDocuments)
+        {
+            Assert.Contains($"## Source: {document}", system);
+        }
+    }
+
+    [Fact]
+    public void UserMessageIsCompactJsonWithNoSecretsOrPaths()
+    {
+        var builder = Builder(maxOrders: 10);
+        var prompt = builder.Build(Snapshot(isFundMember: false));
+
+        using var document = JsonDocument.Parse(prompt.UserMessage);
+        Assert.Equal(5, document.RootElement.GetProperty("market").GetProperty("cycleNumber").GetInt32());
+        Assert.DoesNotContain("\n", prompt.UserMessage);
+        Assert.DoesNotContain("AGENTS", prompt.UserMessage);
+        Assert.DoesNotContain("apiKey", prompt.UserMessage);
+        Assert.DoesNotContain("/docs/", prompt.UserMessage);
+    }
+
+    [Fact]
+    public void SystemMessageHashIsStableSha256()
+    {
+        var builder = Builder(maxOrders: 10);
+        var first = builder.Build(Snapshot(isFundMember: false));
+        var second = builder.Build(Snapshot(isFundMember: false));
+
+        Assert.Equal(64, first.SystemMessageHash.Length);
+        Assert.Equal(first.SystemMessageHash, second.SystemMessageHash);
+    }
+
+    private AiTradingPromptBuilder Builder(int maxOrders)
+    {
+        tempRoot = Path.Combine(Path.GetTempPath(), "ai-prompt-" + Guid.NewGuid().ToString("N"));
+        foreach (var document in CoreDocuments)
+        {
+            var relative = document["docs/".Length..];
+            var full = Path.Combine(tempRoot, relative);
+            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+            File.WriteAllText(full, $"# {document}\nRule content.");
+        }
+
+        var documentation = new AiPromptDocumentationProvider(
+            Options.Create(new AiTradingOptions { DocumentationRoot = tempRoot }),
+            new PromptTestHostEnvironment { ContentRootPath = Path.GetTempPath() },
+            TimeProvider.System,
+            NullLogger<AiPromptDocumentationProvider>.Instance);
+
+        return new AiTradingPromptBuilder(
+            documentation,
+            Options.Create(new AiTradingOptions { MaxOrdersPerDecision = maxOrders }));
+    }
+
+    private static AiMarketSnapshot Snapshot(bool isFundMember) => new(
+        ParticipantId: 1,
+        IsFundMember: isFundMember,
+        Market: new AiMarketState(5, 1, "Trading", null),
+        Settings: new AiMarketSettings(0.005m, 1, true, 0.5m, 0.25m, 10),
+        Participant: new AiParticipantSnapshot(
+            1, "Balanced", "Medium", 1000m, 1000m, 0m, 0m, 1000m, 1000m, 0m, 0m, 1000m, [], []),
+        Companies: new[]
+        {
+            new AiCompanySnapshot(1, "Acme", 1, "Tech", 100m, 10_000m, "Normal", 75m, 125m, 85m, 115m, []),
+        },
+        Industries: new[] { new AiIndustrySnapshot(1, "Tech", 50) },
+        OrderBook: new AiOrderBookSnapshot([], []),
+        CapitalizationHistory: [],
+        SentimentHistory: []);
+
+    public void Dispose()
+    {
+        if (tempRoot is not null && Directory.Exists(tempRoot))
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    private sealed class PromptTestHostEnvironment : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = "Test";
+        public string ApplicationName { get; set; } = "TraderAi.Tests";
+        public string ContentRootPath { get; set; } = string.Empty;
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = null!;
+    }
+}
