@@ -321,6 +321,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AiTraderCall>()
             .Property(call => call.Error).HasMaxLength(2000);
 
+        modelBuilder.Entity<AiTraderCall>()
+            .Property(call => call.Summary).HasMaxLength(1000);
+
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
             foreach (var property in entityType.GetProperties())

@@ -33,6 +33,14 @@ public sealed class AiTraderCall
 
     public string? ApplicationResultJson { get; set; }
 
+    // Denormalized so the newest-first history list projects without materializing the large request, response,
+    // decision, or application-result columns.
+    public string? Summary { get; set; }
+
+    public int AppliedOrders { get; set; }
+
+    public int RejectedOrders { get; set; }
+
     public AiTraderCallStatus Status { get; set; }
 
     public int? HttpStatusCode { get; set; }
