@@ -10,6 +10,8 @@ import { MoneyTransactionModal } from './MoneyTransactionModal'
 import { IndustryHoldingsTable } from './IndustryHoldingsTable'
 import { groupHoldingsByIndustry } from './industryHoldings'
 import { TradeModal } from './TradeModal'
+import { AiTraderAutomationPanel } from './AiTraderAutomationPanel'
+import { AiTraderCallsPanel } from './AiTraderCallsPanel'
 import { useClientTable } from './useClientTable'
 import { Pager } from './TableControls'
 import { SettlementsTable } from './SettlementsTable'
@@ -169,6 +171,13 @@ export function ParticipantDetail({ participantId }) {
               </Link>
             </p>
           ) : null}
+          {detail.type === 'AIAgent' ? (
+            <p className="command-member">
+              <span className="tag">{detail.aiProviderLabel ? `AI · ${detail.aiProviderLabel}` : 'AI'}</span>
+              {detail.aiModel ? <span className="tag">{detail.aiModel}</span> : null}
+              {detail.aiStatus ? <span className="tag">{detail.aiStatus}</span> : null}
+            </p>
+          ) : null}
         </div>
         <dl className="statbar">
           <div className="stat">
@@ -224,6 +233,13 @@ export function ParticipantDetail({ participantId }) {
         />
         <BankPanel detail={detail} marketValue={marketValue} costBasis={costBasis} holdingsPnl={holdingsPnl} />
       </div>
+
+      {detail.type === 'Individual' || detail.type === 'AIAgent' ? (
+        <>
+          <AiTraderAutomationPanel key={`automation-${participantId}`} participantId={participantId} detail={detail} onChanged={loadAll} />
+          <AiTraderCallsPanel key={`ai-calls-${participantId}`} participantId={participantId} isAiTrader={detail.type === 'AIAgent'} />
+        </>
+      ) : null}
 
       <HoldingsPanel holdings={holdings} />
 

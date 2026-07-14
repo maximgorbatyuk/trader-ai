@@ -69,7 +69,11 @@ export function TradersTable({ participants, sortKey, sortDir, onToggleSort, onS
                   </span>
                 </th>
                 <td>
-                  <span className="tag">{TRADER_TYPE_LABEL[participant.type] ?? participant.type}</span>
+                  <span className="tag">
+                    {participant.type === 'AIAgent' && participant.aiProviderLabel
+                      ? `AI · ${participant.aiProviderLabel}`
+                      : (TRADER_TYPE_LABEL[participant.type] ?? participant.type)}
+                  </span>
                 </td>
                 <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
                 <td className="num ta-r">{formatMoney(participant.currentBalance)}</td>
