@@ -11,6 +11,38 @@ function rangeFor(index, count, cyclesPerDay) {
   }
 }
 
+export function ordersActivityCellLabel(cell) {
+  if (cell.dayNumber == null) return 'No earlier trading day in this market'
+
+  const range = `Day ${cell.dayNumber}, cycles ${cell.cycleStart}–${cell.cycleEnd}`
+  if (!cell.hasData) return `${range}: not reached`
+
+  const orders = `${cell.ordersPlaced} ${cell.ordersPlaced === 1 ? 'order' : 'orders'}`
+  const details = []
+  if (cell.isPartial) details.push(`in progress through cycle ${cell.observedCycleEnd}`)
+  if (cell.paidDividend) details.push('dividend paid')
+  return `${range}: ${orders}${details.length ? `, ${details.join(', ')}` : ''}`
+}
+
+export function heatmapPositionAfterKey(row, column, key) {
+  switch (key) {
+    case 'ArrowLeft':
+      return { row, column: Math.max(0, column - 1) }
+    case 'ArrowRight':
+      return { row, column: Math.min(DAY_COUNT * COLUMNS_PER_DAY - 1, column + 1) }
+    case 'ArrowUp':
+      return { row: Math.max(0, row - 1), column }
+    case 'ArrowDown':
+      return { row: Math.min(ROW_COUNT - 1, row + 1), column }
+    case 'Home':
+      return { row, column: 0 }
+    case 'End':
+      return { row, column: DAY_COUNT * COLUMNS_PER_DAY - 1 }
+    default:
+      return null
+  }
+}
+
 export function buildOrdersActivityHeatmap(activity, cyclesPerDay) {
   const dayLength = Math.max(CELLS_PER_DAY, Math.trunc(cyclesPerDay))
   const availableDays = [...new Set(activity.map((point) => point.tradingDayNumber))]
@@ -32,6 +64,8 @@ export function buildOrdersActivityHeatmap(activity, cyclesPerDay) {
           hasData: false,
           paidDividend: false,
           level: 0,
+          observedCycleEnd: null,
+          isPartial: false,
         }
       }),
     ),
@@ -51,10 +85,12 @@ export function buildOrdersActivityHeatmap(activity, cyclesPerDay) {
     cell.ordersPlaced += point.ordersPlaced
     cell.hasData = true
     cell.paidDividend ||= point.paidDividend
+    cell.observedCycleEnd = Math.max(cell.observedCycleEnd ?? 0, point.tradingCycleNumber)
   }
 
   const peakOrders = Math.max(0, ...rows.flat().map((cell) => cell.ordersPlaced))
   for (const cell of rows.flat()) {
+    cell.isPartial = cell.hasData && cell.observedCycleEnd < cell.cycleEnd
     if (cell.ordersPlaced > 0) {
       cell.level = Math.ceil((cell.ordersPlaced / peakOrders) * LEVEL_COUNT)
     }
