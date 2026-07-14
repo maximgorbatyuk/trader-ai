@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 
 namespace TraderAi.Services;
@@ -43,8 +44,8 @@ public sealed class AiProviderClient(IHttpClientFactory httpClientFactory, IOpti
             },
         };
 
-        // GLM exposes an explicit switch to suppress chain-of-thought; MiniMax returns reasoning in a separate
-        // field we simply never read, so no request flag is needed there.
+        // GLM exposes an explicit switch to suppress chain-of-thought. MiniMax has no such flag and returns its
+        // reasoning inline in the response content, which ParseSuccess strips before the strict decision parse.
         if (provider.Id == "glm")
         {
             payload["thinking"] = new { type = "disabled" };
@@ -109,11 +110,11 @@ public sealed class AiProviderClient(IHttpClientFactory httpClientFactory, IOpti
                 return Failure(AiProviderCallOutcome.HttpError, status, body, $"Provider returned HTTP {status}.", RetryAfterOf(response));
             }
 
-            return ParseSuccess(status, body);
+            return ParseSuccess(status, body, prepared.ProviderId);
         }
     }
 
-    private static AiProviderResponse ParseSuccess(int status, string body)
+    private static AiProviderResponse ParseSuccess(int status, string body, string providerId)
     {
         try
         {
@@ -130,6 +131,16 @@ public sealed class AiProviderClient(IHttpClientFactory httpClientFactory, IOpti
                 && contentElement.ValueKind == JsonValueKind.String)
             {
                 content = contentElement.GetString();
+            }
+
+            if (providerId == "minimax" && !string.IsNullOrEmpty(content))
+            {
+                content = StripInlineReasoning(content);
+            }
+
+            if (providerId == "glm" && !string.IsNullOrEmpty(content))
+            {
+                content = ExtractDecisionJson(content);
             }
 
             int? promptTokens = null;
@@ -159,6 +170,70 @@ public sealed class AiProviderClient(IHttpClientFactory httpClientFactory, IOpti
             return new AiProviderResponse(
                 AiProviderCallOutcome.MalformedResponse, status, body, null, null, null, null, null, exception.Message);
         }
+    }
+
+    private static readonly Regex MiniMaxThinkBlock =
+        new("<think>.*?</think>", RegexOptions.Singleline | RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // MiniMax M2 wraps its chain-of-thought in a <think>...</think> block ahead of the answer, so the strict
+    // decision parser would reject the whole reply. A reasoning-only reply leaves nothing after stripping, so the
+    // original is kept to fail honestly rather than look like empty content.
+    private static string StripInlineReasoning(string content)
+    {
+        var stripped = MiniMaxThinkBlock.Replace(content, string.Empty).Trim();
+        return stripped.Length == 0 ? content : stripped;
+    }
+
+    // GLM intermittently ignores the thinking-disable flag and prefixes the JSON decision with an undelimited prose
+    // preamble, so the strict decision parser rejects the whole reply. This lifts out the first balanced top-level
+    // object, ignoring braces inside string literals; with no object present the original is kept to fail honestly.
+    private static string ExtractDecisionJson(string content)
+    {
+        var start = content.IndexOf('{');
+        if (start < 0)
+        {
+            return content;
+        }
+
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+        for (var i = start; i < content.Length; i++)
+        {
+            var c = content[i];
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (c == '\\')
+                {
+                    escaped = true;
+                }
+                else if (c == '"')
+                {
+                    inString = false;
+                }
+
+                continue;
+            }
+
+            if (c == '"')
+            {
+                inString = true;
+            }
+            else if (c == '{')
+            {
+                depth++;
+            }
+            else if (c == '}' && --depth == 0)
+            {
+                return content[start..(i + 1)];
+            }
+        }
+
+        return content;
     }
 
     private static int? ReadInt(JsonElement parent, string property)

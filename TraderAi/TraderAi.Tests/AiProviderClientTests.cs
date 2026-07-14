@@ -92,6 +92,74 @@ public sealed class AiProviderClientTests
     }
 
     [Fact]
+    public async Task MiniMaxInlineThinkBlockIsStrippedFromContent()
+    {
+        var body = Envelope("<think>long private reasoning</think>\n\n{\"summary\":\"ok\",\"orders\":[]}");
+        var handler = new StubHandler((_, _) => Task.FromResult(Ok(body)));
+        var client = Client(handler);
+
+        var prepared = client.Prepare(MiniMax, "MiniMax-M2", "system", "user");
+        var response = await client.SendAsync(prepared, "key", CancellationToken.None);
+
+        Assert.Equal("{\"summary\":\"ok\",\"orders\":[]}", response.AssistantContent);
+        Assert.DoesNotContain("reasoning", response.AssistantContent);
+        Assert.Contains("long private reasoning", response.RawBody!);
+    }
+
+    [Fact]
+    public async Task GlmContentIsNotStrippedOfThinkBlocks()
+    {
+        var body = Envelope("<think>should stay</think>final answer");
+        var handler = new StubHandler((_, _) => Task.FromResult(Ok(body)));
+        var client = Client(handler);
+
+        var prepared = client.Prepare(Glm, "glm-4.6", "system", "user");
+        var response = await client.SendAsync(prepared, "key", CancellationToken.None);
+
+        Assert.Equal("<think>should stay</think>final answer", response.AssistantContent);
+    }
+
+    [Fact]
+    public async Task GlmProseWrappedJsonIsExtractedFromContent()
+    {
+        var body = Envelope("Looking at my portfolio, I'll wait.{\"summary\":\"ok\",\"orders\":[]}");
+        var handler = new StubHandler((_, _) => Task.FromResult(Ok(body)));
+        var client = Client(handler);
+
+        var prepared = client.Prepare(Glm, "glm-4.6", "system", "user");
+        var response = await client.SendAsync(prepared, "key", CancellationToken.None);
+
+        Assert.Equal("{\"summary\":\"ok\",\"orders\":[]}", response.AssistantContent);
+        Assert.Contains("Looking at my portfolio", response.RawBody!);
+    }
+
+    [Fact]
+    public async Task GlmExtractionHandlesBracesInStringsAndTrailingProse()
+    {
+        var body = Envelope("prelude {\"summary\":\"a } brace\",\"orders\":[]} trailing note");
+        var handler = new StubHandler((_, _) => Task.FromResult(Ok(body)));
+        var client = Client(handler);
+
+        var prepared = client.Prepare(Glm, "glm-4.6", "system", "user");
+        var response = await client.SendAsync(prepared, "key", CancellationToken.None);
+
+        Assert.Equal("{\"summary\":\"a } brace\",\"orders\":[]}", response.AssistantContent);
+    }
+
+    [Fact]
+    public async Task GlmProseOnlyReplyIsKeptSoParsingFailsHonestly()
+    {
+        var body = Envelope("I am unable to trade right now.");
+        var handler = new StubHandler((_, _) => Task.FromResult(Ok(body)));
+        var client = Client(handler);
+
+        var prepared = client.Prepare(Glm, "glm-4.6", "system", "user");
+        var response = await client.SendAsync(prepared, "key", CancellationToken.None);
+
+        Assert.Equal("I am unable to trade right now.", response.AssistantContent);
+    }
+
+    [Fact]
     public async Task OnlySystemAndUserMessagesAreSent()
     {
         var handler = new StubHandler((_, _) => Task.FromResult(Ok(Envelope("hi"))));
