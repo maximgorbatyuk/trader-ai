@@ -33,4 +33,11 @@ public sealed class CollectiveFundOptions
     // until it is back within capacity. Clamped to MaxMembers and defaulting to it, so enforcement stays off
     // until this is set below MaxMembers.
     public int SoftCloseMembers { get; set; } = 20;
+
+    // Opt-in: when a fund fills a sell for a gain over the shares' cost basis, its founder immediately draws
+    // ManagerProfitFeeShare of that realized gain, funded by debiting the fund so no money is created. This is
+    // separate from the day-close fee skimmed from pass-through dividend fees.
+    public bool ManagerProfitFeeEnabled { get; set; }
+
+    public decimal ManagerProfitFeeShare { get; set; } = 0.10m;
 }

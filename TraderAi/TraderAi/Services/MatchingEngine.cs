@@ -13,19 +13,31 @@ namespace TraderAi.Services;
 // When trade fees are enabled, a participant seller's proceeds are skimmed by TradeFeeOptions.FeeRate and
 // the fee accrues to the National bank's balance. Company-float (primary-issuance) sells carry no fee, so
 // the fee only ever touches secondary-market cash and the ledger stays reconciled.
+//
+// When the collective-fund manager profit fee is enabled, a fund seller's realized gain on each fill is split:
+// the founder is paid ManagerProfitFeeShare of the gain at once, funded by debiting the fund, and the rest of
+// the gain stays in the fund. A loss or break-even fill pays nothing.
 public sealed class MatchingEngine(
     AppDbContext dbContext,
     IOptions<TradeFeeOptions>? tradeFeeOptions = null,
     SettlementService? settlementService = null,
-    MarginService? marginService = null)
+    MarginService? marginService = null,
+    IOptions<CollectiveFundOptions>? collectiveFundOptions = null)
 {
     private readonly bool feeEnabled = tradeFeeOptions?.Value.Enabled ?? false;
     private readonly decimal feeRate = tradeFeeOptions?.Value.FeeRate ?? 0m;
     private readonly string feeBankName = tradeFeeOptions?.Value.BankName ?? "National bank";
 
+    private readonly bool managerProfitFeeEnabled = collectiveFundOptions?.Value.ManagerProfitFeeEnabled ?? false;
+    private readonly decimal managerProfitFeeShare = collectiveFundOptions?.Value.ManagerProfitFeeShare ?? 0m;
+
     // Resolved once per run only when a participant sell could be charged, so a fee-disabled book (or one
     // with only company-float sells) never touches the Banks table.
     private Bank? feeBank;
+
+    // Active funds keyed by their trading participant id, loaded once per run only when the manager profit fee
+    // is enabled and a participant sell could be a fund sale, so an ordinary book never touches the table.
+    private Dictionary<int, CollectiveFund>? fundsBySellerId;
 
     public async Task<int> RunAsync(MarketCycle cycle)
     {
@@ -52,6 +64,14 @@ public sealed class MatchingEngine(
             && openOrders.Any(order => order.Type == OrderType.Sell && order.ParticipantId != null))
         {
             feeBank = await ResolveFeeBankAsync();
+        }
+
+        if (managerProfitFeeEnabled && managerProfitFeeShare > 0m
+            && openOrders.Any(order => order.Type == OrderType.Sell && order.ParticipantId != null))
+        {
+            fundsBySellerId = await dbContext.CollectiveFunds
+                .Where(fund => fund.Status == CollectiveFundStatus.Active)
+                .ToDictionaryAsync(fund => fund.ParticipantId);
         }
 
         var fillCount = 0;
@@ -288,8 +308,12 @@ public sealed class MatchingEngine(
         dbContext.ShareTransactions.Add(shareTransaction);
 
         // A company-originated offer has no seller position; only a participant seller's holding shrinks.
+        // Capture cost basis before the reduce so a profitable fund sale can pay its manager below; a sell never
+        // moves AverageCost, so reading it here or after the reduce is equivalent.
+        var sellerAverageCost = 0m;
         if (seller is not null)
         {
+            sellerAverageCost = holdings[(seller.Id, companyId)].AverageCost;
             ReduceHolding(holdings, seller.Id, companyId, quantity);
         }
 
@@ -395,6 +419,49 @@ public sealed class MatchingEngine(
                 {
                     feeBank ??= await ResolveFeeBankAsync();
                     feeBank.Balance += sellerMarginAllocation.InterestPaid;
+                }
+            }
+
+            // A profitable fund sale hands the founder a slice of the realized gain at once, debited from the
+            // fund so the two ledger rows net to zero and no money is created. Skipped on a loss or break-even,
+            // when the founder is gone, or when the fund lacks the free cash for it (then the fund keeps it all).
+            if (fundsBySellerId is not null && fundsBySellerId.TryGetValue(seller.Id, out var sellerFund))
+            {
+                var gain = spent - Round(sellerAverageCost * quantity);
+                var managerFee = gain > 0m ? Round(gain * managerProfitFeeShare) : 0m;
+                if (managerFee > 0m
+                    && participants.TryGetValue(sellerFund.FoundedByParticipantId, out var manager)
+                    && manager.IsActive && !manager.IsBankrupt
+                    && Math.Min(seller.AvailableBalance, seller.SettledCashBalance) >= managerFee)
+                {
+                    seller.CurrentBalance -= managerFee;
+                    seller.SettledCashBalance -= managerFee;
+                    manager.CurrentBalance += managerFee;
+                    manager.SettledCashBalance += managerFee;
+
+                    dbContext.MoneyTransactions.Add(new MoneyTransaction
+                    {
+                        ParticipantId = seller.Id,
+                        Type = MoneyTransactionType.CollectiveFundManagerFee,
+                        Amount = managerFee,
+                        RelatedOrderId = sell.Id,
+                        RelatedShareTransaction = shareTransaction,
+                        Description = $"Manager profit fee on sale of {company.Name}",
+                        CreatedInCycleId = cycle.Id,
+                        CreatedAt = now,
+                    });
+                    dbContext.MoneyTransactions.Add(new MoneyTransaction
+                    {
+                        ParticipantId = manager.Id,
+                        Type = MoneyTransactionType.CollectiveFundManagerFeeReceived,
+                        Amount = managerFee,
+                        RelatedOrderId = sell.Id,
+                        RelatedShareTransaction = shareTransaction,
+                        FromWhomId = seller.Id,
+                        Description = $"Manager profit fee from fund on sale of {company.Name}",
+                        CreatedInCycleId = cycle.Id,
+                        CreatedAt = now,
+                    });
                 }
             }
         }
