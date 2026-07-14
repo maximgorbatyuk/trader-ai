@@ -85,8 +85,10 @@ builder.Services.AddOptions<AiTradingOptions>()
     .Bind(builder.Configuration.GetSection(AiTradingOptions.SectionName))
     .Validate(ValidateAiTrading, "AiTrading configuration is invalid: timing, concurrency, order, and retry limits must be positive, every provider endpoint must be HTTPS, and each provider must list at least one model.")
     .ValidateOnStart();
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<AiProviderCatalog>();
 builder.Services.AddSingleton<AiTraderRuntimeState>();
+builder.Services.AddSingleton<AiPromptDocumentationProvider>();
 builder.Services.AddScoped<AiTraderConfigurationService>();
 builder.Services.AddOptions<RandomChanceRatesOptions>()
     .Bind(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName))
