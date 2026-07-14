@@ -15,6 +15,7 @@ An Auditor is an independent rating agency. It reviews companies for risk, and i
 - A hidden issue raises the verdict to Extra risk and drops the share price by 10%–20%.
 - An equally likely Extra raised expectations verdict can occupy the positive side of that roll when the company's latest five audits contain no Extra risk and at least one ordinary raised expectations verdict.
 - Extra raised expectations lifts the share price by 10%–20%. An older Extra risk outside the latest five audits does not block it, and an older ordinary raise outside that window does not enable it.
+- The larger a company's share of total market capitalization, the narrower its Extra raised expectations band, so a market giant is handed this exceptional raise far less often; a company that is nearly the whole market keeps only a small residual chance.
 - An active crisis triples both Extra-outcome chances.
 - The Extra-risk price drop uses the normal news-impact mechanism and is announced as company news.
 - A High-risk verdict is announced as news with no price impact.

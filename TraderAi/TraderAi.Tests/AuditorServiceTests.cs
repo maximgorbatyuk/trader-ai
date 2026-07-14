@@ -208,6 +208,7 @@ public sealed class AuditorServiceTests : IDisposable
         await AddSnapshotAsync(company.Id, price: 100m, current);
         var auditor = await AddAuditorAsync();
         await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
+        await AddCapitalizationBallastAsync(current, auditor.Id);
         var seller = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 0m);
         var sell = await AddSellOrderAsync(seller.Id, company.Id, quantity: 5, filledQuantity: 0, price: 100m, current);
 
@@ -238,6 +239,28 @@ public sealed class AuditorServiceTests : IDisposable
         Assert.Equal(
             OrderStatus.Cancelled,
             (await context.Orders.AsNoTracking().SingleAsync(order => order.Id == sell.Id)).Status);
+    }
+
+    [Fact]
+    public async Task HighMarketShareSuppressesExtraRaisedExpectations()
+    {
+        var ratedAt = await AddCycleAsync(1);
+        var current = await AddCycleAsync(20);
+        await SetupMarketAsync(current);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        var auditor = await AddAuditorAsync();
+        await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
+
+        // The lone live company is 100% of market capitalisation, flooring the raise factor to 0.1: the stable
+        // Extra Raise band collapses to [0.02, 0.022), so a 0.03 roll that would hit the old [0.02, 0.04) misses.
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
+        Assert.Equal(CompanyRiskRating.Low, latest.Rating);
+        Assert.Equal(0, await context.NewsPosts.CountAsync());
     }
 
     [Fact]
@@ -342,6 +365,7 @@ public sealed class AuditorServiceTests : IDisposable
             CompanyRiskRating.Low,
             CompanyRiskRating.Low,
             CompanyRiskRating.Low);
+        await AddCapitalizationBallastAsync(current, auditor.Id);
 
         await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d, 0.5d], [0]))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
@@ -391,6 +415,7 @@ public sealed class AuditorServiceTests : IDisposable
         await AddSnapshotAsync(company.Id, price: 200m, current);
         var auditor = await AddAuditorAsync();
         await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
+        await AddCapitalizationBallastAsync(current, auditor.Id);
 
         // The Extra Raise band follows the 10% Extra-risk band: [0.10, 0.20).
         await Service(enabled: true, new ScriptedRandom([0.5d, 0.15d, 0.5d], [0]))
@@ -412,6 +437,7 @@ public sealed class AuditorServiceTests : IDisposable
         await AddSnapshotAsync(company.Id, price: 100m, current);
         var auditor = await AddAuditorAsync();
         await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
+        await AddCapitalizationBallastAsync(current, auditor.Id);
         var crisis = await AddCrisisAsync(current);
 
         // Crisis triples the stable band from 2% to 6%, so Extra Raise occupies [0.06, 0.12).
@@ -753,6 +779,15 @@ public sealed class AuditorServiceTests : IDisposable
         {
             await AddRatingAsync(companyId, auditorId, rating, cycle);
         }
+    }
+
+    // Dominates total market capitalisation but is already rated this cycle, so it stays out of the pick while
+    // making the reviewed company's capitalisation share — and thus its extra-raise suppression — negligible.
+    private async Task AddCapitalizationBallastAsync(MarketCycle currentCycle, int auditorId)
+    {
+        var ballast = await AddCompanyAsync(issuedShares: 10_000_000);
+        await AddSnapshotAsync(ballast.Id, price: 100m, currentCycle);
+        await AddRatingAsync(ballast.Id, auditorId, CompanyRiskRating.Low, currentCycle);
     }
 
     public void Dispose()

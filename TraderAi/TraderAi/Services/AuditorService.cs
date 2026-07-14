@@ -6,8 +6,10 @@ using TraderAi.Models;
 namespace TraderAi.Services;
 
 // Weighted selection keeps large companies prominent without starving small ones, while the cooldown prevents
-// repeated reviews. Extra outcomes share one roll so eligible positive and negative bands stay exactly symmetric.
-// Price changes share MarketImpactService, and the ordinary positive roll remains gated to preserve seeded sequences.
+// repeated reviews. Extra outcomes share one roll: the negative issue band is fixed, but the positive extra-raise
+// band narrows as a company's share of total market capitalisation rises, so a market giant is rarely handed an
+// exceptional raise. Price changes share MarketImpactService, and the ordinary positive roll remains gated to
+// preserve seeded sequences.
 public sealed class AuditorService(
     AppDbContext dbContext,
     IOptions<AuditorOptions> options,
@@ -31,6 +33,9 @@ public sealed class AuditorService(
 
     private const decimal MinRaisePercent = 5m;
     private const decimal MaxRaisePercent = 15m;
+
+    // A near-monopoly still keeps a small shot at an extra raise, mirroring the capitalisation selection floor.
+    private const double MinExtraRaiseFactor = 0.1;
 
     // Buyers revise their bids when a company is flagged: a base cancel chance nudged by the owner's risk profile
     // and temperament.
@@ -91,6 +96,23 @@ public sealed class AuditorService(
             .Select(group => group.Key)
             .ToHashSet();
 
+        var capByCompany = companies.Values.ToDictionary(
+            company => company.Id,
+            company => (double)LatestPrice(snapshotsByCompany.GetValueOrDefault(company.Id)) * company.IssuedSharesCount);
+        var totalMarketCap = capByCompany.Values.Sum();
+
+        // The bigger a company's slice of total market capitalisation, the more its extra-raise band is trimmed.
+        double ExtraRaiseCapFactor(int companyId)
+        {
+            if (totalMarketCap <= 0.0)
+            {
+                return 1.0;
+            }
+
+            var share = capByCompany.GetValueOrDefault(companyId) / totalMarketCap;
+            return Math.Clamp(1.0 - share, MinExtraRaiseFactor, 1.0);
+        }
+
         var picked = new HashSet<int>();
 
         foreach (var auditor in auditors)
@@ -123,7 +145,7 @@ public sealed class AuditorService(
             var issueFound = extraOutcomeRoll < extraOutcomeChance;
             var extraRaiseFound = !issueFound
                 && extraRaiseEligibleCompanyIds.Contains(company.Id)
-                && extraOutcomeRoll < extraOutcomeChance * 2;
+                && extraOutcomeRoll < extraOutcomeChance * (1 + ExtraRaiseCapFactor(company.Id));
 
             CompanyRiskRating rating;
             decimal? impactPercent = null;
