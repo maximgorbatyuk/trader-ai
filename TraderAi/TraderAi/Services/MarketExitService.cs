@@ -211,6 +211,7 @@ public sealed class MarketExitService(
                 Type = MoneyTransactionType.Release,
                 Amount = release,
                 RelatedOrderId = order.Id,
+                Description = "Reserved cash released on market exit",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });

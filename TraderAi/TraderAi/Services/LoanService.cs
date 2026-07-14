@@ -563,6 +563,14 @@ public sealed class LoanService(
             Type = type,
             Amount = amount,
             RelatedLoanId = loanId,
+            Description = type switch
+            {
+                MoneyTransactionType.LoanDisbursement => "Loan principal disbursed by bank",
+                MoneyTransactionType.LoanInterest => "Loan interest paid to bank",
+                MoneyTransactionType.LoanRepayment => "Loan principal repaid to bank",
+                MoneyTransactionType.LoanFine => "Loan late-payment fine paid to bank",
+                _ => null,
+            },
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
         });

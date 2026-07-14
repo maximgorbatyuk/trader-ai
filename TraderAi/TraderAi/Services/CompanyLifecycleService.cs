@@ -237,6 +237,7 @@ public sealed class CompanyLifecycleService(
                     Type = MoneyTransactionType.Release,
                     Amount = order.ReservedCashAmount,
                     RelatedOrderId = order.Id,
+                    Description = "Reserved cash released on company delisting",
                     CreatedInCycleId = currentCycleId,
                     CreatedAt = now,
                 });

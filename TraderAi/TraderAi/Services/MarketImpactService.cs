@@ -190,6 +190,7 @@ public sealed class MarketImpactService(AppDbContext dbContext)
                         Type = MoneyTransactionType.Release,
                         Amount = release,
                         RelatedOrderId = order.Id,
+                        Description = "Reserved cash released on stale order cancel",
                         CreatedInCycleId = cycleId,
                         CreatedAt = now,
                     });

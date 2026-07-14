@@ -583,6 +583,7 @@ public sealed class MarketService(
                     Type = MoneyTransactionType.Release,
                     Amount = release,
                     RelatedOrderId = order.Id,
+                    Description = "Reserved cash released on buy order cancel",
                     CreatedInCycleId = currentCycleId,
                     CreatedAt = DateTime.UtcNow,
                 });
@@ -640,6 +641,7 @@ public sealed class MarketService(
             Type = delta >= 0m ? MoneyTransactionType.Reserve : MoneyTransactionType.Release,
             Amount = Math.Abs(delta),
             RelatedOrderId = order.Id,
+            Description = "Reserved cash adjusted on buy order reprice",
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
         });
@@ -924,6 +926,7 @@ public sealed class MarketService(
                 ParticipantId = owner.Id,
                 Type = MoneyTransactionType.Dividend,
                 Amount = payout,
+                Description = "Dividend from share holdings",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             };
@@ -1169,6 +1172,7 @@ public sealed class MarketService(
                 Type = MoneyTransactionType.Reserve,
                 Amount = reserved,
                 RelatedOrder = order,
+                Description = "Cash reserved for new buy order",
                 CreatedInCycleId = cycleId,
                 CreatedAt = now,
             });
@@ -1923,6 +1927,7 @@ public sealed class MarketService(
                 ParticipantId = fundParticipant.Id,
                 Type = MoneyTransactionType.FundAdvertisement,
                 Amount = quote.Price,
+                Description = "Fund advertising campaign fee",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
@@ -2013,6 +2018,7 @@ public sealed class MarketService(
             ParticipantId = from.Id,
             Type = fromType,
             Amount = amount,
+            Description = $"Transfer to {to.Name}",
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
         });
@@ -2021,6 +2027,8 @@ public sealed class MarketService(
             ParticipantId = to.Id,
             Type = toType,
             Amount = amount,
+            FromWhomId = from.Id,
+            Description = $"Transfer from {from.Name}",
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
         });

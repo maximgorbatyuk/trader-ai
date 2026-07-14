@@ -155,6 +155,7 @@ public sealed class MarginService(AppDbContext dbContext, IOptions<MarginOptions
             ParticipantId = buyer.Id,
             Type = MoneyTransactionType.MarginAdvance,
             Amount = advance,
+            Description = "Margin advance to cover purchase",
             CreatedInCycleId = cycleId,
             CreatedAt = now,
         });
@@ -356,6 +357,12 @@ public sealed class MarginService(AppDbContext dbContext, IOptions<MarginOptions
             ParticipantId = participantId,
             Type = type,
             Amount = amount,
+            Description = type switch
+            {
+                MoneyTransactionType.MarginInterestPayment => "Margin interest paid to broker",
+                MoneyTransactionType.MarginDebitRepayment => "Margin debit repaid to broker",
+                _ => null,
+            },
             CreatedInCycleId = cycleId,
             CreatedAt = now,
         });

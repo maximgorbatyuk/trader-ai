@@ -243,6 +243,7 @@ public sealed class BankruptcyService(
                 ParticipantId = participant.Id,
                 Type = MoneyTransactionType.Bankruptcy,
                 Amount = cashLost,
+                Description = "Cash written off in bankruptcy",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
@@ -408,6 +409,7 @@ public sealed class BankruptcyService(
                 Type = MoneyTransactionType.Release,
                 Amount = release,
                 RelatedOrderId = order.Id,
+                Description = "Reserved cash released on bankruptcy order cancel",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });

@@ -440,6 +440,7 @@ public sealed class AuditorService(
                 Type = MoneyTransactionType.Release,
                 Amount = order.ReservedCashAmount,
                 RelatedOrderId = order.Id,
+                Description = "Reserved cash released on buy order cancel",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });

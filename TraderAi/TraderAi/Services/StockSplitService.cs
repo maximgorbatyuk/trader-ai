@@ -252,6 +252,7 @@ public sealed class StockSplitService(
                 Type = MoneyTransactionType.Release,
                 Amount = order.ReservedCashAmount,
                 RelatedOrderId = order.Id,
+                Description = "Reserved cash released on reverse-split order cancel",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });

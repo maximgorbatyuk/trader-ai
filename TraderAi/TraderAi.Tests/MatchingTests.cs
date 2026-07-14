@@ -70,6 +70,29 @@ public sealed class MatchingTests : IDisposable
     }
 
     [Fact]
+    public async Task TradeCreditRecordsBuyerAsSourceAndDebitHasNone()
+    {
+        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
+
+        await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 110m);
+        await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 5, 100m);
+
+        await marketService.AdvanceCycleAsync();
+
+        // The seller's proceeds came from the buyer, so the credit records the buyer as the source.
+        var credit = await context.MoneyTransactions
+            .SingleAsync(money => money.ParticipantId == seed.Seller.Id && money.Type == MoneyTransactionType.Credit);
+        Assert.Equal(seed.Buyer.Id, credit.FromWhomId);
+        Assert.False(string.IsNullOrWhiteSpace(credit.Description));
+
+        // The buyer's payment is an outflow, so nobody sent it money: no participant source.
+        var debit = await context.MoneyTransactions
+            .SingleAsync(money => money.ParticipantId == seed.Buyer.Id && money.Type == MoneyTransactionType.Debit);
+        Assert.Null(debit.FromWhomId);
+        Assert.False(string.IsNullOrWhiteSpace(debit.Description));
+    }
+
+    [Fact]
     public async Task MidpointMatchReleasesUnusedBuyReservation()
     {
         var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);

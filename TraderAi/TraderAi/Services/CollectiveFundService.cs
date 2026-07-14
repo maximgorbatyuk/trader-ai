@@ -292,6 +292,8 @@ public sealed class CollectiveFundService(
                 ParticipantId = memberParticipant.Id,
                 Type = MoneyTransactionType.CollectiveFundDividend,
                 Amount = gross,
+                FromWhomId = fundOwner.Id,
+                Description = "Dividend passed through from fund",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
@@ -307,6 +309,7 @@ public sealed class CollectiveFundService(
                     ParticipantId = memberParticipant.Id,
                     Type = MoneyTransactionType.CollectiveFundDividendFee,
                     Amount = fee,
+                    Description = "Management fee on fund dividend",
                     CreatedInCycleId = currentCycleId,
                     CreatedAt = now,
                 });
@@ -324,6 +327,7 @@ public sealed class CollectiveFundService(
                 ParticipantId = fundOwner.Id,
                 Type = MoneyTransactionType.CollectiveFundDividendPaid,
                 Amount = distributedGross,
+                Description = "Dividends distributed to members",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
@@ -338,6 +342,7 @@ public sealed class CollectiveFundService(
                 ParticipantId = fundOwner.Id,
                 Type = MoneyTransactionType.CollectiveFundDividendFeeReceived,
                 Amount = feesCollected,
+                Description = "Management fees collected from members",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
@@ -405,6 +410,7 @@ public sealed class CollectiveFundService(
                 ParticipantId = fundParticipant.Id,
                 Type = MoneyTransactionType.CollectiveFundManagerFee,
                 Amount = managerFee,
+                Description = "Manager fee paid to founder",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
@@ -413,6 +419,8 @@ public sealed class CollectiveFundService(
                 ParticipantId = manager.Id,
                 Type = MoneyTransactionType.CollectiveFundManagerFeeReceived,
                 Amount = managerFee,
+                FromWhomId = fundParticipant.Id,
+                Description = "Manager fee received from fund",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
@@ -743,8 +751,8 @@ public sealed class CollectiveFundService(
             fundParticipant.SettledCashBalance -= deposit;
             member.CurrentBalance += deposit;
             member.SettledCashBalance += deposit;
-            AddFundTransaction(fundParticipant.Id, deposit, currentCycleId, now);
-            AddFundTransaction(member.Id, deposit, currentCycleId, now);
+            AddFundTransaction(fundParticipant.Id, deposit, currentCycleId, now, null, "Deposit returned to departing member");
+            AddFundTransaction(member.Id, deposit, currentCycleId, now, fundParticipant.Id, "Deposit returned on leaving fund");
             AddMembershipEvent(fund, member.Id, CollectiveFundMembershipEventType.Left, deposit, currentCycleId, now);
             RemoveMembership(fund, membership);
             return;
@@ -1079,7 +1087,7 @@ public sealed class CollectiveFundService(
                 {
                     member.CurrentBalance += payout;
                     member.SettledCashBalance += payout;
-                    AddFundTransaction(member.Id, payout, currentCycleId, now);
+                    AddFundTransaction(member.Id, payout, currentCycleId, now, fundParticipant.Id, "Payout from fund closure");
                 }
 
                 AddMembershipEvent(fund, member.Id, CollectiveFundMembershipEventType.Left, payout, currentCycleId, now);
@@ -1240,8 +1248,8 @@ public sealed class CollectiveFundService(
         member.SettledCashBalance -= deposit;
         fundParticipant.CurrentBalance += deposit;
         fundParticipant.SettledCashBalance += deposit;
-        AddFundTransaction(member.Id, deposit, currentCycleId, now);
-        AddFundTransaction(fundParticipant.Id, deposit, currentCycleId, now);
+        AddFundTransaction(member.Id, deposit, currentCycleId, now, null, "Deposit to join fund");
+        AddFundTransaction(fundParticipant.Id, deposit, currentCycleId, now, member.Id, "Deposit from joining member");
         AddMembershipEvent(fund, member.Id, CollectiveFundMembershipEventType.Joined, deposit, currentCycleId, now);
 
         var membership = new CollectiveFundParticipant
@@ -1377,6 +1385,7 @@ public sealed class CollectiveFundService(
                 Type = MoneyTransactionType.Release,
                 Amount = release,
                 RelatedOrderId = order.Id,
+                Description = "Reserved cash released on buy order cancel",
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
@@ -1393,12 +1402,14 @@ public sealed class CollectiveFundService(
         membershipsByFundId[fund.Id].Remove(membership);
     }
 
-    private void AddFundTransaction(int participantId, decimal amount, int currentCycleId, DateTime now) =>
+    private void AddFundTransaction(int participantId, decimal amount, int currentCycleId, DateTime now, int? fromWhomId, string description) =>
         dbContext.MoneyTransactions.Add(new MoneyTransaction
         {
             ParticipantId = participantId,
             Type = MoneyTransactionType.CollectiveFund,
             Amount = amount,
+            FromWhomId = fromWhomId,
+            Description = description,
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
         });

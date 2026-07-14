@@ -244,6 +244,7 @@ public sealed class MatchingEngine(
                 Type = MoneyTransactionType.Release,
                 Amount = release,
                 RelatedOrderId = order.Id,
+                Description = "Reserved cash released on self-crossing order cancel",
                 CreatedInCycleId = cycleId,
                 CreatedAt = now,
             });
@@ -317,6 +318,7 @@ public sealed class MatchingEngine(
             Amount = spent,
             RelatedOrderId = buy.Id,
             RelatedShareTransaction = shareTransaction,
+            Description = $"Paid for {quantity} shares of {company.Name}",
             CreatedInCycleId = cycle.Id,
             CreatedAt = now,
         });
@@ -330,6 +332,7 @@ public sealed class MatchingEngine(
                 Type = MoneyTransactionType.Release,
                 Amount = released,
                 RelatedOrderId = buy.Id,
+                Description = "Unused buy reservation released on fill",
                 CreatedInCycleId = cycle.Id,
                 CreatedAt = now,
             });
@@ -345,6 +348,8 @@ public sealed class MatchingEngine(
                 Amount = spent,
                 RelatedOrderId = sell.Id,
                 RelatedShareTransaction = shareTransaction,
+                FromWhomId = buyer.Id,
+                Description = $"Proceeds from selling {quantity} shares of {company.Name}",
                 CreatedInCycleId = cycle.Id,
                 CreatedAt = now,
             });
@@ -368,6 +373,7 @@ public sealed class MatchingEngine(
                         Amount = fee,
                         RelatedOrderId = sell.Id,
                         RelatedShareTransaction = shareTransaction,
+                        Description = $"Trading fee on sale of {company.Name}",
                         CreatedInCycleId = cycle.Id,
                         CreatedAt = now,
                     });
