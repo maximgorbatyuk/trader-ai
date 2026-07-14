@@ -199,6 +199,232 @@ public sealed class AuditorServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task EligibleHistoryYieldsExtraRaisedExpectationsWithPositiveImpact()
+    {
+        var ratedAt = await AddCycleAsync(1);
+        var current = await AddCycleAsync(20);
+        await SetupMarketAsync(current);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        var auditor = await AddAuditorAsync();
+        await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
+        var seller = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 0m);
+        var sell = await AddSellOrderAsync(seller.Id, company.Id, quantity: 5, filledQuantity: 0, price: 100m, current);
+
+        // Pick, then 0.03 falls in the stable Extra Raise band [0.02, 0.04); midpoint impact lifts 15%.
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d, 0.5d], [0]))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var rating = await context.CompanyRatings.AsNoTracking()
+            .OrderByDescending(row => row.Id)
+            .FirstAsync();
+        Assert.Equal(CompanyRiskRating.ExtraRaisedExpectations, rating.Rating);
+        Assert.Equal(15m, rating.ImpactPercent);
+
+        var latest = await context.PriceSnapshots.AsNoTracking()
+            .Where(snapshot => snapshot.CompanyId == company.Id)
+            .OrderByDescending(snapshot => snapshot.Id)
+            .FirstAsync();
+        Assert.Equal(115m, latest.Price);
+
+        var news = await context.NewsPosts.AsNoTracking().SingleAsync();
+        Assert.Equal(NewsImpactScope.Company, news.Scope);
+        Assert.Equal(NewsImpactDirection.Increase, news.Direction);
+        Assert.Equal(15m, news.ImpactPercent);
+        Assert.Equal(company.Id, news.TargetCompanyId);
+        Assert.Equal(current.Id, news.ImpactAppliedInCycleId);
+        Assert.StartsWith("Exceptional audit", news.Title);
+        Assert.Equal(
+            OrderStatus.Cancelled,
+            (await context.Orders.AsNoTracking().SingleAsync(order => order.Id == sell.Id)).Status);
+    }
+
+    [Fact]
+    public async Task ExtraInLatestFiveBlocksExtraRaisedExpectations()
+    {
+        var ratedAt = await AddCycleAsync(1);
+        var current = await AddCycleAsync(20);
+        await SetupMarketAsync(current);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        var auditor = await AddAuditorAsync();
+        await AddRatingsAsync(
+            company.Id,
+            auditor.Id,
+            ratedAt,
+            CompanyRiskRating.RaisedExpectations,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.Extra);
+
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
+        Assert.Equal(CompanyRiskRating.Low, latest.Rating);
+        Assert.Equal(0, await context.NewsPosts.CountAsync());
+    }
+
+    [Fact]
+    public async Task NoRaisedExpectationsInLatestFiveBlocksExtraRaisedExpectations()
+    {
+        var ratedAt = await AddCycleAsync(1);
+        var current = await AddCycleAsync(20);
+        await SetupMarketAsync(current);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        var auditor = await AddAuditorAsync();
+        await AddRatingsAsync(
+            company.Id,
+            auditor.Id,
+            ratedAt,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.High,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.High,
+            CompanyRiskRating.Low);
+
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
+        Assert.Equal(CompanyRiskRating.Low, latest.Rating);
+        Assert.Equal(0, await context.NewsPosts.CountAsync());
+    }
+
+    [Fact]
+    public async Task ExtraRaisedExpectationsDoesNotRenewItsOwnEligibility()
+    {
+        var ratedAt = await AddCycleAsync(1);
+        var current = await AddCycleAsync(20);
+        await SetupMarketAsync(current);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        var auditor = await AddAuditorAsync();
+        await AddRatingsAsync(
+            company.Id,
+            auditor.Id,
+            ratedAt,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.ExtraRaisedExpectations,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.High,
+            CompanyRiskRating.Low);
+
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
+        Assert.Equal(CompanyRiskRating.Low, latest.Rating);
+    }
+
+    [Fact]
+    public async Task ExtraOlderThanLatestFiveDoesNotBlockExtraRaisedExpectations()
+    {
+        var ratedAt = await AddCycleAsync(1);
+        var current = await AddCycleAsync(20);
+        await SetupMarketAsync(current);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        var auditor = await AddAuditorAsync();
+        await AddRatingsAsync(
+            company.Id,
+            auditor.Id,
+            ratedAt,
+            CompanyRiskRating.Extra,
+            CompanyRiskRating.RaisedExpectations,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.Low);
+
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d, 0.5d], [0]))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
+        Assert.Equal(CompanyRiskRating.ExtraRaisedExpectations, latest.Rating);
+    }
+
+    [Fact]
+    public async Task RaisedExpectationsOlderThanLatestFiveDoesNotEnableExtraRaisedExpectations()
+    {
+        var ratedAt = await AddCycleAsync(1);
+        var current = await AddCycleAsync(20);
+        await SetupMarketAsync(current);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        var auditor = await AddAuditorAsync();
+        await AddRatingsAsync(
+            company.Id,
+            auditor.Id,
+            ratedAt,
+            CompanyRiskRating.RaisedExpectations,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.High,
+            CompanyRiskRating.Low,
+            CompanyRiskRating.High,
+            CompanyRiskRating.Low);
+
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
+        Assert.Equal(CompanyRiskRating.Low, latest.Rating);
+    }
+
+    [Fact]
+    public async Task BigMoveUsesTenPercentExtraRaisedExpectationsBand()
+    {
+        var ratedAt = await AddCycleAsync(1);
+        var older = await AddCycleAsync(10);
+        var current = await AddCycleAsync(20);
+        await SetupMarketAsync(current);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(company.Id, price: 100m, older);
+        await AddSnapshotAsync(company.Id, price: 200m, current);
+        var auditor = await AddAuditorAsync();
+        await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
+
+        // The Extra Raise band follows the 10% Extra-risk band: [0.10, 0.20).
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.15d, 0.5d], [0]))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
+        Assert.Equal(CompanyRiskRating.ExtraRaisedExpectations, latest.Rating);
+        Assert.Equal(15m, latest.ImpactPercent);
+    }
+
+    [Fact]
+    public async Task CrisisMultiplierExpandsExtraRaisedExpectationsBand()
+    {
+        var ratedAt = await AddCycleAsync(1);
+        var current = await AddCycleAsync(20);
+        await SetupMarketAsync(current);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        var auditor = await AddAuditorAsync();
+        await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
+        var crisis = await AddCrisisAsync(current);
+
+        // Crisis triples the stable band from 2% to 6%, so Extra Raise occupies [0.06, 0.12).
+        await Service(enabled: true, new ScriptedRandom([0.5d, 0.08d, 0.5d], [0]))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow, crisis);
+        await context.SaveChangesAsync();
+
+        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
+        Assert.Equal(CompanyRiskRating.ExtraRaisedExpectations, latest.Rating);
+        Assert.Empty(await context.CrisisEvents.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
     public async Task RaisedExpectationsLiftsPriceAndCancelsOnlyEligibleSellOrders()
     {
         var cycle = await AddCycleAsync(20);
@@ -515,6 +741,18 @@ public sealed class AuditorServiceTests : IDisposable
             CreatedAt = DateTime.UtcNow,
         });
         await context.SaveChangesAsync();
+    }
+
+    private async Task AddRatingsAsync(
+        int companyId,
+        int auditorId,
+        MarketCycle cycle,
+        params CompanyRiskRating[] ratings)
+    {
+        foreach (var rating in ratings)
+        {
+            await AddRatingAsync(companyId, auditorId, rating, cycle);
+        }
     }
 
     public void Dispose()

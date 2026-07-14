@@ -28,6 +28,7 @@ const PLAYER_SHARE_OPTIONS = [
 const RISK_OPTIONS = [
   { value: 'all', label: 'Any rating' },
   { value: 'none', label: 'No audit' },
+  { value: 'ExtraRaisedExpectations', label: 'Extra raised expectations' },
   { value: 'RaisedExpectations', label: 'Raised expectations' },
   { value: 'Extra', label: 'Extra risk' },
   { value: 'High', label: 'High risk' },

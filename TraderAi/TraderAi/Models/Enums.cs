@@ -189,6 +189,7 @@ public enum CompanyRiskRating
     High,
     Extra,
     RaisedExpectations,
+    ExtraRaisedExpectations,
 }
 
 public enum CrisisEventType

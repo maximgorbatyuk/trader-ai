@@ -13,7 +13,7 @@ public sealed class CompanyRating
 
     public CompanyRiskRating Rating { get; set; }
 
-    // The price drop applied when a hidden issue escalated the verdict to Extra; null otherwise.
+    // Stores an absolute value because the rating determines direction and both positive and negative verdicts share this record.
     public decimal? ImpactPercent { get; set; }
 
     public int CreatedInCycleId { get; set; }

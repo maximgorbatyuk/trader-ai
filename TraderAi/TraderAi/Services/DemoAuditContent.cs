@@ -1,7 +1,7 @@
 namespace TraderAi.Services;
 
-// Headlines for auditor findings: a neutral high-risk flag, a discovered issue, or raised expectations. Each
-// call draws one Next from a caller-supplied Random to pick a template, so output is reproducible for a seed.
+// Separate templates keep the exceptional outcome visible in news, while caller-owned randomness preserves
+// reproducible seeded simulations.
 internal static class DemoAuditContent
 {
     private static readonly (string Title, string Content)[] HighRiskTemplates =
@@ -36,6 +36,16 @@ internal static class DemoAuditContent
             "A clean audit strengthened confidence in {company}, with the rating desk pointing to improving fundamentals."),
     ];
 
+    private static readonly (string Title, string Content)[] ExtraRaisedExpectationsTemplates =
+    [
+        ("Exceptional audit lifts expectations for {company}",
+            "Auditors found exceptional strength at {company} and sharply raised their outlook for its near-term performance."),
+        ("{company} earns exceptional auditor confidence",
+            "A standout review of {company} led auditors to issue an exceptionally strong positive outlook."),
+        ("Auditors see exceptional upside at {company}",
+            "A clean review uncovered unusually strong prospects at {company}, prompting a major outlook upgrade."),
+    ];
+
     public static (string Title, string Content) HighRisk(string companyName, Random random) =>
         Fill(HighRiskTemplates[random.Next(HighRiskTemplates.Length)], companyName);
 
@@ -44,6 +54,9 @@ internal static class DemoAuditContent
 
     public static (string Title, string Content) RaisedExpectations(string companyName, Random random) =>
         Fill(RaisedExpectationsTemplates[random.Next(RaisedExpectationsTemplates.Length)], companyName);
+
+    public static (string Title, string Content) ExtraRaisedExpectations(string companyName, Random random) =>
+        Fill(ExtraRaisedExpectationsTemplates[random.Next(ExtraRaisedExpectationsTemplates.Length)], companyName);
 
     private static (string Title, string Content) Fill((string Title, string Content) template, string companyName) =>
         (template.Title.Replace("{company}", companyName), template.Content.Replace("{company}", companyName));

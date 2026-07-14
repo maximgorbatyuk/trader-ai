@@ -1513,17 +1513,26 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                     CompanyId = companyId, AuditorId = auditorId, Rating = CompanyRiskRating.Extra, ImpactPercent = 25m,
                     CreatedInCycleId = cycleId, CreatedAt = DateTime.UtcNow,
                 });
+                dbContext.CompanyRatings.Add(new CompanyRating
+                {
+                    CompanyId = companyId,
+                    AuditorId = auditorId,
+                    Rating = CompanyRiskRating.ExtraRaisedExpectations,
+                    ImpactPercent = 15m,
+                    CreatedInCycleId = cycleId,
+                    CreatedAt = DateTime.UtcNow,
+                });
                 await dbContext.SaveChangesAsync();
             }
 
             var detail = await client.GetFromJsonAsync<CompanyDetailDto>($"/companies/{companyId}");
-            Assert.Equal("Extra", detail!.CurrentRating);
-            Assert.Equal("High", detail.PreviousRating);
+            Assert.Equal("ExtraRaisedExpectations", detail!.CurrentRating);
+            Assert.Equal("Extra", detail.PreviousRating);
 
             var ratings = await client.GetFromJsonAsync<CompanyRatingDto[]>($"/companies/{companyId}/ratings");
-            Assert.Equal(2, ratings!.Length);
-            Assert.Equal("Extra", ratings[0].Rating);
-            Assert.Equal(25m, ratings[0].ImpactPercent);
+            Assert.Equal(3, ratings!.Length);
+            Assert.Equal("ExtraRaisedExpectations", ratings[0].Rating);
+            Assert.Equal(15m, ratings[0].ImpactPercent);
         }
         finally
         {
@@ -1531,8 +1540,10 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
-    [Fact]
-    public async Task RaisedExpectationsDoesNotPutAHoldingInHighRiskAttention()
+    [Theory]
+    [InlineData(CompanyRiskRating.RaisedExpectations)]
+    [InlineData(CompanyRiskRating.ExtraRaisedExpectations)]
+    public async Task PositiveAuditorRatingsDoNotPutAHoldingInHighRiskAttention(CompanyRiskRating rating)
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
         var databasePath = Path.Combine(databaseDirectory, "app.db");
@@ -1564,7 +1575,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 {
                     CompanyId = companyId,
                     AuditorId = auditorId,
-                    Rating = CompanyRiskRating.RaisedExpectations,
+                    Rating = rating,
                     ImpactPercent = 10m,
                     CreatedInCycleId = cycleId,
                     CreatedAt = DateTime.UtcNow,

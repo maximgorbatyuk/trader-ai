@@ -6,8 +6,8 @@ using TraderAi.Models;
 namespace TraderAi.Services;
 
 // Weighted selection keeps large companies prominent without starving small ones, while the cooldown prevents
-// repeated reviews. Price changes share MarketImpactService so audit events respect the same market controls.
-// Scripted draws stay in auditor order, with the positive roll gated at zero to preserve existing seeded sequences.
+// repeated reviews. Extra outcomes share one roll so eligible positive and negative bands stay exactly symmetric.
+// Price changes share MarketImpactService, and the ordinary positive roll remains gated to preserve seeded sequences.
 public sealed class AuditorService(
     AppDbContext dbContext,
     IOptions<AuditorOptions> options,
@@ -25,9 +25,9 @@ public sealed class AuditorService(
     private const int TrendWindowCycles = 10;
     private const double BigMovePerCycleThreshold = 0.05;
 
-    // An uncovered issue drops the price by a random amount in this range.
-    private const decimal MinIssueDropPercent = 10m;
-    private const decimal MaxIssueDropPercent = 20m;
+    // Extra verdicts use the same magnitude in opposite directions.
+    private const decimal MinExtraImpactPercent = 10m;
+    private const decimal MaxExtraImpactPercent = 20m;
 
     private const decimal MinRaisePercent = 5m;
     private const decimal MaxRaisePercent = 15m;
@@ -72,13 +72,24 @@ public sealed class AuditorService(
                         snapshot.Price))
                     .ToList());
 
-        var latestRatingCycleByCompany = (await dbContext.CompanyRatings
-                .Select(rating => new { rating.CompanyId, rating.CreatedInCycleId })
-                .ToListAsync())
+        var ratingRows = await dbContext.CompanyRatings
+            .Select(rating => new { rating.Id, rating.CompanyId, rating.Rating, rating.CreatedInCycleId })
+            .ToListAsync();
+        var latestRatingCycleByCompany = ratingRows
             .GroupBy(rating => rating.CompanyId)
             .ToDictionary(
                 group => group.Key,
                 group => group.Max(rating => cycleNumbersById.GetValueOrDefault(rating.CreatedInCycleId)));
+        var extraRaiseEligibleCompanyIds = ratingRows
+            .GroupBy(rating => rating.CompanyId)
+            .Where(group =>
+            {
+                var recent = group.OrderByDescending(rating => rating.Id).Take(5).Select(rating => rating.Rating).ToList();
+                return recent.Contains(CompanyRiskRating.RaisedExpectations)
+                    && !recent.Contains(CompanyRiskRating.Extra);
+            })
+            .Select(group => group.Key)
+            .ToHashSet();
 
         var picked = new HashSet<int>();
 
@@ -100,13 +111,19 @@ public sealed class AuditorService(
 
             var stable = IsStable(snapshotsByCompany.GetValueOrDefault(company.Id), currentCycleNumber);
             var triggers = chanceRates.Value.EventTriggerChances;
-            var issueChance = stable ? triggers.AuditorIssueOnStable : triggers.AuditorIssueOnBigMove;
+            var extraOutcomeChance = stable ? triggers.AuditorIssueOnStable : triggers.AuditorIssueOnBigMove;
             if (activeCrisis is not null)
             {
-                issueChance = Math.Min(1.0, issueChance * chanceRates.Value.ChanceModifiers.CrisisAuditorIssueMultiplier);
+                extraOutcomeChance = Math.Min(
+                    1.0,
+                    extraOutcomeChance * chanceRates.Value.ChanceModifiers.CrisisAuditorIssueMultiplier);
             }
 
-            var issueFound = random.NextDouble() < issueChance;
+            var extraOutcomeRoll = random.NextDouble();
+            var issueFound = extraOutcomeRoll < extraOutcomeChance;
+            var extraRaiseFound = !issueFound
+                && extraRaiseEligibleCompanyIds.Contains(company.Id)
+                && extraOutcomeRoll < extraOutcomeChance * 2;
 
             CompanyRiskRating rating;
             decimal? impactPercent = null;
@@ -114,8 +131,8 @@ public sealed class AuditorService(
             if (issueFound)
             {
                 rating = CompanyRiskRating.Extra;
-                impactPercent = Round(MinIssueDropPercent
-                    + ((decimal)random.NextDouble() * (MaxIssueDropPercent - MinIssueDropPercent)));
+                impactPercent = Round(MinExtraImpactPercent
+                    + ((decimal)random.NextDouble() * (MaxExtraImpactPercent - MinExtraImpactPercent)));
 
                 // cancelStaleOrders: false — the personality-weighted revision below replaces the blanket cancel.
                 await marketImpact.ApplyImpactAsync(
@@ -137,12 +154,17 @@ public sealed class AuditorService(
                     TargetCompanyId = company.Id,
                 });
             }
-            else if (triggers.AuditorRaiseExpectationsChance > 0d
-                && random.NextDouble() < triggers.AuditorRaiseExpectationsChance)
+            else if (extraRaiseFound
+                || (triggers.AuditorRaiseExpectationsChance > 0d
+                    && random.NextDouble() < triggers.AuditorRaiseExpectationsChance))
             {
-                rating = CompanyRiskRating.RaisedExpectations;
-                impactPercent = Round(MinRaisePercent
-                    + ((decimal)random.NextDouble() * (MaxRaisePercent - MinRaisePercent)));
+                rating = extraRaiseFound
+                    ? CompanyRiskRating.ExtraRaisedExpectations
+                    : CompanyRiskRating.RaisedExpectations;
+                var minImpactPercent = extraRaiseFound ? MinExtraImpactPercent : MinRaisePercent;
+                var maxImpactPercent = extraRaiseFound ? MaxExtraImpactPercent : MaxRaisePercent;
+                impactPercent = Round(minImpactPercent
+                    + ((decimal)random.NextDouble() * (maxImpactPercent - minImpactPercent)));
 
                 await marketImpact.ApplyImpactAsync(
                     NewsImpactDirection.Increase,
@@ -154,7 +176,9 @@ public sealed class AuditorService(
 
                 await ReviseSellOrdersAsync(company.Id, now);
 
-                var (title, content) = DemoAuditContent.RaisedExpectations(company.Name, random);
+                var (title, content) = extraRaiseFound
+                    ? DemoAuditContent.ExtraRaisedExpectations(company.Name, random)
+                    : DemoAuditContent.RaisedExpectations(company.Name, random);
                 dbContext.NewsPosts.Add(new NewsPost
                 {
                     Title = title,

@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
 
@@ -89,6 +90,32 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.True(File.Exists(databasePath));
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void StartupRejectsAuditorExtraOutcomeChanceAboveFiftyPercent()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = factory.WithWebHostBuilder(builder =>
+            {
+                builder.UseSetting("ConnectionStrings:DefaultConnection", $"Data Source={databasePath}");
+                builder.UseSetting("RandomChanceRates:EventTriggerChances:AuditorIssueOnBigMove", "0.20");
+                builder.UseSetting("RandomChanceRates:ChanceModifiers:CrisisAuditorIssueMultiplier", "3.0");
+            });
+
+            var exception = Assert.Throws<OptionsValidationException>(() => configuredFactory.CreateClient());
+            Assert.Contains("50%", exception.Message);
+            Assert.False(File.Exists(databasePath));
         }
         finally
         {
