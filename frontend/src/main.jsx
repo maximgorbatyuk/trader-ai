@@ -21,6 +21,7 @@ import CrisisDetailPage from './CrisisDetailPage.jsx'
 import BanksPage from './BanksPage.jsx'
 import BankLoansPage from './BankLoansPage.jsx'
 import PlayerStatsPage from './PlayerStatsPage.jsx'
+import FundStatsPage from './FundStatsPage.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -30,6 +31,7 @@ createRoot(document.getElementById('root')).render(
           <Route path="/" element={<App />} />
           <Route path="/trade-market" element={<TradeMarketPage />} />
           <Route path="/player-stats" element={<PlayerStatsPage />} />
+          <Route path="/fund-stats" element={<FundStatsPage />} />
           <Route path="/traders" element={<TradersPage />} />
           <Route path="/traders/:id" element={<TraderDetailPage />} />
           <Route path="/companies" element={<CompaniesPage />} />

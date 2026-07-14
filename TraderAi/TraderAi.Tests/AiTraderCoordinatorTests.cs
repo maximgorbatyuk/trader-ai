@@ -171,13 +171,14 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     public async Task InvalidJsonRetainsRawResponseAndSetsError()
     {
         var seed = await SeedMarketAsync();
-        fakeClient.OnSend = _ => Task.FromResult(Success("not json"));
+        const string malformed = "{\"summary\":\"x\",\"orders\":}";
+        fakeClient.OnSend = _ => Task.FromResult(Success(malformed));
 
         var status = await Coordinator().ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
 
         Assert.Equal(AiTraderCallStatus.InvalidJson, status);
         var call = await Db().AiTraderCalls.SingleAsync();
-        Assert.Equal("not json", call.ResponseBody);
+        Assert.Equal(malformed, call.ResponseBody);
         Assert.NotNull(call.Error);
         Assert.Equal(AiTraderRuntimeStatus.Error, Runtime().Get(seed.ParticipantId).Status);
     }

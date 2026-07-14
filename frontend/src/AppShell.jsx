@@ -136,6 +136,9 @@ export function AppShell() {
           <NavLink className={sideLinkClass} to="/player-stats">
             Player stats
           </NavLink>
+          <NavLink className={sideLinkClass} to="/fund-stats">
+            Fund stats
+          </NavLink>
 
           <SideGroup title="Active market">
             <NavLink className={sideLinkClass} to="/traders">
