@@ -275,7 +275,7 @@ public sealed class OrderMaintenanceTests : IDisposable
     {
         for (var step = 0; step < times; step++)
         {
-            await market.StepCycleAsync();
+            await market.RunCycleTickAsync();
         }
     }
 

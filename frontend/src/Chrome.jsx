@@ -37,13 +37,7 @@ export function TopBar({ connected, ready, market, pending, tradingClock, runAct
       </Link>
       <div className="topbar-status">
         {market ? (
-          <Controls
-            market={market}
-            pending={pending}
-            nextStepTitle={tradingClock?.nextStepTitle}
-            runAction={runAction}
-            resetMarket={resetMarket}
-          />
+          <Controls market={market} pending={pending} runAction={runAction} resetMarket={resetMarket} />
         ) : null}
         {tradingClock ? <TradingClockBadges clock={tradingClock} /> : null}
         {market?.luldAffectedCount > 0 ? (
@@ -58,10 +52,9 @@ export function TopBar({ connected, ready, market, pending, tradingClock, runAct
   )
 }
 
-function Controls({ market, pending, nextStepTitle, runAction, resetMarket }) {
+function Controls({ market, pending, runAction, resetMarket }) {
   const running = market.status === 'Running'
   const [confirmingReset, setConfirmingReset] = useState(false)
-  const stepTitle = nextStepTitle ?? 'Run one decision-and-match trading cycle'
 
   useEffect(() => {
     if (!confirmingReset) return undefined
@@ -82,14 +75,6 @@ function Controls({ market, pending, nextStepTitle, runAction, resetMarket }) {
 
   return (
     <div className="controls" role="group" aria-label="Market controls">
-      <button
-        className="btn"
-        disabled={pending || running}
-        title={running ? `Pause the loop to step by hand. ${stepTitle}` : stepTitle}
-        onClick={() => runAction(api.stepCycle)}
-      >
-        Step once
-      </button>
       {running ? (
         <button className="btn btn-primary" disabled={pending} onClick={() => runAction(api.pauseMarket)}>
           Pause loop

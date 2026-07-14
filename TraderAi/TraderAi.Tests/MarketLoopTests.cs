@@ -68,19 +68,6 @@ public sealed class MarketLoopTests : IDisposable
     }
 
     [Fact]
-    public async Task ManualStepRunsEvenWhenMarketIsPaused()
-    {
-        await TestMarketSeed.SeedClassicScenarioAsync(context);
-        await marketService.SetStatusAsync(MarketStatus.Paused);
-
-        var tick = await marketService.StepCycleAsync();
-
-        Assert.True(tick.Ran);
-        Assert.Equal(2, tick.OrdersPlaced);
-        Assert.Equal(1, tick.FillCount);
-    }
-
-    [Fact]
     public async Task SetStatusReturnsNullWhenNoMarketExists()
     {
         Assert.Null(await marketService.SetStatusAsync(MarketStatus.Paused));
@@ -171,7 +158,7 @@ public sealed class MarketLoopTests : IDisposable
     }
 
     [Fact]
-    public async Task PausedBreakFreezesAutomaticallyButManualStepAdvancesOnlyBreakTime()
+    public async Task PausedBreakFreezesUntilTheRunningLoopResumes()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var market = await context.Markets.SingleAsync();
@@ -229,9 +216,10 @@ public sealed class MarketLoopTests : IDisposable
         Assert.False((await service.PlaceOrderAsync(player.Id, company.Id, OrderType.Buy, 1, 100m)).Success);
         Assert.True((await service.CancelPlayerOrderAsync(order.Id)).Success);
 
-        var step = await service.StepCycleAsync();
+        await service.SetStatusAsync(MarketStatus.Running);
+        var tick = await service.RunCycleTickAsync();
 
-        Assert.True(step.Ran);
+        Assert.True(tick.Ran);
         Assert.Equal(2, breakCycle.ElapsedSeconds);
         Assert.Single(await context.MarketCycles.ToListAsync());
         Assert.Equal(0m, player.ReservedBalance);
@@ -350,9 +338,10 @@ public sealed class MarketLoopTests : IDisposable
         Assert.False((await service.RunCycleTickAsync()).Ran);
         Assert.Equal(SettlementStatus.Pending, (await context.SettlementInstructions.SingleAsync()).Status);
 
-        var step = await service.StepCycleAsync();
+        await service.SetStatusAsync(MarketStatus.Running);
+        var tick = await service.RunCycleTickAsync();
 
-        Assert.True(step.Ran);
+        Assert.True(tick.Ran);
         Assert.Equal(SettlementStatus.Settled, (await context.SettlementInstructions.SingleAsync()).Status);
         Assert.Equal(seller.CurrentBalance, seller.SettledCashBalance);
         Assert.Equal(buyer.CurrentBalance, buyer.SettledCashBalance);

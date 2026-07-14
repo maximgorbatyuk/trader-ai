@@ -44,7 +44,7 @@ public sealed class DividendTests : IDisposable
         var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
         var bob = await context.Participants.FirstAsync(participant => participant.Name == "Bob");
 
-        await Service().StepCycleAsync();
+        await Service().RunCycleTickAsync();
 
         // Alice holds 10 shares at price 100; the floor rate (0.01% of capitalisation, i.e. 0.01 per share) pays
         // 0.10 across her 10 shares.
@@ -82,7 +82,7 @@ public sealed class DividendTests : IDisposable
         var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
         var holding = await context.Holdings.FirstAsync(row => row.ParticipantId == alice.Id);
 
-        await Service().StepCycleAsync();
+        await Service().RunCycleTickAsync();
 
         var dividend = await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.Dividend);
         var line = await context.DividendPayouts.SingleAsync(payout => payout.MoneyTransactionId == dividend.Id);
@@ -101,7 +101,7 @@ public sealed class DividendTests : IDisposable
 
         var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
 
-        await Service().StepCycleAsync();
+        await Service().RunCycleTickAsync();
 
         Assert.False(await context.MoneyTransactions.AnyAsync(money => money.Type == MoneyTransactionType.Dividend));
         await context.Entry(alice).ReloadAsync();
@@ -116,7 +116,7 @@ public sealed class DividendTests : IDisposable
         market.NextDividendCycleNumber = 0;
         await context.SaveChangesAsync();
 
-        await Service().StepCycleAsync();
+        await Service().RunCycleTickAsync();
 
         Assert.False(await context.MoneyTransactions.AnyAsync(money => money.Type == MoneyTransactionType.Dividend));
         await context.Entry(market).ReloadAsync();
@@ -165,7 +165,7 @@ public sealed class DividendTests : IDisposable
         market.NextDividendCycleNumber = 1;
         await context.SaveChangesAsync();
 
-        await Service().StepCycleAsync();
+        await Service().RunCycleTickAsync();
 
         // Uncapped would be price*rate*qty = 10,000 * 0.0001 * 2,000,000 = 2,000,000; the ceiling holds it to 1,000,000.
         var dividend = await context.MoneyTransactions.SingleAsync(money => money.Type == MoneyTransactionType.Dividend);
@@ -189,7 +189,7 @@ public sealed class DividendTests : IDisposable
         var dueCycleId = market.CurrentCycleId!.Value;
         var before = DateTime.UtcNow;
 
-        await Service(new QueuedRoll(1d, 0d, 0d)).StepCycleAsync();
+        await Service(new QueuedRoll(1d, 0d, 0d)).RunCycleTickAsync();
 
         var after = DateTime.UtcNow;
         await context.Entry(company).ReloadAsync();
@@ -213,7 +213,7 @@ public sealed class DividendTests : IDisposable
             heldShares: 1);
         var company = await context.Companies.SingleAsync();
 
-        await Service(new QueuedRoll(1d, 0d, 0d)).StepCycleAsync();
+        await Service(new QueuedRoll(1d, 0d, 0d)).RunCycleTickAsync();
 
         await context.Entry(company).ReloadAsync();
         Assert.Equal(1_000_000m, company.CashBalance);
@@ -233,7 +233,7 @@ public sealed class DividendTests : IDisposable
             heldShares: 1);
         var company = await context.Companies.SingleAsync();
 
-        await Service(new QueuedRoll(1d, 0d, 0d)).StepCycleAsync();
+        await Service(new QueuedRoll(1d, 0d, 0d)).RunCycleTickAsync();
 
         await context.Entry(company).ReloadAsync();
         Assert.Equal(0m, company.CashBalance);
@@ -246,7 +246,7 @@ public sealed class DividendTests : IDisposable
         var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 0m);
         var company = await context.Companies.SingleAsync();
 
-        await Service(new QueuedRoll(0d, 0d, 0d, 0d)).StepCycleAsync();
+        await Service(new QueuedRoll(0d, 0d, 0d, 0d)).RunCycleTickAsync();
 
         await context.Entry(holder).ReloadAsync();
         await context.Entry(company).ReloadAsync();
@@ -303,7 +303,7 @@ public sealed class DividendTests : IDisposable
         });
         await context.SaveChangesAsync();
 
-        await Service(new QueuedRoll(1d, 0d, 0.2d, 0d, 0.8d, 1d)).StepCycleAsync();
+        await Service(new QueuedRoll(1d, 0d, 0.2d, 0d, 0.8d, 1d)).RunCycleTickAsync();
 
         await context.Entry(firstCompany).ReloadAsync();
         await context.Entry(secondCompany).ReloadAsync();
@@ -353,7 +353,7 @@ public sealed class DividendTests : IDisposable
         });
         await context.SaveChangesAsync();
 
-        await Service(new QueuedRoll(1d, 0d, 0d)).StepCycleAsync();
+        await Service(new QueuedRoll(1d, 0d, 0d)).RunCycleTickAsync();
 
         var income = await context.CorporateCashTransactions.SingleAsync();
         Assert.Equal(activeCompany.Id, income.CompanyId);
@@ -368,7 +368,7 @@ public sealed class DividendTests : IDisposable
         var company = await context.Companies.FirstAsync();
 
         // A 0.5 roll clears the 0.75 stable chance but would miss the 0.25 volatile one; then the rate floors.
-        await Service(new QueuedRoll(0.5d, 0d, 1d)).StepCycleAsync();
+        await Service(new QueuedRoll(0.5d, 0d, 1d)).RunCycleTickAsync();
 
         await context.Entry(holder).ReloadAsync();
         Assert.Equal(0.1m, holder.CurrentBalance);
@@ -384,7 +384,7 @@ public sealed class DividendTests : IDisposable
         var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 0.04m);
         var company = await context.Companies.FirstAsync();
 
-        await Service().StepCycleAsync();
+        await Service().RunCycleTickAsync();
 
         await context.Entry(holder).ReloadAsync();
         Assert.Equal(0.04m, holder.CurrentBalance);
@@ -407,7 +407,7 @@ public sealed class DividendTests : IDisposable
         var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 0m);
         var company = await context.Companies.FirstAsync();
 
-        await Service().StepCycleAsync();
+        await Service().RunCycleTickAsync();
 
         await context.Entry(holder).ReloadAsync();
         Assert.Equal(0m, holder.CurrentBalance);
@@ -428,7 +428,7 @@ public sealed class DividendTests : IDisposable
         var company = await context.Companies.FirstAsync();
 
         // The same 0.5 roll misses the 0.25 volatile chance, so nothing pays — but the baseline still refreshes.
-        await Service(new QueuedRoll(0.5d, 0.5d)).StepCycleAsync();
+        await Service(new QueuedRoll(0.5d, 0.5d)).RunCycleTickAsync();
 
         await context.Entry(holder).ReloadAsync();
         Assert.Equal(0m, holder.CurrentBalance);

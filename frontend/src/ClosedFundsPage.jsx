@@ -9,9 +9,9 @@ import { TemperamentTag } from './TemperamentTag'
 const POLL_INTERVAL_MS = 2500
 const PAGE_SIZE = 20
 
-// Roster of collective funds that have unwound. They are dropped from the live Traders list once closed, so this
-// page is where their history stays visible; the table is paginated newest-first and polls its current page.
-function ClosedFundsPage() {
+// Archived fund view embedded in the Traders roster. It remains independently paged and polled because the
+// closed-fund response has a different shape from the active participant roster.
+function ClosedFundsView({ statusControl }) {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [funds, setFunds] = useState(null)
@@ -43,7 +43,7 @@ function ClosedFundsPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
-    <main className="main">
+    <>
       {!ready ? (
         <section className="placeholder" aria-busy="true">
           <span className="spinner" aria-hidden="true" />
@@ -59,6 +59,7 @@ function ClosedFundsPage() {
           ) : null}
 
           <Panel title="Closed funds" count={`${formatInt(total)}`} className="panel-holdings">
+            <div className="roster-toolbar">{statusControl}</div>
             {items.length === 0 ? (
               <p className="note">No funds have closed yet.</p>
             ) : (
@@ -136,8 +137,8 @@ function ClosedFundsPage() {
           </Panel>
         </>
       )}
-    </main>
+    </>
   )
 }
 
-export default ClosedFundsPage
+export default ClosedFundsView

@@ -249,13 +249,9 @@ public sealed class MarketService(
 
     public Task<RunDecisionsResult> GenerateDecisionsAsync() => WithLockAsync(GenerateDecisionsCoreAsync);
 
-    // Single automatic step used by the background loop: decide then match under one lock so a manual
-    // trigger cannot slip between the two halves. Skips unless the market is explicitly running.
+    // Single automatic step used by the background loop: decide then match under one lock. Skips unless the
+    // market is explicitly running.
     public Task<CycleTickResult> RunCycleTickAsync() => WithLockAsync(RunCycleTickCoreAsync);
-
-    // Manual equivalent of one loop tick, used while the loop is stopped: same decide-then-match step
-    // but without the running gate, so a single cycle can be stepped by hand.
-    public Task<CycleTickResult> StepCycleAsync() => WithLockAsync(StepCycleCoreAsync);
 
     public Task<Market> SeedDemoMarketAsync() => WithLockAsync(SeedDemoMarketCoreAsync);
 
@@ -332,22 +328,6 @@ public sealed class MarketService(
     {
         var market = await dbContext.Markets.FirstOrDefaultAsync();
         if (market is null || market.Status != MarketStatus.Running || market.CurrentCycleId is null)
-        {
-            return CycleTickResult.Skipped();
-        }
-
-        if (tradingClockService is not null && !await tradingClockService.IsTradingAsync(market))
-        {
-            return await InTransactionAsync(() => AdvanceBreakCoreAsync(market));
-        }
-
-        return await DecideAndAdvanceCoreAsync();
-    }
-
-    private async Task<CycleTickResult> StepCycleCoreAsync()
-    {
-        var market = await dbContext.Markets.FirstOrDefaultAsync();
-        if (market?.CurrentCycleId is null)
         {
             return CycleTickResult.Skipped();
         }

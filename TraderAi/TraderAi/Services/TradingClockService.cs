@@ -11,8 +11,7 @@ public sealed record TradingClockState(
     int TradingCycleNumber,
     int RemainingTradingCycles,
     int RemainingPhaseSeconds,
-    int TradingCycleSeconds,
-    string NextStepMeaning);
+    int TradingCycleSeconds);
 
 public sealed record BreakAdvanceResult(bool OpenedNextDay, int ElapsedSeconds, MarketCycle? OpenedCycle);
 
@@ -54,7 +53,6 @@ public sealed class TradingClockService(AppDbContext dbContext, IOptions<Trading
             ? Math.Max(0, settings.TradingCyclesPerDay - cycle.TradingCycleNumber)
             : 0;
         var remainingSeconds = remainingCycles * settings.TradingCycleSeconds;
-        var nextStep = "Advance one trading cycle";
 
         if (day.State == TradingSessionState.Break)
         {
@@ -63,7 +61,6 @@ public sealed class TradingClockService(AppDbContext dbContext, IOptions<Trading
             remainingSeconds = activeBreak is null
                 ? 0
                 : Math.Max(0, activeBreak.DurationSeconds - activeBreak.ElapsedSeconds);
-            nextStep = $"Advance the break countdown by {settings.TradingCycleSeconds} seconds";
         }
 
         return new TradingClockState(
@@ -72,8 +69,7 @@ public sealed class TradingClockService(AppDbContext dbContext, IOptions<Trading
             cycle.TradingCycleNumber,
             remainingCycles,
             remainingSeconds,
-            settings.TradingCycleSeconds,
-            nextStep);
+            settings.TradingCycleSeconds);
     }
 
     public async Task<MarketCycle?> CompleteTradingCycleAsync(Market market, MarketCycle currentCycle, DateTime now)

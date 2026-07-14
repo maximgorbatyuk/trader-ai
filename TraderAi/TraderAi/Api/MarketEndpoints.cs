@@ -1151,16 +1151,6 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
-        app.MapPost("/cycles/tick", async (MarketService marketService) =>
-        {
-            var result = await marketService.StepCycleAsync();
-            return Results.Ok(new CycleTickResponse(
-                result.Ran,
-                result.CompletedCycleNumber,
-                result.OrdersPlaced,
-                result.FillCount));
-        });
-
         app.MapGet("/cycles", async (AppDbContext dbContext) =>
         {
             var cycles = await dbContext.MarketCycles.OrderBy(cycle => cycle.CycleNumber).ToListAsync();
@@ -2788,7 +2778,6 @@ public static class MarketEndpoints
             clock?.RemainingTradingCycles,
             clock?.RemainingPhaseSeconds,
             clock?.TradingCycleSeconds,
-            clock?.NextStepMeaning,
             luldAffectedCount);
 
     private static OrderResponse ToOrderResponse(Order order) => new(
@@ -3035,7 +3024,6 @@ public sealed record MarketResponse(
     int? RemainingTradingCycles,
     int? RemainingPhaseSeconds,
     int? TradingCycleSeconds,
-    string? NextStepMeaning,
     int LuldAffectedCount);
 
 public sealed record ParticipantResponse(
@@ -3226,8 +3214,6 @@ public sealed record OrderResponse(
     decimal LimitPrice,
     decimal ReservedCashAmount,
     int CreatedInCycleId);
-
-public sealed record CycleTickResponse(bool Ran, int? CompletedCycleNumber, int OrdersPlaced, int FillCount);
 
 public sealed record ActivityPointResponse(
     int CycleNumber,

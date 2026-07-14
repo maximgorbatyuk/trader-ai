@@ -419,6 +419,28 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task ManualCycleEndpointIsNotExposed()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            using var response = await client.PostAsync("/cycles/tick", null);
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task SeedPlaceOrdersAndAdvanceSettlesTheTrade()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -453,8 +475,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             });
             Assert.Equal(HttpStatusCode.OK, buyResponse.StatusCode);
 
-            var tick = await (await client.PostAsync("/cycles/tick", null)).Content.ReadFromJsonAsync<CycleTickDto>();
-            Assert.Equal(1, tick!.FillCount);
+            var tick = await RunCycleAsync(configuredFactory);
+            Assert.Equal(1, tick.FillCount);
 
             var transactions = await client.GetFromJsonAsync<ShareTransactionDto[]>("/transactions/shares");
             var transaction = Assert.Single(transactions!);
@@ -528,7 +550,6 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(209, market.RemainingTradingCycles);
             Assert.Equal(418, market.RemainingPhaseSeconds);
             Assert.Equal(2, market.TradingCycleSeconds);
-            Assert.Equal("Advance one trading cycle", market.NextStepMeaning);
         }
         finally
         {
@@ -605,7 +626,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             });
             Assert.Equal(HttpStatusCode.OK, buyResponse.StatusCode);
 
-            await client.PostAsync("/cycles/tick", null);
+            await RunCycleAsync(configuredFactory);
             Assert.NotEmpty((await client.GetFromJsonAsync<ShareTransactionDto[]>("/transactions/shares"))!);
             var corporateBeforeReset = await client.GetFromJsonAsync<PagedCorporateCashMovementsDto>(
                 $"/companies/{companySell.CompanyId}/corporate-cash-movements?page=1&pageSize=10");
@@ -686,7 +707,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
             Assert.Equal(allAfterSeed.Length + 1, (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!.Length);
 
-            await client.PostAsync("/cycles/tick", null);
+            await RunCycleAsync(configuredFactory);
 
             // The buy fully fills and leaves the open list; the partially filled company sell stays open.
             var openAfterAdvance = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
@@ -757,7 +778,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 quantity = 5,
                 limitPrice = companySell.LimitPrice,
             });
-            await client.PostAsync("/cycles/tick", null);
+            await RunCycleAsync(configuredFactory);
 
             var holdings = await client.GetFromJsonAsync<HoldingDto[]>($"/participants/{buyer.Id}/holdings");
 
@@ -800,7 +821,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 quantity,
                 limitPrice = companySell.LimitPrice,
             });
-            await client.PostAsync("/cycles/tick", null);
+            await RunCycleAsync(configuredFactory);
 
             var detail = await client.GetFromJsonAsync<ParticipantDetailDto>($"/participants/{buyer.Id}");
             Assert.Equal(detail!.CurrentBalance - detail.SettledCashBalance, detail.UnsettledCashBalance);
@@ -902,7 +923,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 quantity = 4,
                 limitPrice = companySell.LimitPrice,
             });
-            await client.PostAsync("/cycles/tick", null);
+            await RunCycleAsync(configuredFactory);
 
             var detail = await client.GetFromJsonAsync<ParticipantDetailDto>($"/participants/{buyer.Id}");
 
@@ -1008,7 +1029,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 quantity,
                 limitPrice = price,
             });
-            await client.PostAsync("/cycles/tick", null);
+            await RunCycleAsync(configuredFactory);
 
             var holding = Assert.Single(
                 (await client.GetFromJsonAsync<HoldingDto[]>($"/participants/{buyer.Id}/holdings"))!);
@@ -1054,7 +1075,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 quantity = 3,
                 limitPrice = companySell.LimitPrice,
             });
-            await client.PostAsync("/cycles/tick", null);
+            await RunCycleAsync(configuredFactory);
 
             var buyerOrder = Assert.Single(
                 (await client.GetFromJsonAsync<OrderDto[]>($"/participants/{buyer.Id}/orders"))!);
@@ -1105,7 +1126,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 quantity,
                 limitPrice = price,
             });
-            await client.PostAsync("/cycles/tick", null);
+            await RunCycleAsync(configuredFactory);
 
             var detail = await client.GetFromJsonAsync<CompanyDetailDto>($"/companies/{companySell.CompanyId}");
 
@@ -1161,7 +1182,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 quantity,
                 limitPrice = price,
             });
-            await client.PostAsync("/cycles/tick", null);
+            await RunCycleAsync(configuredFactory);
 
             var shareholders = await client.GetFromJsonAsync<ShareholderDto[]>(
                 $"/companies/{companySell.CompanyId}/shareholders");
@@ -1210,7 +1231,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 quantity = 3,
                 limitPrice = sellOrders[0].LimitPrice,
             });
-            await client.PostAsync("/cycles/tick", null);
+            await RunCycleAsync(configuredFactory);
 
             var companyOrders = await client.GetFromJsonAsync<OrderDto[]>($"/companies/{tradedCompanyId}/orders");
             Assert.Contains(companyOrders!, order => order.Type == "Buy" && order.ParticipantId == buyer.Id);
@@ -2571,6 +2592,10 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             // tests create, attempt a real provider call. It stays disabled so tests never touch the network.
             builder.UseSetting("AiTrading:Enabled", "false");
 
+            // API tests advance cycles explicitly through MarketService so no background tick can race their
+            // exact-count assertions.
+            builder.UseSetting("MarketLoop:Enabled", "false");
+
             // A manual tick decides then matches; the no-op engine removes generated trades so these
             // tests settle only the order they place by hand and can assert exact counts.
             builder.ConfigureServices(services =>
@@ -2579,6 +2604,14 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 services.AddScoped<IDecisionEngine, NoOpDecisionEngine>();
             });
         });
+    }
+
+    private static async Task<CycleTickResult> RunCycleAsync(WebApplicationFactory<Program> configuredFactory)
+    {
+        using var scope = configuredFactory.Services.CreateScope();
+        var marketService = scope.ServiceProvider.GetRequiredService<MarketService>();
+        await marketService.SetStatusAsync(MarketStatus.Running);
+        return await marketService.RunCycleTickAsync();
     }
 
     private sealed record ParticipantDto(
@@ -2745,8 +2778,6 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
     private sealed record PagedFundMembershipEventsDto(FundMembershipEventDto[] Items, int Total, int Page, int PageSize);
 
-    private sealed record CycleTickDto(bool Ran, int? CompletedCycleNumber, int OrdersPlaced, int FillCount);
-
     private sealed record CycleDto(int Id, int CycleNumber);
 
     private sealed record HoldingDto(
@@ -2802,8 +2833,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         int? TradingCycleNumber,
         int? RemainingTradingCycles,
         int? RemainingPhaseSeconds,
-        int? TradingCycleSeconds,
-        string? NextStepMeaning);
+        int? TradingCycleSeconds);
 
     private sealed record OrderDto(
         int Id,

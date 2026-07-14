@@ -1,14 +1,11 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import './index.css'
 import App from './App.jsx'
 import TradersPage from './TradersPage.jsx'
 import CompaniesPage from './CompaniesPage.jsx'
 import { AppShell } from './AppShell.jsx'
-import DepartedTradersPage from './DepartedTradersPage.jsx'
-import ClosedFundsPage from './ClosedFundsPage.jsx'
-import ClosedCompaniesPage from './ClosedCompaniesPage.jsx'
 import AuditorsPage from './AuditorsPage.jsx'
 import NewsPage from './NewsPage.jsx'
 import TraderDetailPage from './TraderDetailPage.jsx'
@@ -36,7 +33,7 @@ createRoot(document.getElementById('root')).render(
           <Route path="/traders/:id" element={<TraderDetailPage />} />
           <Route path="/companies" element={<CompaniesPage />} />
           <Route path="/companies/:id" element={<CompanyDetailPage />} />
-          <Route path="/closed-companies" element={<ClosedCompaniesPage />} />
+          <Route path="/closed-companies" element={<Navigate replace to="/companies?view=closed" />} />
           <Route path="/industries" element={<IndustriesPage />} />
           <Route path="/industries/:id" element={<IndustryDetailPage />} />
           <Route path="/news" element={<NewsPage />} />
@@ -45,8 +42,8 @@ createRoot(document.getElementById('root')).render(
           <Route path="/auditors" element={<AuditorsPage />} />
           <Route path="/banks" element={<BanksPage />} />
           <Route path="/loans" element={<BankLoansPage />} />
-          <Route path="/departed-traders" element={<DepartedTradersPage />} />
-          <Route path="/closed-funds" element={<ClosedFundsPage />} />
+          <Route path="/departed-traders" element={<Navigate replace to="/traders?view=departed" />} />
+          <Route path="/closed-funds" element={<Navigate replace to="/traders?view=closed-funds" />} />
         </Route>
       </Routes>
     </BrowserRouter>

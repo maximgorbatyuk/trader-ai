@@ -8,9 +8,9 @@ import { Panel } from './Panel'
 const POLL_INTERVAL_MS = 2500
 const PAGE_SIZE = 20
 
-// Roster of companies that have been delisted. They drop off the live Companies list and the map once closed, so
-// this page is where their history stays visible; the table is paginated newest-first and polls its current page.
-function ClosedCompaniesPage() {
+// Archived company view embedded in the Companies roster. It remains independently paged and polled because the
+// closed-company response has a different shape from the active roster.
+function ClosedCompaniesView({ statusControl }) {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [companies, setCompanies] = useState(null)
@@ -42,7 +42,7 @@ function ClosedCompaniesPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
-    <main className="main">
+    <>
       {!ready ? (
         <section className="placeholder" aria-busy="true">
           <span className="spinner" aria-hidden="true" />
@@ -58,6 +58,7 @@ function ClosedCompaniesPage() {
           ) : null}
 
           <Panel title="Closed companies" count={`${formatInt(total)}`} className="panel-holdings">
+            <div className="roster-toolbar">{statusControl}</div>
             {items.length === 0 ? (
               <p className="note">No companies have been delisted yet.</p>
             ) : (
@@ -126,8 +127,8 @@ function ClosedCompaniesPage() {
           </Panel>
         </>
       )}
-    </main>
+    </>
   )
 }
 
-export default ClosedCompaniesPage
+export default ClosedCompaniesView
