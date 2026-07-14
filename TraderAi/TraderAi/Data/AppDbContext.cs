@@ -89,6 +89,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<MarginCall> MarginCalls => Set<MarginCall>();
 
+    public DbSet<AiTraderConfiguration> AiTraderConfigurations => Set<AiTraderConfiguration>();
+
+    public DbSet<AiTraderCall> AiTraderCalls => Set<AiTraderCall>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<NewsPost>()
@@ -279,6 +283,43 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<SettlementInstruction>()
             .HasIndex(instruction => new { instruction.SellerId, instruction.Status, instruction.DueDayNumber });
+
+        // One AI configuration per participant: ParticipantId is the primary key and the foreign key, so it
+        // cascades away with the participant. The audit log keeps no relationship, so its history outlives a
+        // participant departure and is only cleared by a full market reset.
+        modelBuilder.Entity<AiTraderConfiguration>()
+            .HasKey(configuration => configuration.ParticipantId);
+
+        modelBuilder.Entity<AiTraderConfiguration>()
+            .HasOne<Participant>()
+            .WithOne()
+            .HasForeignKey<AiTraderConfiguration>(configuration => configuration.ParticipantId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<AiTraderConfiguration>()
+            .Property(configuration => configuration.ProviderId).HasMaxLength(64);
+
+        modelBuilder.Entity<AiTraderConfiguration>()
+            .Property(configuration => configuration.Model).HasMaxLength(128);
+
+        // Call history is read newest-first per participant, so the seek covers (participant, id).
+        modelBuilder.Entity<AiTraderCall>()
+            .HasIndex(call => new { call.ParticipantId, call.Id });
+
+        modelBuilder.Entity<AiTraderCall>()
+            .Property(call => call.ProviderId).HasMaxLength(64);
+
+        modelBuilder.Entity<AiTraderCall>()
+            .Property(call => call.ProviderLabel).HasMaxLength(128);
+
+        modelBuilder.Entity<AiTraderCall>()
+            .Property(call => call.Model).HasMaxLength(128);
+
+        modelBuilder.Entity<AiTraderCall>()
+            .Property(call => call.PromptHash).HasMaxLength(64);
+
+        modelBuilder.Entity<AiTraderCall>()
+            .Property(call => call.Error).HasMaxLength(2000);
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
