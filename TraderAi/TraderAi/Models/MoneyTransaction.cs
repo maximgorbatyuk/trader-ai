@@ -22,6 +22,12 @@ public sealed class MoneyTransaction
     // orphaned id once the loan or participant is gone, like the other history-tolerant scalar ids.
     public int? RelatedLoanId { get; set; }
 
+    // Scalar id (no FK) of the participant the money came from; null when it enters the system from nowhere.
+    // Like the other ids here it stays valid as a plain number after that source participant leaves the market.
+    public int? FromWhomId { get; set; }
+
+    public string? Description { get; set; }
+
     public int CreatedInCycleId { get; set; }
 
     public DateTime CreatedAt { get; set; }

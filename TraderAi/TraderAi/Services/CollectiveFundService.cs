@@ -38,9 +38,13 @@ public sealed class CollectiveFundService(
     // Share of a fund's own dividend receipt that is passed straight through to its members, split by deposit.
     private const decimal DividendPassThroughFraction = 0.50m;
 
-    // The fund withholds this cut from each member's pass-through dividend as a management fee; the withheld
-    // amount stays in the fund's cash rather than reaching the member.
+    // Management fee each member pays the fund on its pass-through dividend, charged as a separate transfer back
+    // to the fund after the member has received the dividend in full.
     private const decimal DividendFeeFraction = 0.20m;
+
+    // Share of the fees a fund collects across a trading day that its owner (the founder) draws at the day's
+    // close, paid only when the fund can afford it in cash.
+    private const decimal ManagerFeeShare = 0.10m;
 
     // A fund that owns nothing and cannot afford even the cheapest share for this many consecutive cycles unwinds.
     private const int MaxIdleCycles = 20;
@@ -263,7 +267,8 @@ public sealed class CollectiveFundService(
             .Where(participant => memberIds.Contains(participant.Id))
             .ToDictionaryAsync(participant => participant.Id);
 
-        var distributed = 0m;
+        var distributedGross = 0m;
+        var feesCollected = 0m;
         foreach (var member in members)
         {
             if (!memberParticipants.TryGetValue(member.ParticipantId, out var memberParticipant))
@@ -272,30 +277,146 @@ public sealed class CollectiveFundService(
             }
 
             var gross = Round(pool * member.DepositAmount / totalDeposit);
-
-            // The fund keeps a fee cut of each member's pass-through dividend; only the net leaves the fund's cash,
-            // so the withheld fee stays behind in the fund's balance without a separate transfer.
-            var cut = Round(gross * (1m - DividendFeeFraction));
-            if (cut <= 0m)
+            if (gross <= 0m)
             {
                 continue;
             }
 
-            memberParticipant.CurrentBalance += cut;
-            memberParticipant.SettledCashBalance += cut;
-            distributed += cut;
+            // The member receives the full pass-through dividend first, then pays the management fee back to the
+            // fund as a separate transfer, so both the payout and the fee show up as their own cash movements.
+            memberParticipant.CurrentBalance += gross;
+            memberParticipant.SettledCashBalance += gross;
+            distributedGross += gross;
             dbContext.MoneyTransactions.Add(new MoneyTransaction
             {
                 ParticipantId = memberParticipant.Id,
                 Type = MoneyTransactionType.CollectiveFundDividend,
-                Amount = cut,
+                Amount = gross,
+                CreatedInCycleId = currentCycleId,
+                CreatedAt = now,
+            });
+
+            var fee = Round(gross * DividendFeeFraction);
+            if (fee > 0m)
+            {
+                memberParticipant.CurrentBalance -= fee;
+                memberParticipant.SettledCashBalance -= fee;
+                feesCollected += fee;
+                dbContext.MoneyTransactions.Add(new MoneyTransaction
+                {
+                    ParticipantId = memberParticipant.Id,
+                    Type = MoneyTransactionType.CollectiveFundDividendFee,
+                    Amount = fee,
+                    CreatedInCycleId = currentCycleId,
+                    CreatedAt = now,
+                });
+            }
+        }
+
+        // The fund pays the full dividend out and collects the fees back; both legs are recorded so its cash
+        // movements explain every balance change rather than the balance shifting with nothing in the ledger.
+        fundOwner.CurrentBalance -= distributedGross;
+        fundOwner.SettledCashBalance -= distributedGross;
+        if (distributedGross > 0m)
+        {
+            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            {
+                ParticipantId = fundOwner.Id,
+                Type = MoneyTransactionType.CollectiveFundDividendPaid,
+                Amount = distributedGross,
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
             });
         }
 
-        fundOwner.CurrentBalance -= distributed;
-        fundOwner.SettledCashBalance -= distributed;
+        fundOwner.CurrentBalance += feesCollected;
+        fundOwner.SettledCashBalance += feesCollected;
+        if (feesCollected > 0m)
+        {
+            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            {
+                ParticipantId = fundOwner.Id,
+                Type = MoneyTransactionType.CollectiveFundDividendFeeReceived,
+                Amount = feesCollected,
+                CreatedInCycleId = currentCycleId,
+                CreatedAt = now,
+            });
+        }
+    }
+
+    // Pays each fund's owner (its founder) a share of the payout fees the fund collected across the trading day
+    // that is closing, recorded as a fund outflow paired with the owner's income. The player's own fund is swept
+    // here too, on top of its manual withdrawal path. Runs once per trading day.
+    public async Task PayManagerFeesForTradingDayAsync(int tradingDayId, int currentCycleId, DateTime now)
+    {
+        if (!options.Value.Enabled)
+        {
+            return;
+        }
+
+        var dayCycleIds = await dbContext.MarketCycles
+            .Where(cycle => cycle.TradingDayId == tradingDayId)
+            .Select(cycle => cycle.Id)
+            .ToListAsync();
+        if (dayCycleIds.Count == 0)
+        {
+            return;
+        }
+
+        var funds = await dbContext.CollectiveFunds
+            .Where(fund => fund.Status == CollectiveFundStatus.Active)
+            .ToListAsync();
+
+        foreach (var fund in funds)
+        {
+            var feesToday = await dbContext.MoneyTransactions
+                .Where(transaction => transaction.ParticipantId == fund.ParticipantId
+                    && transaction.Type == MoneyTransactionType.CollectiveFundDividendFeeReceived
+                    && dayCycleIds.Contains(transaction.CreatedInCycleId))
+                .SumAsync(transaction => transaction.Amount);
+            var managerFee = Round(feesToday * ManagerFeeShare);
+            if (managerFee <= 0m)
+            {
+                continue;
+            }
+
+            var fundParticipant = await dbContext.Participants
+                .FirstOrDefaultAsync(participant => participant.Id == fund.ParticipantId);
+            var manager = await dbContext.Participants
+                .FirstOrDefaultAsync(participant => participant.Id == fund.FoundedByParticipantId);
+            // Skip when the founder has since gone bankrupt or left the market so the fee never lands in a dead
+            // account; the fund keeps it instead.
+            if (fundParticipant is null || manager is null || !manager.IsActive || manager.IsBankrupt)
+            {
+                continue;
+            }
+
+            if (TransferableCash(fundParticipant) < managerFee)
+            {
+                continue;
+            }
+
+            fundParticipant.CurrentBalance -= managerFee;
+            fundParticipant.SettledCashBalance -= managerFee;
+            manager.CurrentBalance += managerFee;
+            manager.SettledCashBalance += managerFee;
+            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            {
+                ParticipantId = fundParticipant.Id,
+                Type = MoneyTransactionType.CollectiveFundManagerFee,
+                Amount = managerFee,
+                CreatedInCycleId = currentCycleId,
+                CreatedAt = now,
+            });
+            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            {
+                ParticipantId = manager.Id,
+                Type = MoneyTransactionType.CollectiveFundManagerFeeReceived,
+                Amount = managerFee,
+                CreatedInCycleId = currentCycleId,
+                CreatedAt = now,
+            });
+        }
     }
 
     private async Task LoadStateAsync(int currentCycleId)

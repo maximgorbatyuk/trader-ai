@@ -845,18 +845,42 @@ public sealed class CollectiveFundServiceTests : IDisposable
             .DistributeDividendToMembersAsync(fundParticipant, payout: 1_000m, cycle.Id, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
-        // Half of the 1,000 receipt (500) is shared 1:3 by deposit, then each member's cut loses the 20% fund fee.
+        // Half of the 1,000 receipt (500) is shared 1:3 by deposit as the gross dividend (125 and 375), then each
+        // member pays the 20% fee back, netting 100 and 300.
         var refreshedOne = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == memberOne.Id);
         var refreshedTwo = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == memberTwo.Id);
         Assert.Equal(100m, refreshedOne.CurrentBalance);
         Assert.Equal(300m, refreshedTwo.CurrentBalance);
 
-        // The fund retains the un-passed half plus the withheld fees (25 + 75).
+        // The fund keeps the un-passed half plus the collected fees (25 + 75).
         var refreshedFund = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fundParticipant.Id);
         Assert.Equal(600m, refreshedFund.CurrentBalance);
 
-        // Member payouts carry their own transaction type so they can be totalled separately from share dividends.
-        Assert.Equal(2, await context.MoneyTransactions.CountAsync(transaction => transaction.Type == MoneyTransactionType.CollectiveFundDividend));
+        // Each member receives the full gross dividend as its own row before the fee is charged.
+        var dividendRows = await context.MoneyTransactions.AsNoTracking()
+            .Where(transaction => transaction.Type == MoneyTransactionType.CollectiveFundDividend)
+            .OrderBy(transaction => transaction.Amount)
+            .Select(transaction => transaction.Amount)
+            .ToListAsync();
+        Assert.Equal([125m, 375m], dividendRows);
+
+        // The fee each member pays back to the fund is recorded on the member's side.
+        var feeRows = await context.MoneyTransactions.AsNoTracking()
+            .Where(transaction => transaction.Type == MoneyTransactionType.CollectiveFundDividendFee)
+            .OrderBy(transaction => transaction.Amount)
+            .Select(transaction => transaction.Amount)
+            .ToListAsync();
+        Assert.Equal([25m, 75m], feeRows);
+
+        // The fund records paying the full gross out and collecting the fees back, so both legs appear in its cash movements.
+        var fundOutflow = await context.MoneyTransactions.AsNoTracking()
+            .SingleAsync(transaction => transaction.ParticipantId == fundParticipant.Id
+                && transaction.Type == MoneyTransactionType.CollectiveFundDividendPaid);
+        Assert.Equal(500m, fundOutflow.Amount);
+        var fundFee = await context.MoneyTransactions.AsNoTracking()
+            .SingleAsync(transaction => transaction.ParticipantId == fundParticipant.Id
+                && transaction.Type == MoneyTransactionType.CollectiveFundDividendFeeReceived);
+        Assert.Equal(100m, fundFee.Amount);
     }
 
     [Fact]
@@ -1663,6 +1687,88 @@ public sealed class CollectiveFundServiceTests : IDisposable
         return crisis;
     }
 
+    [Fact]
+    public async Task ManagerDrawsTenPercentOfDailyFeesAtDayClose()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 1_000m);
+        var manager = await AddTraderAsync(currentBalance: 5_000m);
+        fund.FoundedByParticipantId = manager.Id;
+        await context.SaveChangesAsync();
+
+        // The fund collected 400 in payout fees across the trading day.
+        await AddFeeReceiptAsync(fundParticipant.Id, cycle.Id, 400m);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .PayManagerFeesForTradingDayAsync(cycle.TradingDayId, cycle.Id, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        // 10% of the day's fees leaves the fund and reaches the manager.
+        var refreshedFund = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fundParticipant.Id);
+        var refreshedManager = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == manager.Id);
+        Assert.Equal(960m, refreshedFund.CurrentBalance);
+        Assert.Equal(5_040m, refreshedManager.CurrentBalance);
+
+        var fundRow = await context.MoneyTransactions.AsNoTracking()
+            .SingleAsync(transaction => transaction.ParticipantId == fundParticipant.Id
+                && transaction.Type == MoneyTransactionType.CollectiveFundManagerFee);
+        Assert.Equal(40m, fundRow.Amount);
+        var managerRow = await context.MoneyTransactions.AsNoTracking()
+            .SingleAsync(transaction => transaction.ParticipantId == manager.Id
+                && transaction.Type == MoneyTransactionType.CollectiveFundManagerFeeReceived);
+        Assert.Equal(40m, managerRow.Amount);
+    }
+
+    [Fact]
+    public async Task ManagerFeeSkippedWhenFundLacksCash()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 20m);
+        var manager = await AddTraderAsync(currentBalance: 5_000m);
+        fund.FoundedByParticipantId = manager.Id;
+        await context.SaveChangesAsync();
+
+        // 10% of the day's 400 fees is 40, but the fund holds only 20 in cash, so the payment is skipped.
+        await AddFeeReceiptAsync(fundParticipant.Id, cycle.Id, 400m);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .PayManagerFeesForTradingDayAsync(cycle.TradingDayId, cycle.Id, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshedFund = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fundParticipant.Id);
+        var refreshedManager = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == manager.Id);
+        Assert.Equal(20m, refreshedFund.CurrentBalance);
+        Assert.Equal(5_000m, refreshedManager.CurrentBalance);
+        Assert.False(await context.MoneyTransactions.AnyAsync(transaction => transaction.Type == MoneyTransactionType.CollectiveFundManagerFee));
+    }
+
+    [Fact]
+    public async Task PlayerManagedFundAlsoPaysManagerFee()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 1_000m);
+        fund.IsPlayerManaged = true;
+        var owner = await AddTraderAsync(currentBalance: 5_000m);
+        fund.FoundedByParticipantId = owner.Id;
+        await context.SaveChangesAsync();
+
+        await AddFeeReceiptAsync(fundParticipant.Id, cycle.Id, 400m);
+
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .PayManagerFeesForTradingDayAsync(cycle.TradingDayId, cycle.Id, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        // A player fund is swept like any other: its owner draws 10% of the day's fees on top of manual withdrawal.
+        var refreshedFund = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fundParticipant.Id);
+        var refreshedOwner = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == owner.Id);
+        Assert.Equal(960m, refreshedFund.CurrentBalance);
+        Assert.Equal(5_040m, refreshedOwner.CurrentBalance);
+        var ownerRow = await context.MoneyTransactions.AsNoTracking()
+            .SingleAsync(transaction => transaction.ParticipantId == owner.Id
+                && transaction.Type == MoneyTransactionType.CollectiveFundManagerFeeReceived);
+        Assert.Equal(40m, ownerRow.Amount);
+    }
+
     private async Task<(Market Market, MarketCycle Cycle, Company Company)> SeedAsync(
         decimal price,
         int cycleNumber = 600,
@@ -1830,6 +1936,19 @@ public sealed class CollectiveFundServiceTests : IDisposable
         {
             ParticipantId = participantId,
             Type = MoneyTransactionType.Dividend,
+            Amount = amount,
+            CreatedInCycleId = cycleId,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+    }
+
+    private async Task AddFeeReceiptAsync(int participantId, int cycleId, decimal amount)
+    {
+        context.MoneyTransactions.Add(new MoneyTransaction
+        {
+            ParticipantId = participantId,
+            Type = MoneyTransactionType.CollectiveFundDividendFeeReceived,
             Amount = amount,
             CreatedInCycleId = cycleId,
             CreatedAt = DateTime.UtcNow,

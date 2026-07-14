@@ -276,7 +276,30 @@ export function MoneyTransactionModal({ transaction, participantId, onClose }) {
               <dt>Recorded</dt>
               <dd>{formatTimestamp(detail?.createdAt)}</dd>
             </div>
+            <div>
+              <dt>From</dt>
+              <dd className="cell-ellipsis">
+                {detail?.fromWhomId != null ? (
+                  detail.fromWhomName ? (
+                    <Link className="cell-link" to={`/traders/${detail.fromWhomId}`}>
+                      {detail.fromWhomName}
+                    </Link>
+                  ) : (
+                    `#${detail.fromWhomId}`
+                  )
+                ) : (
+                  '—'
+                )}
+              </dd>
+            </div>
           </dl>
+
+          {detail?.description ? (
+            <div className="modal-section">
+              <span className="map-stat-label">Description</span>
+              <p className="note note-sm">{detail.description}</p>
+            </div>
+          ) : null}
 
           {error ? (
             <p className="note note-sm">{error}</p>

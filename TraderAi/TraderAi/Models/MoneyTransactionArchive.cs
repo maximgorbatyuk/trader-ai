@@ -18,6 +18,10 @@ public sealed class MoneyTransactionArchive
 
     public int? RelatedLoanId { get; set; }
 
+    public int? FromWhomId { get; set; }
+
+    public string? Description { get; set; }
+
     public int CreatedInCycleId { get; set; }
 
     public DateTime CreatedAt { get; set; }

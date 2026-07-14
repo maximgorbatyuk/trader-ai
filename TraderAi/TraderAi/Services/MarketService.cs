@@ -1286,6 +1286,15 @@ public sealed class MarketService(
             await dbContext.SaveChangesAsync();
         }
 
+        // The trading day just closed (the clock returned no next cycle), so each fund pays its owner a share of
+        // the day's collected fees before the day-end worth snapshot. The save flushes this cycle's dividend fees
+        // so the sweep's fee total reads them back.
+        if (nextCycle is null && currentCycle.TradingDayId > 0 && collectiveFundService is not null)
+        {
+            await dbContext.SaveChangesAsync();
+            await collectiveFundService.PayManagerFeesForTradingDayAsync(currentCycle.TradingDayId, currentCycle.Id, now);
+        }
+
         // Runs once this cycle's fills and shocks are persisted so each trader's holdings reflect final prices;
         // the added rows flush with the market update below, inside the advance transaction.
         await WriteWorthSnapshotsAsync(currentCycle.Id, now);
@@ -1354,8 +1363,8 @@ public sealed class MarketService(
             .ExecuteDeleteAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO MoneyTransactionArchives (Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, CreatedInCycleId, CreatedAt)
-            SELECT Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, CreatedInCycleId, CreatedAt
+            INSERT INTO MoneyTransactionArchives (Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt)
+            SELECT Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt
             FROM MoneyTransactions WHERE CreatedInCycleId <= {cutoffCycleId}");
         // The archive twin keeps no dividend line detail, so drop the breakdown with its parent rather than
         // leaving rows that reference an archived transaction.
@@ -1689,7 +1698,14 @@ public sealed class MarketService(
             return PlayerFundResult.Fail("Withdrawal amount exceeds the fund's withdrawable cash.");
         }
 
-        RecordPlayerFundTransfer(context.FundParticipant, context.Player, amount, context.Market.CurrentCycleId ?? 0, DateTime.UtcNow);
+        RecordPlayerFundTransfer(
+            context.FundParticipant,
+            context.Player,
+            amount,
+            context.Market.CurrentCycleId ?? 0,
+            DateTime.UtcNow,
+            MoneyTransactionType.CollectiveFundWithdrawal,
+            MoneyTransactionType.CollectiveFundWithdrawalReceived);
         await dbContext.SaveChangesAsync();
         return PlayerFundResult.Ok();
     }
@@ -1820,7 +1836,14 @@ public sealed class MarketService(
 
         if (fundParticipant.CurrentBalance > 0m)
         {
-            RecordPlayerFundTransfer(fundParticipant, player, fundParticipant.CurrentBalance, currentCycleId, now);
+            RecordPlayerFundTransfer(
+                fundParticipant,
+                player,
+                fundParticipant.CurrentBalance,
+                currentCycleId,
+                now,
+                MoneyTransactionType.CollectiveFundWithdrawal,
+                MoneyTransactionType.CollectiveFundWithdrawalReceived);
         }
 
         // A winding-down fund's loans are discharged like any departing borrower's.
@@ -1972,7 +1995,14 @@ public sealed class MarketService(
 
     // Moves cash one way between the player and its fund and records both legs, reusing the fund cash-movement
     // type the AI join/leave flow already uses.
-    private void RecordPlayerFundTransfer(Participant from, Participant to, decimal amount, int currentCycleId, DateTime now)
+    private void RecordPlayerFundTransfer(
+        Participant from,
+        Participant to,
+        decimal amount,
+        int currentCycleId,
+        DateTime now,
+        MoneyTransactionType fromType = MoneyTransactionType.CollectiveFund,
+        MoneyTransactionType toType = MoneyTransactionType.CollectiveFund)
     {
         from.CurrentBalance -= amount;
         from.SettledCashBalance -= amount;
@@ -1981,7 +2011,7 @@ public sealed class MarketService(
         dbContext.MoneyTransactions.Add(new MoneyTransaction
         {
             ParticipantId = from.Id,
-            Type = MoneyTransactionType.CollectiveFund,
+            Type = fromType,
             Amount = amount,
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
@@ -1989,7 +2019,7 @@ public sealed class MarketService(
         dbContext.MoneyTransactions.Add(new MoneyTransaction
         {
             ParticipantId = to.Id,
-            Type = MoneyTransactionType.CollectiveFund,
+            Type = toType,
             Amount = amount,
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,

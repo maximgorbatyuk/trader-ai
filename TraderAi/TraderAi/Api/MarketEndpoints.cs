@@ -760,6 +760,15 @@ public static class MarketEndpoints
                     .ToListAsync()
                 : [];
 
+            // The source is a plain id, so the participant may already have left the market; a null name just
+            // means the row survived its sender.
+            var fromWhomName = transaction.FromWhomId is int fromWhomId
+                ? await dbContext.Participants
+                    .Where(participant => participant.Id == fromWhomId)
+                    .Select(participant => participant.Name)
+                    .FirstOrDefaultAsync()
+                : null;
+
             // Resolve every referenced company in one query. Closed companies are retained, so historical rows
             // still get their names.
             var companyIds = new List<int>();
@@ -781,6 +790,9 @@ public static class MarketEndpoints
                 transaction.CreatedInCycleId,
                 cycleNumber,
                 transaction.CreatedAt,
+                transaction.FromWhomId,
+                fromWhomName,
+                transaction.Description,
                 order is null
                     ? null
                     : new MoneyTransactionOrderInfo(
@@ -3005,6 +3017,9 @@ public sealed record MoneyTransactionDetailResponse(
     int CreatedInCycleId,
     int? CycleNumber,
     DateTime CreatedAt,
+    int? FromWhomId,
+    string? FromWhomName,
+    string? Description,
     MoneyTransactionOrderInfo? Order,
     MoneyTransactionTradeInfo? Trade,
     MoneyTransactionLoanInfo? Loan,

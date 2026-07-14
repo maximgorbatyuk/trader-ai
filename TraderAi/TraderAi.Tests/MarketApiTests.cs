@@ -2141,6 +2141,63 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task MoneyTransactionDetailReturnsTheSourceParticipantAndDescription()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int participantId;
+            int sourceId;
+            int transactionId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 7, Status = CycleStatus.Completed, StartedAt = now };
+                dbContext.MarketCycles.Add(cycle);
+
+                var recipient = new Participant { Name = "Recipient", Type = ParticipantType.Individual, IsActive = true };
+                var source = new Participant { Name = "Benefactor", Type = ParticipantType.Individual, IsActive = true };
+                dbContext.Participants.Add(recipient);
+                dbContext.Participants.Add(source);
+                await dbContext.SaveChangesAsync();
+                participantId = recipient.Id;
+                sourceId = source.Id;
+
+                var transaction = new MoneyTransaction
+                {
+                    ParticipantId = recipient.Id,
+                    Type = MoneyTransactionType.Credit,
+                    Amount = 250m,
+                    FromWhomId = source.Id,
+                    Description = "Bonus payout",
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = now,
+                };
+                dbContext.MoneyTransactions.Add(transaction);
+                await dbContext.SaveChangesAsync();
+                transactionId = transaction.Id;
+            }
+
+            var detail = await client.GetFromJsonAsync<MoneyTransactionDetailDto>(
+                $"/participants/{participantId}/money-transactions/{transactionId}");
+            Assert.Equal(sourceId, detail!.FromWhomId);
+            Assert.Equal("Benefactor", detail.FromWhomName);
+            Assert.Equal("Bonus payout", detail.Description);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AdvertiseEndpointsQuoteThenChargeTheFundAndLiftPopularity()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -2287,6 +2344,9 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal Amount,
         int CreatedInCycleId,
         int? CycleNumber,
+        int? FromWhomId,
+        string? FromWhomName,
+        string? Description,
         MoneyTransactionOrderDto? Order,
         MoneyTransactionTradeDto? Trade,
         MoneyTransactionLoanDto? Loan,

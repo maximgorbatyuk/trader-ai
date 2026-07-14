@@ -175,6 +175,30 @@ public sealed class PlayerFundTests : IDisposable
         Assert.Equal(2_500m, fundParticipant.CurrentBalance);
     }
 
+    // The withdrawal records a directional pair so cash movements read correctly: the fund's row is an outflow
+    // and the owner's row is income, instead of both showing as a deposit.
+    [Fact]
+    public async Task WithdrawRecordsFundOutflowAndOwnerIncome()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var market = Service(new FixedRoll(0d));
+        var player = (await market.CreatePlayerAsync("Ada")).Player!;
+        await market.OpenPlayerFundAsync(4_000m, null);
+        var fund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+
+        var result = await market.WithdrawFromPlayerFundAsync(1_500m);
+
+        Assert.True(result.Success);
+        var fundRow = await context.MoneyTransactions.AsNoTracking()
+            .SingleAsync(transaction => transaction.ParticipantId == fund.ParticipantId
+                && transaction.Type == MoneyTransactionType.CollectiveFundWithdrawal);
+        Assert.Equal(1_500m, fundRow.Amount);
+        var ownerRow = await context.MoneyTransactions.AsNoTracking()
+            .SingleAsync(transaction => transaction.ParticipantId == player.Id
+                && transaction.Type == MoneyTransactionType.CollectiveFundWithdrawalReceived);
+        Assert.Equal(1_500m, ownerRow.Amount);
+    }
+
     [Fact]
     public async Task WithdrawCannotSpendUnsettledFundCash()
     {
