@@ -174,6 +174,76 @@ public sealed class MarketService(
         decimal limitPrice) =>
         WithLockAsync(() => PlaceOrderCoreAsync(participantId, companyId, type, quantity, limitPrice));
 
+    // Applies an AI trader's decision through the ordinary order path. It reacquires the market lock, reloads the
+    // trader, its configuration, and current market state into an OrderBookContext, and places each order with the
+    // same validation any order faces. A stale configuration revision or an ineligible participant applies nothing;
+    // each order commits independently, so one invalid order never rolls back a valid one.
+    public Task<AiDecisionApplicationResult> ApplyAiDecisionAsync(
+        int participantId,
+        int configurationRevision,
+        AiTradeDecision decision) =>
+        WithLockAsync(() => ApplyAiDecisionCoreAsync(participantId, configurationRevision, decision));
+
+    private async Task<AiDecisionApplicationResult> ApplyAiDecisionCoreAsync(
+        int participantId,
+        int configurationRevision,
+        AiTradeDecision decision)
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        var configuration = await dbContext.AiTraderConfigurations
+            .FirstOrDefaultAsync(candidate => candidate.ParticipantId == participantId);
+        var participant = await dbContext.Participants
+            .FirstOrDefaultAsync(candidate => candidate.Id == participantId);
+
+        var stillCurrent = market?.CurrentCycleId is not null
+            && configuration is not null
+            && configuration.Revision == configurationRevision
+            && participant is { IsActive: true, IsBankrupt: false, Type: ParticipantType.AIAgent };
+        if (!stillCurrent)
+        {
+            return new AiDecisionApplicationResult(false, []);
+        }
+
+        var priceByCompany = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
+        var boundsByCompany = await ResolveOrderPriceBoundsByCompanyAsync(priceByCompany);
+        var context = new OrderBookContext
+        {
+            Market = market!,
+            CurrentCycleId = market!.CurrentCycleId!.Value,
+            Participant = participant!,
+            PriceByCompany = priceByCompany,
+            BoundsByCompany = boundsByCompany,
+        };
+
+        var results = new List<AiOrderApplicationResult>(decision.Orders.Length);
+        for (var index = 0; index < decision.Orders.Length; index++)
+        {
+            var order = decision.Orders[index];
+            var placement = await PlaceOrderCoreAsync(
+                participantId,
+                order.CompanyId,
+                order.Side,
+                order.Quantity,
+                order.LimitPrice,
+                context.PriceByCompany,
+                deferSave: false,
+                context.BoundsByCompany);
+
+            results.Add(new AiOrderApplicationResult(
+                index,
+                order.Side,
+                order.CompanyId,
+                order.Quantity,
+                order.LimitPrice,
+                order.Reason,
+                placement.Success,
+                placement.Order?.Id,
+                placement.Error));
+        }
+
+        return new AiDecisionApplicationResult(true, results.ToArray());
+    }
+
     public Task<AdvanceCycleResult> AdvanceCycleAsync() =>
         WithLockAsync(() => InTransactionAsync(AdvanceCycleEntryCoreAsync));
 
