@@ -17,6 +17,8 @@ import { Pager } from './TableControls'
 import { SettlementsTable } from './SettlementsTable'
 import { cashSettlement, quantitySettlement } from './marketAccounting'
 import { maintenanceStanding } from './marginModel'
+import { FavoriteCompaniesTable } from './FavoriteCompaniesTable'
+import { favoriteCompanies } from './favoriteCompanies'
 
 const POLL_INTERVAL_MS = 2500
 const WORTH_HISTORY_POINTS = 64
@@ -34,7 +36,7 @@ function fundStatusClass(status) {
 // The trader detail block: identity, a total-worth chart, editable profile, bank statement, holdings, orders,
 // cash movements, and trades. Owns its own polling keyed on participantId so it can sit under the Traders
 // table and swap as the selected trader changes.
-export function ParticipantDetail({ participantId }) {
+export function ParticipantDetail({ participantId, showFavoriteCompanies = false }) {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [detail, setDetail] = useState(null)
@@ -242,6 +244,16 @@ export function ParticipantDetail({ participantId }) {
       ) : null}
 
       <HoldingsPanel holdings={holdings} />
+
+      {showFavoriteCompanies ? (
+        <Panel
+          title="Favorite companies"
+          count={`${formatInt(favoriteCompanies(companies).length)}`}
+          className="panel-holdings"
+        >
+          <FavoriteCompaniesTable companies={companies} />
+        </Panel>
+      ) : null}
 
       <MarginPanel margin={detail.margin} />
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { formatMoney, formatSigned, toneOf } from './format'
 import { LineChart } from './LineChart'
+import { BUY_FILTER_OPTIONS, DEFAULT_BUY_FILTER, filterBuyOrders } from './orderBookFilters'
 import { ORDER_BOOK_DEFAULT_SORT, orderBookOwnedShares, sortOrderBookRows } from './orderBookSort'
 import { Panel } from './Panel'
 import { PercentButtons } from './PercentButtons'
@@ -16,11 +17,6 @@ import {
   tradeOrderAvailability,
   tradeOrderEligibility,
 } from './tradeOrderModalModel'
-
-const BUY_FILTER_OPTIONS = [
-  { value: 'owned', label: 'Owned' },
-  { value: 'all', label: 'All' },
-]
 
 // Sell-book filters surface the two distress supplies: bankrupt traders dumping cheaply, and companies
 // (the null-participant issuer float) offering their own shares.
@@ -54,15 +50,15 @@ export function OrderBookPanel({
 }) {
   const [tradeOrder, setTradeOrder] = useState(null)
   const [activeSide, setActiveSide] = useState('Buy')
-  // The buy book defaults to the companies the actor holds, so it opens on the demand for the actor's own
-  // positions; the filter widens it to the whole book on demand.
-  const [buyFilter, setBuyFilter] = useState('owned')
+  // Owned stays the default so the book opens on actionable positions; favorites can narrow the watchlist
+  // independently, while All widens it to the complete buy book.
+  const [buyFilter, setBuyFilter] = useState(DEFAULT_BUY_FILTER)
   const [sellFilter, setSellFilter] = useState('all')
   const [sortBySide, setSortBySide] = useState(ORDER_BOOK_DEFAULT_SORT)
   const tabRefs = useRef({})
 
   const buysAll = orders.filter((order) => order.type === 'Buy')
-  const buys = buyFilter === 'owned' ? buysAll.filter((order) => actorHoldingCompanyIds.has(order.companyId)) : buysAll
+  const buys = filterBuyOrders(buysAll, buyFilter, actorHoldingCompanyIds, companyById)
   const sellsAll = orders.filter((order) => order.type === 'Sell')
   const sells =
     sellFilter === 'bankrupts'

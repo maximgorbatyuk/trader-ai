@@ -6,6 +6,7 @@ import { LineChart } from './LineChart'
 import { OrderForm } from './OrderForm'
 import { luldPresentation } from './marketAccounting'
 import { RatingBadge } from './RatingBadge'
+import { FavoriteCompanyToggle } from './FavoriteCompanyToggle'
 
 const POLL_INTERVAL_MS = 1000
 
@@ -29,7 +30,7 @@ function formatCyclesAgo(cyclesAgo) {
 
 // Detail dialog for one company opened from the market map. Live price, cap and share count come from the
 // dashboard's already-polled company record; the price history and most recent trade are fetched here.
-export function CompanyModal({ company, onClose }) {
+export function CompanyModal({ company, onClose, onFavoriteChanged }) {
   const companyId = company?.id
   const [prices, setPrices] = useState([])
   const [player, setPlayer] = useState(null)
@@ -183,6 +184,14 @@ export function CompanyModal({ company, onClose }) {
             <h2 className="command-name" id={titleId}>
               {company.name}
             </h2>
+            {player ? (
+              <FavoriteCompanyToggle
+                companyId={company.id}
+                companyName={company.name}
+                isFavorite={company.isFavorite}
+                onChanged={onFavoriteChanged}
+              />
+            ) : null}
           </div>
           <div className="quote">
             <strong className="quote-last num">{formatMoney(company.currentPrice)}</strong>

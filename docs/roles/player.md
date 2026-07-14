@@ -12,6 +12,7 @@ The Player is the human-controlled trader. It uses the same market, order book, 
 - Short selling is planned for later and is not implemented.
 - The Player cannot place an order opposite to its own open order for the same company, and cannot trade a closed company.
 - The Player receives dividends on held shares and sale proceeds like any other share owner.
+- The Player may mark companies as favorites from company details. Favorite companies appear in the Player views and can be isolated on the Market Map; the marker remains attached to retained company history until the market resets.
 - A fill changes the Player's economic cash and shares immediately and settles on T+1. The Player panel shows total, settled, and pending cash and shares and lists pending settlement instructions.
 - The automated decision pass skips the Player.
 - The market does not re-price or age out Player orders because they rested too long, but the universal allowed-range check still applies: a Player order left beyond the allowed range after the band moves is cancelled and its reserved cash released.

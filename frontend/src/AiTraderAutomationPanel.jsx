@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import './aiTrader.css'
 import { api } from './api'
 import { Panel } from './Panel'
+import { AiRawResponseModal } from './AiRawResponseModal'
 import { automationPayload, testRequestPayload, validateAutomation } from './aiTraderModel'
 
 const AUTOMATION_TYPES = [
@@ -20,7 +21,8 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
-  const [test, setTest] = useState({ status: 'idle', message: '' })
+  const [test, setTest] = useState({ status: 'idle', message: '', responseBody: null, statusCode: null })
+  const [showRawResponse, setShowRawResponse] = useState(false)
 
   const originalProviderId = detail.aiProviderId ?? null
 
@@ -34,7 +36,6 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
         setProviders(catalog)
         if (type === 'AIAgent' && !providerId && catalog.length > 0) {
           setProviderId(catalog[0].id)
-          setModel(catalog[0].models?.[0] ?? '')
         }
       })
       .catch(() => {})
@@ -58,15 +59,6 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
     setType(nextType)
     if (nextType === 'AIAgent' && !providerId && providers.length > 0) {
       setProviderId(providers[0].id)
-      setModel(providers[0].models?.[0] ?? '')
-    }
-  }
-
-  function handleProviderChange(nextProviderId) {
-    setProviderId(nextProviderId)
-    const nextModels = providers.find((provider) => provider.id === nextProviderId)?.models ?? []
-    if (nextModels.length > 0 && !nextModels.includes(model)) {
-      setModel(nextModels[0])
     }
   }
 
@@ -85,16 +77,20 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
   }
 
   async function handleTest() {
-    setTest({ status: 'testing', message: '' })
+    setShowRawResponse(false)
+    setTest({ status: 'testing', message: '', responseBody: null, statusCode: null })
     try {
       const result = await api.testParticipantAutomation(participantId, testRequestPayload(formState))
-      setTest(
-        result?.success
-          ? { status: 'ok', message: result.assistantContent ?? '(empty reply)' }
-          : { status: 'error', message: result?.error ?? 'The test failed.' },
-      )
+      setTest({
+        status: result?.success ? 'ok' : 'error',
+        message: result?.success
+          ? result.assistantContent ?? '(empty reply)'
+          : result?.error ?? 'The test failed.',
+        responseBody: result?.responseBody ?? null,
+        statusCode: result?.httpStatusCode ?? null,
+      })
     } catch (testError) {
-      setTest({ status: 'error', message: testError.message })
+      setTest({ status: 'error', message: testError.message, responseBody: null, statusCode: null })
     }
   }
 
@@ -120,7 +116,7 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
           <>
             <label className="field">
               <span>Provider</span>
-              <select className="select" value={providerId} onChange={(event) => handleProviderChange(event.target.value)}>
+              <select className="select" value={providerId} onChange={(event) => setProviderId(event.target.value)}>
                 <option value="" disabled>
                   Select a provider
                 </option>
@@ -134,21 +130,23 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
 
             <label className="field">
               <span>Model</span>
-              <select
+              <input
                 className="select"
+                type="text"
+                autoComplete="off"
+                spellCheck="false"
+                list={models.length > 0 ? 'ai-model-suggestions' : undefined}
                 value={model}
                 onChange={(event) => setModel(event.target.value)}
-                disabled={models.length === 0}
-              >
-                <option value="" disabled>
-                  Select a model
-                </option>
-                {models.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
+                placeholder="Type the provider model name"
+              />
+              {models.length > 0 ? (
+                <datalist id="ai-model-suggestions">
+                  {models.map((option) => (
+                    <option key={option} value={option} />
+                  ))}
+                </datalist>
+              ) : null}
             </label>
 
             <label className="field">
@@ -184,6 +182,11 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
                 Test failed: {test.message}
               </p>
             ) : null}
+            {(test.status === 'ok' || test.status === 'error') && test.responseBody ? (
+              <button className="btn" type="button" onClick={() => setShowRawResponse(true)}>
+                View raw response
+              </button>
+            ) : null}
 
             {runtimeStatus ? (
               <p className="ai-status-line">
@@ -209,6 +212,13 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
           </p>
         ) : null}
       </div>
+      {showRawResponse ? (
+        <AiRawResponseModal
+          statusCode={test.statusCode}
+          body={test.responseBody}
+          onClose={() => setShowRawResponse(false)}
+        />
+      ) : null}
     </Panel>
   )
 }

@@ -65,13 +65,26 @@ public sealed class AiTraderConfigurationTests : IDisposable
     }
 
     [Fact]
-    public async Task ModelNotBelongingToProviderIsRejected()
+    public async Task ArbitraryModelNameIsAcceptedForKnownProvider()
     {
         var participant = await SeedParticipantAsync(ParticipantType.Individual);
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "MiniMax-M2", "key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6-custom-tuned", "key"));
+
+        Assert.True(result.Success);
+        Assert.Equal("glm-4.6-custom-tuned", (await context.AiTraderConfigurations.SingleAsync()).Model);
+    }
+
+    [Fact]
+    public async Task BlankModelIsRejected()
+    {
+        var participant = await SeedParticipantAsync(ParticipantType.Individual);
+
+        var result = await service.UpdateAutomationAsync(
+            participant.Id,
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "   ", "key"));
 
         Assert.False(result.Success);
         Assert.False(await context.AiTraderConfigurations.AnyAsync());

@@ -25,7 +25,7 @@ export function validateAutomation(state) {
   }
 
   if (!isNonBlank(state.model)) {
-    return { valid: false, error: 'Select a model.' }
+    return { valid: false, error: 'Enter a model name.' }
   }
 
   if (requiresNewApiKey(state) && !isNonBlank(state.apiKey)) {

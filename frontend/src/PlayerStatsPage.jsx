@@ -63,7 +63,7 @@ function PlayerStatsPage() {
 
   return (
     <main className="main">
-      <ParticipantDetail key={playerId} participantId={playerId} />
+      <ParticipantDetail key={playerId} participantId={playerId} showFavoriteCompanies />
     </main>
   )
 }

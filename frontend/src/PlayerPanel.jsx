@@ -12,6 +12,8 @@ import { groupHoldingsByIndustry } from './industryHoldings'
 import { maintenanceStanding } from './marginModel'
 import { SettlementsTable } from './SettlementsTable'
 import { cashSettlement, quantitySettlement } from './marketAccounting'
+import { FavoriteCompaniesTable } from './FavoriteCompaniesTable'
+import { favoriteCompanies } from './favoriteCompanies'
 
 const POLL_INTERVAL_MS = 1000
 const WORTH_HISTORY_POINTS = 64
@@ -180,6 +182,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
           cashMoves={cashMoves}
           settlements={settlements}
           companies={companies}
+          showFavoriteCompanies
           onSelectCompany={onSelectCompany}
           onRefresh={refresh}
         />
@@ -558,6 +561,7 @@ function ActorView({
   cashMoves,
   settlements,
   companies,
+  showFavoriteCompanies,
   onSelectCompany,
   onRefresh,
 }) {
@@ -682,6 +686,7 @@ function ActorView({
         cashMoves={cashMoves}
         settlements={settlements}
         companies={companies}
+        showFavoriteCompanies={showFavoriteCompanies}
         onSelectCompany={onSelectCompany}
         onRefresh={onRefresh}
       />
@@ -701,12 +706,14 @@ const BASE_TABS = [
   { key: 'margin', label: 'Margin', hasCount: false },
 ]
 const MEMBERS_TAB = { key: 'members', label: 'Members', hasCount: true }
+const FAVORITES_TAB = { key: 'favorites', label: 'Favorite companies', hasCount: true }
 
 // The actor's detail views behind one tab strip so the panel stays compact: the roster tabs carry a live count,
 // and arrow keys move focus between tabs (roving tabindex) to match the order-book tablist. The fund variant
 // appends a Members tab.
-function ActorTabs({ participantId, canCancelOrders, members, holdings, attention, openOrders, loans, margin, loanStatus, onLoanStatusChange, worthHistory, cashMoves, settlements, companies, onSelectCompany, onRefresh }) {
-  const tabs = members ? [...BASE_TABS, MEMBERS_TAB] : BASE_TABS
+function ActorTabs({ participantId, canCancelOrders, members, holdings, attention, openOrders, loans, margin, loanStatus, onLoanStatusChange, worthHistory, cashMoves, settlements, companies, showFavoriteCompanies, onSelectCompany, onRefresh }) {
+  const playerTabs = showFavoriteCompanies ? [...BASE_TABS, FAVORITES_TAB] : BASE_TABS
+  const tabs = members ? [...playerTabs, MEMBERS_TAB] : playerTabs
   const [activeKey, setActiveKey] = useState('assets')
   const tabRefs = useRef({})
 
@@ -719,6 +726,7 @@ function ActorTabs({ participantId, canCancelOrders, members, holdings, attentio
     loans: loans.length,
     settlements: settlements.length,
     members: members?.length ?? 0,
+    favorites: favoriteCompanies(companies).length,
   }
 
   function focusTab(key) {
@@ -787,6 +795,11 @@ function ActorTabs({ participantId, canCancelOrders, members, holdings, attentio
           <LoansSection loans={loans} status={loanStatus} onStatusChange={onLoanStatusChange} onRepaid={onRefresh} />
         ) : null}
         {activeKey === 'margin' ? <MarginSection margin={margin} /> : null}
+        {activeKey === 'favorites' ? (
+          <div className="modal-section player-section">
+            <FavoriteCompaniesTable companies={companies} onSelectCompany={onSelectCompany} />
+          </div>
+        ) : null}
         {activeKey === 'members' ? <MembersSection members={members ?? []} /> : null}
       </div>
     </div>

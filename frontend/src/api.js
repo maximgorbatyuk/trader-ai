@@ -41,6 +41,10 @@ function put(path, body) {
   })
 }
 
+function remove(path) {
+  return request(path, { method: 'DELETE' })
+}
+
 // Drops null/undefined/empty values so optional filters never reach the API as blank query params.
 function toQuery(params) {
   const query = new URLSearchParams()
@@ -131,6 +135,8 @@ export const api = {
   placeOrder: (order) => post('/orders', order),
   getPlayer: () => get('/player'),
   createPlayer: (payload) => post('/player', payload),
+  markFavoriteCompany: (companyId) => put(`/player/favorite-companies/${companyId}`, {}),
+  unmarkFavoriteCompany: (companyId) => remove(`/player/favorite-companies/${companyId}`),
   cancelPlayerOrder: (orderId) => post(`/player/orders/${orderId}/cancel`),
   openPlayerFund: (payload) => post('/player/fund', payload),
   depositToPlayerFund: (payload) => post('/player/fund/deposit', payload),

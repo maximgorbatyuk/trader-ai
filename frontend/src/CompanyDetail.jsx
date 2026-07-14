@@ -13,6 +13,7 @@ import { TradeModal } from './TradeModal'
 import { Pager } from './TableControls'
 import { corporateCashMovementPresentation } from './cashMovements'
 import { luldPresentation } from './marketAccounting'
+import { FavoriteCompanyToggle } from './FavoriteCompanyToggle'
 
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
@@ -188,6 +189,14 @@ export function CompanyDetail({ companyId }) {
         <div className="command-id">
           <span className="command-label">Company</span>
           <h2 className="command-name">{detail.name}</h2>
+          {player ? (
+            <FavoriteCompanyToggle
+              companyId={detail.id}
+              companyName={detail.name}
+              isFavorite={detail.isFavorite}
+              onChanged={(isFavorite) => setDetail((current) => ({ ...current, isFavorite }))}
+            />
+          ) : null}
         </div>
         <dl className="statbar">
           <div className="stat">

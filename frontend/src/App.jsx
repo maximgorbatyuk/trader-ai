@@ -161,6 +161,10 @@ function App() {
         <CompanyModal
           company={mapModalCompany}
           onClose={() => setMapModalCompanyId(null)}
+          onFavoriteChanged={(isFavorite) => {
+            setCompanies((current) => current.map((company) =>
+              company.id === mapModalCompany.id ? { ...company, isFavorite } : company))
+          }}
         />
       ) : null}
     </>

@@ -5,6 +5,7 @@ import { Treemap } from './Treemap'
 import { luldPresentation } from './marketAccounting'
 import { formatPct, TONE_WORD } from './treemapLayout'
 import { LatestNews } from './LatestNews'
+import { matchesFavoriteFilter } from './favoriteCompanies'
 
 // The 25th/75th percentile of a value set, used to split companies into cheapest / average / richest bands.
 function quartileBounds(values) {
@@ -24,6 +25,11 @@ const PLAYER_SHARE_OPTIONS = [
   { value: 'all', label: 'All companies' },
   { value: 'owned', label: 'Player holds' },
   { value: 'not', label: 'Player does not hold' },
+]
+const FAVORITE_OPTIONS = [
+  { value: 'all', label: 'All companies' },
+  { value: 'favorite', label: 'Favorite companies' },
+  { value: 'not-favorite', label: 'Not favorite' },
 ]
 const RISK_OPTIONS = [
   { value: 'all', label: 'Any rating' },
@@ -47,6 +53,7 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
   const [industrySel, setIndustrySel] = useState(() => new Set())
   const [capBucket, setCapBucket] = useState('all')
   const [playerSel, setPlayerSel] = useState('all')
+  const [favoriteSel, setFavoriteSel] = useState('all')
   const [riskSel, setRiskSel] = useState('all')
 
   if (capChange.cycle !== currentCycleNumber) {
@@ -96,6 +103,7 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
     if (!matchesCap(company.capitalization)) return false
     if (playerSel === 'owned' && !heldIds.has(company.id)) return false
     if (playerSel === 'not' && heldIds.has(company.id)) return false
+    if (!matchesFavoriteFilter(company, favoriteSel)) return false
     return matchesRisk(company)
   })
 
@@ -178,6 +186,16 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
             <span className="filter-label">Player shares</span>
             <select className="select select-sm" value={playerSel} onChange={(event) => setPlayerSel(event.target.value)}>
               {PLAYER_SHARE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-field">
+            <span className="filter-label">Player favorites</span>
+            <select className="select select-sm" value={favoriteSel} onChange={(event) => setFavoriteSel(event.target.value)}>
+              {FAVORITE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>

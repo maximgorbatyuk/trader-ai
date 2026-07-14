@@ -503,9 +503,9 @@ public static class MarketEndpoints
             }
 
             var model = request.Model?.Trim();
-            if (string.IsNullOrWhiteSpace(model) || !catalog.IsModelValid(providerId, model))
+            if (string.IsNullOrWhiteSpace(model))
             {
-                return Results.BadRequest(new { error = "Unknown model for the selected provider." });
+                return Results.BadRequest(new { error = "A model name is required." });
             }
 
             var apiKey = !string.IsNullOrWhiteSpace(request.ApiKey)
@@ -528,6 +528,7 @@ public static class MarketEndpoints
                 success,
                 response.HttpStatusCode,
                 response.AssistantContent,
+                response.RawBody,
                 stopwatch.ElapsedMilliseconds,
                 success ? null : response.Error ?? "The provider call failed."));
         });
@@ -1062,6 +1063,12 @@ public static class MarketEndpoints
 
         app.MapGet("/player", async (AppDbContext dbContext, MarginService marginService) =>
             Results.Ok(await BuildPlayerResponseAsync(dbContext, marginService)));
+
+        app.MapPut("/player/favorite-companies/{companyId:int}", async (int companyId, AppDbContext dbContext) =>
+            await SetFavoriteCompanyAsync(dbContext, companyId, true));
+
+        app.MapDelete("/player/favorite-companies/{companyId:int}", async (int companyId, AppDbContext dbContext) =>
+            await SetFavoriteCompanyAsync(dbContext, companyId, false));
 
         app.MapPost("/player", async (CreatePlayerRequest? request, MarketService marketService, AppDbContext dbContext, MarginService marginService) =>
         {
@@ -1802,6 +1809,7 @@ public static class MarketEndpoints
                 return new CompanyResponse(
                     company.Id,
                     company.Name,
+                    company.IsFavorite,
                     company.IndustryId,
                     industryNameById.GetValueOrDefault(company.IndustryId),
                     company.IssuedSharesCount,
@@ -1835,6 +1843,27 @@ public static class MarketEndpoints
             haltOptions.UpperBandPercent,
             haltOptions.AllowedOrderLowerPercent,
             haltOptions.AllowedOrderUpperPercent);
+
+    private static async Task<IResult> SetFavoriteCompanyAsync(
+        AppDbContext dbContext,
+        int companyId,
+        bool isFavorite)
+    {
+        if (!await dbContext.Participants.AnyAsync(participant => participant.Type == ParticipantType.Player))
+        {
+            return Results.NotFound(new { error = "No player exists." });
+        }
+
+        var company = await dbContext.Companies.FirstOrDefaultAsync(candidate => candidate.Id == companyId);
+        if (company is null)
+        {
+            return Results.NotFound(new { error = "Company not found." });
+        }
+
+        company.IsFavorite = isFavorite;
+        await dbContext.SaveChangesAsync();
+        return Results.NoContent();
+    }
 
     // Resolves the AI-automation view for a participant. Provider label comes from the backend catalog and the
     // live status from in-memory runtime state; the stored key is never read here, only its presence.
@@ -2257,6 +2286,7 @@ public static class MarketEndpoints
         return new CompanyDetailResponse(
             company.Id,
             company.Name,
+            company.IsFavorite,
             company.IndustryId,
             industryName,
             company.IssuedSharesCount,
@@ -2795,6 +2825,7 @@ public static class MarketEndpoints
 public sealed record CompanyResponse(
     int Id,
     string Name,
+    bool IsFavorite,
     int IndustryId,
     string? IndustryName,
     int IssuedSharesCount,
@@ -2835,6 +2866,7 @@ public sealed record PagedNewsResponse(NewsPostResponse[] Items, int Total, int 
 public sealed record CompanyDetailResponse(
     int Id,
     string Name,
+    bool IsFavorite,
     int IndustryId,
     string? IndustryName,
     int IssuedSharesCount,
@@ -3092,6 +3124,7 @@ public sealed record AiProviderTestResponse(
     bool Success,
     int? HttpStatusCode,
     string? AssistantContent,
+    string? ResponseBody,
     long? DurationMilliseconds,
     string? Error);
 

@@ -86,9 +86,9 @@ public sealed class AiTraderConfigurationService(
         }
 
         var model = request.Model?.Trim();
-        if (string.IsNullOrWhiteSpace(model) || !catalog.IsModelValid(providerId, model))
+        if (string.IsNullOrWhiteSpace(model))
         {
-            return UpdateAutomationResult.Fail("Unknown model for the selected provider.");
+            return UpdateAutomationResult.Fail("A model name is required.");
         }
 
         var providerChanged = existing is null || existing.ProviderId != providerId;

@@ -21,6 +21,75 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task PlayerCanMarkAndUnmarkAFavoriteCompany()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+
+            using var initialCompanies = await client.GetFromJsonAsync<JsonDocument>("/companies");
+            var initialCompany = initialCompanies!.RootElement.EnumerateArray().First();
+            var companyId = initialCompany.GetProperty("id").GetInt32();
+            Assert.False(initialCompany.GetProperty("isFavorite").GetBoolean());
+
+            using var marked = await client.PutAsync($"/player/favorite-companies/{companyId}", null);
+            Assert.Equal(HttpStatusCode.NoContent, marked.StatusCode);
+
+            using var favoriteCompanies = await client.GetFromJsonAsync<JsonDocument>("/companies");
+            var favoriteCompany = favoriteCompanies!.RootElement.EnumerateArray()
+                .Single(company => company.GetProperty("id").GetInt32() == companyId);
+            Assert.True(favoriteCompany.GetProperty("isFavorite").GetBoolean());
+
+            using var favoriteDetail = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}");
+            Assert.True(favoriteDetail!.RootElement.GetProperty("isFavorite").GetBoolean());
+
+            using var unmarked = await client.DeleteAsync($"/player/favorite-companies/{companyId}");
+            Assert.Equal(HttpStatusCode.NoContent, unmarked.StatusCode);
+
+            using var ordinaryDetail = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}");
+            Assert.False(ordinaryDetail!.RootElement.GetProperty("isFavorite").GetBoolean());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task FavoriteCompanyMutationRequiresAPlayerAndKnownCompany()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            using var companies = await client.GetFromJsonAsync<JsonDocument>("/companies");
+            var companyId = companies!.RootElement.EnumerateArray().First().GetProperty("id").GetInt32();
+
+            using var withoutPlayer = await client.PutAsync($"/player/favorite-companies/{companyId}", null);
+            Assert.Equal(HttpStatusCode.NotFound, withoutPlayer.StatusCode);
+            Assert.Contains("No player exists.", await withoutPlayer.Content.ReadAsStringAsync());
+
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+            using var missingCompany = await client.PutAsync("/player/favorite-companies/999999", null);
+            Assert.Equal(HttpStatusCode.NotFound, missingCompany.StatusCode);
+            Assert.Contains("Company not found.", await missingCompany.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AccountingContractsShareValuationAndPendingSettlementSummary()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -2375,6 +2444,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
                 Assert.True(doc.RootElement.GetProperty("success").GetBoolean());
                 Assert.Equal("I am the model.", doc.RootElement.GetProperty("assistantContent").GetString());
+                Assert.Equal("I am the model.", doc.RootElement.GetProperty("responseBody").GetString());
             },
             configure: services =>
             {

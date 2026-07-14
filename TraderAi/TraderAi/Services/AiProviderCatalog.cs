@@ -4,8 +4,9 @@ namespace TraderAi.Services;
 
 public sealed record AiProviderDescriptor(string Id, string Label, Uri Endpoint, IReadOnlyList<string> Models);
 
-// Read-only view over the configured providers. It normalises provider ids to their catalog key and answers
-// whether a chosen model belongs to a provider, so the frontend can never persist an unknown provider or model.
+// Read-only view over the configured providers. It normalises provider ids to their catalog key so the frontend
+// can never persist an unknown provider; the model is free-form text and the per-provider model list is only
+// suggestion metadata for the UI.
 public sealed class AiProviderCatalog
 {
     private readonly Dictionary<string, AiProviderDescriptor> byId;
@@ -46,8 +47,4 @@ public sealed class AiProviderCatalog
 
     public AiProviderDescriptor? Find(string providerId)
         => byId.TryGetValue(providerId, out var descriptor) ? descriptor : null;
-
-    public bool IsModelValid(string providerId, string model)
-        => byId.TryGetValue(providerId, out var descriptor)
-            && descriptor.Models.Any(candidate => string.Equals(candidate, model, StringComparison.OrdinalIgnoreCase));
 }
