@@ -247,7 +247,7 @@ public sealed class AuditorServiceTests : IDisposable
         var news = await context.NewsPosts.AsNoTracking().SingleAsync();
         Assert.Equal(NewsImpactScope.Company, news.Scope);
         Assert.Equal(NewsImpactDirection.Increase, news.Direction);
-        Assert.Equal(1m, news.ImpactPercent);
+        Assert.Equal(10m, news.ImpactPercent);
         Assert.Equal(company.Id, news.TargetCompanyId);
         Assert.Equal(cycle.Id, news.ImpactAppliedInCycleId);
         Assert.Empty(await context.CrisisEvents.AsNoTracking().ToListAsync());

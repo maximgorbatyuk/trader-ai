@@ -164,7 +164,7 @@ public sealed class AuditorService(
                     PublishedAt = now,
                     Scope = NewsImpactScope.Company,
                     Direction = NewsImpactDirection.Increase,
-                    ImpactPercent = 1m,
+                    ImpactPercent = impactPercent,
                     TargetCompanyId = company.Id,
                 });
             }
