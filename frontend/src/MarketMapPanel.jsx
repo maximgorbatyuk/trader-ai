@@ -26,8 +26,10 @@ const PLAYER_SHARE_OPTIONS = [
   { value: 'not', label: 'Player does not hold' },
 ]
 const RISK_OPTIONS = [
-  { value: 'all', label: 'Any risk' },
+  { value: 'all', label: 'Any rating' },
   { value: 'none', label: 'No audit' },
+  { value: 'ExtraRaisedExpectations', label: 'Extra raised expectations' },
+  { value: 'RaisedExpectations', label: 'Raised expectations' },
   { value: 'Extra', label: 'Extra risk' },
   { value: 'High', label: 'High risk' },
   { value: 'Low', label: 'Low risk' },

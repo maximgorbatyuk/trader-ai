@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using TraderAi.Api;
 using TraderAi.Data;
 using TraderAi.Models;
@@ -48,6 +49,7 @@ builder.Services.AddScoped<MarketExitService>();
 builder.Services.AddScoped<StockSplitService>();
 builder.Services.AddScoped<AuditorService>();
 builder.Services.AddScoped<ShareEmissionService>();
+builder.Services.AddScoped<PrimaryIssuanceService>();
 builder.Services.AddScoped<CompanyLifecycleService>();
 builder.Services.AddScoped<LoanService>();
 builder.Services.AddScoped<VolatilityHaltService>();
@@ -71,6 +73,7 @@ builder.Services.Configure<MarketExitOptions>(builder.Configuration.GetSection(M
 builder.Services.Configure<StockSplitOptions>(builder.Configuration.GetSection(StockSplitOptions.SectionName));
 builder.Services.Configure<AuditorOptions>(builder.Configuration.GetSection(AuditorOptions.SectionName));
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
+builder.Services.Configure<PrimaryIssuanceOptions>(builder.Configuration.GetSection(PrimaryIssuanceOptions.SectionName));
 builder.Services.Configure<CompanyLifecycleOptions>(builder.Configuration.GetSection(CompanyLifecycleOptions.SectionName));
 builder.Services.Configure<LoanOptions>(builder.Configuration.GetSection(LoanOptions.SectionName));
 builder.Services.Configure<TradeFeeOptions>(builder.Configuration.GetSection(TradeFeeOptions.SectionName));
@@ -78,7 +81,23 @@ builder.Services.Configure<VolatilityHaltOptions>(builder.Configuration.GetSecti
 builder.Services.Configure<ConcentrationCapOptions>(builder.Configuration.GetSection(ConcentrationCapOptions.SectionName));
 builder.Services.Configure<ArchiveOptions>(builder.Configuration.GetSection(ArchiveOptions.SectionName));
 builder.Services.Configure<IndustrySentimentOptions>(builder.Configuration.GetSection(IndustrySentimentOptions.SectionName));
-builder.Services.Configure<RandomChanceRatesOptions>(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName));
+builder.Services.AddOptions<RandomChanceRatesOptions>()
+    .Bind(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName))
+    .Validate(options =>
+    {
+        var stableChance = options.EventTriggerChances.AuditorIssueOnStable;
+        var bigMoveChance = options.EventTriggerChances.AuditorIssueOnBigMove;
+        var crisisMultiplier = options.ChanceModifiers.CrisisAuditorIssueMultiplier;
+        return double.IsFinite(stableChance)
+            && double.IsFinite(bigMoveChance)
+            && double.IsFinite(crisisMultiplier)
+            && stableChance is >= 0d and <= 0.5d
+            && bigMoveChance is >= 0d and <= 0.5d
+            && crisisMultiplier >= 0d
+            && stableChance * crisisMultiplier <= 0.5d
+            && bigMoveChance * crisisMultiplier <= 0.5d;
+    }, "Auditor Extra outcome chances, including crisis adjustment, must remain between 0% and 50% to preserve symmetry.")
+    .ValidateOnStart();
 builder.Services.AddHostedService<MarketLoopService>();
 
 var loopIntervalSeconds = builder.Configuration.GetValue<int>($"{MarketLoopOptions.SectionName}:IntervalSeconds");
@@ -111,6 +130,9 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 var app = builder.Build();
+
+// Validate before database initialization so invalid probability configuration cannot mutate persistent state.
+_ = app.Services.GetRequiredService<IOptions<RandomChanceRatesOptions>>().Value;
 
 using (var scope = app.Services.CreateScope())
 {

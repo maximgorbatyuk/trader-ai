@@ -13,7 +13,7 @@ public sealed class VolatilityHaltOptions
 
     public int TradingPauseDurationSeconds { get; set; } = 300;
 
-    public decimal UpperBandPercent { get; set; } = 10m;
+    public decimal UpperBandPercent { get; set; } = 15m;
 
     public decimal LowerBandPercent { get; set; } = 15m;
 
@@ -21,5 +21,7 @@ public sealed class VolatilityHaltOptions
     // reference -AllowedOrderLowerPercent and +AllowedOrderUpperPercent, waiting for the band to reach it.
     public decimal AllowedOrderLowerPercent { get; set; } = 25m;
 
-    public decimal AllowedOrderUpperPercent { get; set; } = 15m;
+    public decimal AllowedOrderUpperPercent { get; set; } = 25m;
+
+    public decimal DemandRatchetStepPercent { get; set; } = 0.25m;
 }

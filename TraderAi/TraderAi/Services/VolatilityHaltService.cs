@@ -49,9 +49,25 @@ public sealed class VolatilityHaltService(
             var reference = referenceByCompany.GetValueOrDefault(company.Id, fallbackByCompany.GetValueOrDefault(company.Id));
             if (reference > 0m && (state.State is LuldState.Normal or LuldState.LimitState || state.ReferencePrice <= 0m))
             {
-                state.ReferencePrice = Round(reference);
-                state.LowerBandPrice = Round(reference * (1m - settings.LowerBandPercent / 100m));
-                state.UpperBandPrice = Round(reference * (1m + settings.UpperBandPercent / 100m));
+                var bandReference = reference;
+                if (state.State == LuldState.Normal && settings.DemandRatchetStepPercent > 0m)
+                {
+                    var ratchetBase = Math.Max(reference, state.ReferencePrice);
+                    var provisionalLower = Round(ratchetBase * (1m - settings.LowerBandPercent / 100m));
+                    var provisionalUpper = Round(ratchetBase * (1m + settings.UpperBandPercent / 100m));
+                    if (HasExcessBuyDemand(
+                            ordersByCompany.GetValueOrDefault(company.Id) ?? [],
+                            currentCycleId,
+                            provisionalLower,
+                            provisionalUpper))
+                    {
+                        bandReference = ratchetBase * (1m + settings.DemandRatchetStepPercent / 100m);
+                    }
+                }
+
+                state.ReferencePrice = Round(bandReference);
+                state.LowerBandPrice = Round(state.ReferencePrice * (1m - settings.LowerBandPercent / 100m));
+                state.UpperBandPrice = Round(state.ReferencePrice * (1m + settings.UpperBandPercent / 100m));
                 state.UpdatedInCycleId = currentCycleId;
             }
 
@@ -152,6 +168,27 @@ public sealed class VolatilityHaltService(
             return PriceLimitDirection.Upper;
         }
         return price <= state.LowerBandPrice ? PriceLimitDirection.Lower : null;
+    }
+
+    private static bool HasExcessBuyDemand(
+        IReadOnlyCollection<Order> orders,
+        int currentCycleId,
+        decimal lowerBandPrice,
+        decimal upperBandPrice)
+    {
+        var buyQuantity = orders
+            .Where(order => order.Type == OrderType.Buy
+                && order.CreatedInCycleId != currentCycleId
+                && order.LimitPrice >= lowerBandPrice
+                && order.LimitPrice <= upperBandPrice)
+            .Sum(order => (long)order.RemainingQuantity);
+        var sellQuantity = orders
+            .Where(order => order.Type == OrderType.Sell
+                && order.CreatedInCycleId != currentCycleId
+                && order.LimitPrice >= lowerBandPrice
+                && order.LimitPrice <= upperBandPrice)
+            .Sum(order => (long)order.RemainingQuantity);
+        return buyQuantity > sellQuantity;
     }
 
     public static void ResetToNormal(PriceBandState state, int currentCycleId)

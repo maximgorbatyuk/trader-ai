@@ -119,6 +119,25 @@ public sealed class RuleBasedDecisionEngineTests
     }
 
     [Fact]
+    public void RaisedBandReferencePullsInsideBuyFormationAboveTheLatestTrade()
+    {
+        var bounds = OrderPriceBounds.FromReference(110m, 15m, 10m, 25m, 15m);
+        var buy = EngineWith([0.05d, 0.50d, 0d])
+            .Decide(ContextFor(
+                availableCash: 5000m,
+                sharesOwned: 0,
+                companyPrice: 100m,
+                priceChangePct: 0.10m,
+                bounds: bounds));
+
+        Assert.Collection(buy, intent =>
+        {
+            Assert.Equal(OrderType.Buy, intent.Type);
+            Assert.Equal(111.10m, intent.LimitPrice);
+        });
+    }
+
+    [Fact]
     public void InsideBandSellSitsOneToFivePercentBelowMarketWhenTheOutsideRollDoesNotPass()
     {
         var sell = EngineWith([0.05d, 0.50d, 0d])
@@ -540,7 +559,8 @@ public sealed class RuleBasedDecisionEngineTests
         decimal longRangeChangePct = 0m,
         int sectorSentiment = 0,
         Temperament temperament = Temperament.Balanced,
-        RiskProfile riskProfile = RiskProfile.Medium)
+        RiskProfile riskProfile = RiskProfile.Medium,
+        OrderPriceBounds? bounds = null)
     {
         const int companyId = 1;
 
@@ -551,7 +571,7 @@ public sealed class RuleBasedDecisionEngineTests
         return new DecisionContext(
             NewParticipant(availableCash, temperament, riskProfile),
             availableCash,
-            [new CompanyQuote(companyId, companyPrice, priceChangePct, netShareDemand, longRangeChangePct, sectorSentiment, Bounds(companyPrice))],
+            [new CompanyQuote(companyId, companyPrice, priceChangePct, netShareDemand, longRangeChangePct, sectorSentiment, bounds ?? Bounds(companyPrice))],
             holdings,
             new HashSet<int>(companiesWithOpenOrders ?? []));
     }

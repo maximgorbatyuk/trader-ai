@@ -60,16 +60,37 @@ export const TEMPERAMENT_TAG_CLASS = {
   Conservative: 'tag-temperament-conservative',
 }
 
-// Risk-rating labels and tag classes. Severity escalates through non-market hues (calm blue → amber → magenta)
-// so the market's reserved green/red are untouched; the text label carries the meaning without relying on hue.
+// Rating labels and tag classes. Risk severity uses non-market hues, while positive outlooks use the
+// reserved market-up tone; every meaning is also carried by text rather than hue alone.
 export const RATING_LABEL = {
+  ExtraRaisedExpectations: 'Extra raised expectations',
+  RaisedExpectations: 'Raised expectations',
   Low: 'Low risk',
   High: 'High risk',
   Extra: 'Extra risk',
 }
 
 export const RATING_TAG_CLASS = {
+  ExtraRaisedExpectations: 'tag-rating-raised',
+  RaisedExpectations: 'tag-rating-raised',
   Low: 'tag-rating-low',
   High: 'tag-rating-high',
   Extra: 'tag-rating-extra',
+}
+
+const RATING_ORDER = { ExtraRaisedExpectations: -2, RaisedExpectations: -1, Low: 0, High: 1, Extra: 2 }
+
+export function ratingTrend(current, previous) {
+  if (!current || !previous || !(current in RATING_ORDER) || !(previous in RATING_ORDER)) return null
+  if (RATING_ORDER[current] > RATING_ORDER[previous]) return 'worsened'
+  if (RATING_ORDER[current] < RATING_ORDER[previous]) return 'improved'
+  return null
+}
+
+export function ratingImpactLabel(rating, impactPercent) {
+  if (typeof impactPercent !== 'number') return ''
+  if (rating === 'RaisedExpectations' || rating === 'ExtraRaisedExpectations') {
+    return ` +${impactPercent.toFixed(0)}%`
+  }
+  return rating === 'Extra' ? ` −${impactPercent.toFixed(0)}%` : ''
 }

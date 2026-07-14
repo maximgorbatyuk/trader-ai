@@ -10,7 +10,7 @@ public sealed class TradeFeeOptions
     public bool Enabled { get; set; }
 
     // Fraction of the trade value (execution price × quantity) deducted from the seller's proceeds.
-    public decimal FeeRate { get; set; } = 0.01m;
+    public decimal FeeRate { get; set; } = 0.005m;
 
     // The bank the fee accrues to, resolved-or-created by the same first-by-id rule the loan service uses.
     public string BankName { get; set; } = "National bank";

@@ -6,6 +6,7 @@ A Company is the listed asset in the game. It issues shares, belongs to an indus
 
 - A Company starts with an issued share supply and an initial market price.
 - Unsold issued shares are available through the company's float. When those shares sell, the buyer receives shares, no participant seller receives cash, and the primary proceeds enter the company's issuer cash on T+1 settlement.
+- When unsold float becomes scarce, the Company can issue a demand-paced block of new shares at the current price at most once per trading day. The new offer uses ordinary matching and stops recurring once float is replenished.
 - A Company does not make automated trading decisions, join funds, or go bankrupt. It can be delisted, but through its own lifecycle rules rather than the trader-churn that removes traders (see Lifecycle).
 - Shareholders can be Individuals, AI Agents, the Player, or Collective Funds.
 - Company price changes through matched trades and market events.

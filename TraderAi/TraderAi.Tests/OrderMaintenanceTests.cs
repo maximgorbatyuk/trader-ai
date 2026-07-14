@@ -174,12 +174,12 @@ public sealed class OrderMaintenanceTests : IDisposable
         var market = Service(new FixedRoll(0d));
 
         var placed = await market.PlaceOrderAsync(bob.Id, company.Id, OrderType.Buy, 2, 100m);
-        // Old compounding would chase 100 -> 110 -> 121 -> ... toward 180; the band ceiling now stops it at 110.
+        // Old compounding would chase 100 -> 110 -> 121 -> ... toward 180; the band ceiling now stops it at 115.
         await StepAsync(market, 8);
 
         var order = await context.Orders.FindAsync(placed.Order!.Id);
         Assert.Equal(OrderStatus.Open, order!.Status);
-        Assert.Equal(110m, order.LimitPrice);
+        Assert.Equal(115m, order.LimitPrice);
     }
 
     [Fact]

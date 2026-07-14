@@ -100,6 +100,10 @@ function TradeMarketPage() {
   }
 
   const currentCycleNumber = market?.currentCycleNumber ?? null
+  const tradingCyclesPerDay =
+    market?.tradingCycleNumber != null && market?.remainingTradingCycles != null
+      ? market.tradingCycleNumber + market.remainingTradingCycles
+      : null
   const onSelectCompany = (companyId) => navigate(`/companies/${companyId}`)
 
   const participantNameById = new Map(participants.map((participant) => [participant.id, participant.name]))
@@ -160,7 +164,7 @@ function TradeMarketPage() {
           />
         ) : (
           <Panel title="Orders activity" className="panel-activity">
-            <OrdersActivity activity={activity} />
+            <OrdersActivity activity={activity} cyclesPerDay={tradingCyclesPerDay} />
             {/* The map tab already carries the news strip; show it here so news stays visible on this tab too. */}
             <div className="trade-news">
               <LatestNews

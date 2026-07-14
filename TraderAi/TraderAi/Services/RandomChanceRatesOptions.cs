@@ -47,11 +47,14 @@ public sealed class EventTriggerChances
     // New-company appearance chance once the company count is healthy.
     public double CompanyAppearanceLow { get; set; } = 0.01;
 
-    // Discovery chance when auditing a company after a big recent price move.
+    // Chance of each symmetric Extra outcome after a big recent price move.
     public double AuditorIssueOnBigMove { get; set; } = 0.10;
 
-    // Discovery chance when auditing a price-stable company.
+    // Chance of each symmetric Extra outcome when auditing a price-stable company.
     public double AuditorIssueOnStable { get; set; } = 0.02;
+
+    // Chance an issue-free audit raises expectations instead of issuing the ordinary risk verdict.
+    public double AuditorRaiseExpectationsChance { get; set; } = 0.08;
 
     // Base chance a trader revises a buy after a High rating, before personality deltas.
     public double AuditorHighRatingBuyRevision { get; set; } = 0.50;
@@ -108,7 +111,7 @@ public sealed class ChanceModifiers
     // Multiplies every trader's bankruptcy chance while a crisis is active.
     public double CrisisBankruptcyMultiplier { get; set; } = 2.0;
 
-    // Multiplies the auditor discovery chance while a crisis is active.
+    // Multiplies both symmetric auditor Extra-outcome chances while a crisis is active.
     public double CrisisAuditorIssueMultiplier { get; set; } = 3.0;
 
     // Scales every trader's quit chance during a global crisis.
@@ -147,10 +150,14 @@ public sealed class ChanceModifiers
 public sealed class RandomMagnitudeBands
 {
     // Lower bound of the random dividend rate applied to a paying company's capitalisation.
-    public decimal DividendRateMin { get; set; } = 0.0001m;
+    public decimal DividendRateMin { get; set; } = 0.0003m;
 
     // Upper bound of the random dividend rate.
-    public decimal DividendRateMax { get; set; } = 0.005m;
+    public decimal DividendRateMax { get; set; } = 0.015m;
+
+    public double PrimaryIssuanceRateMin { get; set; } = 0.02;
+
+    public double PrimaryIssuanceRateMax { get; set; } = 0.20;
 
     // Lower bound of the emission size as a fraction of the current share count.
     public double ShareEmissionRateMin { get; set; } = 0.01;

@@ -126,9 +126,9 @@ public sealed class DecisionFlowTests : IDisposable
         var bounds = Assert.Single(decisionEngine.LastQuotes!).Bounds;
         Assert.NotNull(bounds);
         Assert.Equal(85m, bounds!.ActiveLowerPrice);
-        Assert.Equal(110m, bounds.ActiveUpperPrice);
+        Assert.Equal(115m, bounds.ActiveUpperPrice);
         Assert.Equal(75m, bounds.AllowedMinimumPrice);
-        Assert.Equal(115m, bounds.AllowedMaximumPrice);
+        Assert.Equal(125m, bounds.AllowedMaximumPrice);
     }
 
     // Server-owned validation cannot be bypassed by a deferred automated write: an intent priced beyond the

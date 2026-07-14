@@ -599,7 +599,8 @@ public static class MarketEndpoints
                     .Select(rating => new { rating.CompanyId, rating.Id, rating.Rating })
                     .ToListAsync())
                 .GroupBy(rating => rating.CompanyId)
-                .Where(group => group.OrderByDescending(rating => rating.Id).First().Rating != CompanyRiskRating.Low)
+                .Where(group => group.OrderByDescending(rating => rating.Id).First().Rating
+                    is CompanyRiskRating.High or CompanyRiskRating.Extra)
                 .Select(group => group.Key)
                 .ToHashSet();
 
@@ -1056,10 +1057,23 @@ public static class MarketEndpoints
                     .ToListAsync())
                 .ToHashSet();
 
-            var cycles = await dbContext.MarketCycles.OrderBy(cycle => cycle.CycleNumber).ToListAsync();
+            var cycles = await (
+                    from cycle in dbContext.MarketCycles
+                    join day in dbContext.TradingDays on cycle.TradingDayId equals day.Id
+                    orderby cycle.CycleNumber
+                    select new
+                    {
+                        cycle.Id,
+                        cycle.CycleNumber,
+                        TradingDayNumber = day.DayNumber,
+                        cycle.TradingCycleNumber,
+                    })
+                .ToListAsync();
             var response = cycles
                 .Select(cycle => new ActivityPointResponse(
                     cycle.CycleNumber,
+                    cycle.TradingDayNumber,
+                    cycle.TradingCycleNumber,
                     ordersPlacedByCycleId.GetValueOrDefault(cycle.Id),
                     dividendCycleIds.Contains(cycle.Id)))
                 .ToArray();
@@ -2957,7 +2971,12 @@ public sealed record OrderResponse(
 
 public sealed record CycleTickResponse(bool Ran, int? CompletedCycleNumber, int OrdersPlaced, int FillCount);
 
-public sealed record ActivityPointResponse(int CycleNumber, int OrdersPlaced, bool PaidDividend);
+public sealed record ActivityPointResponse(
+    int CycleNumber,
+    int TradingDayNumber,
+    int TradingCycleNumber,
+    int OrdersPlaced,
+    bool PaidDividend);
 
 public sealed record HoldingResponse(
     int CompanyId,

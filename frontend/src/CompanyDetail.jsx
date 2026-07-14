@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
-import { formatInt, formatMoney, formatSigned, toneOf } from './format'
+import { formatInt, formatMoney, formatSigned, ratingTrend, toneOf } from './format'
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
 import { RatingBadge } from './RatingBadge'
@@ -17,7 +17,6 @@ import { luldPresentation } from './marketAccounting'
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
 const CORPORATE_CASH_PAGE_SIZE = 10
-const RISK_ORDER = { Low: 0, High: 1, Extra: 2 }
 
 function formatPct(fraction) {
   if (typeof fraction !== 'number') return '—'
@@ -38,14 +37,6 @@ function formatSharePct(quantity, issuedShares) {
 function priceVsReference(price, reference) {
   if (typeof price !== 'number' || typeof reference !== 'number' || reference === 0) return null
   return formatPct((price - reference) / reference)
-}
-
-// The direction of the latest rating change, comparing the current verdict's severity to the one before it.
-function ratingTrend(current, previous) {
-  if (!current || !previous || !(current in RISK_ORDER) || !(previous in RISK_ORDER)) return null
-  if (RISK_ORDER[current] > RISK_ORDER[previous]) return 'worsened'
-  if (RISK_ORDER[current] < RISK_ORDER[previous]) return 'improved'
-  return null
 }
 
 // The company detail block: identity, a price-history chart, ownership and shareholders, and recent orders

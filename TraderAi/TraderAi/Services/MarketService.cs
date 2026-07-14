@@ -97,7 +97,8 @@ public sealed class MarketService(
     SettlementService? settlementService = null,
     MarginService? marginService = null,
     IOptions<VolatilityHaltOptions>? volatilityHaltOptions = null,
-    IOptions<CollectiveFundOptions>? collectiveFundOptions = null)
+    IOptions<CollectiveFundOptions>? collectiveFundOptions = null,
+    PrimaryIssuanceService? primaryIssuanceService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -493,6 +494,14 @@ public sealed class MarketService(
         if (shareEmissionService is not null)
         {
             await shareEmissionService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
+        // Priced issuance runs after free grants so scarcity is measured from the post-emission supply, while
+        // the new issuer order still reaches lifecycle checks, decisions, and matching in this cycle.
+        if (primaryIssuanceService is not null)
+        {
+            await primaryIssuanceService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
             await dbContext.SaveChangesAsync();
         }
 
