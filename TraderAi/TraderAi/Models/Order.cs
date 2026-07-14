@@ -23,6 +23,10 @@ public sealed class Order
 
     public decimal ReservedCashAmount { get; set; }
 
+    // Only demand-paced replenishment offers consume that service's daily cooldown; initial listings and free
+    // emissions use the same issuer-order shape but must remain distinguishable.
+    public bool IsFloatReplenishment { get; set; }
+
     // Set on a loan-distress forced-sale order owned by LoanService; generic order ageing skips these the same
     // way it leaves a bankrupt trader's forced sales to their service owner.
     public int? RelatedLoanId { get; set; }

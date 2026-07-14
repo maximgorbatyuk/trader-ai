@@ -23,6 +23,8 @@ When a demo market is seeded, each company receives an initial price and issued 
 
 Company-originated float has no participant seller. When a trader buys from that float, the buyer receives shares and pays cash, no trader receives the proceeds, and the issuer receives the primary proceeds on T+1 settlement.
 
+When unsold issuer float falls below its scarcity threshold, the company can add a small percentage of its current issued supply and place the new shares in one company-originated sell order at the current price. A company can do this at most once per trading day, and issuance stops once unsold float is no longer scarce. The order uses ordinary matching, so the new supply absorbs participant cash instead of distributing free holdings.
+
 ## Matching Price
 
 Normal price formation happens through matched orders.
@@ -50,7 +52,7 @@ This means the market does not calculate one global clearing price from total de
 
 ## Order Prices
 
-Automated discretionary traders use the latest company price as their reference quote, biasing buys above and sells below it so ordinary orders have a chance to cross. The exact target, side, and quantity depend on recent price movement, long-range movement, order-book imbalance, available cash, holdings, debt pressure, temperament, and risk profile.
+Automated discretionary traders form ordinary in-band orders around the higher of the latest company price and the active LULD reference, biasing buys above and sells below it so orders have a chance to cross and a demand ratchet can lift later price formation. The exact target, side, and quantity depend on recent price movement, long-range movement, order-book imbalance, available cash, holdings, debt pressure, temperament, and risk profile.
 
 Every participant order — the player's and an automated one — must rest inside the allowed order range around the LULD reference, and a price beyond it is rejected. Continuous matching still only crosses orders inside the narrower executable band, so an order in the allowed range but outside the band waits until the band reaches it. See [LULD price controls](luld.md).
 
@@ -65,6 +67,8 @@ Resting automated orders can also move toward the market before matching, always
 The human player's orders are not automatically aged or re-priced by ordinary maintenance, but they remain subject to the universal allowed-range validity check.
 
 LULD price controls preserve participant and issuer orders. Persistent pressure at a price band pauses continuous matching through Limit State and Trading Pause, then eligible resting orders can execute at one deterministic reopening-auction price before normal matching resumes. See [LULD price controls](luld.md).
+
+Persistent unmatched demand can also move the LULD reference before it reaches the limit-state boundary. When in-band buy quantity exceeds sell quantity at the end of a matching cycle, the next cycle nudges the reference upward by a small configured step so later orders form around a higher level. The ratchet stops when the imbalance clears and does not change midpoint execution.
 
 ## Direct Price Moves
 
@@ -95,7 +99,7 @@ A science investigation is a positive sector event. It raises affected companies
 
 ### Auditor Findings
 
-Auditors review companies during the pre-match window. A severe finding can directly drop a company's price and trigger buyer order revisions before that cycle's automated decisions and matching.
+Auditors review companies during the pre-match window. A severe finding can directly drop a company's price and trigger buyer order revisions before that cycle's automated decisions and matching. An issue-free review can instead raise expectations, lift the price, and cancel eligible participant sell orders so owners can re-form asks around the new level; player and bankrupt-owner orders remain untouched.
 
 ### Stock Splits
 
@@ -105,7 +109,9 @@ The split-adjusted price is recorded as a new price point. The unsold float is r
 
 ## Actions That Do Not Directly Set Price
 
-Free-share emission does not directly write a new market price. It increases issued supply and grants new shares to eligible traders at zero cost, then lets normal trading absorb the added supply.
+Demand-paced primary issuance does not directly write a new market price. It increases issued supply and lists the new float at the current price, then lets ordinary matching determine whether demand absorbs it.
+
+Free-share emission also does not directly write a new market price. It increases issued supply and grants new shares to eligible traders at zero cost, then lets normal trading absorb the added supply.
 
 Dividends also do not directly set price. They transfer available issuer cash to shareholders when a payout window is due. That extra participant cash can influence later orders, but no price point is written by the dividend itself.
 

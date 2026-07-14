@@ -193,11 +193,11 @@ public sealed class DividendTests : IDisposable
 
         var after = DateTime.UtcNow;
         await context.Entry(company).ReloadAsync();
-        Assert.Equal(12.35m, company.CashBalance);
+        Assert.Equal(37.04m, company.CashBalance);
         var income = await context.CorporateCashTransactions.SingleAsync();
         Assert.Equal(CorporateCashTransactionType.OperatingIncome, income.Type);
         Assert.Equal(company.Id, income.CompanyId);
-        Assert.Equal(12.35m, income.Amount);
+        Assert.Equal(37.04m, income.Amount);
         Assert.Equal(dueCycleId, income.CreatedInCycleId);
         Assert.InRange(income.CreatedAt, before, after);
     }
@@ -250,20 +250,20 @@ public sealed class DividendTests : IDisposable
 
         await context.Entry(holder).ReloadAsync();
         await context.Entry(company).ReloadAsync();
-        Assert.Equal(0.1m, holder.CurrentBalance);
-        Assert.Equal(9.9m, company.CashBalance);
+        Assert.Equal(0.3m, holder.CurrentBalance);
+        Assert.Equal(29.7m, company.CashBalance);
         var movements = await context.CorporateCashTransactions.OrderBy(row => row.Id).ToListAsync();
         Assert.Collection(
             movements,
             income =>
             {
                 Assert.Equal(CorporateCashTransactionType.OperatingIncome, income.Type);
-                Assert.Equal(10m, income.Amount);
+                Assert.Equal(30m, income.Amount);
             },
             dividend =>
             {
                 Assert.Equal(CorporateCashTransactionType.DividendDeclared, dividend.Type);
-                Assert.Equal(0.1m, dividend.Amount);
+                Assert.Equal(0.3m, dividend.Amount);
             });
     }
 
@@ -311,9 +311,9 @@ public sealed class DividendTests : IDisposable
         var income = Assert.Single(movements, row => row.Type == CorporateCashTransactionType.OperatingIncome);
         var dividend = Assert.Single(movements, row => row.Type == CorporateCashTransactionType.DividendDeclared);
         Assert.Equal(firstCompany.Id, income.CompanyId);
-        Assert.Equal(402m, income.Amount);
+        Assert.Equal(1206m, income.Amount);
         Assert.Equal(secondCompany.Id, dividend.CompanyId);
-        Assert.Equal(2.16m, dividend.Amount);
+        Assert.Equal(6.48m, dividend.Amount);
     }
 
     [Fact]

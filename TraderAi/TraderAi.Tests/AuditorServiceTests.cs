@@ -7,10 +7,9 @@ using TraderAi.Services;
 
 namespace TraderAi.Tests;
 
-// Drives the auditor with a scripted Random so company selection, the hidden-issue roll, the drop size, and the
-// per-buyer cancel rolls are all forced. Backfilling auditors draws nothing; each acting auditor then draws one
-// NextDouble to pick a company, one to roll for an issue, one more (Extra only) for the drop, and one per
-// eligible buy order, plus one Next per news headline.
+// Drives the auditor with a scripted Random so company selection, verdict rolls, impact sizes, and buy-order
+// revisions are forced. Backfilling auditors draws nothing, and a disabled positive path preserves the legacy
+// draw sequence for focused tests.
 public sealed class AuditorServiceTests : IDisposable
 {
     private readonly SqliteConnection connection;
@@ -30,8 +29,17 @@ public sealed class AuditorServiceTests : IDisposable
         context.Database.EnsureCreated();
     }
 
-    private AuditorService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new AuditorOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), random, new MarketImpactService(context));
+    private AuditorService Service(bool enabled, Random random, double raiseExpectationsChance = 0d)
+    {
+        var chanceRates = new RandomChanceRatesOptions();
+        chanceRates.EventTriggerChances.AuditorRaiseExpectationsChance = raiseExpectationsChance;
+        return new(
+            context,
+            Options.Create(new AuditorOptions { Enabled = enabled }),
+            Options.Create(chanceRates),
+            random,
+            new MarketImpactService(context));
+    }
 
     private NewsService DeferredNews() =>
         new(
@@ -154,26 +162,26 @@ public sealed class AuditorServiceTests : IDisposable
         var buyer = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 500m);
         var buy = await AddBuyOrderAsync(buyer.Id, company.Id, quantity: 5, price: 100m, reserved: 500m, current);
 
-        // pick, issue roll hits (< 0.10), drop size 0.5 → 25%, cancel roll hits (< 0.70); one int for the headline.
+        // pick, issue roll hits (< 0.10), drop size 0.5 → 15%, cancel roll hits (< 0.70); one int for the headline.
         await Service(enabled: true, new ScriptedRandom([0.9d, 0.05d, 0.5d, 0.1d], [0]))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
         Assert.Equal(CompanyRiskRating.Extra, rating.Rating);
-        Assert.Equal(25m, rating.ImpactPercent);
+        Assert.Equal(15m, rating.ImpactPercent);
 
-        // A fresh snapshot 25% below the last price of 200.
+        // A fresh snapshot 15% below the last price of 200.
         var latest = await context.PriceSnapshots.AsNoTracking()
             .Where(snapshot => snapshot.CompanyId == company.Id)
             .OrderByDescending(snapshot => snapshot.Id)
             .FirstAsync();
-        Assert.Equal(150m, latest.Price);
+        Assert.Equal(170m, latest.Price);
 
         var news = await context.NewsPosts.AsNoTracking().SingleAsync();
         Assert.Equal(NewsImpactScope.Company, news.Scope);
         Assert.Equal(NewsImpactDirection.Decrease, news.Direction);
-        Assert.Equal(25m, news.ImpactPercent);
+        Assert.Equal(15m, news.ImpactPercent);
         Assert.Equal(company.Id, news.TargetCompanyId);
         Assert.Equal(current.Id, news.ImpactAppliedInCycleId);
 
@@ -181,13 +189,68 @@ public sealed class AuditorServiceTests : IDisposable
         Assert.Equal(0, await DeferredNews().ApplyPendingImpactsForCycleAsync(current, DateTime.UtcNow));
         await context.SaveChangesAsync();
         Assert.Equal(snapshotsBeforeApply, await context.PriceSnapshots.CountAsync(snapshot => snapshot.CompanyId == company.Id));
-        Assert.Equal(150m, (await context.PriceSnapshots.AsNoTracking()
+        Assert.Equal(170m, (await context.PriceSnapshots.AsNoTracking()
             .Where(snapshot => snapshot.CompanyId == company.Id)
             .OrderByDescending(snapshot => snapshot.Id)
             .FirstAsync()).Price);
 
         var refreshedBuy = await context.Orders.AsNoTracking().FirstAsync(order => order.Id == buy.Id);
         Assert.Equal(OrderStatus.Cancelled, refreshedBuy.Status);
+    }
+
+    [Fact]
+    public async Task RaisedExpectationsLiftsPriceAndCancelsOnlyEligibleSellOrders()
+    {
+        var cycle = await AddCycleAsync(20);
+        await SetupMarketAsync(cycle);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 100m, cycle);
+        await AddAuditorAsync();
+        var crisis = await AddCrisisAsync(cycle);
+
+        var ordinary = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 0m);
+        var player = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 0m);
+        player.Type = ParticipantType.Player;
+        var bankrupt = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 0m);
+        bankrupt.IsBankrupt = true;
+        await context.SaveChangesAsync();
+
+        var ordinarySell = await AddSellOrderAsync(
+            ordinary.Id, company.Id, quantity: 5, filledQuantity: 2, price: 100m, cycle);
+        var playerSell = await AddSellOrderAsync(
+            player.Id, company.Id, quantity: 5, filledQuantity: 0, price: 100m, cycle);
+        var bankruptSell = await AddSellOrderAsync(
+            bankrupt.Id, company.Id, quantity: 5, filledQuantity: 0, price: 100m, cycle);
+
+        // pick, issue miss, positive roll hit, lift midpoint → 10%; one int for the headline.
+        await Service(
+                enabled: true,
+                new ScriptedRandom([0.5d, 0.9d, 0.05d, 0.5d], [0]),
+                raiseExpectationsChance: 0.08d)
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
+        await context.SaveChangesAsync();
+
+        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
+        Assert.Equal(CompanyRiskRating.RaisedExpectations, rating.Rating);
+        Assert.Equal(10m, rating.ImpactPercent);
+
+        var latest = await context.PriceSnapshots.AsNoTracking()
+            .Where(snapshot => snapshot.CompanyId == company.Id)
+            .OrderByDescending(snapshot => snapshot.Id)
+            .FirstAsync();
+        Assert.Equal(110m, latest.Price);
+
+        Assert.Equal(OrderStatus.Cancelled, (await context.Orders.AsNoTracking().SingleAsync(order => order.Id == ordinarySell.Id)).Status);
+        Assert.Equal(OrderStatus.Open, (await context.Orders.AsNoTracking().SingleAsync(order => order.Id == playerSell.Id)).Status);
+        Assert.Equal(OrderStatus.Open, (await context.Orders.AsNoTracking().SingleAsync(order => order.Id == bankruptSell.Id)).Status);
+
+        var news = await context.NewsPosts.AsNoTracking().SingleAsync();
+        Assert.Equal(NewsImpactScope.Company, news.Scope);
+        Assert.Equal(NewsImpactDirection.Increase, news.Direction);
+        Assert.Equal(1m, news.ImpactPercent);
+        Assert.Equal(company.Id, news.TargetCompanyId);
+        Assert.Equal(cycle.Id, news.ImpactAppliedInCycleId);
+        Assert.Empty(await context.CrisisEvents.AsNoTracking().ToListAsync());
     }
 
     [Fact]
@@ -201,7 +264,7 @@ public sealed class AuditorServiceTests : IDisposable
         var crisis = await AddCrisisAsync(cycle);
 
         // A stable company's issue chance is 0.02, tripled to 0.06 by the crisis; a 0.05 roll now hits.
-        // pick 0.5, issue 0.05 (hit), drop size 0.5 → 25%; one int for the headline.
+        // pick 0.5, issue 0.05 (hit), drop size 0.5 → 15%; one int for the headline.
         await Service(enabled: true, new ScriptedRandom([0.5d, 0.05d, 0.5d], [0]))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
         await context.SaveChangesAsync();
@@ -388,6 +451,33 @@ public sealed class AuditorServiceTests : IDisposable
             FilledQuantity = 0,
             LimitPrice = price,
             ReservedCashAmount = reserved,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        context.Orders.Add(order);
+        await context.SaveChangesAsync();
+        return order;
+    }
+
+    private async Task<Order> AddSellOrderAsync(
+        int participantId,
+        int companyId,
+        int quantity,
+        int filledQuantity,
+        decimal price,
+        MarketCycle cycle)
+    {
+        var now = DateTime.UtcNow;
+        var order = new Order
+        {
+            ParticipantId = participantId,
+            CompanyId = companyId,
+            Type = OrderType.Sell,
+            Status = filledQuantity > 0 ? OrderStatus.PartiallyFilled : OrderStatus.Open,
+            Quantity = quantity,
+            FilledQuantity = filledQuantity,
+            LimitPrice = price,
             CreatedInCycleId = cycle.Id,
             CreatedAt = now,
             UpdatedAt = now,

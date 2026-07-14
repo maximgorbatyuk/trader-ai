@@ -11,14 +11,15 @@ The pre-match order is intentional:
 3. Run volatility halts.
 4. Apply stock splits or reverse merges.
 5. Apply free-share emissions.
-6. Process company closure and appearance.
-7. Liquidate cash-starved holders.
-8. Service loans and create distress sells.
-9. Process bankruptcy.
-10. Process collective funds.
-11. Process participant exits and replacements.
-12. Apply the concentration cap.
-13. Run auditors last.
+6. Replenish scarce issuer float with demand-paced primary issuance.
+7. Process company closure and appearance.
+8. Liquidate cash-starved holders.
+9. Service loans and create distress sells.
+10. Process bankruptcy.
+11. Process collective funds.
+12. Process participant exits and replacements.
+13. Apply the concentration cap.
+14. Run auditors last.
 
 Do not reorder these phases without reviewing which prices, ratings, holdings, orders, and crisis state each later service is expected to observe. Preserve existing save boundaries where a later database query must see an earlier phase's staged changes.
 

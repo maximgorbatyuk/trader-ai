@@ -22,7 +22,7 @@ public sealed class LuldStateMachineTests : IDisposable
         clock = new TradingClockService(context, Options.Create(new TradingClockOptions { TradingCycleSeconds = 2 }));
     }
 
-    private VolatilityHaltService Service() => new(
+    private VolatilityHaltService Service(decimal demandRatchetStepPercent = 0m) => new(
         context,
         Options.Create(new VolatilityHaltOptions
         {
@@ -32,6 +32,7 @@ public sealed class LuldStateMachineTests : IDisposable
             TradingPauseDurationSeconds = 300,
             UpperBandPercent = 5m,
             LowerBandPercent = 5m,
+            DemandRatchetStepPercent = demandRatchetStepPercent,
         }),
         clock);
 
@@ -52,6 +53,46 @@ public sealed class LuldStateMachineTests : IDisposable
         Assert.Equal(95m, state.LowerBandPrice);
         Assert.Equal(105m, state.UpperBandPrice);
         Assert.Equal(LuldState.Normal, state.State);
+    }
+
+    [Fact]
+    public async Task PersistentExcessBuyDemandRatchetsTheReferenceEachCycle()
+    {
+        var seed = await SeedAsync(3);
+        var buyer = await AddParticipantAsync("Buyer", 10_000m, reserved: 1_000m);
+        AddOrder(seed, buyer.Id, OrderType.Buy, 10, 100m, 1_000m);
+        await context.SaveChangesAsync();
+
+        await Service(demandRatchetStepPercent: 0.25m)
+            .ProcessForCycleAsync(seed.CycleIds[1], 1, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+        Assert.Equal(100m, (await context.PriceBandStates.SingleAsync()).ReferencePrice);
+
+        await Service(demandRatchetStepPercent: 0.25m)
+            .ProcessForCycleAsync(seed.CycleIds[2], 2, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+        Assert.Equal(100.25m, (await context.PriceBandStates.SingleAsync()).ReferencePrice);
+
+        await Service(demandRatchetStepPercent: 0.25m)
+            .ProcessForCycleAsync(seed.CycleIds[3], 3, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+        Assert.Equal(100.50m, (await context.PriceBandStates.SingleAsync()).ReferencePrice);
+    }
+
+    [Fact]
+    public async Task DemandRatchetTotalsQuantitiesBeyondTheIntegerRange()
+    {
+        var seed = await SeedAsync(2);
+        var buyer = await AddParticipantAsync("Buyer", decimal.MaxValue);
+        AddOrder(seed, buyer.Id, OrderType.Buy, int.MaxValue, 100m, 0m);
+        AddOrder(seed, buyer.Id, OrderType.Buy, int.MaxValue, 100m, 0m);
+        await context.SaveChangesAsync();
+
+        await Service(demandRatchetStepPercent: 0.25m)
+            .ProcessForCycleAsync(seed.CycleIds[2], 2, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(100.25m, (await context.PriceBandStates.SingleAsync()).ReferencePrice);
     }
 
     [Fact]

@@ -6,6 +6,7 @@ Each listed company has its own issuer cash balance and an append-only movement 
 
 - A newly seeded or newly listed company starts with zero issuer cash.
 - Selling the company's unsold float is primary issuance. The buyer pays on the trade date, but the issuer receives the proceeds when the trade settles on T+1.
+- If issuer float becomes scarce, a demand-paced issuance can add a small block of shares and list it at the current price. The daily cooldown and float threshold keep new supply tied to demand rather than elapsed cycles.
 - A secondary-market trade transfers value between participants and does not change issuer cash.
 - Operating income represents value earned from goods and services outside the accounts modeled by the simulation. It adds cash to the issuer without debiting a participant, bank, or customer account.
 
@@ -14,7 +15,7 @@ Each listed company has its own issuer cash balance and an append-only movement 
 - The market schedules a shared corporate-cash window after a random 10–25 trading cycles, then chooses a new interval after each window. The one-minute trading break does not advance this schedule because it does not create trading cycles.
 - For each active company with a current price, operating income and dividends use independent event rolls. A company can receive income, declare a dividend, do both, or do neither in the same window.
 - Both rolls use the same capitalization-stability classification. With the default configuration, an event has a 75% chance when capitalization is within 5% of its previous-window baseline and a 25% chance after a larger move.
-- When an event succeeds, both income and dividend calculations draw from the same configured rate band, 0.01%–0.5% by default.
+- When an event succeeds, both income and dividend calculations draw from the same configured rate band, 0.03%–1.5% by default.
 - Operating income uses the company's full issued capitalization, including unsold float:
 
   `operating income = min(round-to-cents(current price × issued shares × rate), $1,000,000)`

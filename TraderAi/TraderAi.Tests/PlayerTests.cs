@@ -161,10 +161,10 @@ public sealed class PlayerTests : IDisposable
 
         await market.StepCycleAsync();
 
-        // 10 shares at price 100 with the floor rate (0.01%) pay 0.01 each, so 0.10 in total.
+        // The higher floor rate is capped by the issuer cash available in this window.
         var dividend = await context.MoneyTransactions.SingleAsync(money =>
             money.ParticipantId == player.Id && money.Type == MoneyTransactionType.Dividend);
-        Assert.Equal(0.1m, dividend.Amount);
+        Assert.Equal(0.25m, dividend.Amount);
         Assert.Equal(dueCycleId, dividend.CreatedInCycleId);
     }
 
@@ -245,12 +245,12 @@ public sealed class PlayerTests : IDisposable
         var previous = snapshots[0];
         var latest = snapshots[1];
         Assert.Equal(startingBalance, previous.Balance);
-        Assert.Equal(startingBalance + 0.1m, latest.Balance);
+        Assert.Equal(startingBalance + 0.25m, latest.Balance);
 
         var moneyChange = latest.Balance - previous.Balance;
         var worthChange = (latest.Balance + latest.HoldingsValue) - (previous.Balance + previous.HoldingsValue);
-        Assert.Equal(0.1m, moneyChange);
-        Assert.Equal(0.1m, worthChange);
+        Assert.Equal(0.25m, moneyChange);
+        Assert.Equal(0.25m, worthChange);
     }
 
     // Behavior 6: cancelling a player buy releases the reserved cash and records a Release transaction.
@@ -400,11 +400,11 @@ public sealed class PlayerTests : IDisposable
         await GiveSharesAsync(company.Id, player.Id, 5, 100m);
 
         var lowBuy = await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Buy, 1, 74.99m);
-        var highSell = await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Sell, 1, 115.01m);
+        var highSell = await market.PlaceOrderAsync(player.Id, company.Id, OrderType.Sell, 1, 125.01m);
 
         Assert.False(lowBuy.Success);
         Assert.Equal(
-            "Limit price must be between $75.00 and $115.00. The current executable band is $85.00–$110.00.",
+            "Limit price must be between $75.00 and $125.00. The current executable band is $85.00–$115.00.",
             lowBuy.Error);
         Assert.False(highSell.Success);
     }

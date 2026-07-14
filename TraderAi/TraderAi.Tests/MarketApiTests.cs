@@ -229,13 +229,13 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(85m, companyRow.GetProperty("lowerBandPrice").GetDecimal());
             Assert.Equal(110m, companyRow.GetProperty("upperBandPrice").GetDecimal());
             Assert.Equal(75m, companyRow.GetProperty("minimumOrderPrice").GetDecimal());
-            Assert.Equal(115m, companyRow.GetProperty("maximumOrderPrice").GetDecimal());
+            Assert.Equal(125m, companyRow.GetProperty("maximumOrderPrice").GetDecimal());
 
             using var detail = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}");
             Assert.Equal(85m, detail!.RootElement.GetProperty("lowerBandPrice").GetDecimal());
             Assert.Equal(110m, detail.RootElement.GetProperty("upperBandPrice").GetDecimal());
             Assert.Equal(75m, detail.RootElement.GetProperty("minimumOrderPrice").GetDecimal());
-            Assert.Equal(115m, detail.RootElement.GetProperty("maximumOrderPrice").GetDecimal());
+            Assert.Equal(125m, detail.RootElement.GetProperty("maximumOrderPrice").GetDecimal());
         }
         finally
         {
@@ -781,6 +781,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             // The seed's sell orders all belong to the issuer, so the first cycle reports no activity.
             var afterSeed = await client.GetFromJsonAsync<ActivityDto[]>("/cycles/activity");
             Assert.All(afterSeed!, point => Assert.Equal(0, point.OrdersPlaced));
+            Assert.Contains(afterSeed!, point => point.TradingDayNumber == 1 && point.TradingCycleNumber == 1);
 
             var companySell = (await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open"))!
                 .First(order => order.Type == "Sell");
@@ -1523,6 +1524,57 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(2, ratings!.Length);
             Assert.Equal("Extra", ratings[0].Rating);
             Assert.Equal(25m, ratings[0].ImpactPercent);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RaisedExpectationsDoesNotPutAHoldingInHighRiskAttention()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int participantId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                participantId = await dbContext.Participants.Select(participant => participant.Id).FirstAsync();
+                var companyId = await dbContext.Companies.Select(company => company.Id).FirstAsync();
+                dbContext.Holdings.Add(new Holding
+                {
+                    ParticipantId = participantId,
+                    CompanyId = companyId,
+                    Quantity = 1,
+                    SettledQuantity = 1,
+                    AverageCost = 100m,
+                });
+                var auditorId = await dbContext.Auditors.Select(auditor => auditor.Id).FirstAsync();
+                var cycleId = (await dbContext.Markets.FirstAsync()).CurrentCycleId!.Value;
+                dbContext.CompanyRatings.Add(new CompanyRating
+                {
+                    CompanyId = companyId,
+                    AuditorId = auditorId,
+                    Rating = CompanyRiskRating.RaisedExpectations,
+                    ImpactPercent = 10m,
+                    CreatedInCycleId = cycleId,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                await dbContext.SaveChangesAsync();
+            }
+
+            using var response = await client.GetFromJsonAsync<JsonDocument>(
+                $"/participants/{participantId}/companies-attention");
+            Assert.Empty(response!.RootElement.EnumerateArray());
         }
         finally
         {
@@ -2335,7 +2387,11 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
     private sealed record MoneyTransactionDto(int Id, string Type, decimal Amount, int CreatedInCycleId);
 
-    private sealed record ActivityDto(int CycleNumber, int OrdersPlaced);
+    private sealed record ActivityDto(
+        int CycleNumber,
+        int TradingDayNumber,
+        int TradingCycleNumber,
+        int OrdersPlaced);
 
     private sealed record MarketDto(
         int Id,

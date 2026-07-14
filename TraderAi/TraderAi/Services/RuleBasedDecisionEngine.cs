@@ -364,7 +364,7 @@ public sealed class RuleBasedDecisionEngine(
     }
 
     // Pricing draws, in order: one draw decides inside-band versus a waiting outer segment (OutsideBandOrder
-    // chance), then one draw places the price — the 1-5% market offset clamped to the active band, or a uniform
+    // chance), then one draw places the price — the 1-5% reference offset clamped to the active band, or a uniform
     // point across the outer segments. Both sides may use either outer segment.
     private decimal PickLimitPrice(CompanyQuote quote, OrderType type)
     {
@@ -374,9 +374,10 @@ public sealed class RuleBasedDecisionEngine(
             return OuterSegmentPrice(bounds);
         }
 
+        var pricingReference = Math.Max(quote.Price, bounds.ReferencePrice);
         var inside = type == OrderType.Buy
-            ? Round(quote.Price * (1m + RandomOffset()))
-            : Round(quote.Price * (1m - RandomOffset()));
+            ? Round(pricingReference * (1m + RandomOffset()))
+            : Round(pricingReference * (1m - RandomOffset()));
         return Math.Clamp(inside, bounds.ActiveLowerPrice, bounds.ActiveUpperPrice);
     }
 

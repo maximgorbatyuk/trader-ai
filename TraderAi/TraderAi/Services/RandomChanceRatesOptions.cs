@@ -53,6 +53,9 @@ public sealed class EventTriggerChances
     // Discovery chance when auditing a price-stable company.
     public double AuditorIssueOnStable { get; set; } = 0.02;
 
+    // Chance an issue-free audit raises expectations instead of issuing the ordinary risk verdict.
+    public double AuditorRaiseExpectationsChance { get; set; } = 0.08;
+
     // Base chance a trader revises a buy after a High rating, before personality deltas.
     public double AuditorHighRatingBuyRevision { get; set; } = 0.50;
 
@@ -147,10 +150,14 @@ public sealed class ChanceModifiers
 public sealed class RandomMagnitudeBands
 {
     // Lower bound of the random dividend rate applied to a paying company's capitalisation.
-    public decimal DividendRateMin { get; set; } = 0.0001m;
+    public decimal DividendRateMin { get; set; } = 0.0003m;
 
     // Upper bound of the random dividend rate.
-    public decimal DividendRateMax { get; set; } = 0.005m;
+    public decimal DividendRateMax { get; set; } = 0.015m;
+
+    public double PrimaryIssuanceRateMin { get; set; } = 0.02;
+
+    public double PrimaryIssuanceRateMax { get; set; } = 0.20;
 
     // Lower bound of the emission size as a fraction of the current share count.
     public double ShareEmissionRateMin { get; set; } = 0.01;

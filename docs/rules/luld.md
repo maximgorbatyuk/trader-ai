@@ -6,8 +6,9 @@ Trader AI uses a deterministic Limit Up-Limit Down style state machine to preven
 
 - The reference price is the arithmetic average of executed trade prices in the previous five minutes of active trading cycles, including the current cycle's position in that window.
 - When no trade exists in the window, the latest company price snapshot is the fallback reference. Without any reference at all, no order can be placed.
-- The executable band defaults to 15% below and 10% above the reference price, rounded to cents. Continuous matching only crosses orders whose limit rests inside this band.
-- Participants may submit a buy or a sell at any price in a wider allowed order range, 25% below to 15% above the reference. An order inside the allowed range but outside the executable band stays open and waits for the band to reach it; a price beyond the allowed range is rejected.
+- The executable band defaults to 15% below and 15% above the reference price, rounded to cents. Continuous matching only crosses orders whose limit rests inside this band.
+- Participants may submit a buy or a sell at any price in a wider allowed order range, 25% below to 25% above the reference. An order inside the allowed range but outside the executable band stays open and waits for the band to reach it; a price beyond the allowed range is rejected.
+- When in-band buy quantity carried over from a completed matching cycle exceeds carried-over sell quantity, the next active cycle raises the reference by a small configured step. Persistent excess demand compounds the step, while a balanced book returns the reference to its rolling trade calculation.
 - The band is rolling: it can move every active trading cycle as trades shift the reference, and it does not reset at a trading-day boundary. When the band moves, a waiting order the new band now contains becomes executable, one still inside the allowed range keeps waiting, and one left beyond the allowed range is cancelled and its reservation released.
 - Direct price impacts such as news and crises are clamped to the executable band. While a company is not in the normal state, stale-order cancellation is suppressed so its resting book is preserved.
 

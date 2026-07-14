@@ -1535,7 +1535,12 @@
   color: oklch(0.45 0.13 255);
 }
 
-/* Risk ratings escalate through non-market hues (calm blue → amber → magenta) so market green/red stay reserved. */
+/* Raised expectations use the market-up tone; risk ratings escalate through calm blue, amber, and magenta. */
+.tag-rating-raised {
+  background: var(--up-soft);
+  color: var(--up-text);
+}
+
 .tag-rating-low {
   background: oklch(0.93 0.04 220);
   color: oklch(0.44 0.11 235);

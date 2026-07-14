@@ -5,16 +5,9 @@ using TraderAi.Models;
 
 namespace TraderAi.Services;
 
-// Runs each cycle after the other maintenance services: every auditor reviews one eligible company, records a
-// risk rating, and — when it uncovers a hidden issue — triggers a news-driven price correction and prompts
-// buyers to pull their bids. Selection favours larger companies but floors every eligible company's chance, and
-// a rated company is left alone for a safe period before it can be reviewed again. Price moves go through
-// MarketImpactService; everything else is staged on the shared context and the caller owns the save.
-//
-// Draw discipline for a scripted Random: auditors act in ascending id order, and ensuring auditors exist draws
-// nothing. Each acting auditor draws one NextDouble to pick its company, one to roll for a hidden issue, one
-// more (only on an Extra) for the drop size, then one per eligible buy order it revises; each news post it files
-// draws one Next for its headline. An auditor with no eligible company draws nothing.
+// Weighted selection keeps large companies prominent without starving small ones, while the cooldown prevents
+// repeated reviews. Price changes share MarketImpactService so audit events respect the same market controls.
+// Scripted draws stay in auditor order, with the positive roll gated at zero to preserve existing seeded sequences.
 public sealed class AuditorService(
     AppDbContext dbContext,
     IOptions<AuditorOptions> options,
@@ -33,8 +26,11 @@ public sealed class AuditorService(
     private const double BigMovePerCycleThreshold = 0.05;
 
     // An uncovered issue drops the price by a random amount in this range.
-    private const decimal MinIssueDropPercent = 15m;
-    private const decimal MaxIssueDropPercent = 35m;
+    private const decimal MinIssueDropPercent = 10m;
+    private const decimal MaxIssueDropPercent = 20m;
+
+    private const decimal MinRaisePercent = 5m;
+    private const decimal MaxRaisePercent = 15m;
 
     // Buyers revise their bids when a company is flagged: a base cancel chance nudged by the owner's risk profile
     // and temperament.
@@ -138,6 +134,37 @@ public sealed class AuditorService(
                     Scope = NewsImpactScope.Company,
                     Direction = NewsImpactDirection.Decrease,
                     ImpactPercent = impactPercent,
+                    TargetCompanyId = company.Id,
+                });
+            }
+            else if (triggers.AuditorRaiseExpectationsChance > 0d
+                && random.NextDouble() < triggers.AuditorRaiseExpectationsChance)
+            {
+                rating = CompanyRiskRating.RaisedExpectations;
+                impactPercent = Round(MinRaisePercent
+                    + ((decimal)random.NextDouble() * (MaxRaisePercent - MinRaisePercent)));
+
+                await marketImpact.ApplyImpactAsync(
+                    NewsImpactDirection.Increase,
+                    [company.Id],
+                    impactPercent.Value,
+                    currentCycleId,
+                    now,
+                    cancelStaleOrders: false);
+
+                await ReviseSellOrdersAsync(company.Id, now);
+
+                var (title, content) = DemoAuditContent.RaisedExpectations(company.Name, random);
+                dbContext.NewsPosts.Add(new NewsPost
+                {
+                    Title = title,
+                    Content = content,
+                    PublishedInCycleId = currentCycleId,
+                    ImpactAppliedInCycleId = currentCycleId,
+                    PublishedAt = now,
+                    Scope = NewsImpactScope.Company,
+                    Direction = NewsImpactDirection.Increase,
+                    ImpactPercent = 1m,
                     TargetCompanyId = company.Id,
                 });
             }
@@ -338,6 +365,38 @@ public sealed class AuditorService(
             }
 
             CancelBuy(order, owner, currentCycleId, now);
+        }
+    }
+
+    private async Task ReviseSellOrdersAsync(int companyId, DateTime now)
+    {
+        var orders = await dbContext.Orders
+            .Where(order => order.ParticipantId != null
+                && order.CompanyId == companyId
+                && order.Type == OrderType.Sell
+                && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
+            .OrderBy(order => order.Id)
+            .ToListAsync();
+        if (orders.Count == 0)
+        {
+            return;
+        }
+
+        var ownerIds = orders.Select(order => order.ParticipantId!.Value).Distinct().ToList();
+        var ownersById = await dbContext.Participants
+            .Where(participant => ownerIds.Contains(participant.Id))
+            .ToDictionaryAsync(participant => participant.Id);
+
+        foreach (var order in orders)
+        {
+            var owner = ownersById[order.ParticipantId!.Value];
+            if (owner.Type == ParticipantType.Player || owner.IsBankrupt)
+            {
+                continue;
+            }
+
+            order.Status = OrderStatus.Cancelled;
+            order.UpdatedAt = now;
         }
     }
 

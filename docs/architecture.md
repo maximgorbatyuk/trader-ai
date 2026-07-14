@@ -44,7 +44,7 @@ Economic and settled accounting are intentionally separate. Participants can act
 
 Company price is represented by an append-only sequence of price snapshots. The current price is the latest live snapshot for that company, and cycle code uses a shared latest-price lookup rather than repeatedly materializing price history. Retention always keeps each company's newest snapshot in the live set, even when it is older than the normal window, so quiet companies retain a valuation anchor. Capitalization snapshots preserve meaningful company charts across changes in share denomination.
 
-Stock splits and reverse merges change the denomination of holdings, issued supply, cost basis, and compatible issuer orders while preserving capitalization as closely as integer quantities allow. Participant orders are cleared so the book can reform around the new denomination. Primary issuance proceeds settle into a company-owned cash balance. During the existing dividend window, an independent operating-income event can inject cash from the simulated external economy before dividends are funded. Corporate cash has its own append-only ledger, never mixes with participant balances or bank revenue, and makes that external source explicit for reconciliation. See [Corporate cash](logic/corporate-cash.md).
+Stock splits and reverse merges change the denomination of holdings, issued supply, cost basis, and compatible issuer orders while preserving capitalization as closely as integer quantities allow. Participant orders are cleared so the book can reform around the new denomination. Scarce issuer float can trigger demand-paced primary issuance, which adds a priced issuer order at most once per trading day and sends settled proceeds to company cash. During the existing dividend window, an independent operating-income event can inject cash from the simulated external economy before dividends are funded. Corporate cash has its own append-only ledger, never mixes with participant balances or bank revenue, and makes that external source explicit for reconciliation. See [Corporate cash](logic/corporate-cash.md).
 
 For more detail, see [Share price formation](rules/share-price-formation.md).
 
@@ -54,10 +54,10 @@ Sector sentiment has two effects. It scales external shocks such as crises, inve
 
 Several structural controls prevent unstable prices or concentrations:
 
-- LULD maintains rolling price bands for each company. Persistent pressure at a band moves the security through Limit State and Trading Pause without cancelling resting orders, then runs one deterministic reopening auction before continuous trading resumes.
+- LULD maintains rolling price bands for each company. Excess in-band buy demand can ratchet the reference upward by a small step; persistent pressure at a band still moves the security through Limit State and Trading Pause without cancelling resting orders, then runs one deterministic reopening auction before continuous trading resumes.
 - A concentration control reduces a company that grows beyond the configured share of the market.
 - Stock splits and reverse merges keep share denominations within useful bounds.
-- Free-share emission adds limited supply to unusually large companies without directly setting a new price.
+- Demand-paced primary issuance adds priced supply when issuer float is scarce, while free-share emission separately adds limited free supply to unusually large companies.
 - Dividend ceilings and the issuer's available cash limit corporate payouts.
 
 These mechanisms are distinct from news and crisis impacts. A direct market impact records a new price; a supply change alters quantities and lets later trading discover the price.
@@ -70,7 +70,7 @@ The company roster changes over time. New issuers can appear, while persistently
 
 Large companies receive protection from immediate delisting. When a protected company would otherwise close, it is repriced downward and remains active, allowing a later cycle to reassess it. This separates market-cap protection from permanent immunity.
 
-Auditors are standalone entities rather than trading participants. They review companies, publish ratings, and may trigger a price reduction or revision of stale buy interest. Keeping auditors outside the participant hierarchy prevents them from accidentally inheriting balances, holdings, loans, bankruptcy, or fund behavior.
+Auditors are standalone entities rather than trading participants. They review companies, publish ratings, and may trigger a price reduction with stale-buy revisions or a positive expectations lift with eligible stale-sell cancellation. Keeping auditors outside the participant hierarchy prevents them from accidentally inheriting balances, holdings, loans, bankruptcy, or fund behavior.
 
 A crisis is an active interval rather than a single price shock. It initially affects selected industries and then changes the behavior of risk-sensitive services for its duration. Events such as ratings, bankruptcies, company closures, and fund closures are recorded on the crisis timeline when they occur during that window.
 
