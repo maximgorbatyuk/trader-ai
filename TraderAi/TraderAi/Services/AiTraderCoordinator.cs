@@ -217,8 +217,16 @@ public sealed class AiTraderCoordinator(
                 AiTraderRuntimeStatus.Applying, "Applying orders", execution.CallId, snapshot.Market.CycleNumber,
                 timeProvider.GetUtcNow().UtcDateTime, null, null));
 
-            var application = await services.GetRequiredService<MarketService>()
-                .ApplyAiDecisionAsync(participantId, configuration.Revision, execution.Decision);
+            // Apply in a fresh scope so the revision/eligibility guard and cycle tag read committed database
+            // state rather than the entities this scope tracked before the multi-second provider call. Otherwise
+            // an edit that bumped the revision mid-call would be masked by the stale tracked copy.
+            AiDecisionApplicationResult application;
+            using (var applyScope = scopeFactory.CreateScope())
+            {
+                application = await applyScope.ServiceProvider.GetRequiredService<MarketService>()
+                    .ApplyAiDecisionAsync(participantId, configuration.Revision, execution.Decision);
+            }
+
             var applied = application.Orders.Count(order => order.Applied);
             var rejected = application.Orders.Length - applied;
             await callService.RecordApplicationAsync(

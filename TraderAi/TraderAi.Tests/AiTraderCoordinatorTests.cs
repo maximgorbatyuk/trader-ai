@@ -261,6 +261,28 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task ConfigurationEditedDuringCallIsNotApplied()
+    {
+        var seed = await SeedMarketAsync();
+        fakeClient.OnSend = _ =>
+        {
+            // Simulate an operator editing the provider/model/key while the request is in flight: the revision
+            // in the database advances past the one captured when the request was prepared.
+            using var scope = provider.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var configuration = db.AiTraderConfigurations.Single(entry => entry.ParticipantId == seed.ParticipantId);
+            configuration.Revision += 1;
+            db.SaveChanges();
+            return Task.FromResult(Success(ValidDecision.Replace("COMPANY", seed.CompanyId.ToString())));
+        };
+
+        var status = await Coordinator().ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+
+        Assert.Equal(AiTraderCallStatus.Completed, status);
+        Assert.Equal(0, await Db().Orders.CountAsync());
+    }
+
     private AiTraderCoordinator Coordinator() => new(
         provider.GetRequiredService<IServiceScopeFactory>(),
         provider.GetRequiredService<AiProviderCatalog>(),
