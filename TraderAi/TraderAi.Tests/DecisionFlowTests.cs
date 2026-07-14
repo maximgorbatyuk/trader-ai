@@ -244,10 +244,48 @@ public sealed class DecisionFlowTests : IDisposable
         Assert.Equal(50m, engine.AvailableCashByParticipantId[fundParticipant.Id]);
     }
 
+    [Fact]
+    public async Task ConfiguredAiAgentsAreNotSentToTheDecisionEngine()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var aiTrader = new Participant
+        {
+            Name = "AI Trader",
+            Type = ParticipantType.AIAgent,
+            IsActive = true,
+            CurrentBalance = 10_000m,
+            SettledCashBalance = 10_000m,
+        };
+        context.Participants.Add(aiTrader);
+        await context.SaveChangesAsync();
+
+        var engine = new SeenParticipantsDecisionEngine();
+        var service = new MarketService(context, new MatchingEngine(context), engine, new MarketCycleLock(), new Random(1));
+        await service.GenerateDecisionsAsync();
+
+        Assert.DoesNotContain(aiTrader.Id, engine.SeenParticipantIds);
+        Assert.DoesNotContain(engine.SeenTypes, type => type == ParticipantType.AIAgent);
+        Assert.Contains(engine.SeenTypes, type => type == ParticipantType.Individual);
+    }
+
     public void Dispose()
     {
         context.Dispose();
         connection.Dispose();
+    }
+
+    private sealed class SeenParticipantsDecisionEngine : IDecisionEngine
+    {
+        public List<int> SeenParticipantIds { get; } = new();
+
+        public List<ParticipantType> SeenTypes { get; } = new();
+
+        public IReadOnlyList<OrderIntent> Decide(DecisionContext context)
+        {
+            SeenParticipantIds.Add(context.Participant.Id);
+            SeenTypes.Add(context.Participant.Type);
+            return [];
+        }
     }
 
     private sealed class QuoteCapturingDecisionEngine : IDecisionEngine

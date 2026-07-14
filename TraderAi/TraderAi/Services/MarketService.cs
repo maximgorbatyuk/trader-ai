@@ -2178,10 +2178,11 @@ public sealed class MarketService(
             return RunDecisionsResult.Ok(0);
         }
 
+        // Configured AI Agents are owned only by the hosted coordinator, so they never reach the rule-based
+        // engine; the engine drives Individuals and ordinary Collective Funds.
         var traders = await dbContext.Participants
             .Where(participant => participant.IsActive
                 && (participant.Type == ParticipantType.Individual
-                    || participant.Type == ParticipantType.AIAgent
                     || participant.Type == ParticipantType.CollectiveFund))
             .OrderBy(participant => participant.Id)
             .ToListAsync();
@@ -2397,6 +2398,10 @@ public sealed class MarketService(
         await dbContext.ParticipantWorthSnapshotArchives.ExecuteDeleteAsync();
         await dbContext.SectorSentimentSnapshots.ExecuteDeleteAsync();
         await dbContext.SectorSentimentSnapshotArchives.ExecuteDeleteAsync();
+        // Call history has no foreign key, so it is cleared first; the configuration would otherwise cascade with
+        // its participant, but a full reset removes both AI tables explicitly and in dependency order.
+        await dbContext.AiTraderCalls.ExecuteDeleteAsync();
+        await dbContext.AiTraderConfigurations.ExecuteDeleteAsync();
         await dbContext.Participants.ExecuteDeleteAsync();
         await dbContext.Companies.ExecuteDeleteAsync();
         await dbContext.Industries.ExecuteDeleteAsync();
@@ -2412,6 +2417,7 @@ public sealed class MarketService(
             "'CollectiveFunds', 'CollectiveFundParticipants', 'CollectiveFundMembershipEvents', 'ParticipantWorthSnapshots', " +
             "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives', " +
             "'SectorSentimentSnapshots', 'SectorSentimentSnapshotArchives', " +
+            "'AiTraderCalls', 'AiTraderConfigurations', " +
             "'Banks', 'Loans', 'MarginAccounts', 'MarginCalls', 'TradingDays', 'TradingBreakCycles', 'SettlementInstructions')");
 
         var market = await SeedDemoMarketCoreAsync();

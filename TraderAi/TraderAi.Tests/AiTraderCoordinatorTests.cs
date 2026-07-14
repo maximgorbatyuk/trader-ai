@@ -16,20 +16,22 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     private static readonly string ValidDecision =
         "{\"summary\":\"Buy a strong company.\",\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"limitPrice\":100,\"reason\":\"r\"}]}";
 
-    private readonly SqliteConnection connection;
+    private readonly string databasePath;
     private readonly ServiceProvider provider;
     private readonly FakeProviderClient fakeClient = new();
     private readonly string tempDocsRoot;
 
     public AiTraderCoordinatorTests()
     {
-        connection = new SqliteConnection("DataSource=:memory:");
-        connection.Open();
+        // A file-backed database, not a single shared in-memory connection, so each DI scope opens its own
+        // connection and SQLite serialises the background task's writes against the scan's reads, matching how
+        // the coordinator runs in production against a connection string.
+        databasePath = Path.Combine(Path.GetTempPath(), "ai-coord-db-" + Guid.NewGuid().ToString("N") + ".db");
         tempDocsRoot = CreateTempDocs();
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite(connection));
+        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={databasePath}"));
         services.AddSingleton(new FixedTimeProvider(Now));
         services.AddSingleton<TimeProvider>(sp => sp.GetRequiredService<FixedTimeProvider>());
         services.AddSingleton(Random.Shared);
@@ -358,7 +360,12 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     public void Dispose()
     {
         provider.Dispose();
-        connection.Dispose();
+        SqliteConnection.ClearAllPools();
+        foreach (var path in new[] { databasePath, databasePath + "-wal", databasePath + "-shm" }.Where(File.Exists))
+        {
+            File.Delete(path);
+        }
+
         if (Directory.Exists(tempDocsRoot))
         {
             Directory.Delete(tempDocsRoot, recursive: true);

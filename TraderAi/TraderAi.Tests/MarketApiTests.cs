@@ -2233,6 +2233,63 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
+    [Fact]
+    public async Task MarketResetClearsAiTraderTables()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var participant = await db.Participants.FirstAsync(candidate => candidate.Type == ParticipantType.Individual);
+                participant.Type = ParticipantType.AIAgent;
+                db.AiTraderConfigurations.Add(new AiTraderConfiguration
+                {
+                    ParticipantId = participant.Id,
+                    ProviderId = "glm",
+                    Model = "glm-4.6",
+                    ApiKey = "secret-key",
+                    Revision = 1,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                });
+                db.AiTraderCalls.Add(new AiTraderCall
+                {
+                    ParticipantId = participant.Id,
+                    ParticipantName = participant.Name,
+                    ProviderId = "glm",
+                    ProviderLabel = "GLM",
+                    Model = "glm-4.6",
+                    PromptHash = "hash",
+                    RequestJson = "{}",
+                    Status = AiTraderCallStatus.Completed,
+                    RequestedAt = DateTime.UtcNow,
+                });
+                await db.SaveChangesAsync();
+            }
+
+            using var resetResponse = await client.PostAsync("/market/reset", null);
+            resetResponse.EnsureSuccessStatusCode();
+
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                Assert.Equal(0, await db.AiTraderConfigurations.CountAsync());
+                Assert.Equal(0, await db.AiTraderCalls.CountAsync());
+            }
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
@@ -2242,6 +2299,10 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             // Auditors fire every cycle under the shared Random and would perturb the exact-count assertions
             // below; they are exercised directly against seeded rating rows instead.
             builder.UseSetting("Auditor:Enabled", "false");
+
+            // The AI coordinator is a hosted service that would otherwise poll and, for any configuration these
+            // tests create, attempt a real provider call. It stays disabled so tests never touch the network.
+            builder.UseSetting("AiTrading:Enabled", "false");
 
             // A manual tick decides then matches; the no-op engine removes generated trades so these
             // tests settle only the order they place by hand and can assert exact counts.
