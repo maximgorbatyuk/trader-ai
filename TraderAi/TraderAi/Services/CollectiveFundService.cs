@@ -40,7 +40,7 @@ public sealed class CollectiveFundService(
 
     // The fund withholds this cut from each member's pass-through dividend as a management fee; the withheld
     // amount stays in the fund's cash rather than reaching the member.
-    private const decimal DividendFeeFraction = 0.05m;
+    private const decimal DividendFeeFraction = 0.20m;
 
     // A fund that owns nothing and cannot afford even the cheapest share for this many consecutive cycles unwinds.
     private const int MaxIdleCycles = 20;
