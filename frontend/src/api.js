@@ -117,6 +117,12 @@ export const api = {
   getFundMembershipHistory: (participantId, page = 1, pageSize = 10) =>
     get(`/participants/${participantId}/fund-membership-history?page=${page}&pageSize=${pageSize}`),
   updateParticipantProfile: (participantId, profile) => put(`/participants/${participantId}/profile`, profile),
+  getAiProviders: () => get('/ai/providers'),
+  updateParticipantAutomation: (participantId, payload) => put(`/participants/${participantId}/automation`, payload),
+  testParticipantAutomation: (participantId, payload) => post(`/participants/${participantId}/automation/test`, payload),
+  getParticipantAiCalls: (participantId, page = 1, pageSize = 20) =>
+    get(`/participants/${participantId}/ai-calls${toQuery({ page, pageSize })}`),
+  getParticipantAiCall: (participantId, callId) => get(`/participants/${participantId}/ai-calls/${callId}`),
   seedMarket: () => post('/market/seed'),
   resetMarket: () => post('/market/reset'),
   pauseMarket: () => post('/market/pause'),
