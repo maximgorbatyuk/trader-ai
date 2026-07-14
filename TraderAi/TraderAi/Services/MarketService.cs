@@ -174,6 +174,76 @@ public sealed class MarketService(
         decimal limitPrice) =>
         WithLockAsync(() => PlaceOrderCoreAsync(participantId, companyId, type, quantity, limitPrice));
 
+    // Applies an AI trader's decision through the ordinary order path. It reacquires the market lock, reloads the
+    // trader, its configuration, and current market state into an OrderBookContext, and places each order with the
+    // same validation any order faces. A stale configuration revision or an ineligible participant applies nothing;
+    // each order commits independently, so one invalid order never rolls back a valid one.
+    public Task<AiDecisionApplicationResult> ApplyAiDecisionAsync(
+        int participantId,
+        int configurationRevision,
+        AiTradeDecision decision) =>
+        WithLockAsync(() => ApplyAiDecisionCoreAsync(participantId, configurationRevision, decision));
+
+    private async Task<AiDecisionApplicationResult> ApplyAiDecisionCoreAsync(
+        int participantId,
+        int configurationRevision,
+        AiTradeDecision decision)
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        var configuration = await dbContext.AiTraderConfigurations
+            .FirstOrDefaultAsync(candidate => candidate.ParticipantId == participantId);
+        var participant = await dbContext.Participants
+            .FirstOrDefaultAsync(candidate => candidate.Id == participantId);
+
+        var stillCurrent = market?.CurrentCycleId is not null
+            && configuration is not null
+            && configuration.Revision == configurationRevision
+            && participant is { IsActive: true, IsBankrupt: false, Type: ParticipantType.AIAgent };
+        if (!stillCurrent)
+        {
+            return new AiDecisionApplicationResult(false, []);
+        }
+
+        var priceByCompany = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
+        var boundsByCompany = await ResolveOrderPriceBoundsByCompanyAsync(priceByCompany);
+        var context = new OrderBookContext
+        {
+            Market = market!,
+            CurrentCycleId = market!.CurrentCycleId!.Value,
+            Participant = participant!,
+            PriceByCompany = priceByCompany,
+            BoundsByCompany = boundsByCompany,
+        };
+
+        var results = new List<AiOrderApplicationResult>(decision.Orders.Length);
+        for (var index = 0; index < decision.Orders.Length; index++)
+        {
+            var order = decision.Orders[index];
+            var placement = await PlaceOrderCoreAsync(
+                participantId,
+                order.CompanyId,
+                order.Side,
+                order.Quantity,
+                order.LimitPrice,
+                context.PriceByCompany,
+                deferSave: false,
+                context.BoundsByCompany);
+
+            results.Add(new AiOrderApplicationResult(
+                index,
+                order.Side,
+                order.CompanyId,
+                order.Quantity,
+                order.LimitPrice,
+                order.Reason,
+                placement.Success,
+                placement.Order?.Id,
+                placement.Error));
+        }
+
+        return new AiDecisionApplicationResult(true, results.ToArray());
+    }
+
     public Task<AdvanceCycleResult> AdvanceCycleAsync() =>
         WithLockAsync(() => InTransactionAsync(AdvanceCycleEntryCoreAsync));
 
@@ -569,31 +639,7 @@ public sealed class MarketService(
     }
 
     private void CancelOrder(Order order, Participant participant, int currentCycleId)
-    {
-        if (order.Type == OrderType.Buy)
-        {
-            var release = order.ReservedCashAmount;
-            if (release > 0m)
-            {
-                participant.ReservedBalance -= release;
-                order.ReservedCashAmount = 0m;
-                dbContext.MoneyTransactions.Add(new MoneyTransaction
-                {
-                    ParticipantId = participant.Id,
-                    Type = MoneyTransactionType.Release,
-                    Amount = release,
-                    RelatedOrderId = order.Id,
-                    Description = "Reserved cash released on buy order cancel",
-                    CreatedInCycleId = currentCycleId,
-                    CreatedAt = DateTime.UtcNow,
-                });
-            }
-        }
-        // A sell reserves no cash and holds no links; cancelling it simply stops the order counting
-        // toward the seller's outstanding sells, freeing that quantity to be listed again.
-        order.Status = OrderStatus.Cancelled;
-        order.UpdatedAt = DateTime.UtcNow;
-    }
+        => OrderCancellation.Cancel(dbContext, order, participant, currentCycleId);
 
     // A stale order is chased one RepriceStep toward the market and then clamped into the active band, so it can
     // never compound past the band into the runaway limits the old unbounded step produced. A sell already inside
@@ -2132,10 +2178,11 @@ public sealed class MarketService(
             return RunDecisionsResult.Ok(0);
         }
 
+        // Configured AI Agents are owned only by the hosted coordinator, so they never reach the rule-based
+        // engine; the engine drives Individuals and ordinary Collective Funds.
         var traders = await dbContext.Participants
             .Where(participant => participant.IsActive
                 && (participant.Type == ParticipantType.Individual
-                    || participant.Type == ParticipantType.AIAgent
                     || participant.Type == ParticipantType.CollectiveFund))
             .OrderBy(participant => participant.Id)
             .ToListAsync();
@@ -2351,6 +2398,10 @@ public sealed class MarketService(
         await dbContext.ParticipantWorthSnapshotArchives.ExecuteDeleteAsync();
         await dbContext.SectorSentimentSnapshots.ExecuteDeleteAsync();
         await dbContext.SectorSentimentSnapshotArchives.ExecuteDeleteAsync();
+        // Call history has no foreign key, so it is cleared first; the configuration would otherwise cascade with
+        // its participant, but a full reset removes both AI tables explicitly and in dependency order.
+        await dbContext.AiTraderCalls.ExecuteDeleteAsync();
+        await dbContext.AiTraderConfigurations.ExecuteDeleteAsync();
         await dbContext.Participants.ExecuteDeleteAsync();
         await dbContext.Companies.ExecuteDeleteAsync();
         await dbContext.Industries.ExecuteDeleteAsync();
@@ -2366,6 +2417,7 @@ public sealed class MarketService(
             "'CollectiveFunds', 'CollectiveFundParticipants', 'CollectiveFundMembershipEvents', 'ParticipantWorthSnapshots', " +
             "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives', " +
             "'SectorSentimentSnapshots', 'SectorSentimentSnapshotArchives', " +
+            "'AiTraderCalls', 'AiTraderConfigurations', " +
             "'Banks', 'Loans', 'MarginAccounts', 'MarginCalls', 'TradingDays', 'TradingBreakCycles', 'SettlementInstructions')");
 
         var market = await SeedDemoMarketCoreAsync();

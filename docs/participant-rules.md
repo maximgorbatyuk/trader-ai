@@ -5,7 +5,7 @@ Participants are the actors that can hold cash, reserve cash for buy orders, own
 ## Role Pages
 
 - [Individual](roles/individual.md) - default automated trader.
-- [AI Agent](roles/ai-agent.md) - automated agent-style trader, currently following Individual rules.
+- [AI Agent](roles/ai-agent.md) - trader driven by a hosted language-model provider chosen by the operator.
 - [Player](roles/player.md) - human-controlled trader.
 - [Company](roles/company.md) - share issuer and listed asset.
 - [Collective Fund](roles/collective-fund.md) - pooled automated trader.

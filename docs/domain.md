@@ -67,7 +67,7 @@ Fields:
 
 Notes:
 
-- Individual and AI agent participants can trade.
+- Individual and AI agent participants can trade. Individuals and funds are driven by the rule-based engine; a configured AI agent is driven instead by a hosted language-model provider. See [AI Agent](roles/ai-agent.md).
 - Company participants can own shares and take part in the market if needed.
 - A player participant is a human-controlled trader; it trades by hand, and the market never manages its orders automatically.
 - Current balance is economic cash; settled cash separates completed delivery from pending T+1 cash.

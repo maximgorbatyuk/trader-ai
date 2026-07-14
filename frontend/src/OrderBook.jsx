@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { formatMoney, formatSigned, toneOf } from './format'
 import { LineChart } from './LineChart'
+import { ORDER_BOOK_DEFAULT_SORT, orderBookOwnedShares, sortOrderBookRows } from './orderBookSort'
 import { Panel } from './Panel'
 import { PercentButtons } from './PercentButtons'
+import { SortHeader } from './TableControls'
 import { affordability } from './marginModel'
 import { luldPresentation } from './marketAccounting'
 import { classifyOrderPrice, orderPriceBounds } from './orderPriceRange'
@@ -34,10 +36,8 @@ function traderName(id, byId) {
   return byId.get(id) ?? `#${id}`
 }
 
-// The resting order book as a Buy/Sell tab pair. Shared by the dashboard and the Trade market page; each caller
-// passes the already-derived lookups, the active actor (the player or their managed fund), and its own
-// onSelectCompany (modal on the dashboard, route navigation on the trade page). The inner table scrolls, so a
-// long book stays contained.
+// Sharing the resting book keeps sorting and trade behavior aligned between the dashboard and Trade market page.
+// The inner table scrolls so a long live book stays contained.
 export function OrderBookPanel({
   orders,
   participantNameById,
@@ -50,7 +50,6 @@ export function OrderBookPanel({
   actorHoldingCompanyIds,
   actorHoldingByCompany,
   emptyActorHint,
-  onSelectCompany,
   onTraded,
 }) {
   const [tradeOrder, setTradeOrder] = useState(null)
@@ -59,22 +58,12 @@ export function OrderBookPanel({
   // positions; the filter widens it to the whole book on demand.
   const [buyFilter, setBuyFilter] = useState('owned')
   const [sellFilter, setSellFilter] = useState('all')
+  const [sortBySide, setSortBySide] = useState(ORDER_BOOK_DEFAULT_SORT)
   const tabRefs = useRef({})
 
-  // Sells list highest price first. Buys surface the companies the actor already holds first (so it can add
-  // to or defend those positions), then everything else, each group ordered by highest price.
-  const buysAll = orders
-    .filter((order) => order.type === 'Buy')
-    .sort((a, b) => {
-      const aHeld = actorHoldingCompanyIds.has(a.companyId)
-      const bHeld = actorHoldingCompanyIds.has(b.companyId)
-      if (aHeld !== bHeld) return aHeld ? -1 : 1
-      return b.limitPrice - a.limitPrice
-    })
+  const buysAll = orders.filter((order) => order.type === 'Buy')
   const buys = buyFilter === 'owned' ? buysAll.filter((order) => actorHoldingCompanyIds.has(order.companyId)) : buysAll
-  const sellsAll = orders
-    .filter((order) => order.type === 'Sell')
-    .sort((a, b) => b.limitPrice - a.limitPrice)
+  const sellsAll = orders.filter((order) => order.type === 'Sell')
   const sells =
     sellFilter === 'bankrupts'
       ? sellsAll.filter((order) => bankruptParticipantIds.has(order.participantId))
@@ -87,6 +76,7 @@ export function OrderBookPanel({
     { key: 'Sell', tone: 'down', orders: sells },
   ]
   const active = sides.find((side) => side.key === activeSide) ?? sides[0]
+  const activeSort = sortBySide[active.key]
 
   function focusTab(key) {
     setActiveSide(key)
@@ -97,6 +87,14 @@ export function OrderBookPanel({
     if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
     event.preventDefault()
     focusTab(activeSide === 'Buy' ? 'Sell' : 'Buy')
+  }
+
+  function toggleSort(key) {
+    setSortBySide((current) => {
+      const sideSort = current[active.key]
+      const direction = sideSort.key === key && sideSort.direction === 'desc' ? 'asc' : 'desc'
+      return { ...current, [active.key]: { key, direction } }
+    })
   }
 
   return (
@@ -162,7 +160,9 @@ export function OrderBookPanel({
           actor={actor}
           actorHoldingCompanyIds={actorHoldingCompanyIds}
           actorHoldingByCompany={actorHoldingByCompany}
-          onSelectCompany={onSelectCompany}
+          sortKey={activeSort.key}
+          sortDirection={activeSort.direction}
+          onToggleSort={toggleSort}
           onTrade={setTradeOrder}
         />
       </div>
@@ -182,42 +182,123 @@ export function OrderBookPanel({
   )
 }
 
-function OrderSide({ side, tone, orders, participantNameById, bankruptParticipantIds, companyNameById, companyPriceById, companySharesById, companyById, actor, actorHoldingCompanyIds, actorHoldingByCompany, onSelectCompany, onTrade }) {
+function OrderSide({
+  side,
+  tone,
+  orders,
+  participantNameById,
+  bankruptParticipantIds,
+  companyNameById,
+  companyPriceById,
+  companySharesById,
+  companyById,
+  actor,
+  actorHoldingCompanyIds,
+  actorHoldingByCompany,
+  sortKey,
+  sortDirection,
+  onToggleSort,
+  onTrade,
+}) {
   if (orders.length === 0) {
     return <p className="note note-sm">No {side.toLowerCase()} orders.</p>
   }
 
   // Gain/loss only applies to bids the actor can sell into; a resting sell offer has no cost basis for the actor.
   const showGainLoss = side === 'Buy'
+  const rows = orders.map((order) => {
+    const isOwn = actor != null && order.participantId === actor.id
+    const company = companyById?.get(order.companyId)
+    const remaining = order.quantity - order.filledQuantity
+    const availability = tradeOrderAvailability({
+      actorId: actor?.id ?? null,
+      orderParticipantId: order.participantId,
+      remaining,
+      price: order.limitPrice,
+      company,
+    })
+    const actionable = availability.eligible
+    const companyName = companyNameById.get(order.companyId) ?? `#${order.companyId}`
+    const marketPrice = companyPriceById.get(order.companyId) ?? null
+    // A bid the actor can sell into: they hold shares of its company and it is not their own order.
+    const sellable = side === 'Buy' && actionable && !!actorHoldingCompanyIds?.has(order.companyId)
+    const holding = actorHoldingByCompany?.get(order.companyId)
+    const ownedShares = orderBookOwnedShares(actor, holding)
+    const sellableQuantity = holding ? Math.min(holding.shares, remaining) : 0
+    // The displayed benefit values the most shares both the holding and resting bid can absorb.
+    const sellGainLoss =
+      sellable && holding && sellableQuantity > 0
+        ? sellableQuantity * (order.limitPrice - holding.averageCost)
+        : null
+    const traderLabel = isOwn ? 'You' : traderName(order.participantId, participantNameById)
+
+    return {
+      order,
+      isOwn,
+      company,
+      remaining,
+      availability,
+      actionable,
+      companyName,
+      marketPrice,
+      ownedShares,
+      sellable,
+      sellGainLoss,
+      traderLabel,
+      sortValues: {
+        orderPrice: order.limitPrice,
+        marketPrice,
+        quantity: remaining,
+        ownedShares,
+        gainLoss: sellGainLoss,
+        company: companyName,
+        trader: traderLabel,
+      },
+    }
+  })
+  const sortedRows = sortOrderBookRows(rows, sortKey, sortDirection)
 
   return (
     <div className="tbl-scroll">
       <table className="tbl tbl-book">
         <thead>
           <tr>
-            <th scope="col" className="ta-r">
-              Order price
-            </th>
-            <th scope="col" className="ta-r">
-              Market price
-            </th>
-            <th scope="col" className="ta-r">
-              Quantity
-            </th>
+            <SortHeader label="Order price" columnKey="orderPrice" sortKey={sortKey} sortDir={sortDirection} onToggle={onToggleSort} />
+            <SortHeader label="Market price" columnKey="marketPrice" sortKey={sortKey} sortDir={sortDirection} onToggle={onToggleSort} />
+            <SortHeader label="Quantity" columnKey="quantity" sortKey={sortKey} sortDir={sortDirection} onToggle={onToggleSort} />
             {showGainLoss ? (
-              <th scope="col" className="ta-r">
-                Gain/loss
-              </th>
+              <SortHeader
+                label="Owned"
+                columnKey="ownedShares"
+                sortKey={sortKey}
+                sortDir={sortDirection}
+                onToggle={onToggleSort}
+                title="Sort by shares held by the selected actor"
+              />
             ) : null}
-            <th scope="col">Company</th>
-            <th scope="col">Trader</th>
-            <th scope="col">Action</th>
+            {showGainLoss ? (
+              <SortHeader label="Gain/loss" columnKey="gainLoss" sortKey={sortKey} sortDir={sortDirection} onToggle={onToggleSort} />
+            ) : null}
+            <SortHeader label="Company" columnKey="company" sortKey={sortKey} sortDir={sortDirection} onToggle={onToggleSort} align="left" />
+            <SortHeader label="Trader" columnKey="trader" sortKey={sortKey} sortDir={sortDirection} onToggle={onToggleSort} align="left" />
           </tr>
         </thead>
         <tbody>
-          {orders.map((order) => {
-            const isOwn = actor != null && order.participantId === actor.id
-            const company = companyById?.get(order.companyId)
+          {sortedRows.map((row) => {
+            const {
+              order,
+              isOwn,
+              company,
+              remaining,
+              availability,
+              actionable,
+              companyName,
+              marketPrice,
+              ownedShares,
+              sellable,
+              sellGainLoss,
+              traderLabel,
+            } = row
             const luld = luldPresentation(company?.luldState)
             const luldAffected = luld.orderEntryDisabled
             const bounds = orderPriceBounds(company)
@@ -238,17 +319,7 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                   : !bounds.available && outsideBand
                     ? 'Outside band'
                     : null
-            const remaining = order.quantity - order.filledQuantity
-            const availability = tradeOrderAvailability({
-              actorId: actor?.id ?? null,
-              orderParticipantId: order.participantId,
-              remaining,
-              price: order.limitPrice,
-              company,
-            })
-            const actionable = availability.eligible
             const isBankrupt = !!bankruptParticipantIds?.has(order.participantId)
-            const companyName = companyNameById.get(order.companyId) ?? `#${order.companyId}`
             const issuedShares = companySharesById?.get(order.companyId) ?? null
             // Share of the whole company still on offer, shown only for sells (a bid can exceed the float, so
             // the fraction is meaningless on the buy side).
@@ -258,7 +329,6 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                 : null
             const sharePctLabel =
               sharePct == null ? null : sharePct >= 0.1 ? `${sharePct.toFixed(1)}%` : '<0.1%'
-            const marketPrice = companyPriceById.get(order.companyId) ?? null
             // How far the order's limit sits from the live market price, so the gap reads at a glance.
             const percentDiff =
               marketPrice != null && marketPrice > 0 ? ((order.limitPrice - marketPrice) / marketPrice) * 100 : null
@@ -268,16 +338,6 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                 : null
             const diffGlyph = percentDiff == null ? '' : percentDiff > 0 ? '▲' : percentDiff < 0 ? '▼' : '◆'
             const diffTone = percentDiff == null || percentDiff === 0 ? 'flat' : percentDiff > 0 ? 'up' : 'down'
-            // A bid the actor can sell into: they hold shares of its company and it is not their own order.
-            const sellable = side === 'Buy' && actionable && !!actorHoldingCompanyIds?.has(order.companyId)
-            // Realized gain/loss from selling the shares the actor holds into this bid: the most both the
-            // holding and the bid can absorb, valued at the bid price minus the weighted-average price paid.
-            const holding = actorHoldingByCompany?.get(order.companyId)
-            const sellableQuantity = holding ? Math.min(holding.shares, remaining) : 0
-            const sellGainLoss =
-              sellable && holding && sellableQuantity > 0
-                ? sellableQuantity * (order.limitPrice - holding.averageCost)
-                : null
             const gainGlyph = sellGainLoss == null ? '' : sellGainLoss > 0 ? '▲' : sellGainLoss < 0 ? '▼' : '◆'
             // The actor takes the opposite side: buy a resting sell offer, sell into a resting buy order.
             const actionLabel =
@@ -329,6 +389,11 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                 </td>
                 {showGainLoss ? (
                   <td className="num ta-r">
+                    {ownedShares == null ? <span className="muted-sub">—</span> : ownedShares}
+                  </td>
+                ) : null}
+                {showGainLoss ? (
+                  <td className="num ta-r">
                     {sellGainLoss != null ? (
                       <span className={`num tone-${toneOf(sellGainLoss)}`} title="Gain or loss from selling your shares into this bid">
                         <span aria-hidden="true">{gainGlyph} </span>
@@ -340,18 +405,7 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                   </td>
                 ) : null}
                 <td>
-                  <button
-                    type="button"
-                    className="cell-name-btn cell-ellipsis"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onSelectCompany?.(order.companyId)
-                    }}
-                    onKeyDown={(event) => event.stopPropagation()}
-                    title={`Open ${companyName}`}
-                  >
-                    {companyName}
-                  </button>
+                  <span className="book-company cell-ellipsis">{companyName}</span>
                 </td>
                 <td>
                   <span className="cell-trader">
@@ -361,31 +415,12 @@ function OrderSide({ side, tone, orders, participantNameById, bankruptParticipan
                           ●{' '}
                         </span>
                       ) : null}
-                      {isOwn ? 'You' : traderName(order.participantId, participantNameById)}
+                      {traderLabel}
                     </span>
                     {side === 'Sell' && isBankrupt ? <span className="tag tag-bankrupt">Bankrupt</span> : null}
                     {bandStatusLabel ? <span className="tag tag-flag">{bandStatusLabel}</span> : null}
                     {luldAffected ? <span className="tag tag-flag">{luld.indicator} {luld.label}</span> : null}
                   </span>
-                </td>
-                <td>
-                  {actionable ? (
-                    <button
-                      type="button"
-                      className="btn"
-                      aria-label={actionLabel}
-                      title={side === 'Sell' ? 'Buy this offer' : 'Sell into this bid'}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onTrade(order)
-                      }}
-                      onKeyDown={(event) => event.stopPropagation()}
-                    >
-                      {side === 'Sell' ? 'Buy' : 'Sell'}
-                    </button>
-                  ) : (
-                    <span className="muted-sub">—</span>
-                  )}
                 </td>
               </tr>
             )

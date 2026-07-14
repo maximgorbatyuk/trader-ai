@@ -81,6 +81,21 @@ builder.Services.Configure<VolatilityHaltOptions>(builder.Configuration.GetSecti
 builder.Services.Configure<ConcentrationCapOptions>(builder.Configuration.GetSection(ConcentrationCapOptions.SectionName));
 builder.Services.Configure<ArchiveOptions>(builder.Configuration.GetSection(ArchiveOptions.SectionName));
 builder.Services.Configure<IndustrySentimentOptions>(builder.Configuration.GetSection(IndustrySentimentOptions.SectionName));
+builder.Services.AddOptions<AiTradingOptions>()
+    .Bind(builder.Configuration.GetSection(AiTradingOptions.SectionName))
+    .Validate(ValidateAiTrading, "AiTrading configuration is invalid: timing, concurrency, order, and retry limits must be positive, every provider endpoint must be HTTPS, and each provider must list at least one model.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<AiProviderCatalog>();
+builder.Services.AddSingleton<AiTraderRuntimeState>();
+builder.Services.AddSingleton<AiPromptDocumentationProvider>();
+builder.Services.AddHttpClient();
+builder.Services.AddScoped<IAiProviderClient, AiProviderClient>();
+builder.Services.AddScoped<AiMarketSnapshotBuilder>();
+builder.Services.AddScoped<AiTradingPromptBuilder>();
+builder.Services.AddScoped<AiTraderCallService>();
+builder.Services.AddScoped<AiTraderConfigurationService>();
+builder.Services.AddHostedService<AiTraderCoordinator>();
 builder.Services.AddOptions<RandomChanceRatesOptions>()
     .Bind(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName))
     .Validate(options =>
@@ -202,6 +217,34 @@ static void EnsureSqliteDirectory(string connectionString)
     {
         Directory.CreateDirectory(directory);
     }
+}
+
+static bool ValidateAiTrading(AiTradingOptions options)
+{
+    if (options.ScanIntervalMilliseconds <= 0
+        || options.RequestTimeoutSeconds <= 0
+        || options.MaxConcurrentRequests <= 0
+        || options.MaxOrdersPerDecision <= 0
+        || options.HistoryCycles <= 0
+        || options.RetryBaseDelaySeconds <= 0
+        || options.RetryMaxDelaySeconds < options.RetryBaseDelaySeconds
+        || options.AuthErrorRetrySeconds <= 0)
+    {
+        return false;
+    }
+
+    foreach (var provider in options.Providers.Values)
+    {
+        if (string.IsNullOrWhiteSpace(provider.DisplayName)
+            || provider.Models.Count == 0
+            || !Uri.TryCreate(provider.Endpoint, UriKind.Absolute, out var endpoint)
+            || endpoint.Scheme != Uri.UriSchemeHttps)
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static bool SqliteDatabaseExists(string connectionString)

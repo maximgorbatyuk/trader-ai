@@ -207,3 +207,14 @@ public enum CrisisEventType
     FundClosed,
     CompanyClosed,
 }
+
+public enum AiTraderCallStatus
+{
+    Pending,
+    Completed,
+    HttpError,
+    TimedOut,
+    InvalidJson,
+    Cancelled,
+    Abandoned,
+}

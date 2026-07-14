@@ -17,6 +17,143 @@ namespace TraderAi.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
 
+            modelBuilder.Entity("TraderAi.Models.AiTraderCall", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ApplicationResultJson")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("AppliedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("AppliedOrders")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("CompletionTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ConfigurationRevision")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DecisionJson")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("DurationMilliseconds")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(2000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("HttpStatusCode")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Model")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("ParticipantId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ParticipantName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PromptHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("PromptTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ProviderId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ProviderLabel")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("RejectedOrders")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("RequestJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("RequestedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("RespondedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ResponseBody")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("SnapshotCycleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("SnapshotCycleNumber")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Summary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("TotalTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ParticipantId", "Id");
+
+                    b.ToTable("AiTraderCalls");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.AiTraderConfiguration", b =>
+                {
+                    b.Property<int>("ParticipantId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ApiKey")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Model")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ProviderId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ParticipantId");
+
+                    b.ToTable("AiTraderConfigurations");
+                });
+
             modelBuilder.Entity("TraderAi.Models.Auditor", b =>
                 {
                     b.Property<int>("Id")
@@ -1646,6 +1783,15 @@ namespace TraderAi.Migrations
                         .IsUnique();
 
                     b.ToTable("TradingDays");
+                });
+
+            modelBuilder.Entity("TraderAi.Models.AiTraderConfiguration", b =>
+                {
+                    b.HasOne("TraderAi.Models.Participant", null)
+                        .WithOne()
+                        .HasForeignKey("TraderAi.Models.AiTraderConfiguration", "ParticipantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("TraderAi.Models.CollectiveFundParticipant", b =>

@@ -174,7 +174,11 @@ public sealed class MarketExitService(
     private void SpawnReplacement(int currentCycleId, DateTime now)
     {
         var balance = random.Next(ReplacementMinBalance, ReplacementMaxBalance + 1);
-        var type = random.Next(2) == 0 ? ParticipantType.Individual : ParticipantType.AIAgent;
+        // The type draw is retained as a discarded placeholder so the fixed exit draw sequence (balance, type,
+        // temperament, risk, name) is unchanged; a replacement is always a rule-based Individual because AI traders
+        // exist only through explicit operator configuration.
+        _ = random.Next(2);
+        var type = ParticipantType.Individual;
         var temperament = Temperaments[random.Next(Temperaments.Length)];
         var riskProfile = RiskProfiles[random.Next(RiskProfiles.Length)];
         var name = DemoMarketNames.PickOnePerson(random, takenNames);

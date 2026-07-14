@@ -144,7 +144,9 @@ public sealed class MarketExitServiceTests : IDisposable
 
         Assert.Equal(1, await context.MarketExits.CountAsync());
         var replacement = await context.Participants.AsNoTracking().SingleAsync();
-        Assert.Equal(ParticipantType.AIAgent, replacement.Type);
+        // A market-exit replacement is always a rule-based Individual; the type draw is retained as a discarded
+        // placeholder so the fixed exit draw sequence stays intact.
+        Assert.Equal(ParticipantType.Individual, replacement.Type);
     }
 
     [Fact]

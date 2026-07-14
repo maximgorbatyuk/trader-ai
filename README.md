@@ -46,7 +46,7 @@ No authentication is required between the frontend and backend for local develop
 | [Domain](docs/domain.md) | The simulation's data model and the core market rules. |
 | [Participant rules](docs/participant-rules.md) | Shared participant rules and links to each role page. |
 | [Individual](docs/roles/individual.md) | Rules for the default automated trader. |
-| [AI Agent](docs/roles/ai-agent.md) | Rules for agent-style automated traders. |
+| [AI Agent](docs/roles/ai-agent.md) | Rules for provider-backed traders driven by a hosted language model. |
 | [Player](docs/roles/player.md) | Rules for the human-controlled trader. |
 | [Company](docs/roles/company.md) | Rules for issuers and listed assets. |
 | [Collective Fund](docs/roles/collective-fund.md) | Rules for pooled fund traders. |

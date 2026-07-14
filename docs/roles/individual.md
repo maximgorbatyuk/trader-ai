@@ -18,4 +18,5 @@ An Individual is the default automated trader in the simulation. It represents a
 - If an Individual cannot afford the cheapest share for several cycles but still owns shares, it may list part of its most valuable holding to raise cash.
 - After the opening protection window, an Individual can go bankrupt when its holdings become extremely valuable or when debt pressure is high. Bankruptcy wipes cash, discharges open loans, makes the trader inactive, and forces a sell-down of most holdings.
 - After the fund-opening window, a low-balance Individual can join an existing collective fund or open a new one. While it is a fund member, the fund-member rules apply.
-- A shareless, low-cash Individual that has been unable to buy for a long stretch can leave the market. The game archives the departure and creates a replacement trader.
+- A shareless, low-cash Individual that has been unable to buy for a long stretch can leave the market. The game archives the departure and creates a replacement trader, always another rule-based Individual.
+- An operator can convert an Individual into a provider-backed AI Agent from the trader detail page; until then it trades by the rule-based logic above. See [AI Agent](ai-agent.md).

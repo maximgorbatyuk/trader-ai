@@ -1,0 +1,63 @@
+/* AI-trader automation and call-history styles. Kept in their own sheet, consuming the shared design tokens
+   from index.css rather than editing App.css. */
+
+.ai-status-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  font-size: var(--t-xs);
+}
+
+.ai-test-reply {
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--t-xs);
+  overflow-wrap: anywhere;
+}
+
+/* Long provider/model names wrap rather than pushing the table wide. */
+.panel-ai-calls .cell-ellipsis {
+  overflow-wrap: anywhere;
+}
+
+.ai-call-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--s-3);
+  margin: 0 0 var(--s-4);
+}
+
+.ai-call-meta dt {
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ai-call-meta dd {
+  margin: 0;
+  font-size: var(--t-sm);
+}
+
+/* Stored JSON is plain text in a scrollable region so a wide payload never widens the dialog. */
+.ai-call-json {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--t-2xs);
+  white-space: pre;
+}
+
+.modal-ai-call {
+  width: min(760px, 96vw);
+}

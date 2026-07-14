@@ -2233,6 +2233,260 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         }
     }
 
+    [Fact]
+    public async Task MarketResetClearsAiTraderTables()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var participant = await db.Participants.FirstAsync(candidate => candidate.Type == ParticipantType.Individual);
+                participant.Type = ParticipantType.AIAgent;
+                db.AiTraderConfigurations.Add(new AiTraderConfiguration
+                {
+                    ParticipantId = participant.Id,
+                    ProviderId = "glm",
+                    Model = "glm-4.6",
+                    ApiKey = "secret-key",
+                    Revision = 1,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                });
+                db.AiTraderCalls.Add(new AiTraderCall
+                {
+                    ParticipantId = participant.Id,
+                    ParticipantName = participant.Name,
+                    ProviderId = "glm",
+                    ProviderLabel = "GLM",
+                    Model = "glm-4.6",
+                    PromptHash = "hash",
+                    RequestJson = "{}",
+                    Status = AiTraderCallStatus.Completed,
+                    RequestedAt = DateTime.UtcNow,
+                });
+                await db.SaveChangesAsync();
+            }
+
+            using var resetResponse = await client.PostAsync("/market/reset", null);
+            resetResponse.EnsureSuccessStatusCode();
+
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                Assert.Equal(0, await db.AiTraderConfigurations.CountAsync());
+                Assert.Equal(0, await db.AiTraderCalls.CountAsync());
+            }
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AiProvidersEndpointListsConfiguredProviders()
+    {
+        await WithClientAsync(async (client, _) =>
+        {
+            using var doc = JsonDocument.Parse(await client.GetStringAsync("/ai/providers"));
+            var providers = doc.RootElement.EnumerateArray().ToList();
+            var ids = providers.Select(entry => entry.GetProperty("id").GetString()).ToList();
+            Assert.Contains("glm", ids);
+            Assert.Contains("minimax", ids);
+            var glm = providers.Single(entry => entry.GetProperty("id").GetString() == "glm");
+            Assert.Equal("GLM", glm.GetProperty("label").GetString());
+            Assert.NotEmpty(glm.GetProperty("models").EnumerateArray().ToList());
+        });
+    }
+
+    [Fact]
+    public async Task AutomationConvertsIndividualToAiAndBackWithoutExposingKey()
+    {
+        await WithClientAsync(async (client, factoryInstance) =>
+        {
+            await client.PostAsync("/market/seed", null);
+            var participantId = await FirstIndividualIdAsync(factoryInstance);
+
+            using var put = await client.PutAsJsonAsync(
+                $"/participants/{participantId}/automation",
+                new { type = "AIAgent", providerId = "glm", model = "glm-4.6", apiKey = "secret-key" });
+            Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+            var putBody = await put.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("secret-key", putBody);
+            using (var detail = JsonDocument.Parse(putBody))
+            {
+                Assert.Equal("glm", detail.RootElement.GetProperty("aiProviderId").GetString());
+                Assert.Equal("GLM", detail.RootElement.GetProperty("aiProviderLabel").GetString());
+                Assert.Equal("glm-4.6", detail.RootElement.GetProperty("aiModel").GetString());
+                Assert.True(detail.RootElement.GetProperty("hasAiApiKey").GetBoolean());
+            }
+
+            Assert.DoesNotContain("secret-key", await client.GetStringAsync("/participants"));
+
+            using var back = await client.PutAsJsonAsync(
+                $"/participants/{participantId}/automation",
+                new { type = "Individual", providerId = (string?)null, model = (string?)null, apiKey = (string?)null });
+            Assert.Equal(HttpStatusCode.OK, back.StatusCode);
+            using var backDetail = JsonDocument.Parse(await back.Content.ReadAsStringAsync());
+            Assert.False(backDetail.RootElement.GetProperty("hasAiApiKey").GetBoolean());
+        });
+    }
+
+    [Fact]
+    public async Task AutomationReturnsBadRequestAndNotFound()
+    {
+        await WithClientAsync(async (client, factoryInstance) =>
+        {
+            await client.PostAsync("/market/seed", null);
+            var participantId = await FirstIndividualIdAsync(factoryInstance);
+
+            using var bad = await client.PutAsJsonAsync(
+                $"/participants/{participantId}/automation",
+                new { type = "AIAgent", providerId = "unknown", model = "x", apiKey = "k" });
+            Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+
+            using var missing = await client.PutAsJsonAsync(
+                "/participants/999999/automation",
+                new { type = "AIAgent", providerId = "glm", model = "glm-4.6", apiKey = "k" });
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        });
+    }
+
+    [Fact]
+    public async Task AutomationTestReturnsProviderReply()
+    {
+        await WithClientAsync(
+            async (client, factoryInstance) =>
+            {
+                await client.PostAsync("/market/seed", null);
+                var participantId = await FirstIndividualIdAsync(factoryInstance);
+
+                using var response = await client.PostAsJsonAsync(
+                    $"/participants/{participantId}/automation/test",
+                    new { providerId = "glm", model = "glm-4.6", apiKey = "secret-key" });
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                Assert.True(doc.RootElement.GetProperty("success").GetBoolean());
+                Assert.Equal("I am the model.", doc.RootElement.GetProperty("assistantContent").GetString());
+            },
+            configure: services =>
+            {
+                services.RemoveAll<IAiProviderClient>();
+                services.AddScoped<IAiProviderClient>(_ => new StubAiProviderClient("I am the model."));
+            });
+    }
+
+    [Fact]
+    public async Task AiCallHistoryIsNewestFirstBoundedAndOwnerScoped()
+    {
+        await WithClientAsync(async (client, factoryInstance) =>
+        {
+            await client.PostAsync("/market/seed", null);
+
+            int ownerId;
+            int otherId;
+            using (var scope = factoryInstance.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var individuals = await db.Participants
+                    .Where(participant => participant.Type == ParticipantType.Individual)
+                    .Take(2)
+                    .ToListAsync();
+                ownerId = individuals[0].Id;
+                otherId = individuals[1].Id;
+                for (var index = 0; index < 25; index++)
+                {
+                    db.AiTraderCalls.Add(AiCall(ownerId));
+                }
+
+                await db.SaveChangesAsync();
+            }
+
+            using var pageDoc = JsonDocument.Parse(
+                await client.GetStringAsync($"/participants/{ownerId}/ai-calls?page=1&pageSize=100"));
+            Assert.Equal(25, pageDoc.RootElement.GetProperty("total").GetInt32());
+            var items = pageDoc.RootElement.GetProperty("items").EnumerateArray().ToList();
+            Assert.Equal(20, items.Count);
+            var ids = items.Select(item => item.GetProperty("id").GetInt64()).ToList();
+            Assert.Equal(ids.OrderByDescending(id => id).ToList(), ids);
+
+            var callId = ids[0];
+            using var ownerDetail = await client.GetAsync($"/participants/{ownerId}/ai-calls/{callId}");
+            Assert.Equal(HttpStatusCode.OK, ownerDetail.StatusCode);
+            using var detailDoc = JsonDocument.Parse(await ownerDetail.Content.ReadAsStringAsync());
+            Assert.False(string.IsNullOrEmpty(detailDoc.RootElement.GetProperty("requestJson").GetString()));
+
+            using var otherDetail = await client.GetAsync($"/participants/{otherId}/ai-calls/{callId}");
+            Assert.Equal(HttpStatusCode.NotFound, otherDetail.StatusCode);
+        });
+    }
+
+    private static async Task<int> FirstIndividualIdAsync(WebApplicationFactory<Program> factoryInstance)
+    {
+        using var scope = factoryInstance.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return (await db.Participants.FirstAsync(participant =>
+            participant.Type == ParticipantType.Individual && participant.IsActive)).Id;
+    }
+
+    private static AiTraderCall AiCall(int participantId) => new()
+    {
+        ParticipantId = participantId,
+        ParticipantName = "Trader",
+        ProviderId = "glm",
+        ProviderLabel = "GLM",
+        Model = "glm-4.6",
+        PromptHash = "hash",
+        RequestJson = "{\"prompt\":true}",
+        Status = AiTraderCallStatus.Completed,
+        RequestedAt = DateTime.UtcNow,
+    };
+
+    private async Task WithClientAsync(
+        Func<HttpClient, WebApplicationFactory<Program>, Task> body,
+        Action<IServiceCollection>? configure = null)
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            var configured = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            if (configure is not null)
+            {
+                configured = configured.WithWebHostBuilder(builder => builder.ConfigureServices(configure));
+            }
+
+            using (configured)
+            using (var client = configured.CreateClient())
+            {
+                await body(client, configured);
+            }
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    private sealed class StubAiProviderClient(string content) : IAiProviderClient
+    {
+        public PreparedAiProviderRequest Prepare(AiProviderDescriptor provider, string model, string systemMessage, string userMessage)
+            => new(provider.Id, provider.Label, model, provider.Endpoint, "{}");
+
+        public Task<AiProviderResponse> SendTestAsync(AiProviderDescriptor provider, string model, string apiKey, CancellationToken cancellationToken)
+            => Task.FromResult(new AiProviderResponse(AiProviderCallOutcome.Success, 200, content, content, 1, 1, 2, null, null));
+
+        public Task<AiProviderResponse> SendAsync(PreparedAiProviderRequest prepared, string apiKey, CancellationToken cancellationToken)
+            => Task.FromResult(new AiProviderResponse(AiProviderCallOutcome.Success, 200, content, content, 1, 1, 2, null, null));
+    }
+
     private WebApplicationFactory<Program> CreateFactory(string databasePath)
     {
         return factory.WithWebHostBuilder(builder =>
@@ -2242,6 +2496,10 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             // Auditors fire every cycle under the shared Random and would perturb the exact-count assertions
             // below; they are exercised directly against seeded rating rows instead.
             builder.UseSetting("Auditor:Enabled", "false");
+
+            // The AI coordinator is a hosted service that would otherwise poll and, for any configuration these
+            // tests create, attempt a real provider call. It stays disabled so tests never touch the network.
+            builder.UseSetting("AiTrading:Enabled", "false");
 
             // A manual tick decides then matches; the no-op engine removes generated trades so these
             // tests settle only the order they place by hand and can assert exact counts.
