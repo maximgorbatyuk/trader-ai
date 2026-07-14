@@ -6,7 +6,7 @@ A single developer — the person building the simulation — using the dashboar
 
 ## Product Purpose
 
-Trader AI simulates a trading market: participants (individuals, companies, AI agents) place buy and sell orders across discrete market cycles; a matching engine fills them by price-time priority, transfers per-share ownership, settles cash, and snapshots prices. A rule-based decision engine trades on its own, with an LLM-backed engine planned behind the same interface. The dashboard is the window into that running simulation — it makes the live state legible at a glance and exposes the controls to step or run the market. Success is when the operator can tell, in seconds, what the market is doing and intervene with confidence.
+Trader AI simulates a trading market: participants (individuals, companies, AI agents) place buy and sell orders across discrete market cycles; a matching engine fills them by price-time priority, transfers per-share ownership, settles cash, and snapshots prices. A rule-based decision engine trades most participants on its own, and an operator can convert a trader into an AI agent whose orders come from a hosted language model (GLM or MiniMax) running alongside the market. The dashboard is the window into that running simulation — it makes the live state legible at a glance and exposes the controls to step or run the market. Success is when the operator can tell, in seconds, what the market is doing and intervene with confidence.
 
 ## Brand Personality
 

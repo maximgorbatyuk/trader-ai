@@ -32,6 +32,12 @@ The logical trading clock groups 210 two-second trading cycles into a seven-minu
 
 Random market behavior is configurable through one shared family of chance and magnitude settings. Deterministic services do not consume random values. Randomized services preserve a stable draw order so seeded simulations and scripted tests remain reproducible when unrelated features are disabled.
 
+## AI traders
+
+An operator can convert an Individual into a provider-backed AI Agent driven by a hosted language model rather than the rule-based engine. Provider inference runs outside the serialized market transaction: a hosted coordinator builds a fresh market snapshot, sends one credential-free-logged request per turn, and strictly deserializes a JSON order decision. It reacquires the shared market lock only to revalidate and place still-valid orders through the ordinary order path, so an AI order faces the same LULD, price-range, buying-power, reservation, and owned-share checks as any other and never delays a cycle.
+
+Each trader keeps at most one request in flight, and configured AI Agents are owned only by the coordinator while Individuals and funds stay with the rule-based engine. Per-trader configuration stores the provider, chosen model, and an API key that is write-only in the interface, kept without encryption, never returned by the API, and never logged. Relevant project rules are read lazily from an explicit allowlist and cached in memory for five minutes. Every request is audited to the database before the call and updated with its response, decision, application outcome, timing, and token usage; a provider or parsing failure leaves the trader idle in a visible Error state with no rule-based fallback. See [AI Agent](roles/ai-agent.md).
+
 ## Orders, holdings, and prices
 
 A holding is one quantity-based position for a participant and company, with a weighted average cost. It is not one database row per share. A position that is sold out may retain its row with a zero quantity, while active-position reads include only positive quantities.

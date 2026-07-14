@@ -1,18 +1,24 @@
 # AI Agent
 
-An AI Agent is an automated trader role reserved for agent-like market participants. In the current game rules, it follows the same market behavior as an Individual while keeping a distinct role label for future strategy differences.
+An AI Agent is a trader whose decisions come from a hosted large-language-model provider instead of the rule-based engine. An operator converts an Individual into an AI Agent from the trader detail page, choosing a provider (GLM or MiniMax) and one of that provider's models. The trader keeps trading as a rule-based Individual until it is converted.
 
-## Rules
+## Provider decisions
 
-- An AI Agent can buy, sell, hold shares, receive dividends, and use the same margin buying power as other automated traders. Margin debit is separate from explicit term loans.
-- Its decisions use temperament and risk profile in the same way as an Individual: risk affects how strongly it reacts to market signals, and temperament affects action frequency and order size.
-- It places at most one automated action per cycle: buy, sell, or wait. Like an Individual, it prices most orders inside the executable band and occasionally in the allowed range just outside it, always within the allowed order range. See [LULD price controls](../rules/luld.md).
-- It cannot sell shares it does not own or shares already committed to another open sell order.
-- Its fills change economic positions immediately and settle on T+1. Short selling is planned for later and is not implemented.
-- Its ordinary orders can be re-priced toward the executable band (clamped so an aged limit never compounds past it), cancelled for age or for resting beyond the allowed range after the band moves, cancelled by price shocks, or cancelled by a stock split.
-- LULD Limit State and Trading Pause preserve its resting orders for cancellation or the reopening auction.
-- It can become cash-starved and may sell part of its most valuable holding to raise cash.
-- It can join or open a collective fund when eligible. While it is a fund member, the fund-member rules apply.
-- It can go bankrupt under the same rules as an Individual.
-- It can leave the market after a long shareless, low-cash drought or after a severe fund-loss event.
-- Replacement traders may enter the market as AI Agents, so this role can appear as the simulation churns even if the initial demo market starts with Individuals.
+- A hosted coordinator runs provider inference beside the market loop. Each eligible AI Agent has at most one request in flight, and requests run outside the market transaction so they never delay a two-second cycle.
+- For each turn the coordinator builds a fresh market snapshot, loads the cached project rules, sends one request with no conversation history, and strictly parses the reply. It then reacquires the market lock only to revalidate and place the still-valid orders.
+- The reply must be exactly one JSON object: a short summary and an orders array. An empty orders array is a valid decision to wait. Each order carries a side, company id, quantity, limit price, and a reason.
+- Deserialization is strict — Markdown fences, surrounding prose, unknown fields, non-positive numbers, or an unknown side make the whole reply invalid — but successfully parsed orders are applied independently, so one invalid order never blocks another valid one.
+- Applied orders face the same validation as any order: no short selling, only owned shares may be sold, and market break, delisting, halt, allowed price range, buying power, and cash reservation are all enforced at application time. Orders rest in the book and match only when the normal cycle advances. See [LULD price controls](../rules/luld.md).
+- A provider or parsing failure leaves the AI Agent idle in a visible Error state; there is no rule-based fallback. A missing or rejected key surfaces the same Error state and retries on a longer authentication window. Transient errors back off before retrying.
+
+## Configuration and observability
+
+- The provider, model, and API key are set per trader on the detail page. The key is write-only in the interface, stored as provided in the database without encryption, never returned by the API, and never written to a log.
+- Conversion is reversible. Converting back to Individual cancels any in-flight request, cancels the trader's open orders, deletes the configuration, and resumes rule-based decisions.
+- Every attempted request is recorded before the call and updated with the raw response, parsed decision, application outcome, timing, and token usage. The detail page lists this history newest first with server paging and loads a call's full request and response only when it is opened.
+- Call history is retained through provider edits, conversion, pause, restart, and market departure. A full market reset removes it along with the configuration.
+
+## Lifecycle
+
+- An AI Agent shares the non-decision lifecycle of an Individual: dividends, margin buying power, bankruptcy, fund membership, free-share emissions, starvation-liquidation, and market exit all behave the same. See [Individual](individual.md).
+- Market-exit replacements are always rule-based Individuals, so an AI Agent appears only through explicit operator configuration.
