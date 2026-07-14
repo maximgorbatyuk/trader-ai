@@ -90,10 +90,12 @@ builder.Services.AddSingleton<AiProviderCatalog>();
 builder.Services.AddSingleton<AiTraderRuntimeState>();
 builder.Services.AddSingleton<AiPromptDocumentationProvider>();
 builder.Services.AddHttpClient();
-builder.Services.AddScoped<AiProviderClient>();
+builder.Services.AddScoped<IAiProviderClient, AiProviderClient>();
 builder.Services.AddScoped<AiMarketSnapshotBuilder>();
 builder.Services.AddScoped<AiTradingPromptBuilder>();
+builder.Services.AddScoped<AiTraderCallService>();
 builder.Services.AddScoped<AiTraderConfigurationService>();
+builder.Services.AddHostedService<AiTraderCoordinator>();
 builder.Services.AddOptions<RandomChanceRatesOptions>()
     .Bind(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName))
     .Validate(options =>

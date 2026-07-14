@@ -5,12 +5,24 @@ using Microsoft.Extensions.Options;
 
 namespace TraderAi.Services;
 
+// The seam the coordinator and the automation-test endpoint depend on, so a fake provider can stand in without a
+// network call in tests.
+public interface IAiProviderClient
+{
+    PreparedAiProviderRequest Prepare(AiProviderDescriptor provider, string model, string systemMessage, string userMessage);
+
+    Task<AiProviderResponse> SendTestAsync(AiProviderDescriptor provider, string model, string apiKey, CancellationToken cancellationToken);
+
+    Task<AiProviderResponse> SendAsync(PreparedAiProviderRequest prepared, string apiKey, CancellationToken cancellationToken);
+}
+
 // One OpenAI-compatible chat client for every provider. Preparation is split from sending so the exact
 // credential-free body is captured before the key is ever touched; the key appears only in the Authorization
 // header at send time. Both GLM and MiniMax return the same OpenAI-shaped envelope, so only request shaping
 // (disabling provider "thinking") differs. Provider request/response details must be confirmed against live
 // provider documentation; the shaping here is validated only against a fake transport in tests.
 public sealed class AiProviderClient(IHttpClientFactory httpClientFactory, IOptions<AiTradingOptions> options)
+    : IAiProviderClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.General);
 
