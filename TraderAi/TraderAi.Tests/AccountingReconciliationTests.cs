@@ -51,7 +51,7 @@ public sealed class AccountingReconciliationTests : IDisposable
             new MarketCycleLock(),
             new FloorRoll(),
             settlementService: settlement);
-        await service.StepCycleAsync();
+        await service.RunCycleTickAsync();
 
         var dividendDebit = await context.CorporateCashTransactions
             .Where(transaction => transaction.Type == CorporateCashTransactionType.DividendDeclared)

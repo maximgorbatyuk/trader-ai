@@ -89,14 +89,47 @@ public sealed class AiTraderCallServiceTests : IDisposable
     [Fact]
     public async Task InvalidJsonRetainsRawResponseAndError()
     {
+        const string malformed = "{\"summary\":\"x\",\"orders\":}";
         await service.ExecuteAsync(Descriptor(), MaxOrders,
-            _ => Task.FromResult(Ok("not json at all", "not json at all")), CancellationToken.None);
+            _ => Task.FromResult(Ok(malformed, malformed)), CancellationToken.None);
 
         var stored = await context.AiTraderCalls.SingleAsync();
         Assert.Equal(AiTraderCallStatus.InvalidJson, stored.Status);
-        Assert.Equal("not json at all", stored.ResponseBody);
+        Assert.Equal(malformed, stored.ResponseBody);
         Assert.NotNull(stored.Error);
         Assert.Null(stored.DecisionJson);
+    }
+
+    [Fact]
+    public async Task ProseOnlyReplyIsRecordedAsCompletedNoOrderWaitDecision()
+    {
+        // The exact GLM reply that previously failed with "'L' is an invalid start of a value": reasoning in prose
+        // with no JSON object at all. It must now record a completed no-order decision, never a parse error.
+        const string prose = """
+            Looking at this portfolio, I need to analyze the situation:
+
+            1. **Cash is 98% of net worth** (~$2B in cash vs ~$35M in holdings) - massive concentration in cash
+            2. **Conservative/Low risk profile** - but extreme cash concentration is still a risk
+            3. **Open order exists** for company 30 (Mainmast Capital) which is in TradingPause - can't place new orders there
+            4. **Key opportunities**: Companies with positive ratings (RaisedExpectations/Extra) in favorable-sentiment sectors, especially those not already held or underweight
+            5. **Sector sentiment leaders**: Apparel & Fashion (+29), Banking & Finance (+12), Shipping & Maritime (+12), Forestry & Timber (+11)
+
+            Strategy: Gradually deploy cash into high-quality positions across favorable sectors to reduce cash concentration while maintaining diversification and conservative position sizing. Focus on attractively-priced companies with positive catalysts.
+            """;
+
+        var execution = await service.ExecuteAsync(Descriptor(), MaxOrders,
+            _ => Task.FromResult(Ok(prose, prose)), CancellationToken.None);
+
+        Assert.Equal(AiTraderCallStatus.Completed, execution.Status);
+        Assert.NotNull(execution.Decision);
+        Assert.Empty(execution.Decision!.Orders);
+        Assert.StartsWith("Looking at this portfolio", execution.Decision.Summary);
+        Assert.Contains("attractively-priced companies with positive catalysts", execution.Decision.Summary);
+
+        var stored = await context.AiTraderCalls.SingleAsync();
+        Assert.Equal(AiTraderCallStatus.Completed, stored.Status);
+        Assert.NotNull(stored.DecisionJson);
+        Assert.Null(stored.Error);
     }
 
     [Fact]

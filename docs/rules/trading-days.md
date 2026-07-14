@@ -13,11 +13,9 @@ Each trading cycle represents two seconds of active simulation time. A complete 
 
 Finishing cycle 210 activates one break cycle for that trading day. The break has its own countdown, but it never creates or increments a trading cycle. When the countdown reaches zero, the break completes and the next numbered day opens at cycle 1.
 
-## Pause and manual steps
+## Pause and reset
 
 Pausing the market freezes both the trading countdown and the break countdown. Starting it again resumes the active phase from the same remaining value.
-
-`Step once` advances one two-second unit of logical time. During trading, that step completes one trading cycle. During the break, it advances only the break countdown, so thirty manual break steps complete the one-minute break without changing the trading-cycle number.
 
 Resetting the market returns the clock to day 1 before its first trading cycle.
 
@@ -39,7 +37,7 @@ The countdown updates between server refreshes, freezes visibly when the market 
 
 ## Trading-day boundaries
 
-Trading-day numbers are unique and increase one at a time. A trade executed at any point on Day N is due for T+1 settlement when Day N+1 opens; neither the one-minute break nor its thirty manual steps count as another day. Due instructions update settled cash and shares together at the new day boundary. See [Trade settlement](../logic/settlement.md).
+Trading-day numbers are unique and increase one at a time. A trade executed at any point on Day N is due for T+1 settlement when Day N+1 opens; the one-minute break does not count as another day. Due instructions update settled cash and shares together at the new day boundary. See [Trade settlement](../logic/settlement.md).
 
 Margin debit interest also uses the trading-day boundary and accrues at most once per day. It does not accrue once per cycle or during the break. See [Margin accounts](../logic/margin.md).
 
@@ -52,7 +50,7 @@ Security-specific LULD durations count active trading cycles. A market-wide brea
 - The top navigation shows **Day N · Trading** or **Day N · Break**.
 - **Cycle X/210 · Y left** shows completed-day progress and cycles remaining. It remains at **Cycle 210/210 · 0 left** throughout the break.
 - The adjacent **MM:SS left** timer counts down the active trading phase or the separate break phase.
-- During a manual pause, both displayed countdowns remain frozen until the market resumes or advances with **Step once**.
+- During a pause, both displayed countdowns remain frozen until the market resumes.
 - Trader and player settlement tables show the trade day and due day calculated from this clock.
 
 Weekends, public holidays, extended-hours sessions, overnight orders, and a literal U.S. exchange timezone are outside this schedule.

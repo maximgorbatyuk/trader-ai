@@ -78,7 +78,7 @@ Large companies receive protection from immediate delisting. When a protected co
 
 Auditors are standalone entities rather than trading participants. They review companies, publish ratings, and may trigger a price reduction with stale-buy revisions or a positive expectations lift with eligible stale-sell cancellation. Keeping auditors outside the participant hierarchy prevents them from accidentally inheriting balances, holdings, loans, bankruptcy, or fund behavior.
 
-A crisis is an active interval rather than a single price shock. It initially affects selected industries and then changes the behavior of risk-sensitive services for its duration. Events such as ratings, bankruptcies, company closures, and fund closures are recorded on the crisis timeline when they occur during that window.
+A crisis is an active interval rather than a single price shock. It initially affects selected industries and then changes the behavior of risk-sensitive services for its duration. Events such as ratings, bankruptcies, company closures, and fund closures are recorded on the crisis timeline when they occur during that window. See [Market crises](logic/crisis.md).
 
 ## Participants and collective funds
 

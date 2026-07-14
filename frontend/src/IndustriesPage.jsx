@@ -123,13 +123,15 @@ function IndustriesPage() {
             {treemapItems.length === 0 ? (
               <p className="note">Seed the market to see industries.</p>
             ) : (
-              <Treemap
-                items={treemapItems}
-                onSelect={(industryId) => navigate(`/industries/${industryId}`)}
-                formatValue={formatCompactMoney}
-                formatChange={formatSentimentChange}
-                ariaLabel="Industries by total worth"
-              />
+              <div className="map-layout">
+                <Treemap
+                  items={treemapItems}
+                  onSelect={(industryId) => navigate(`/industries/${industryId}`)}
+                  formatValue={formatCompactMoney}
+                  formatChange={formatSentimentChange}
+                  ariaLabel="Industries by total worth"
+                />
+              </div>
             )}
           </Panel>
 

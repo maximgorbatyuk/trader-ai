@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt } from './format'
 import { Panel } from './Panel'
 import { CompaniesTable } from './CompaniesTable'
+import ClosedCompaniesView from './ClosedCompaniesPage'
 
 const POLL_INTERVAL_MS = 2500
 const PAGE_SIZE = 20
@@ -13,6 +14,8 @@ const PAGE_SIZE = 20
 // clicking a company opens its own detail page.
 function CompaniesPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const view = searchParams.get('view') === 'closed' ? 'closed' : 'active'
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [data, setData] = useState(null)
@@ -25,6 +28,8 @@ function CompaniesPage() {
 
   // Industries seldom change, so they are fetched once to populate the filter rather than on every poll.
   useEffect(() => {
+    if (view !== 'active') return undefined
+
     let active = true
     api
       .getIndustries()
@@ -37,7 +42,7 @@ function CompaniesPage() {
     return () => {
       active = false
     }
-  }, [])
+  }, [view])
 
   const loadAll = useCallback(async () => {
     try {
@@ -59,13 +64,15 @@ function CompaniesPage() {
   }, [page, search, industryFilter, sortKey, sortDir])
 
   useEffect(() => {
+    if (view !== 'active') return undefined
+
     const initialId = setTimeout(loadAll, 0)
     const intervalId = setInterval(loadAll, POLL_INTERVAL_MS)
     return () => {
       clearTimeout(initialId)
       clearInterval(intervalId)
     }
-  }, [loadAll])
+  }, [loadAll, view])
 
   function selectCompany(companyId) {
     navigate(`/companies/${companyId}`)
@@ -84,10 +91,23 @@ function CompaniesPage() {
   const total = data?.total ?? 0
   const items = data?.items ?? []
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const statusControl = (
+    <select
+      className="select select-sm"
+      aria-label="Filter companies by status"
+      value={view}
+      onChange={(event) => setSearchParams({ view: event.target.value })}
+    >
+      <option value="active">Active companies</option>
+      <option value="closed">Closed companies</option>
+    </select>
+  )
 
   return (
     <main className="main">
-      {!ready ? (
+      {view === 'closed' ? (
+        <ClosedCompaniesView statusControl={statusControl} />
+      ) : !ready ? (
         <section className="placeholder" aria-busy="true">
           <span className="spinner" aria-hidden="true" />
           <p>Loading companies…</p>
@@ -103,6 +123,7 @@ function CompaniesPage() {
 
           <Panel title="Companies" count={`${formatInt(total)}`} className="panel-holdings">
             <div className="roster-toolbar">
+              {statusControl}
               <input
                 className="select select-sm roster-search"
                 type="search"

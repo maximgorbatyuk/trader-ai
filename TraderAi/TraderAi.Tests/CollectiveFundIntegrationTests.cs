@@ -55,8 +55,8 @@ public sealed class CollectiveFundIntegrationTests : IDisposable
         var trader = await SeedStarvedTraderAsync();
         var marketService = new MarketService(context, new MatchingEngine(context), new NoOpDecisionEngine(), new MarketCycleLock(), new Random(1));
 
-        await marketService.StepCycleAsync();
-        await marketService.StepCycleAsync();
+        await marketService.RunCycleTickAsync();
+        await marketService.RunCycleTickAsync();
 
         var starved = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == trader.Id);
         Assert.Equal(2, starved.CannotBuyCycles);
@@ -66,7 +66,7 @@ public sealed class CollectiveFundIntegrationTests : IDisposable
         tracked.CurrentBalance = 1_000m;
         await context.SaveChangesAsync();
 
-        await marketService.StepCycleAsync();
+        await marketService.RunCycleTickAsync();
 
         var recovered = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == trader.Id);
         Assert.Equal(0, recovered.CannotBuyCycles);

@@ -131,7 +131,6 @@ export const api = {
   resetMarket: () => post('/market/reset'),
   pauseMarket: () => post('/market/pause'),
   startMarket: () => post('/market/start'),
-  stepCycle: () => post('/cycles/tick'),
   placeOrder: (order) => post('/orders', order),
   getPlayer: () => get('/player'),
   createPlayer: (payload) => post('/player', payload),

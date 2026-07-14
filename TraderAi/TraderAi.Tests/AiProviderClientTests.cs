@@ -147,7 +147,7 @@ public sealed class AiProviderClientTests
     }
 
     [Fact]
-    public async Task GlmProseOnlyReplyIsKeptSoParsingFailsHonestly()
+    public async Task GlmProseOnlyReplyIsReturnedVerbatimByTransport()
     {
         var body = Envelope("I am unable to trade right now.");
         var handler = new StubHandler((_, _) => Task.FromResult(Ok(body)));
@@ -156,6 +156,8 @@ public sealed class AiProviderClientTests
         var prepared = client.Prepare(Glm, "glm-4.6", "system", "user");
         var response = await client.SendAsync(prepared, "key", CancellationToken.None);
 
+        // The transport leaves brace-free prose untouched; the decision layer, not the transport, decides that a
+        // reply with no JSON object is a no-order wait.
         Assert.Equal("I am unable to trade right now.", response.AssistantContent);
     }
 

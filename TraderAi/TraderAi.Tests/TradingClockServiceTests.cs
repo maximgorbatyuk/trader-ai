@@ -88,7 +88,6 @@ public sealed class TradingClockServiceTests : IDisposable
         Assert.Equal(84, trading.TradingCycleNumber);
         Assert.Equal(126, trading.RemainingTradingCycles);
         Assert.Equal(252, trading.RemainingPhaseSeconds);
-        Assert.Equal("Advance one trading cycle", trading.NextStepMeaning);
 
         seed.Day.State = TradingSessionState.Break;
         seed.Cycle.TradingCycleNumber = 210;
@@ -107,7 +106,6 @@ public sealed class TradingClockServiceTests : IDisposable
         Assert.Equal(TradingSessionState.Break, resting!.TradingSessionState);
         Assert.Equal(0, resting.RemainingTradingCycles);
         Assert.Equal(44, resting.RemainingPhaseSeconds);
-        Assert.Equal("Advance the break countdown by 2 seconds", resting.NextStepMeaning);
     }
 
     private async Task<(Market Market, TradingDay Day, MarketCycle Cycle)> SeedAsync(int tradingCycleNumber)

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt } from './format'
 import { Panel } from './Panel'
 import { TradersTable } from './TradersTable'
+import ClosedFundsView from './ClosedFundsPage'
+import DepartedTradersView from './DepartedTradersPage'
 
 const POLL_INTERVAL_MS = 2500
 const PAGE_SIZE = 20
@@ -21,6 +23,9 @@ const TYPE_OPTIONS = [
 // trader opens its own detail page.
 function TradersPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedView = searchParams.get('view')
+  const view = requestedView === 'departed' || requestedView === 'closed-funds' ? requestedView : 'active'
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [data, setData] = useState(null)
@@ -50,13 +55,15 @@ function TradersPage() {
   }, [page, search, typeFilter, sortKey, sortDir])
 
   useEffect(() => {
+    if (view !== 'active') return undefined
+
     const initialId = setTimeout(loadAll, 0)
     const intervalId = setInterval(loadAll, POLL_INTERVAL_MS)
     return () => {
       clearTimeout(initialId)
       clearInterval(intervalId)
     }
-  }, [loadAll])
+  }, [loadAll, view])
 
   function selectTrader(participant) {
     navigate(`/traders/${participant.id}`)
@@ -75,10 +82,26 @@ function TradersPage() {
   const total = data?.total ?? 0
   const items = data?.items ?? []
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const statusControl = (
+    <select
+      className="select select-sm"
+      aria-label="Filter traders by status"
+      value={view}
+      onChange={(event) => setSearchParams({ view: event.target.value })}
+    >
+      <option value="active">Active traders</option>
+      <option value="departed">Departed traders</option>
+      <option value="closed-funds">Closed funds</option>
+    </select>
+  )
 
   return (
     <main className="main">
-      {!ready ? (
+      {view === 'departed' ? (
+        <DepartedTradersView statusControl={statusControl} />
+      ) : view === 'closed-funds' ? (
+        <ClosedFundsView statusControl={statusControl} />
+      ) : !ready ? (
         <section className="placeholder" aria-busy="true">
           <span className="spinner" aria-hidden="true" />
           <p>Loading traders…</p>
@@ -94,6 +117,7 @@ function TradersPage() {
 
           <Panel title="Traders" count={`${formatInt(total)}`} className="panel-holdings">
             <div className="roster-toolbar">
+              {statusControl}
               <input
                 className="select select-sm roster-search"
                 type="search"

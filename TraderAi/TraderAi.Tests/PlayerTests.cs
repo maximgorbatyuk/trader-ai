@@ -159,7 +159,7 @@ public sealed class PlayerTests : IDisposable
         company.CashBalance = 0.20m;
         await context.SaveChangesAsync();
 
-        await market.StepCycleAsync();
+        await market.RunCycleTickAsync();
 
         // The higher floor rate is capped by the issuer cash available in this window.
         var dividend = await context.MoneyTransactions.SingleAsync(money =>
@@ -178,7 +178,7 @@ public sealed class PlayerTests : IDisposable
         var player = (await market.CreatePlayerAsync("Ada")).Player!;
         var completedCycleId = (await context.Markets.FirstAsync()).CurrentCycleId!.Value;
 
-        await market.StepCycleAsync();
+        await market.RunCycleTickAsync();
 
         var snapshots = await context.ParticipantWorthSnapshots.ToListAsync();
         Assert.Equal(3, snapshots.Count);
@@ -193,7 +193,7 @@ public sealed class PlayerTests : IDisposable
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
 
-        await Service(new FixedRoll(0d)).StepCycleAsync();
+        await Service(new FixedRoll(0d)).RunCycleTickAsync();
 
         Assert.Equal(2, await context.ParticipantWorthSnapshots.CountAsync());
     }
@@ -208,7 +208,7 @@ public sealed class PlayerTests : IDisposable
         var player = (await market.CreatePlayerAsync("Ada")).Player!;
         await GiveSharesAsync(company.Id, player.Id, 10, 100m);
 
-        await market.StepCycleAsync();
+        await market.RunCycleTickAsync();
 
         await context.Entry(player).ReloadAsync();
         var snapshot = await context.ParticipantWorthSnapshots.SingleAsync(snapshot => snapshot.ParticipantId == player.Id);
@@ -233,8 +233,8 @@ public sealed class PlayerTests : IDisposable
         await context.SaveChangesAsync();
         var startingBalance = player.CurrentBalance;
 
-        await market.StepCycleAsync();
-        await market.StepCycleAsync();
+        await market.RunCycleTickAsync();
+        await market.RunCycleTickAsync();
 
         var snapshots = await context.ParticipantWorthSnapshots
             .Where(snapshot => snapshot.ParticipantId == player.Id)
@@ -429,7 +429,7 @@ public sealed class PlayerTests : IDisposable
     {
         for (var step = 0; step < times; step++)
         {
-            await market.StepCycleAsync();
+            await market.RunCycleTickAsync();
         }
     }
 

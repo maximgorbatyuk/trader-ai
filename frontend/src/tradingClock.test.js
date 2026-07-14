@@ -13,10 +13,9 @@ const tradingMarket = {
   remainingTradingCycles: 126,
   remainingPhaseSeconds: 252,
   tradingCycleSeconds: 2,
-  nextStepMeaning: 'Advance one trading cycle',
 }
 
-test('formats the trading phase, cycle progress, remaining time, and next step', async () => {
+test('formats the trading phase, cycle progress, and remaining time', async () => {
   const { createTradingClock, interpolateTradingClock, formatTradingClock } = await loadClock()
   const snapshot = createTradingClock?.(tradingMarket, 1_000)
 
@@ -24,7 +23,6 @@ test('formats the trading phase, cycle progress, remaining time, and next step',
     dayPhaseLabel: 'Day 7 · Trading',
     cycleLabel: 'Cycle 84/210 · 126 left',
     timeLabel: '04:12 left',
-    nextStepTitle: 'Advance one trading cycle',
   })
 })
 
@@ -37,7 +35,6 @@ test('formats the break without advancing the completed trading-cycle count', as
       tradingCycleNumber: 210,
       remainingTradingCycles: 0,
       remainingPhaseSeconds: 43,
-      nextStepMeaning: 'Advance the break countdown by 2 seconds',
     },
     1_000,
   )
@@ -46,7 +43,6 @@ test('formats the break without advancing the completed trading-cycle count', as
     dayPhaseLabel: 'Day 7 · Break',
     cycleLabel: 'Cycle 210/210 · 0 left',
     timeLabel: '00:43 left',
-    nextStepTitle: 'Advance the break countdown by 2 seconds',
   })
 })
 

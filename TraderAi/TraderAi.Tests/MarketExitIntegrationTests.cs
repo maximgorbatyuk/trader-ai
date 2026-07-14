@@ -9,7 +9,7 @@ namespace TraderAi.Tests;
 
 // Exercises the exit hooks inside a real MarketService tick with both the fund and exit services wired. It proves
 // the save-fence ordering: a devastated fund member is flagged when its fund closes, that flag is persisted
-// before the exit rolls read the database, and the member departs and is replaced within the same StepCycleAsync.
+// before the exit rolls read the database, and the member departs and is replaced within the same RunCycleTickAsync.
 public sealed class MarketExitIntegrationTests : IDisposable
 {
     private readonly SqliteConnection connection;
@@ -49,7 +49,7 @@ public sealed class MarketExitIntegrationTests : IDisposable
             collectiveFundService: fundService,
             marketExitService: exitService);
 
-        await marketService.StepCycleAsync();
+        await marketService.RunCycleTickAsync();
 
         // The fund unwound and flagged the member; the exit rolls, reading the settled flag, made it depart.
         var fund = await context.CollectiveFunds.AsNoTracking().SingleAsync();

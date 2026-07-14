@@ -95,6 +95,16 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
                 decisionJson = JsonSerializer.Serialize(decision, StoredJsonOptions);
                 summary = decision!.Summary;
             }
+            else if (content.Trim() is { Length: > 0 } prose && !prose.Contains('{'))
+            {
+                // A reply that carries no JSON object at all is the model reasoning in prose and placing no orders,
+                // so it is recorded as a completed no-order decision with that reasoning kept as the summary rather
+                // than surfaced as a JSON parse error.
+                decision = new AiTradeDecision(prose, []);
+                status = AiTraderCallStatus.Completed;
+                decisionJson = JsonSerializer.Serialize(decision, StoredJsonOptions);
+                summary = decision.Summary;
+            }
             else
             {
                 status = AiTraderCallStatus.InvalidJson;

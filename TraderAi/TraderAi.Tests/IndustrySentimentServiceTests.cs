@@ -310,7 +310,7 @@ public sealed class IndustrySentimentServiceTests : IDisposable
             new Random(1),
             industrySentimentService: sentimentService);
 
-        await marketService.StepCycleAsync();
+        await marketService.RunCycleTickAsync();
 
         Assert.Equal(4, decisionEngine.ObservedSentiment);
         Assert.Equal(4, await context.Industries.Select(industry => industry.SentimentValue).SingleAsync());
@@ -370,10 +370,10 @@ public sealed class IndustrySentimentServiceTests : IDisposable
             newsService: news,
             industrySentimentService: sentiment);
 
-        await market.StepCycleAsync();
+        await market.RunCycleTickAsync();
         Assert.Equal(currentCycle.Id, (await context.NewsPosts.SingleAsync()).ImpactAppliedInCycleId);
         Assert.Equal(0, await context.Industries.Select(item => item.SentimentValue).SingleAsync());
-        await market.StepCycleAsync();
+        await market.RunCycleTickAsync();
 
         Assert.Equal(4, await context.Industries.Select(item => item.SentimentValue).SingleAsync());
     }
@@ -402,7 +402,7 @@ public sealed class IndustrySentimentServiceTests : IDisposable
             new MarketCycleLock(),
             new Random(1));
 
-        await marketService.StepCycleAsync();
+        await marketService.RunCycleTickAsync();
 
         var snapshots = await context.SectorSentimentSnapshots
             .OrderBy(snapshot => snapshot.IndustryId)
@@ -436,9 +436,9 @@ public sealed class IndustrySentimentServiceTests : IDisposable
             new Random(1),
             archiveOptions: Options.Create(new ArchiveOptions { Enabled = true, RetentionCycles = 1 }));
 
-        await marketService.StepCycleAsync();
+        await marketService.RunCycleTickAsync();
         var original = await context.SectorSentimentSnapshots.AsNoTracking().SingleAsync();
-        await marketService.StepCycleAsync();
+        await marketService.RunCycleTickAsync();
 
         var archived = await context.SectorSentimentSnapshotArchives.AsNoTracking().SingleAsync();
         Assert.Equal(original.Id, archived.Id);

@@ -45,7 +45,7 @@ function worthToneOf(change) {
 }
 
 // Layout route: the persistent left sidebar, the shared top navbar and footer, and the routed page between
-// them. The shell owns the market poll and the Step/Start/Pause/Reset actions so the navbar can drive them on
+// them. The shell owns the market poll and the Start/Pause/Reset actions so the navbar can drive them on
 // every page; pages read the market state and actions through the outlet context.
 export function AppShell() {
   const [player, setPlayer] = useState(null)
@@ -136,6 +136,9 @@ export function AppShell() {
           <NavLink className={sideLinkClass} to="/player-stats">
             Player stats
           </NavLink>
+          <NavLink className={sideLinkClass} to="/fund-stats">
+            Fund stats
+          </NavLink>
 
           <SideGroup title="Active market">
             <NavLink className={sideLinkClass} to="/traders">
@@ -164,17 +167,6 @@ export function AppShell() {
             </NavLink>
           </SideGroup>
 
-          <SideGroup title="Inactive market">
-            <NavLink className={sideLinkClass} to="/closed-companies">
-              Closed companies
-            </NavLink>
-            <NavLink className={sideLinkClass} to="/departed-traders">
-              Departed traders
-            </NavLink>
-            <NavLink className={sideLinkClass} to="/closed-funds">
-              Closed funds
-            </NavLink>
-          </SideGroup>
         </nav>
         {player ? (
           <div className="sidebar-player">

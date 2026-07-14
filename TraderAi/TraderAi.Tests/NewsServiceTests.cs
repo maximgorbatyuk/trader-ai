@@ -244,8 +244,8 @@ public sealed class NewsServiceTests : IDisposable
         Assert.True((await news.PublishManualNewsAsync(
             new ManualNewsRequest(NewsImpactScope.Company, FinanceTheme, NewsImpactDirection.Increase, 5m, company.Id, null))).Success);
 
-        var tick = await market.StepCycleAsync();
-        await market.StepCycleAsync();
+        var tick = await market.RunCycleTickAsync();
+        await market.RunCycleTickAsync();
 
         Assert.Equal(1, tick.FillCount);
         Assert.Equal(105m, await LatestPriceAsync(company.Id));

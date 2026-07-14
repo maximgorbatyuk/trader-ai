@@ -7,7 +7,9 @@ import { Panel } from './Panel'
 const POLL_INTERVAL_MS = 2500
 const REASON_LABEL = { FundLoss: 'Fund loss', Starvation: 'Starvation' }
 
-function DepartedTradersPage() {
+// Archived departure view embedded in the Traders roster. The existing endpoint intentionally returns the most
+// recent fifty departures, so this view preserves that behavior instead of inventing client-side pagination.
+function DepartedTradersView({ statusControl }) {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [exits, setExits] = useState([])
@@ -34,7 +36,7 @@ function DepartedTradersPage() {
   }, [loadAll])
 
   return (
-    <main className="main">
+    <>
       {!ready ? (
         <section className="placeholder" aria-busy="true">
           <span className="spinner" aria-hidden="true" />
@@ -50,6 +52,7 @@ function DepartedTradersPage() {
           ) : null}
 
           <Panel title="Departed traders" count={`${exits.length}`} className="panel-holdings">
+            <div className="roster-toolbar">{statusControl}</div>
             {exits.length === 0 ? (
               <p className="note">No traders have left the market yet.</p>
             ) : (
@@ -110,8 +113,8 @@ function DepartedTradersPage() {
           </Panel>
         </>
       )}
-    </main>
+    </>
   )
 }
 
-export default DepartedTradersPage
+export default DepartedTradersView
