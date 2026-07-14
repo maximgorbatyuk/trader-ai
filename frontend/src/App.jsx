@@ -148,7 +148,6 @@ function App() {
                     actorHoldingCompanyIds={actorHoldingCompanyIds}
                     actorHoldingByCompany={actorHoldingByCompany}
                     emptyActorHint={emptyActorHint}
-                    onSelectCompany={setMapModalCompanyId}
                     onTraded={loadAll}
                   />
                 </div>

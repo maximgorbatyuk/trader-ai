@@ -191,7 +191,6 @@ function TradeMarketPage() {
           actorHoldingCompanyIds={actorHoldingCompanyIds}
           actorHoldingByCompany={actorHoldingByCompany}
           emptyActorHint={emptyActorHint}
-          onSelectCompany={onSelectCompany}
           onTraded={loadAll}
         />
       </div>
