@@ -5,6 +5,7 @@ An AI Agent is a trader whose decisions come from a hosted large-language-model 
 ## Provider decisions
 
 - A hosted coordinator runs provider inference beside the market loop. Each eligible AI Agent has at most one request in flight, and requests run outside the market transaction so they never delay a two-second cycle.
+- Each agent decides a configurable number of times per trading day rather than on every cycle. The decisions are spread across the day, and the last one is an end-of-day planning call: its orders are not placed that day but are stored and created at the opening cycle of the next trading day, revalidated against the market state at that time. A plan whose target day never opens for the agent is discarded rather than applied late.
 - For each turn the coordinator builds a fresh market snapshot, loads the cached project rules, sends one request with no conversation history, and strictly parses the reply. It then reacquires the market lock only to revalidate and place the still-valid orders.
 - The reply must be exactly one JSON object: a short summary and an orders array. An empty orders array is a valid decision to wait. Each order carries a side, company id, quantity, limit price, and a reason. A reply that carries no JSON object at all — only prose — is treated as the same decision to wait, keeping the model's text as the summary rather than surfacing an error.
 - Deserialization is otherwise strict — a Markdown fence, unknown fields, non-positive numbers, or an unknown side make the whole reply invalid — but successfully parsed orders are applied independently, so one invalid order never blocks another valid one.
@@ -13,7 +14,7 @@ An AI Agent is a trader whose decisions come from a hosted large-language-model 
 
 ## Configuration and observability
 
-- The provider, model, and API key are set per trader on the detail page. The key is write-only in the interface, stored as provided in the database without encryption, never returned by the API, and never written to a log.
+- The provider, model, API key, and maximum decisions per trading day are set per trader on the detail page; the cadence defaults to three. The key is write-only in the interface, stored as provided in the database without encryption, never returned by the API, and never written to a log.
 - Conversion is reversible. Converting back to Individual cancels any in-flight request, cancels the trader's open orders, deletes the configuration, and resumes rule-based decisions.
 - Every attempted request is recorded before the call and updated with the raw response, parsed decision, application outcome, timing, and token usage. The detail page lists this history newest first with server paging and loads a call's full request and response only when it is opened.
 - Call history is retained through provider edits, conversion, pause, restart, and market departure. A full market reset removes it along with the configuration.

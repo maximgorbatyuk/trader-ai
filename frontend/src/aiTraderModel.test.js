@@ -81,6 +81,37 @@ test('test-request payload is built from provider, model, and key', async () => 
   )
 })
 
+test('max decisions per day must be a whole number of at least one', async () => {
+  const { validateAutomation } = await loadModule()
+  const base = { type: 'AIAgent', providerId: 'glm', model: 'glm-4.6', apiKey: 'k', originalProviderId: null }
+  assert.equal(validateAutomation({ ...base, maxDecisions: '3' }).valid, true)
+  assert.equal(validateAutomation({ ...base, maxDecisions: '1' }).valid, true)
+  assert.equal(validateAutomation({ ...base, maxDecisions: '0' }).valid, false)
+  assert.equal(validateAutomation({ ...base, maxDecisions: '-2' }).valid, false)
+  assert.equal(validateAutomation({ ...base, maxDecisions: '2.5' }).valid, false)
+  assert.equal(validateAutomation({ ...base, maxDecisions: '' }).valid, false)
+  // Omitting the field leaves validation unaffected, so the backend default applies.
+  assert.equal(validateAutomation(base).valid, true)
+})
+
+test('ai payload carries max decisions per day when set and omits it otherwise', async () => {
+  const { automationPayload } = await loadModule()
+  const base = { type: 'AIAgent', providerId: 'glm', model: 'glm-4.6', apiKey: 'secret', originalProviderId: null }
+  assert.deepEqual(automationPayload({ ...base, maxDecisions: '5' }), {
+    type: 'AIAgent',
+    providerId: 'glm',
+    model: 'glm-4.6',
+    apiKey: 'secret',
+    maxDecisionsPerDay: 5,
+  })
+  assert.deepEqual(automationPayload({ ...base, maxDecisions: '' }), {
+    type: 'AIAgent',
+    providerId: 'glm',
+    model: 'glm-4.6',
+    apiKey: 'secret',
+  })
+})
+
 test('formatStoredJson pretty-prints json and never evaluates content', async () => {
   const { formatStoredJson } = await loadModule()
   assert.equal(formatStoredJson('{"a":1}'), '{\n  "a": 1\n}')

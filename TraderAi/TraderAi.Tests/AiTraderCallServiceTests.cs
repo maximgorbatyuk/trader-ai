@@ -133,6 +133,34 @@ public sealed class AiTraderCallServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task MarkPendingNextDaySetsStatusAndTargetDay()
+    {
+        var execution = await service.ExecuteAsync(Descriptor(), MaxOrders,
+            _ => Task.FromResult(Ok(ValidDecision, ValidDecision)), CancellationToken.None);
+
+        await service.MarkPendingNextDayAsync(execution.CallId, targetDayNumber: 4);
+
+        var stored = await context.AiTraderCalls.SingleAsync();
+        Assert.Equal(AiTraderCallStatus.PendingNextDay, stored.Status);
+        Assert.Equal(4, stored.NextDayTargetDayNumber);
+    }
+
+    [Fact]
+    public async Task RecordApplicationSettlesAPendingNextDayCallToCompleted()
+    {
+        var execution = await service.ExecuteAsync(Descriptor(), MaxOrders,
+            _ => Task.FromResult(Ok(ValidDecision, ValidDecision)), CancellationToken.None);
+        await service.MarkPendingNextDayAsync(execution.CallId, targetDayNumber: 2);
+
+        await service.RecordApplicationAsync(execution.CallId, "{\"applied\":true}", appliedOrders: 1, rejectedOrders: 0);
+
+        var stored = await context.AiTraderCalls.SingleAsync();
+        Assert.Equal(AiTraderCallStatus.Completed, stored.Status);
+        Assert.Equal(1, stored.AppliedOrders);
+        Assert.NotNull(stored.AppliedAt);
+    }
+
+    [Fact]
     public async Task CancellationAndTimeoutReceiveDistinctStatuses()
     {
         await service.ExecuteAsync(Descriptor(1), MaxOrders, _ => Task.FromResult(Cancelled()), CancellationToken.None);

@@ -1857,17 +1857,17 @@ public static class MarketEndpoints
 
     // Resolves the AI-automation view for a participant. Provider label comes from the backend catalog and the
     // live status from in-memory runtime state; the stored key is never read here, only its presence.
-    private static (string? ProviderId, string? ProviderLabel, string? Model, bool HasKey, string? Status, string? Message, long? CallId)
+    private static (string? ProviderId, string? ProviderLabel, string? Model, bool HasKey, string? Status, string? Message, long? CallId, int? MaxDecisions)
         ResolveAiFields(AiTraderConfiguration? configuration, AiProviderCatalog catalog, AiTraderRuntimeState runtimeState, int participantId)
     {
         if (configuration is null)
         {
-            return (null, null, null, false, null, null, null);
+            return (null, null, null, false, null, null, null, null);
         }
 
         var label = catalog.Find(configuration.ProviderId)?.Label ?? configuration.ProviderId;
         var runtime = runtimeState.Get(participantId);
-        return (configuration.ProviderId, label, configuration.Model, true, runtime.Status.ToString(), runtime.Message, runtime.CurrentCallId);
+        return (configuration.ProviderId, label, configuration.Model, true, runtime.Status.ToString(), runtime.Message, runtime.CurrentCallId, configuration.MaxDecisionsPerDay);
     }
 
     private static async Task<List<ParticipantResponse>> BuildParticipantResponsesAsync(
@@ -1930,7 +1930,8 @@ public static class MarketEndpoints
                     ai.HasKey,
                     ai.Status,
                     ai.Message,
-                    ai.CallId);
+                    ai.CallId,
+                    ai.MaxDecisions);
             })
             .ToList();
     }
@@ -2386,7 +2387,8 @@ public static class MarketEndpoints
             ai.HasKey,
             ai.Status,
             ai.Message,
-            ai.CallId);
+            ai.CallId,
+            ai.MaxDecisions);
     }
 
     private static async Task<PlayerResponse?> BuildPlayerResponseAsync(AppDbContext dbContext, MarginService marginService)
@@ -3053,7 +3055,8 @@ public sealed record ParticipantResponse(
     bool HasAiApiKey,
     string? AiStatus,
     string? AiStatusMessage,
-    long? AiCurrentCallId);
+    long? AiCurrentCallId,
+    int? AiMaxDecisionsPerDay);
 
 public sealed record ParticipantDetailResponse(
     int Id,
@@ -3085,7 +3088,8 @@ public sealed record ParticipantDetailResponse(
     bool HasAiApiKey,
     string? AiStatus,
     string? AiStatusMessage,
-    long? AiCurrentCallId);
+    long? AiCurrentCallId,
+    int? AiMaxDecisionsPerDay);
 
 public sealed record CollectiveFundMemberResponse(
     int ParticipantId,

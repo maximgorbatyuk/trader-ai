@@ -136,6 +136,12 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
     public string SerializeApplicationResult<T>(T applicationResult)
         => JsonSerializer.Serialize(applicationResult, StoredJsonOptions);
 
+    // Rehydrates a stored decision to reapply a deferred plan. Uses the same options the decision was stored with.
+    public AiTradeDecision? DeserializeDecision(string? decisionJson)
+        => string.IsNullOrWhiteSpace(decisionJson)
+            ? null
+            : JsonSerializer.Deserialize<AiTradeDecision>(decisionJson, StoredJsonOptions);
+
     public async Task RecordApplicationAsync(
         long callId,
         string applicationResultJson,
@@ -154,9 +160,58 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
             stored.AppliedOrders = appliedOrders;
             stored.RejectedOrders = rejectedOrders;
             stored.AppliedAt = DateTime.UtcNow;
+
+            // A deferred plan is applied a day after it completed; recording its application settles it to Completed.
+            // For the ordinary same-cycle path the status is already Completed, so this is a no-op there.
+            stored.Status = AiTraderCallStatus.Completed;
             await dbContext.SaveChangesAsync();
         });
     }
+
+    // Defers an end-of-day planning call: its stored decision is applied at the opening cycle of the target day.
+    public async Task MarkPendingNextDayAsync(long callId, int targetDayNumber)
+    {
+        await WithLockAsync(async () =>
+        {
+            var stored = await dbContext.AiTraderCalls.FirstOrDefaultAsync(candidate => candidate.Id == callId);
+            if (stored is null)
+            {
+                return;
+            }
+
+            stored.Status = AiTraderCallStatus.PendingNextDay;
+            stored.NextDayTargetDayNumber = targetDayNumber;
+            await dbContext.SaveChangesAsync();
+        });
+    }
+
+    // A deferred plan whose target day passed without opening is abandoned so it never applies late.
+    public async Task AbandonPendingNextDayAsync(long callId, string reason)
+    {
+        await WithLockAsync(async () =>
+        {
+            var stored = await dbContext.AiTraderCalls.FirstOrDefaultAsync(candidate => candidate.Id == callId);
+            if (stored is null)
+            {
+                return;
+            }
+
+            stored.Status = AiTraderCallStatus.Abandoned;
+            stored.Error = Truncate(reason, 2000);
+            await dbContext.SaveChangesAsync();
+        });
+    }
+
+    // Deferred plans that are due (target day opened) or stale (target day already passed) for one participant,
+    // newest first, so the coordinator can apply the due one and abandon the rest.
+    public Task<List<AiTraderCall>> GetDuePendingNextDayCallsAsync(int participantId, int currentDayNumber)
+        => dbContext.AiTraderCalls
+            .Where(call => call.ParticipantId == participantId
+                && call.Status == AiTraderCallStatus.PendingNextDay
+                && call.NextDayTargetDayNumber != null
+                && call.NextDayTargetDayNumber <= currentDayNumber)
+            .OrderByDescending(call => call.Id)
+            .ToListAsync();
 
     // A row left Pending across a restart is orphaned: no in-flight call can still be tracking it.
     public async Task<int> AbandonStalePendingCallsAsync()

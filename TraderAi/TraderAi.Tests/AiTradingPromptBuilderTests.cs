@@ -62,6 +62,19 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
     }
 
     [Fact]
+    public void FinalDecisionOfDayAddsEndOfDayPlanningInstruction()
+    {
+        var builder = Builder(maxOrders: 10);
+        var planning = builder.Build(Snapshot(isFundMember: false, isFinalDecisionOfDay: true));
+        var ordinary = builder.Build(Snapshot(isFundMember: false));
+
+        Assert.Contains("final decision", planning.SystemMessage);
+        Assert.Contains("next trading day", planning.SystemMessage);
+        Assert.DoesNotContain("final decision", ordinary.SystemMessage);
+        Assert.NotEqual(ordinary.SystemMessageHash, planning.SystemMessageHash);
+    }
+
+    [Fact]
     public void SystemMessageHashIsStableSha256()
     {
         var builder = Builder(maxOrders: 10);
@@ -94,10 +107,10 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
             Options.Create(new AiTradingOptions { MaxOrdersPerDecision = maxOrders }));
     }
 
-    private static AiMarketSnapshot Snapshot(bool isFundMember) => new(
+    private static AiMarketSnapshot Snapshot(bool isFundMember, bool isFinalDecisionOfDay = false) => new(
         ParticipantId: 1,
         IsFundMember: isFundMember,
-        Market: new AiMarketState(5, 1, "Trading", null),
+        Market: new AiMarketState(5, 1, 5, 205, "Trading", isFinalDecisionOfDay, null),
         Settings: new AiMarketSettings(0.005m, 1, true, 0.5m, 0.25m, 10),
         Participant: new AiParticipantSnapshot(
             1, "Balanced", "Medium", 1000m, 1000m, 0m, 0m, 1000m, 1000m, 0m, 0m, 1000m, [], []),

@@ -217,4 +217,7 @@ public enum AiTraderCallStatus
     InvalidJson,
     Cancelled,
     Abandoned,
+
+    // An end-of-day planning call whose decision is stored and applied at the next trading day's opening cycle.
+    PendingNextDay,
 }

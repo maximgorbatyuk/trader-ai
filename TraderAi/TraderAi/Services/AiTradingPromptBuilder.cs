@@ -20,13 +20,17 @@ public sealed class AiTradingPromptBuilder(
     public AiPrompt Build(AiMarketSnapshot snapshot)
     {
         var documents = documentation.GetDocuments(snapshot.IsFundMember);
-        var systemMessage = BuildSystemMessage(documents, aiOptions.Value.MaxOrdersPerDecision);
+        var systemMessage = BuildSystemMessage(
+            documents, aiOptions.Value.MaxOrdersPerDecision, snapshot.Market.IsFinalDecisionOfDay);
         var userMessage = JsonSerializer.Serialize(snapshot, UserMessageOptions);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(systemMessage)));
         return new AiPrompt(systemMessage, userMessage, hash);
     }
 
-    private static string BuildSystemMessage(IReadOnlyList<AiPromptDocument> documents, int maxOrders)
+    private static string BuildSystemMessage(
+        IReadOnlyList<AiPromptDocument> documents,
+        int maxOrders,
+        bool isFinalDecisionOfDay)
     {
         var builder = new StringBuilder();
         builder.AppendLine(
@@ -40,6 +44,17 @@ public sealed class AiTradingPromptBuilder(
         builder.AppendLine(
             "- Respond with exactly one JSON object and nothing else: no Markdown fences and no surrounding prose.");
         builder.AppendLine($"- Include at most {maxOrders} orders. An empty orders array is a valid decision to wait.");
+
+        if (isFinalDecisionOfDay)
+        {
+            builder.AppendLine();
+            builder.AppendLine(
+                "This is your final decision of the current trading day; the market is about to close. Orders you "
+                + "return now will not execute today. They will be created at the opening cycle of the next trading "
+                + "day and revalidated against the market state at that time. Review the end-of-day snapshot and "
+                + "return the orders you want working at the next day's open.");
+        }
+
         builder.AppendLine();
         builder.AppendLine("The response must match this JSON schema exactly:");
         builder.AppendLine(

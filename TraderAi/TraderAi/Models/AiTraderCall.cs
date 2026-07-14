@@ -60,4 +60,8 @@ public sealed class AiTraderCall
     public DateTime? AppliedAt { get; set; }
 
     public long? DurationMilliseconds { get; set; }
+
+    // Set on an end-of-day planning call whose orders are deferred: the trading-day number at whose opening cycle
+    // the stored decision should be applied. Null for ordinary calls.
+    public int? NextDayTargetDayNumber { get; set; }
 }

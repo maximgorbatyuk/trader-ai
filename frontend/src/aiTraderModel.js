@@ -32,6 +32,13 @@ export function validateAutomation(state) {
     return { valid: false, error: 'Enter an API key.' }
   }
 
+  if (state.maxDecisions !== undefined && state.maxDecisions !== null) {
+    const maxDecisions = Number(state.maxDecisions)
+    if (!Number.isInteger(maxDecisions) || maxDecisions < 1) {
+      return { valid: false, error: 'Max decisions per day must be a whole number of at least 1.' }
+    }
+  }
+
   return { valid: true }
 }
 
@@ -43,6 +50,11 @@ export function automationPayload(state) {
   const payload = { type: 'AIAgent', providerId: state.providerId, model: state.model }
   if (isNonBlank(state.apiKey)) {
     payload.apiKey = state.apiKey
+  }
+  const maxDecisions = Number(state.maxDecisions)
+  if (state.maxDecisions !== undefined && state.maxDecisions !== null && state.maxDecisions !== ''
+    && Number.isInteger(maxDecisions) && maxDecisions >= 1) {
+    payload.maxDecisionsPerDay = maxDecisions
   }
   return payload
 }

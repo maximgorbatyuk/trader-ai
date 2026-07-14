@@ -1,16 +1,19 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
 
 namespace TraderAi.Services;
 
 // Conversion contract shared by the configuration service and the API layer. Model is chosen per trader; the
-// key is write-only and may be blank when an existing provider's key should be retained.
+// key is write-only and may be blank when an existing provider's key should be retained. MaxDecisionsPerDay is
+// null when the caller does not change the cadence.
 public sealed record UpdateParticipantAutomationRequest(
     ParticipantType Type,
     string? ProviderId,
     string? Model,
-    string? ApiKey);
+    string? ApiKey,
+    int? MaxDecisionsPerDay = null);
 
 public sealed record UpdateAutomationResult(bool Success, string? Error, bool ParticipantNotFound)
 {
@@ -28,8 +31,11 @@ public sealed class AiTraderConfigurationService(
     AppDbContext dbContext,
     AiProviderCatalog catalog,
     AiTraderRuntimeState runtimeState,
-    MarketCycleLock cycleLock)
+    MarketCycleLock cycleLock,
+    IOptions<TradingClockOptions> clockOptions)
 {
+    private const int DefaultMaxDecisionsPerDay = 3;
+
     public async Task<UpdateAutomationResult> UpdateAutomationAsync(
         int participantId,
         UpdateParticipantAutomationRequest request)
@@ -107,6 +113,13 @@ public sealed class AiTraderConfigurationService(
             return UpdateAutomationResult.Fail("An API key is required.");
         }
 
+        var maxDecisionsPerDay = request.MaxDecisionsPerDay ?? existing?.MaxDecisionsPerDay ?? DefaultMaxDecisionsPerDay;
+        var maxAllowed = clockOptions.Value.TradingCyclesPerDay;
+        if (maxDecisionsPerDay < 1 || maxDecisionsPerDay > maxAllowed)
+        {
+            return UpdateAutomationResult.Fail($"Max decisions per day must be between 1 and {maxAllowed}.");
+        }
+
         var now = DateTime.UtcNow;
         if (existing is null)
         {
@@ -116,18 +129,29 @@ public sealed class AiTraderConfigurationService(
                 ProviderId = providerId,
                 Model = model,
                 ApiKey = apiKey,
+                MaxDecisionsPerDay = maxDecisionsPerDay,
                 Revision = 1,
                 CreatedAt = now,
                 UpdatedAt = now,
             });
         }
-        else if (existing.ProviderId != providerId || existing.Model != model || existing.ApiKey != apiKey)
+        else
         {
-            existing.ProviderId = providerId;
-            existing.Model = model;
-            existing.ApiKey = apiKey;
-            existing.Revision += 1;
-            existing.UpdatedAt = now;
+            if (existing.ProviderId != providerId || existing.Model != model || existing.ApiKey != apiKey)
+            {
+                existing.ProviderId = providerId;
+                existing.Model = model;
+                existing.ApiKey = apiKey;
+                existing.Revision += 1;
+                existing.UpdatedAt = now;
+            }
+
+            if (existing.MaxDecisionsPerDay != maxDecisionsPerDay)
+            {
+                // Cadence does not invalidate an in-flight decision, so it is persisted without a revision bump.
+                existing.MaxDecisionsPerDay = maxDecisionsPerDay;
+                existing.UpdatedAt = now;
+            }
         }
 
         participant.Type = ParticipantType.AIAgent;

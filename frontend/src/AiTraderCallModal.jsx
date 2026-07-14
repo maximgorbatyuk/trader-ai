@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { formatStoredJson } from './aiTraderModel'
+import { aiCallStatusLabel } from './format'
 
 function formatTimestamp(value) {
   if (!value) return '—'
@@ -126,7 +127,7 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
               <dl className="ai-call-meta">
                 <div>
                   <dt>Status</dt>
-                  <dd>{call.status}</dd>
+                  <dd>{aiCallStatusLabel(call.status)}</dd>
                 </div>
                 <div>
                   <dt>Cycle</dt>

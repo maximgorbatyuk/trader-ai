@@ -17,7 +17,14 @@ public sealed record AiMarketSnapshot(
     IReadOnlyList<AiCapitalizationHistoryPoint> CapitalizationHistory,
     IReadOnlyList<AiSentimentHistoryPoint> SentimentHistory);
 
-public sealed record AiMarketState(int CycleNumber, int TradingDayNumber, string Session, AiActiveCrisis? ActiveCrisis);
+public sealed record AiMarketState(
+    int CycleNumber,
+    int TradingDayNumber,
+    int TradingCycleNumber,
+    int RemainingTradingCycles,
+    string Session,
+    bool IsFinalDecisionOfDay,
+    AiActiveCrisis? ActiveCrisis);
 
 public sealed record AiActiveCrisis(string Title, string Scope, int CyclesRemaining);
 
@@ -102,7 +109,7 @@ public sealed class AiMarketSnapshotBuilder(
     IOptions<MarginOptions> marginOptions,
     IOptions<VolatilityHaltOptions> volatilityHaltOptions)
 {
-    public async Task<AiMarketSnapshot?> BuildAsync(int participantId)
+    public async Task<AiMarketSnapshot?> BuildAsync(int participantId, bool isFinalDecisionOfDay = false)
     {
         var market = await dbContext.Markets.FirstOrDefaultAsync();
         if (market?.CurrentCycleId is not { } currentCycleId)
@@ -133,7 +140,7 @@ public sealed class AiMarketSnapshotBuilder(
             .Select(cycle => cycle.Id)
             .ToListAsync();
 
-        var state = await BuildMarketStateAsync(currentCycleNumber, clock);
+        var state = await BuildMarketStateAsync(currentCycleNumber, clock, isFinalDecisionOfDay);
         var settings = BuildSettings();
         var companies = await BuildCompaniesAsync(prices, cycleNumbersById);
         var industries = await BuildIndustriesAsync();
@@ -155,7 +162,10 @@ public sealed class AiMarketSnapshotBuilder(
             sentimentHistory);
     }
 
-    private async Task<AiMarketState> BuildMarketStateAsync(int currentCycleNumber, TradingClockState? clock)
+    private async Task<AiMarketState> BuildMarketStateAsync(
+        int currentCycleNumber,
+        TradingClockState? clock,
+        bool isFinalDecisionOfDay)
     {
         var crisis = await dbContext.Crises
             .Where(candidate => currentCycleNumber > candidate.TriggeredInCycleNumber
@@ -173,7 +183,10 @@ public sealed class AiMarketSnapshotBuilder(
         return new AiMarketState(
             currentCycleNumber,
             clock?.TradingDayNumber ?? 0,
+            clock?.TradingCycleNumber ?? 0,
+            clock?.RemainingTradingCycles ?? 0,
             clock?.TradingSessionState.ToString() ?? "Unknown",
+            isFinalDecisionOfDay,
             activeCrisis);
     }
 

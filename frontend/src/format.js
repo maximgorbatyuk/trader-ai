@@ -78,6 +78,22 @@ export const RATING_TAG_CLASS = {
   Extra: 'tag-rating-extra',
 }
 
+// Friendly labels for AI-call statuses; the label text carries the meaning without relying on color.
+export const AI_CALL_STATUS_LABEL = {
+  Pending: 'Pending',
+  Completed: 'Completed',
+  HttpError: 'HTTP error',
+  TimedOut: 'Timed out',
+  InvalidJson: 'Invalid JSON',
+  Cancelled: 'Cancelled',
+  Abandoned: 'Abandoned',
+  PendingNextDay: 'Pending next day',
+}
+
+export function aiCallStatusLabel(status) {
+  return AI_CALL_STATUS_LABEL[status] ?? status
+}
+
 const RATING_ORDER = { ExtraRaisedExpectations: -2, RaisedExpectations: -1, Low: 0, High: 1, Extra: 2 }
 
 export function ratingTrend(current, previous) {

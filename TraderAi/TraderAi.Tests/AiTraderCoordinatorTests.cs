@@ -284,11 +284,98 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         Assert.Equal(0, await Db().Orders.CountAsync());
     }
 
+    [Fact]
+    public async Task ScanStartsNoWorkOutsideScheduledDecisionCycles()
+    {
+        // Trading cycle 50 is not in the default cadence {2, 101, 200}.
+        await SeedMarketAsync(tradingCycleNumber: 50);
+        var gate = new TaskCompletionSource<AiProviderResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fakeClient.OnSend = _ => gate.Task;
+        var coordinator = Coordinator();
+
+        await coordinator.ScanAsync(CancellationToken.None);
+
+        Assert.Empty(coordinator.InFlightParticipants);
+        Assert.Equal(0, await Db().AiTraderCalls.CountAsync());
+    }
+
+    [Fact]
+    public async Task FinalDecisionOfDayDefersOrdersToTheNextDay()
+    {
+        var seed = await SeedMarketAsync(tradingCycleNumber: 200);
+        fakeClient.OnSend = _ => Task.FromResult(Success(ValidDecision.Replace("COMPANY", seed.CompanyId.ToString())));
+
+        var status = await Coordinator().ProcessParticipantAsync(
+            seed.ParticipantId, seed.CycleNumber, CancellationToken.None, isFinalDecisionOfDay: true);
+
+        Assert.Equal(AiTraderCallStatus.Completed, status);
+        var call = await Db().AiTraderCalls.SingleAsync();
+        Assert.Equal(AiTraderCallStatus.PendingNextDay, call.Status);
+        Assert.Equal(2, call.NextDayTargetDayNumber);
+        Assert.Equal(0, await Db().Orders.CountAsync());
+    }
+
+    [Fact]
+    public async Task DayOpenAppliesADuePendingPlan()
+    {
+        var seed = await SeedMarketAsync(tradingCycleNumber: 1);
+        await SeedPendingPlanAsync(seed.ParticipantId, targetDayNumber: 1, seed.CompanyId);
+
+        await Coordinator().ApplyPendingNextDayPlanAsync(
+            seed.ParticipantId, seed.CycleNumber, currentDayNumber: 1, CancellationToken.None);
+
+        var call = await Db().AiTraderCalls.SingleAsync();
+        Assert.Equal(AiTraderCallStatus.Completed, call.Status);
+        Assert.Equal(1, call.AppliedOrders);
+        Assert.NotNull(call.AppliedAt);
+        Assert.Equal(1, await Db().Orders.CountAsync());
+    }
+
+    [Fact]
+    public async Task PendingPlanWhoseTargetDayPassedIsAbandonedWithoutOrders()
+    {
+        var seed = await SeedMarketAsync(tradingCycleNumber: 1);
+        await SeedPendingPlanAsync(seed.ParticipantId, targetDayNumber: 1, seed.CompanyId);
+
+        // The market has reached day 2's open; the plan targeted day 1, which never opened for it.
+        await Coordinator().ApplyPendingNextDayPlanAsync(
+            seed.ParticipantId, seed.CycleNumber, currentDayNumber: 2, CancellationToken.None);
+
+        var call = await Db().AiTraderCalls.SingleAsync();
+        Assert.Equal(AiTraderCallStatus.Abandoned, call.Status);
+        Assert.NotNull(call.Error);
+        Assert.Equal(0, await Db().Orders.CountAsync());
+    }
+
+    private async Task SeedPendingPlanAsync(int participantId, int targetDayNumber, int companyId)
+    {
+        using var scope = provider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        db.AiTraderCalls.Add(new AiTraderCall
+        {
+            ParticipantId = participantId,
+            ParticipantName = "AI 0",
+            ProviderId = "glm",
+            ProviderLabel = "GLM",
+            Model = "glm-4.6",
+            ConfigurationRevision = 1,
+            PromptHash = "h",
+            RequestJson = "{}",
+            DecisionJson = ValidDecision.Replace("COMPANY", companyId.ToString()),
+            Status = AiTraderCallStatus.PendingNextDay,
+            NextDayTargetDayNumber = targetDayNumber,
+            RequestedAt = Now.UtcDateTime,
+            RespondedAt = Now.UtcDateTime,
+        });
+        await db.SaveChangesAsync();
+    }
+
     private AiTraderCoordinator Coordinator() => new(
         provider.GetRequiredService<IServiceScopeFactory>(),
         provider.GetRequiredService<AiProviderCatalog>(),
         provider.GetRequiredService<AiTraderRuntimeState>(),
         provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiTradingOptions>>(),
+        provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<TradingClockOptions>>(),
         provider.GetRequiredService<TimeProvider>(),
         provider.GetRequiredService<ILogger<AiTraderCoordinator>>());
 
@@ -299,7 +386,9 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     private AiTradingOptions Settings()
         => provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiTradingOptions>>().Value;
 
-    private async Task<Seed> SeedMarketAsync(int extraTraders = 0)
+    // The seeded cycle defaults to trading cycle 2, a scheduled decision cycle for the default cadence, so a scan
+    // starts a fresh decision. Tests that exercise the day open or the end-of-day planning call pass 1 or 200.
+    private async Task<Seed> SeedMarketAsync(int extraTraders = 0, int tradingCycleNumber = 2)
     {
         using var scope = provider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -307,7 +396,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         var day = new TradingDay { DayNumber = 1, State = TradingSessionState.Trading, OpenedInCycleId = 0 };
         db.TradingDays.Add(day);
         await db.SaveChangesAsync();
-        var cycle = new MarketCycle { CycleNumber = 1, TradingDayId = day.Id, TradingCycleNumber = 1, Status = CycleStatus.Running };
+        var cycle = new MarketCycle { CycleNumber = tradingCycleNumber, TradingDayId = day.Id, TradingCycleNumber = tradingCycleNumber, Status = CycleStatus.Running };
         var market = new Market { Name = "Market", Status = MarketStatus.Running };
         var industry = new Industry { Name = "Tech" };
         db.AddRange(cycle, market, industry);

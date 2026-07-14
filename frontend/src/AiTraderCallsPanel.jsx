@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import './aiTrader.css'
 import { api } from './api'
+import { aiCallStatusLabel } from './format'
 import { Panel } from './Panel'
 import { Pager } from './TableControls'
 import { AiTraderCallModal } from './AiTraderCallModal'
@@ -81,7 +82,7 @@ export function AiTraderCallsPanel({ participantId, isAiTrader }) {
                     {call.providerLabel} · {call.model}
                   </td>
                   <td>
-                    <span className="tag">{call.status}</span>
+                    <span className="tag">{aiCallStatusLabel(call.status)}</span>
                   </td>
                   <td className="num ta-r">{call.durationMilliseconds != null ? `${call.durationMilliseconds} ms` : '—'}</td>
                   <td className="cell-ellipsis">{call.summary ?? '—'}</td>

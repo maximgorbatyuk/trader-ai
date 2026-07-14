@@ -19,6 +19,7 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
   const [providerId, setProviderId] = useState(detail.aiProviderId ?? '')
   const [model, setModel] = useState(detail.aiModel ?? '')
   const [apiKey, setApiKey] = useState('')
+  const [maxDecisions, setMaxDecisions] = useState(String(detail.aiMaxDecisionsPerDay ?? 3))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   const [test, setTest] = useState({ status: 'idle', message: '', responseBody: null, statusCode: null })
@@ -51,7 +52,7 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
   )
   const models = selectedProvider?.models ?? []
 
-  const formState = { type, providerId, model, apiKey, originalProviderId }
+  const formState = { type, providerId, model, apiKey, maxDecisions, originalProviderId }
   const validation = validateAutomation(formState)
   const runtimeStatus = detail.type === 'AIAgent' ? detail.aiStatus : null
 
@@ -163,6 +164,21 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
             {detail.hasAiApiKey ? (
               <p className="note">API key configured. Enter a new key only to replace it.</p>
             ) : null}
+
+            <label className="field">
+              <span>Max decisions per day</span>
+              <input
+                className="select num"
+                type="number"
+                min="1"
+                step="1"
+                value={maxDecisions}
+                onChange={(event) => setMaxDecisions(event.target.value)}
+              />
+              <span className="note">
+                Spread across the trading day; the final one plans orders for the next day's open.
+              </span>
+            </label>
 
             <button
               className="btn"

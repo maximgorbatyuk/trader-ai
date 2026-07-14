@@ -30,7 +30,9 @@ public sealed class AiTraderConfigurationTests : IDisposable
                 ["minimax"] = new() { DisplayName = "MiniMax", Endpoint = "https://minimax.test/v1", Models = { "MiniMax-M2" } },
             },
         });
-        service = new AiTraderConfigurationService(context, new AiProviderCatalog(options), runtimeState, new MarketCycleLock());
+        service = new AiTraderConfigurationService(
+            context, new AiProviderCatalog(options), runtimeState, new MarketCycleLock(),
+            Options.Create(new TradingClockOptions()));
     }
 
     [Fact]
@@ -194,6 +196,52 @@ public sealed class AiTraderConfigurationTests : IDisposable
         Assert.Equal(OrderStatus.Cancelled, (await context.Orders.SingleAsync()).Status);
         Assert.Equal(0m, (await context.Participants.SingleAsync()).ReservedBalance);
         Assert.True(token.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task ConversionDefaultsMaxDecisionsPerDayToThree()
+    {
+        var participant = await SeedParticipantAsync(ParticipantType.Individual);
+
+        await service.UpdateAutomationAsync(
+            participant.Id,
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+
+        Assert.Equal(3, (await context.AiTraderConfigurations.SingleAsync()).MaxDecisionsPerDay);
+    }
+
+    [Fact]
+    public async Task EditingOnlyMaxDecisionsPerDayPersistsWithoutBumpingRevision()
+    {
+        var participant = await SeedParticipantAsync(ParticipantType.Individual);
+        await service.UpdateAutomationAsync(
+            participant.Id,
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+
+        var result = await service.UpdateAutomationAsync(
+            participant.Id,
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", null, MaxDecisionsPerDay: 5));
+
+        Assert.True(result.Success);
+        var config = await context.AiTraderConfigurations.SingleAsync();
+        Assert.Equal(5, config.MaxDecisionsPerDay);
+        Assert.Equal(1, config.Revision);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(211)]
+    public async Task OutOfRangeMaxDecisionsPerDayIsRejected(int value)
+    {
+        var participant = await SeedParticipantAsync(ParticipantType.Individual);
+
+        var result = await service.UpdateAutomationAsync(
+            participant.Id,
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key", MaxDecisionsPerDay: value));
+
+        Assert.False(result.Success);
+        Assert.False(await context.AiTraderConfigurations.AnyAsync());
     }
 
     [Theory]

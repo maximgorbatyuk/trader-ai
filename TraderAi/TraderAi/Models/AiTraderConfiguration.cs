@@ -17,6 +17,10 @@ public sealed class AiTraderConfiguration
     // recognised as stale and discarded instead of applied.
     public int Revision { get; set; }
 
+    // Maximum provider decisions this agent makes per trading day. The coordinator spreads these across the day's
+    // cycles; the final one is an end-of-day planning call.
+    public int MaxDecisionsPerDay { get; set; } = 3;
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

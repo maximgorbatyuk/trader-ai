@@ -18,10 +18,12 @@ public sealed class AiTraderCoordinator(
     AiProviderCatalog catalog,
     AiTraderRuntimeState runtimeState,
     IOptions<AiTradingOptions> options,
+    IOptions<TradingClockOptions> clockOptions,
     TimeProvider timeProvider,
     ILogger<AiTraderCoordinator> logger) : BackgroundService
 {
     private readonly AiTradingOptions settings = options.Value;
+    private readonly int tradingCyclesPerDay = Math.Max(1, clockOptions.Value.TradingCyclesPerDay);
     private readonly SemaphoreSlim concurrency = new(
         Math.Max(1, options.Value.MaxConcurrentRequests),
         Math.Max(1, options.Value.MaxConcurrentRequests));
@@ -61,8 +63,9 @@ public sealed class AiTraderCoordinator(
         await callService.AbandonStalePendingCallsAsync();
     }
 
-    // One scan pass: start a call for every eligible trader that has no call in flight, whose retry window has
-    // elapsed, and for whom a newer cycle exists than the one last processed.
+    // One scan pass. A trader with a call in flight or an unelapsed retry window is skipped, and each cycle acts at
+    // most once. At the day's opening cycle a due deferred plan is applied; at a scheduled decision cycle a fresh
+    // decision starts, flagged as the day's final (planning) call when it is the last scheduled cycle.
     public async Task ScanAsync(CancellationToken stoppingToken)
     {
         using var scope = scopeFactory.CreateScope();
@@ -87,15 +90,21 @@ public sealed class AiTraderCoordinator(
             return;
         }
 
+        var currentDayNumber = await dbContext.TradingDays
+            .Where(day => day.Id == currentCycle.TradingDayId)
+            .Select(day => day.DayNumber)
+            .FirstOrDefaultAsync(stoppingToken);
+
         var eligible = await (
             from configuration in dbContext.AiTraderConfigurations
             join participant in dbContext.Participants on configuration.ParticipantId equals participant.Id
             where participant.IsActive && !participant.IsBankrupt && participant.Type == ParticipantType.AIAgent
-            select configuration.ParticipantId).ToListAsync(stoppingToken);
+            select new { configuration.ParticipantId, configuration.MaxDecisionsPerDay }).ToListAsync(stoppingToken);
 
         var now = timeProvider.GetUtcNow();
-        foreach (var participantId in eligible)
+        foreach (var agent in eligible)
         {
+            var participantId = agent.ParticipantId;
             if (inFlight.ContainsKey(participantId))
             {
                 continue;
@@ -114,18 +123,54 @@ public sealed class AiTraderCoordinator(
                 }
             }
 
-            StartProcessing(participantId, currentCycle.CycleNumber, stoppingToken);
+            // Cycle 1 is reserved for applying the prior day's deferred plan; it is never a fresh-decision cycle.
+            if (currentCycle.TradingCycleNumber == 1)
+            {
+                var hasDuePlan = await dbContext.AiTraderCalls.AnyAsync(
+                    call => call.ParticipantId == participantId
+                        && call.Status == AiTraderCallStatus.PendingNextDay
+                        && call.NextDayTargetDayNumber != null
+                        && call.NextDayTargetDayNumber <= currentDayNumber,
+                    stoppingToken);
+                if (hasDuePlan)
+                {
+                    StartApplyingPendingPlan(participantId, currentCycle.CycleNumber, currentDayNumber, stoppingToken);
+                }
+
+                continue;
+            }
+
+            var decisionCycles = AiDecisionCadence.DecisionCycles(agent.MaxDecisionsPerDay, tradingCyclesPerDay);
+            if (decisionCycles.Count == 0 || !decisionCycles.Contains(currentCycle.TradingCycleNumber))
+            {
+                continue;
+            }
+
+            var isFinalDecisionOfDay = currentCycle.TradingCycleNumber == decisionCycles[^1];
+            StartProcessing(participantId, currentCycle.CycleNumber, isFinalDecisionOfDay, stoppingToken);
         }
     }
 
-    private void StartProcessing(int participantId, int cycleNumber, CancellationToken stoppingToken)
+    private void StartProcessing(int participantId, int cycleNumber, bool isFinalDecisionOfDay, CancellationToken stoppingToken)
+        => RunExclusive(
+            participantId,
+            token => ProcessParticipantAsync(participantId, cycleNumber, token, isFinalDecisionOfDay),
+            stoppingToken);
+
+    private void StartApplyingPendingPlan(int participantId, int cycleNumber, int currentDayNumber, CancellationToken stoppingToken)
+        => RunExclusive(
+            participantId,
+            token => ApplyPendingNextDayPlanAsync(participantId, cycleNumber, currentDayNumber, token),
+            stoppingToken);
+
+    private void RunExclusive(int participantId, Func<CancellationToken, Task> action, CancellationToken stoppingToken)
     {
         var task = Task.Run(async () =>
         {
             await concurrency.WaitAsync(stoppingToken);
             try
             {
-                await ProcessParticipantAsync(participantId, cycleNumber, stoppingToken);
+                await action(stoppingToken);
             }
             catch (Exception exception)
             {
@@ -144,7 +189,8 @@ public sealed class AiTraderCoordinator(
     public async Task<AiTraderCallStatus> ProcessParticipantAsync(
         int participantId,
         int cycleNumber,
-        CancellationToken stoppingToken)
+        CancellationToken stoppingToken,
+        bool isFinalDecisionOfDay = false)
     {
         using var scope = scopeFactory.CreateScope();
         var services = scope.ServiceProvider;
@@ -167,7 +213,8 @@ public sealed class AiTraderCoordinator(
             return AiTraderCallStatus.Abandoned;
         }
 
-        var snapshot = await services.GetRequiredService<AiMarketSnapshotBuilder>().BuildAsync(participantId);
+        var snapshot = await services.GetRequiredService<AiMarketSnapshotBuilder>()
+            .BuildAsync(participantId, isFinalDecisionOfDay);
         if (snapshot is null)
         {
             return AiTraderCallStatus.Abandoned;
@@ -213,6 +260,20 @@ public sealed class AiTraderCoordinator(
 
         if (execution.Status == AiTraderCallStatus.Completed && execution.Decision is not null)
         {
+            // The final call of the day is a planning call: its orders are stored and applied at the next day's
+            // opening cycle rather than placed now.
+            if (isFinalDecisionOfDay)
+            {
+                var targetDayNumber = snapshot.Market.TradingDayNumber + 1;
+                await callService.MarkPendingNextDayAsync(execution.CallId, targetDayNumber);
+                schedules[participantId] = new ParticipantSchedule { LastCycleNumber = cycleNumber };
+                runtimeState.Set(participantId, new AiTraderRuntimeSnapshot(
+                    AiTraderRuntimeStatus.Waiting,
+                    $"Planned {execution.Decision.Orders.Length} order(s) for the next trading day open.",
+                    execution.CallId, snapshot.Market.CycleNumber, null, timeProvider.GetUtcNow().UtcDateTime, null));
+                return execution.Status;
+            }
+
             runtimeState.Set(participantId, new AiTraderRuntimeSnapshot(
                 AiTraderRuntimeStatus.Applying, "Applying orders", execution.CallId, snapshot.Market.CycleNumber,
                 timeProvider.GetUtcNow().UtcDateTime, null, null));
@@ -241,6 +302,62 @@ public sealed class AiTraderCoordinator(
 
         HandleFailure(participantId, cycleNumber, execution, response);
         return execution.Status;
+    }
+
+    // Applies (or clears) an agent's deferred plans at the day's opening cycle. A plan whose target day has arrived
+    // is reapplied through the ordinary order path so it is revalidated against fresh state; a plan whose target day
+    // already passed is abandoned so it never applies late.
+    public async Task ApplyPendingNextDayPlanAsync(
+        int participantId,
+        int cycleNumber,
+        int currentDayNumber,
+        CancellationToken stoppingToken)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var services = scope.ServiceProvider;
+        var callService = services.GetRequiredService<AiTraderCallService>();
+
+        var configuration = await services.GetRequiredService<AppDbContext>().AiTraderConfigurations
+            .FirstOrDefaultAsync(candidate => candidate.ParticipantId == participantId, stoppingToken);
+
+        var duePlans = await callService.GetDuePendingNextDayCallsAsync(participantId, currentDayNumber);
+        foreach (var plan in duePlans)
+        {
+            if (plan.NextDayTargetDayNumber < currentDayNumber)
+            {
+                await callService.AbandonPendingNextDayAsync(
+                    plan.Id, "The target trading day passed before the market reopened.");
+                continue;
+            }
+
+            var decision = callService.DeserializeDecision(plan.DecisionJson);
+            if (configuration is null || decision is null)
+            {
+                await callService.AbandonPendingNextDayAsync(plan.Id, "The deferred plan could not be applied.");
+                continue;
+            }
+
+            runtimeState.Set(participantId, new AiTraderRuntimeSnapshot(
+                AiTraderRuntimeStatus.Applying, "Applying next-day plan", plan.Id, cycleNumber,
+                timeProvider.GetUtcNow().UtcDateTime, null, null));
+
+            AiDecisionApplicationResult application;
+            using (var applyScope = scopeFactory.CreateScope())
+            {
+                application = await applyScope.ServiceProvider.GetRequiredService<MarketService>()
+                    .ApplyAiDecisionAsync(participantId, plan.ConfigurationRevision, decision);
+            }
+
+            var applied = application.Orders.Count(order => order.Applied);
+            var rejected = application.Orders.Length - applied;
+            await callService.RecordApplicationAsync(
+                plan.Id, callService.SerializeApplicationResult(application), applied, rejected);
+            runtimeState.Set(participantId, new AiTraderRuntimeSnapshot(
+                AiTraderRuntimeStatus.Waiting, $"Applied {applied} next-day order(s), rejected {rejected}.",
+                plan.Id, cycleNumber, null, timeProvider.GetUtcNow().UtcDateTime, null));
+        }
+
+        schedules[participantId] = new ParticipantSchedule { LastCycleNumber = cycleNumber };
     }
 
     private void HandleFailure(int participantId, int cycleNumber, AiTraderCallExecution execution, AiProviderResponse? response)
