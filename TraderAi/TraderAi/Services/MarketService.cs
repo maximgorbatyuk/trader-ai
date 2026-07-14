@@ -569,31 +569,7 @@ public sealed class MarketService(
     }
 
     private void CancelOrder(Order order, Participant participant, int currentCycleId)
-    {
-        if (order.Type == OrderType.Buy)
-        {
-            var release = order.ReservedCashAmount;
-            if (release > 0m)
-            {
-                participant.ReservedBalance -= release;
-                order.ReservedCashAmount = 0m;
-                dbContext.MoneyTransactions.Add(new MoneyTransaction
-                {
-                    ParticipantId = participant.Id,
-                    Type = MoneyTransactionType.Release,
-                    Amount = release,
-                    RelatedOrderId = order.Id,
-                    Description = "Reserved cash released on buy order cancel",
-                    CreatedInCycleId = currentCycleId,
-                    CreatedAt = DateTime.UtcNow,
-                });
-            }
-        }
-        // A sell reserves no cash and holds no links; cancelling it simply stops the order counting
-        // toward the seller's outstanding sells, freeing that quantity to be listed again.
-        order.Status = OrderStatus.Cancelled;
-        order.UpdatedAt = DateTime.UtcNow;
-    }
+        => OrderCancellation.Cancel(dbContext, order, participant, currentCycleId);
 
     // A stale order is chased one RepriceStep toward the market and then clamped into the active band, so it can
     // never compound past the band into the runaway limits the old unbounded step produced. A sell already inside
