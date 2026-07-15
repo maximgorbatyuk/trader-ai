@@ -2414,7 +2414,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
-    public async Task MarketResetClearsAiTraderTables()
+    public async Task MarketResetClearsAiTraderTablesAndPreservesGameSettings()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
         Directory.CreateDirectory(databaseDirectory);
@@ -2423,6 +2423,16 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
             using var client = configuredFactory.CreateClient();
             await client.PostAsync("/market/seed", null);
+            using (var settingsResponse = await client.PutAsJsonAsync("/settings", new
+            {
+                values = new Dictionary<string, object>
+                {
+                    ["Margin:InitialMarginRate"] = 0.40m,
+                },
+            }))
+            {
+                settingsResponse.EnsureSuccessStatusCode();
+            }
 
             using (var scope = configuredFactory.Services.CreateScope())
             {
@@ -2462,7 +2472,16 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 Assert.Equal(0, await db.AiTraderConfigurations.CountAsync());
                 Assert.Equal(0, await db.AiTraderCalls.CountAsync());
+                Assert.Equal("0.40", await db.GameSettings
+                    .Where(setting => setting.Key == "Margin:InitialMarginRate")
+                    .Select(setting => setting.ValueJson)
+                    .SingleAsync());
             }
+
+            var settings = await client.GetFromJsonAsync<JsonElement[]>("/settings");
+            var margin = Assert.Single(settings!, setting =>
+                setting.GetProperty("key").GetString() == "Margin:InitialMarginRate");
+            Assert.Equal(0.40m, margin.GetProperty("value").GetDecimal());
         }
         finally
         {

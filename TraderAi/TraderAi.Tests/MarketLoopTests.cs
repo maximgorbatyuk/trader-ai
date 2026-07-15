@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
@@ -65,6 +67,32 @@ public sealed class MarketLoopTests : IDisposable
         var tick = await marketService.RunCycleTickAsync();
 
         Assert.True(tick.Ran);
+    }
+
+    [Fact]
+    public async Task HostedLoopObservesEnabledSettingChangesWithoutRestarting()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var services = new ServiceCollection();
+        services.AddSingleton(marketService);
+        await using var provider = services.BuildServiceProvider();
+        var options = new MutableOptions<MarketLoopOptions>(new MarketLoopOptions
+        {
+            Enabled = false,
+            IntervalSeconds = 1,
+        });
+        var hostedLoop = new MarketLoopService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            options,
+            NullLogger<MarketLoopService>.Instance);
+
+        await hostedLoop.StartAsync(CancellationToken.None);
+        await Task.Delay(100);
+        options.Value.Enabled = true;
+        await Task.Delay(1_200);
+        await hostedLoop.StopAsync(CancellationToken.None);
+
+        Assert.True((await context.MarketCycles.OrderByDescending(cycle => cycle.CycleNumber).FirstAsync()).CycleNumber > 1);
     }
 
     [Fact]
@@ -368,5 +396,11 @@ public sealed class MarketLoopTests : IDisposable
         }
 
         public override int Next(int minValue, int maxValue) => minValue;
+    }
+
+    private sealed class MutableOptions<T>(T value) : IOptions<T>
+        where T : class
+    {
+        public T Value { get; } = value;
     }
 }

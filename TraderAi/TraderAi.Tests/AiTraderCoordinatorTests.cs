@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
 using TraderAi.Services;
@@ -244,6 +245,50 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task ConcurrencyLimitChangesDoNotCreateAnOverlappingLimiter()
+    {
+        Settings().MaxConcurrentRequests = 1;
+        await SeedMarketAsync();
+        var gate = new TaskCompletionSource<AiProviderResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fakeClient.OnSend = _ => gate.Task;
+        var coordinator = Coordinator();
+
+        await coordinator.ScanAsync(CancellationToken.None);
+        await fakeClient.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, fakeClient.MaxConcurrent);
+
+        await AddAiTradersAsync(2);
+        Settings().MaxConcurrentRequests = 2;
+        await coordinator.ScanAsync(CancellationToken.None);
+        await Task.Delay(200);
+
+        Assert.Equal(1, fakeClient.MaxConcurrent);
+        Assert.Single(coordinator.InFlightParticipants);
+        var drainingTasks = coordinator.InFlightParticipants
+            .Select(coordinator.InFlightTaskFor)
+            .Where(task => task is not null)
+            .Select(task => task!)
+            .ToList();
+        gate.SetResult(HttpError(500));
+        await Task.WhenAll(drainingTasks);
+        Assert.Empty(coordinator.InFlightParticipants);
+
+        var updatedGate = new TaskCompletionSource<AiProviderResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fakeClient.OnSend = _ => updatedGate.Task;
+        await coordinator.ScanAsync(CancellationToken.None);
+        await Task.Delay(200);
+
+        Assert.Equal(2, fakeClient.MaxConcurrent);
+        var updatedTasks = coordinator.InFlightParticipants
+            .Select(coordinator.InFlightTaskFor)
+            .Where(task => task is not null)
+            .Select(task => task!)
+            .ToList();
+        updatedGate.SetResult(HttpError(500));
+        await Task.WhenAll(updatedTasks);
+    }
+
+    [Fact]
     public async Task ScanKeepsAtMostOneCallInFlightPerParticipant()
     {
         var seed = await SeedMarketAsync();
@@ -299,6 +344,33 @@ public sealed class AiTraderCoordinatorTests : IDisposable
 
         Assert.Empty(coordinator.InFlightParticipants);
         Assert.Equal(0, await Db().AiTraderCalls.CountAsync());
+    }
+
+    [Fact]
+    public async Task ScanUsesTheCurrentTradingDayLengthAfterCoordinatorCreation()
+    {
+        await SeedMarketAsync(tradingCycleNumber: 10);
+        var gate = new TaskCompletionSource<AiProviderResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fakeClient.OnSend = _ => gate.Task;
+        var clockOptions = new SwappableOptions<TradingClockOptions>(new TradingClockOptions
+        {
+            TradingCyclesPerDay = 210,
+            TradingCycleSeconds = 2,
+            BreakDurationSeconds = 60,
+        });
+        var coordinator = Coordinator(clockOptions);
+        clockOptions.Value = new TradingClockOptions
+        {
+            TradingCyclesPerDay = 20,
+            TradingCycleSeconds = 2,
+            BreakDurationSeconds = 60,
+        };
+
+        await coordinator.ScanAsync(CancellationToken.None);
+
+        var inFlight = Assert.Single(coordinator.InFlightParticipants);
+        gate.SetResult(HttpError(500));
+        await coordinator.InFlightTaskFor(inFlight)!;
     }
 
     [Fact]
@@ -372,12 +444,12 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         await db.SaveChangesAsync();
     }
 
-    private AiTraderCoordinator Coordinator() => new(
+    private AiTraderCoordinator Coordinator(IOptions<TradingClockOptions>? clockOptions = null) => new(
         provider.GetRequiredService<IServiceScopeFactory>(),
         provider.GetRequiredService<AiProviderCatalog>(),
         provider.GetRequiredService<AiTraderRuntimeState>(),
         provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiTradingOptions>>(),
-        provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<TradingClockOptions>>(),
+        clockOptions ?? provider.GetRequiredService<IOptions<TradingClockOptions>>(),
         provider.GetRequiredService<TimeProvider>(),
         provider.GetRequiredService<ILogger<AiTraderCoordinator>>());
 
@@ -387,6 +459,43 @@ public sealed class AiTraderCoordinatorTests : IDisposable
 
     private AiTradingOptions Settings()
         => provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiTradingOptions>>().Value;
+
+    private sealed class SwappableOptions<T>(T value) : IOptions<T>
+        where T : class
+    {
+        public T Value { get; set; } = value;
+    }
+
+    private async Task AddAiTradersAsync(int count)
+    {
+        using var scope = provider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        for (var index = 0; index < count; index++)
+        {
+            var trader = new Participant
+            {
+                Name = $"Added AI {index}",
+                Type = ParticipantType.AIAgent,
+                IsActive = true,
+                CurrentBalance = 10_000m,
+                SettledCashBalance = 10_000m,
+            };
+            db.Participants.Add(trader);
+            await db.SaveChangesAsync();
+            db.AiTraderConfigurations.Add(new AiTraderConfiguration
+            {
+                ParticipantId = trader.Id,
+                ProviderId = "glm",
+                Model = "glm-4.6",
+                ApiKey = "secret-key",
+                Revision = 1,
+                CreatedAt = Now.UtcDateTime,
+                UpdatedAt = Now.UtcDateTime,
+            });
+        }
+
+        await db.SaveChangesAsync();
+    }
 
     // The seeded cycle defaults to trading cycle 2, a scheduled decision cycle for the default cadence, so a scan
     // starts a fresh decision. Tests that exercise the day open or the end-of-day planning call pass 1 or 200.
@@ -496,11 +605,14 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     private sealed class FakeProviderClient : IAiProviderClient
     {
         private int current;
+        private readonly TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Func<CancellationToken, Task<AiProviderResponse>> OnSend { get; set; } =
             _ => Task.FromResult(new AiProviderResponse(AiProviderCallOutcome.Success, 200, "{}", "{}", 1, 1, 2, null, null));
 
         public int MaxConcurrent { get; private set; }
+
+        public Task Entered => entered.Task;
 
         public PreparedAiProviderRequest Prepare(AiProviderDescriptor provider, string model, string systemMessage, string userMessage)
             => new(provider.Id, provider.Label, model, provider.Endpoint, "{\"prompt\":true}");
@@ -512,6 +624,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         {
             var concurrent = Interlocked.Increment(ref current);
             MaxConcurrent = Math.Max(MaxConcurrent, concurrent);
+            entered.TrySetResult();
             try
             {
                 return await OnSend(cancellationToken);

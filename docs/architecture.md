@@ -22,6 +22,14 @@ Shared visual and interaction patterns stay centralized. Market and industry map
 
 The UI follows the product design direction in [Product](../PRODUCT.md): a light trading-terminal interface with dense, legible data, accessible focus states, and text or glyphs accompanying market colors.
 
+## Runtime game settings
+
+Simulation-facing and AI-provider settings are persisted in the `GameSettings` table. `appsettings.json` remains the version-controlled source of defaults: startup inserts catalogued keys that are missing from the table without replacing operator changes already stored there. Infrastructure configuration such as connection strings, logging, archive retention, API keys, and documentation paths remains outside this mechanism.
+
+The settings catalog owns the editable key allowlist, value type, human-readable name, and description in code. Database rows contain only the stable key and its JSON value, which keeps presentation metadata reviewable with the behavior it documents while avoiding duplicated labels in seeded data.
+
+The settings service validates the complete candidate configuration before saving it, writes accepted changes atomically, and replaces its in-memory snapshot after the write succeeds. Runtime consumers read typed options from that snapshot instead of querying SQLite. A saved value therefore applies when the next market operation or service scan reads its options; work already in progress completes with the snapshot it started with. Settings writes share the market-cycle lock so a configuration change cannot split one cycle across two configurations.
+
 ## Market-cycle orchestration
 
 The market advances through an ordered service pipeline. Early phases settle sector mood and detect conditions that must stop or transform trading. Supply-side corporate actions and company lifecycle changes happen before liquidation, participant exits, concentration controls, and auditor decisions. Automated decisions and matching then operate on the resulting market state.
@@ -114,7 +122,7 @@ See [Margin accounts](logic/margin.md) and [Bank loans](logic/bank-loans.md).
 
 Price, participant worth, cash movement, sector sentiment, and stock-denomination histories are recorded forward-only. Features added later do not fabricate older history; charts and event trails begin when the corresponding persistence became available.
 
-Frequently used history remains in live tables for a configured retention window. Older rows move to archive tables inside the cycle transaction, preserving identifiers while keeping operational queries small. Price retention excludes the newest live snapshot for every company from archival, preserving one current-price anchor even during a long quiet period. Runtime APIs read the live window, and resetting the demo market clears both live and archived state.
+Frequently used history remains in live tables for a configured retention window. Older rows move to archive tables inside the cycle transaction, preserving identifiers while keeping operational queries small. Price retention excludes the newest live snapshot for every company from archival, preserving one current-price anchor even during a long quiet period. Runtime APIs read the live window, and resetting the demo market clears both live and archived simulation state while preserving operator-managed game settings.
 
 ## Documentation map
 
