@@ -58,6 +58,50 @@ public sealed class RuleBasedDecisionEngineTests
     }
 
     [Fact]
+    public void IndividualBelowTargetRandomlySelectsAFlatExecutableCandidateOnce()
+    {
+        var participant = NewParticipant(100_000m, riskProfile: RiskProfile.Medium);
+        var context = new DecisionContext(
+            participant,
+            AvailableCash: 100_000m,
+            [
+                new CompanyQuote(
+                    1,
+                    Price: 100m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000,
+                    BestExecutableSellPrice: 101m,
+                    BestExecutableSellQuantity: 5),
+                new CompanyQuote(
+                    2,
+                    Price: 100m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000,
+                    BestExecutableSellPrice: 102m,
+                    BestExecutableSellQuantity: 6),
+            ],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: 0m,
+            NetWorth: 100_000m,
+            AvailableBalance: 100_000m,
+            BuyingPower: 100_000m,
+            HasAutomatedTradingData: true);
+        var random = new ScriptedRandom([0.05d], [1]);
+
+        var intent = Assert.Single(new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            random).Decide(context));
+
+        Assert.Equal(2, intent.CompanyId);
+        Assert.Equal(102m, intent.LimitPrice);
+        Assert.Equal(1, random.IntegerDrawCount);
+        Assert.Equal([2], random.IntegerMaxValues);
+        Assert.Equal(0, random.RemainingIntegerDraws);
+    }
+
+    [Fact]
     public void IndividualAtOrAboveMaximumExposureNeverBuys()
     {
         foreach (var holdingsValue in new[] { 5_500m, 6_000m })
@@ -81,7 +125,7 @@ public sealed class RuleBasedDecisionEngineTests
     [Fact]
     public void IndividualBelowTargetCanStillSkip()
     {
-        var intents = EngineWith([0.90d], [0])
+        var intents = EngineWith([0.90d], [0, 0])
             .Decide(AutomatedContextFor(
                 riskProfile: RiskProfile.Medium,
                 netWorth: 10_000m,
@@ -133,12 +177,87 @@ public sealed class RuleBasedDecisionEngineTests
             AvailableBalance: 100_000m,
             BuyingPower: 100_000m,
             HasAutomatedTradingData: true);
+        var random = new ScriptedRandom([0.05d], []);
 
-        var intent = Assert.Single(EngineWith([0.05d, 0d]).Decide(context));
+        var intent = Assert.Single(new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            random).Decide(context));
 
         Assert.Equal(3, intent.CompanyId);
         Assert.Equal(104m, intent.LimitPrice);
         Assert.Equal(4, intent.Quantity);
+        Assert.Equal(0, random.IntegerDrawCount);
+        Assert.Equal(0, random.RemainingIntegerDraws);
+    }
+
+    [Fact]
+    public void IndividualBelowTargetRandomFallbackExcludesPassiveOnlyCandidates()
+    {
+        var participant = NewParticipant(100_000m, riskProfile: RiskProfile.Medium);
+        var context = new DecisionContext(
+            participant,
+            AvailableCash: 100_000m,
+            [
+                new CompanyQuote(
+                    1,
+                    Price: 100m,
+                    PriceChangePct: 0.10m,
+                    NetShareDemand: 1_000,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000),
+                new CompanyQuote(
+                    2,
+                    Price: 100m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000,
+                    BestExecutableSellPrice: 103m,
+                    BestExecutableSellQuantity: 5),
+                new CompanyQuote(
+                    3,
+                    Price: 100m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000,
+                    BestExecutableSellPrice: 104m,
+                    BestExecutableSellQuantity: 4),
+            ],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: 0m,
+            NetWorth: 100_000m,
+            AvailableBalance: 100_000m,
+            BuyingPower: 100_000m,
+            HasAutomatedTradingData: true);
+
+        var intent = Assert.Single(EngineWith([0.05d], [1]).Decide(context));
+
+        Assert.Equal(3, intent.CompanyId);
+        Assert.Equal(104m, intent.LimitPrice);
+    }
+
+    [Fact]
+    public void IndividualBelowTargetRandomlySelectsAPassiveCandidateWhenNoAskIsExecutable()
+    {
+        var participant = NewParticipant(100_000m, riskProfile: RiskProfile.Medium);
+        var context = new DecisionContext(
+            participant,
+            AvailableCash: 100_000m,
+            [
+                new CompanyQuote(1, Price: 100m, Bounds: Bounds(100m), IssuedShares: 10_000),
+                new CompanyQuote(2, Price: 100m, Bounds: Bounds(100m), IssuedShares: 10_000),
+            ],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: 0m,
+            NetWorth: 100_000m,
+            AvailableBalance: 100_000m,
+            BuyingPower: 100_000m,
+            HasAutomatedTradingData: true);
+
+        var intent = Assert.Single(EngineWith([0.05d, 0d], [1]).Decide(context));
+
+        Assert.Equal(2, intent.CompanyId);
+        Assert.True(Bounds(100m).IsWithinActiveBand(intent.LimitPrice));
     }
 
     [Fact]
@@ -163,11 +282,11 @@ public sealed class RuleBasedDecisionEngineTests
         });
     }
 
-    // An executable ask removes all pricing randomness: the engine draws only once for the global action choice.
+    // An executable ask removes pricing randomness; a flat below-target fallback still chooses its target once.
     [Fact]
-    public void IndividualBestAskBuyDrawsOnlyTheDecisionRoll()
+    public void IndividualBestAskBuyDrawsOnlyTheTargetAndDecisionRolls()
     {
-        var random = new ScriptedRandom([0.05d], []);
+        var random = new ScriptedRandom([0.05d], [0]);
         var engine = new RuleBasedDecisionEngine(
             new MaxTradeSizer(),
             Options.Create(new RandomChanceRatesOptions()),
@@ -185,7 +304,7 @@ public sealed class RuleBasedDecisionEngineTests
 
         Assert.Equal(105m, intent.LimitPrice);
         Assert.Equal(1, random.DoubleDrawCount);
-        Assert.Equal(0, random.IntegerDrawCount);
+        Assert.Equal(1, random.IntegerDrawCount);
         Assert.Equal(0, random.RemainingDoubleDraws);
         Assert.Equal(0, random.RemainingIntegerDraws);
     }
@@ -213,12 +332,12 @@ public sealed class RuleBasedDecisionEngineTests
         });
     }
 
-    // A passive bid draws the global action and one inside-band offset; it never consumes the legacy
-    // inside-versus-outside draw.
+    // A flat below-target passive bid draws its target, global action, and one inside-band offset; it never
+    // consumes the legacy inside-versus-outside draw.
     [Fact]
-    public void IndividualPassiveBuyDrawsDecisionAndInsidePriceOnly()
+    public void IndividualPassiveBuyDrawsTargetDecisionAndInsidePriceOnly()
     {
-        var random = new ScriptedRandom([0.05d, 0d], []);
+        var random = new ScriptedRandom([0.05d, 0d], [0]);
         var engine = new RuleBasedDecisionEngine(
             new MaxTradeSizer(),
             Options.Create(new RandomChanceRatesOptions()),
@@ -236,7 +355,7 @@ public sealed class RuleBasedDecisionEngineTests
 
         Assert.True(Bounds(100m).IsWithinActiveBand(intent.LimitPrice));
         Assert.Equal(2, random.DoubleDrawCount);
-        Assert.Equal(0, random.IntegerDrawCount);
+        Assert.Equal(1, random.IntegerDrawCount);
         Assert.Equal(0, random.RemainingDoubleDraws);
         Assert.Equal(0, random.RemainingIntegerDraws);
     }
@@ -938,6 +1057,8 @@ public sealed class RuleBasedDecisionEngineTests
 
         public int IntegerDrawCount { get; private set; }
 
+        public List<int> IntegerMaxValues { get; } = [];
+
         public int RemainingDoubleDraws => doubles.Count;
 
         public int RemainingIntegerDraws => ints.Count;
@@ -951,6 +1072,7 @@ public sealed class RuleBasedDecisionEngineTests
         public override int Next(int maxValue)
         {
             IntegerDrawCount++;
+            IntegerMaxValues.Add(maxValue);
             return ints.Dequeue();
         }
     }

@@ -185,3 +185,40 @@ test('AI call presentation safely handles malformed stored payloads', async () =
     orders: [],
   })
 })
+
+test('decision-quality summary formats rates and flags activity', async () => {
+  const { formatDecisionQuality } = await loadModule()
+  const view = formatDecisionQuality({
+    callAttempts: 4,
+    completedCalls: 2,
+    invalidJsonCalls: 1,
+    otherFailedCalls: 1,
+    callCompletionRate: 0.5,
+    proposedOrders: 8,
+    appliedOrders: 5,
+    rejectedOrders: 3,
+    proposalAcceptanceRate: 0.625,
+    executedBuyNotional: 150,
+  })
+
+  assert.equal(view.hasActivity, true)
+  assert.equal(view.callCompletion, '50%')
+  assert.equal(view.completedCalls, 2)
+  assert.equal(view.callAttempts, 4)
+  assert.equal(view.invalidJsonCalls, 1)
+  assert.equal(view.proposalAcceptance, '63%')
+  assert.equal(view.appliedOrders, 5)
+  assert.equal(view.proposedOrders, 8)
+  assert.equal(view.executedBuyNotional, 150)
+})
+
+test('decision-quality summary is inactive and safe with no data', async () => {
+  const { formatDecisionQuality } = await loadModule()
+
+  assert.equal(formatDecisionQuality(null), null)
+  const empty = formatDecisionQuality({})
+  assert.equal(empty.hasActivity, false)
+  assert.equal(empty.callCompletion, '0%')
+  assert.equal(empty.proposalAcceptance, '0%')
+  assert.equal(empty.executedBuyNotional, 0)
+})

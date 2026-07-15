@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import './aiTrader.css'
 import { api } from './api'
-import { aiCallStatusLabel } from './format'
+import { aiCallStatusLabel, formatCompactMoney } from './format'
+import { formatDecisionQuality } from './aiTraderModel'
 import { Panel } from './Panel'
 import { Pager } from './TableControls'
 import { AiTraderCallModal } from './AiTraderCallModal'
@@ -20,14 +21,19 @@ function formatTimestamp(value) {
 export function AiTraderCallsPanel({ participantId, isAiTrader }) {
   const [page, setPage] = useState(1)
   const [data, setData] = useState({ items: [], total: 0, page: 1, pageSize: PAGE_SIZE })
+  const [quality, setQuality] = useState(null)
   const [error, setError] = useState(null)
   const [ready, setReady] = useState(false)
   const [selectedCallId, setSelectedCallId] = useState(null)
 
   const load = useCallback(async () => {
     try {
-      const result = await api.getParticipantAiCalls(participantId, page, PAGE_SIZE)
+      const [result, summary] = await Promise.all([
+        api.getParticipantAiCalls(participantId, page, PAGE_SIZE),
+        api.getParticipantAiDecisionQuality(participantId),
+      ])
       setData(result ?? { items: [], total: 0, page, pageSize: PAGE_SIZE })
+      setQuality(formatDecisionQuality(summary))
       setError(null)
     } catch (loadError) {
       setError(loadError.message)
@@ -55,6 +61,27 @@ export function AiTraderCallsPanel({ participantId, isAiTrader }) {
         <p className="command-error" role="alert">
           {error}
         </p>
+      ) : null}
+      {quality?.hasActivity ? (
+        <dl className="ai-quality">
+          <div className="ai-quality-item">
+            <dt>Executed buys</dt>
+            <dd className="ai-quality-value">{formatCompactMoney(quality.executedBuyNotional)}</dd>
+            <dd className="ai-quality-sub">deployed capital</dd>
+          </div>
+          <div className="ai-quality-item">
+            <dt>Orders accepted</dt>
+            <dd className="ai-quality-value">{quality.proposalAcceptance}</dd>
+            <dd className="ai-quality-sub">{quality.appliedOrders} of {quality.proposedOrders} proposed</dd>
+          </div>
+          <div className="ai-quality-item">
+            <dt>Replies parsed</dt>
+            <dd className="ai-quality-value">{quality.callCompletion}</dd>
+            <dd className="ai-quality-sub">
+              {quality.completedCalls} of {quality.callAttempts} calls · {quality.invalidJsonCalls} invalid JSON
+            </dd>
+          </div>
+        </dl>
       ) : null}
       {data.items.length === 0 ? (
         <p className="note">No AI calls recorded yet.</p>

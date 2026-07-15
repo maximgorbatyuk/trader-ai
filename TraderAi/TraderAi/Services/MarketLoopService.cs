@@ -14,19 +14,20 @@ public sealed class MarketLoopService(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var settings = options.Value;
-        if (!settings.Enabled)
-        {
-            return;
-        }
-
-        var interval = TimeSpan.FromSeconds(Math.Max(1, settings.IntervalSeconds));
-        using var timer = new PeriodicTimer(interval);
-
         try
         {
-            while (await timer.WaitForNextTickAsync(stoppingToken))
+            while (!stoppingToken.IsCancellationRequested)
             {
+                var settings = options.Value;
+                var delay = settings.Enabled
+                    ? TimeSpan.FromSeconds(Math.Max(1, settings.IntervalSeconds))
+                    : TimeSpan.FromMilliseconds(250);
+                await Task.Delay(delay, stoppingToken);
+                if (!options.Value.Enabled)
+                {
+                    continue;
+                }
+
                 try
                 {
                     using var scope = scopeFactory.CreateScope();

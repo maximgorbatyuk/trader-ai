@@ -22,11 +22,11 @@ public sealed class AiTraderCoordinator(
     TimeProvider timeProvider,
     ILogger<AiTraderCoordinator> logger) : BackgroundService
 {
-    private readonly AiTradingOptions settings = options.Value;
-    private readonly int tradingCyclesPerDay = Math.Max(1, clockOptions.Value.TradingCyclesPerDay);
-    private readonly SemaphoreSlim concurrency = new(
+    private readonly object concurrencySync = new();
+    private SemaphoreSlim concurrency = new(
         Math.Max(1, options.Value.MaxConcurrentRequests),
         Math.Max(1, options.Value.MaxConcurrentRequests));
+    private int concurrencyLimit = Math.Max(1, options.Value.MaxConcurrentRequests);
     private readonly ConcurrentDictionary<int, Task> inFlight = new();
     private readonly ConcurrentDictionary<int, ParticipantSchedule> schedules = new();
 
@@ -36,18 +36,27 @@ public sealed class AiTraderCoordinator(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!settings.Enabled)
-        {
-            return;
-        }
-
-        await AbandonStalePendingCallsAsync(stoppingToken);
-
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(Math.Max(1, settings.ScanIntervalMilliseconds)));
+        var recoveredPendingCalls = false;
         try
         {
-            while (await timer.WaitForNextTickAsync(stoppingToken))
+            while (!stoppingToken.IsCancellationRequested)
             {
+                var settings = options.Value;
+                if (settings.Enabled && !recoveredPendingCalls)
+                {
+                    await AbandonStalePendingCallsAsync(stoppingToken);
+                    recoveredPendingCalls = true;
+                }
+
+                var delay = settings.Enabled
+                    ? TimeSpan.FromMilliseconds(Math.Max(1, settings.ScanIntervalMilliseconds))
+                    : TimeSpan.FromMilliseconds(250);
+                await Task.Delay(delay, stoppingToken);
+                if (!options.Value.Enabled)
+                {
+                    continue;
+                }
+
                 await ScanAsync(stoppingToken);
             }
         }
@@ -68,6 +77,17 @@ public sealed class AiTraderCoordinator(
     // decision starts, flagged as the day's final (planning) call when it is the last scheduled cycle.
     public async Task ScanAsync(CancellationToken stoppingToken)
     {
+        var settings = options.Value;
+        if (!settings.Enabled)
+        {
+            return;
+        }
+
+        if (!TryRefreshConcurrencyLimit(settings.MaxConcurrentRequests))
+        {
+            return;
+        }
+
         using var scope = scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var clock = scope.ServiceProvider.GetRequiredService<TradingClockService>();
@@ -140,6 +160,7 @@ public sealed class AiTraderCoordinator(
                 continue;
             }
 
+            var tradingCyclesPerDay = Math.Max(1, clockOptions.Value.TradingCyclesPerDay);
             var decisionCycles = AiDecisionCadence.DecisionCycles(agent.MaxDecisionsPerDay, tradingCyclesPerDay);
             if (decisionCycles.Count == 0 || !decisionCycles.Contains(currentCycle.TradingCycleNumber))
             {
@@ -167,7 +188,8 @@ public sealed class AiTraderCoordinator(
     {
         var task = Task.Run(async () =>
         {
-            await concurrency.WaitAsync(stoppingToken);
+            var concurrencyGate = CurrentConcurrencyGate();
+            await concurrencyGate.WaitAsync(stoppingToken);
             try
             {
                 await action(stoppingToken);
@@ -178,12 +200,42 @@ public sealed class AiTraderCoordinator(
             }
             finally
             {
-                concurrency.Release();
+                concurrencyGate.Release();
                 inFlight.TryRemove(participantId, out _);
             }
         }, stoppingToken);
 
         inFlight[participantId] = task;
+    }
+
+    private SemaphoreSlim CurrentConcurrencyGate()
+    {
+        lock (concurrencySync)
+        {
+            return concurrency;
+        }
+    }
+
+    private bool TryRefreshConcurrencyLimit(int requestedLimit)
+    {
+        var limit = Math.Max(1, requestedLimit);
+        lock (concurrencySync)
+        {
+            if (limit == concurrencyLimit)
+            {
+                return true;
+            }
+
+            if (!inFlight.IsEmpty)
+            {
+                return false;
+            }
+
+            concurrency.Dispose();
+            concurrency = new SemaphoreSlim(limit, limit);
+            concurrencyLimit = limit;
+            return true;
+        }
     }
 
     public async Task<AiTraderCallStatus> ProcessParticipantAsync(
@@ -248,15 +300,31 @@ public sealed class AiTraderCoordinator(
             stoppingToken, runtimeState.BeginCall(participantId));
 
         AiProviderResponse? response = null;
-        var execution = await callService.ExecuteAsync(
-            descriptor,
-            settings.MaxOrdersPerDecision,
-            async token =>
+        AiTraderCallExecution execution;
+        var invalidJsonRetriesRemaining = Math.Max(0, options.Value.MaxInvalidJsonRetries);
+        while (true)
+        {
+            execution = await callService.ExecuteAsync(
+                descriptor,
+                options.Value.MaxOrdersPerDecision,
+                async token =>
+                {
+                    response = await client.SendAsync(prepared, apiKey, token);
+                    return response;
+                },
+                linked.Token);
+
+            // A malformed reply wastes the whole scheduled decision; retry the same request a bounded number of times
+            // before surfacing the error, and stop early if the call was cancelled by a mid-flight configuration edit.
+            if (execution.Status != AiTraderCallStatus.InvalidJson
+                || invalidJsonRetriesRemaining <= 0
+                || linked.Token.IsCancellationRequested)
             {
-                response = await client.SendAsync(prepared, apiKey, token);
-                return response;
-            },
-            linked.Token);
+                break;
+            }
+
+            invalidJsonRetriesRemaining--;
+        }
 
         if (execution.Status == AiTraderCallStatus.Completed && execution.Decision is not null)
         {
@@ -368,7 +436,7 @@ public sealed class AiTraderCoordinator(
         switch (execution.Status)
         {
             case AiTraderCallStatus.HttpError when response?.HttpStatusCode is 401 or 403:
-                schedule.NextRetryAt = now.AddSeconds(settings.AuthErrorRetrySeconds);
+                schedule.NextRetryAt = now.AddSeconds(options.Value.AuthErrorRetrySeconds);
                 SetError(participantId, "Authentication failed; check the API key.", schedule.NextRetryAt);
                 break;
             case AiTraderCallStatus.HttpError:
@@ -398,8 +466,8 @@ public sealed class AiTraderCoordinator(
     private DateTimeOffset ComputeRetry(DateTimeOffset now, int attempts, TimeSpan? retryAfter)
     {
         var seconds = Math.Min(
-            settings.RetryMaxDelaySeconds,
-            settings.RetryBaseDelaySeconds * Math.Pow(2, Math.Max(0, attempts - 1)));
+            options.Value.RetryMaxDelaySeconds,
+            options.Value.RetryBaseDelaySeconds * Math.Pow(2, Math.Max(0, attempts - 1)));
         var delay = TimeSpan.FromSeconds(seconds);
         if (retryAfter is { } after && after > delay)
         {

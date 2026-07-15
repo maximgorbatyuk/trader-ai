@@ -9,11 +9,21 @@ public sealed record AiProviderDescriptor(string Id, string Label, Uri Endpoint,
 // suggestion metadata for the UI.
 public sealed class AiProviderCatalog
 {
-    private readonly Dictionary<string, AiProviderDescriptor> byId;
+    private readonly IOptions<AiTradingOptions> options;
 
     public AiProviderCatalog(IOptions<AiTradingOptions> options)
     {
-        byId = new Dictionary<string, AiProviderDescriptor>(StringComparer.OrdinalIgnoreCase);
+        this.options = options;
+    }
+
+    public IReadOnlyList<AiProviderDescriptor> All => Build()
+        .Values
+        .OrderBy(provider => provider.Id, StringComparer.Ordinal)
+        .ToList();
+
+    private Dictionary<string, AiProviderDescriptor> Build()
+    {
+        var byId = new Dictionary<string, AiProviderDescriptor>(StringComparer.OrdinalIgnoreCase);
         foreach (var (key, provider) in options.Value.Providers)
         {
             var id = key.Trim().ToLowerInvariant();
@@ -23,9 +33,9 @@ public sealed class AiProviderCatalog
                 new Uri(provider.Endpoint),
                 provider.Models.ToList());
         }
-    }
 
-    public IReadOnlyList<AiProviderDescriptor> All => byId.Values.OrderBy(p => p.Id, StringComparer.Ordinal).ToList();
+        return byId;
+    }
 
     public bool TryNormalizeProvider(string? providerId, out string normalizedId)
     {
@@ -36,7 +46,7 @@ public sealed class AiProviderCatalog
         }
 
         var id = providerId.Trim().ToLowerInvariant();
-        if (!byId.ContainsKey(id))
+        if (!Build().ContainsKey(id))
         {
             return false;
         }
@@ -46,5 +56,8 @@ public sealed class AiProviderCatalog
     }
 
     public AiProviderDescriptor? Find(string providerId)
-        => byId.TryGetValue(providerId, out var descriptor) ? descriptor : null;
+    {
+        var byId = Build();
+        return byId.TryGetValue(providerId, out var descriptor) ? descriptor : null;
+    }
 }

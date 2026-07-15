@@ -29,10 +29,11 @@ var connectionString = ResolveSqliteConnectionString(
 
 EnsureSqliteDirectory(connectionString);
 
-builder.Services.AddDbContext<AppDbContext>(options =>
+builder.Services.AddDbContextFactory<AppDbContext>(options =>
 {
     options.UseSqlite(connectionString);
 });
+builder.Services.AddSingleton<GameSettingsService>();
 
 builder.Services.AddSingleton(Random.Shared);
 builder.Services.AddScoped<MatchingEngine>();
@@ -126,6 +127,30 @@ builder.Services.AddOptions<RandomChanceRatesOptions>()
     .ValidateOnStart();
 builder.Services.AddHostedService<MarketLoopService>();
 
+AddGameSettingsOptions<MarketLoopOptions>(builder.Services, MarketLoopOptions.SectionName);
+AddGameSettingsOptions<TradingClockOptions>(builder.Services, TradingClockOptions.SectionName);
+AddGameSettingsOptions<SettlementOptions>(builder.Services, SettlementOptions.SectionName);
+AddGameSettingsOptions<MarginOptions>(builder.Services, MarginOptions.SectionName);
+AddGameSettingsOptions<AutomatedTradingOptions>(builder.Services, AutomatedTradingOptions.SectionName);
+AddGameSettingsOptions<NewsOptions>(builder.Services, NewsOptions.SectionName);
+AddGameSettingsOptions<CrisisOptions>(builder.Services, CrisisOptions.SectionName);
+AddGameSettingsOptions<ScienceInvestigationOptions>(builder.Services, ScienceInvestigationOptions.SectionName);
+AddGameSettingsOptions<BankruptcyOptions>(builder.Services, BankruptcyOptions.SectionName);
+AddGameSettingsOptions<CollectiveFundOptions>(builder.Services, CollectiveFundOptions.SectionName);
+AddGameSettingsOptions<MarketExitOptions>(builder.Services, MarketExitOptions.SectionName);
+AddGameSettingsOptions<StockSplitOptions>(builder.Services, StockSplitOptions.SectionName);
+AddGameSettingsOptions<AuditorOptions>(builder.Services, AuditorOptions.SectionName);
+AddGameSettingsOptions<ShareEmissionOptions>(builder.Services, ShareEmissionOptions.SectionName);
+AddGameSettingsOptions<PrimaryIssuanceOptions>(builder.Services, PrimaryIssuanceOptions.SectionName);
+AddGameSettingsOptions<CompanyLifecycleOptions>(builder.Services, CompanyLifecycleOptions.SectionName);
+AddGameSettingsOptions<LoanOptions>(builder.Services, LoanOptions.SectionName);
+AddGameSettingsOptions<TradeFeeOptions>(builder.Services, TradeFeeOptions.SectionName);
+AddGameSettingsOptions<VolatilityHaltOptions>(builder.Services, VolatilityHaltOptions.SectionName);
+AddGameSettingsOptions<ConcentrationCapOptions>(builder.Services, ConcentrationCapOptions.SectionName);
+AddGameSettingsOptions<IndustrySentimentOptions>(builder.Services, IndustrySentimentOptions.SectionName);
+AddGameSettingsOptions<AiTradingOptions>(builder.Services, AiTradingOptions.SectionName);
+AddGameSettingsOptions<RandomChanceRatesOptions>(builder.Services, RandomChanceRatesOptions.SectionName);
+
 var loopIntervalSeconds = builder.Configuration.GetValue<int>($"{MarketLoopOptions.SectionName}:IntervalSeconds");
 var tradingCycleSeconds = builder.Configuration.GetValue<int>($"{TradingClockOptions.SectionName}:TradingCycleSeconds");
 var breakDurationSeconds = builder.Configuration.GetValue<int>($"{TradingClockOptions.SectionName}:BreakDurationSeconds");
@@ -157,8 +182,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var app = builder.Build();
 
-// Validate before database initialization so invalid probability configuration cannot mutate persistent state.
-_ = app.Services.GetRequiredService<IOptions<RandomChanceRatesOptions>>().Value;
+ValidateDefaultRandomChanceRates(builder.Configuration);
 
 using (var scope = app.Services.CreateScope())
 {
@@ -175,6 +199,7 @@ using (var scope = app.Services.CreateScope())
     }
 
     dbContext.Database.Migrate();
+    await app.Services.GetRequiredService<GameSettingsService>().InitializeAsync();
 
     // The loop must never resume on its own across restarts: a running market is paused on boot so
     // it only advances after an explicit start.
@@ -191,6 +216,7 @@ app.UseCors(ReactDevelopmentCorsPolicy);
 
 app.MapGet("/health", () => Results.Ok(new { Result = SqliteDatabaseExists(connectionString) }));
 app.MapMarketEndpoints();
+app.MapSettingsEndpoints();
 
 app.Run();
 
@@ -256,6 +282,40 @@ static bool ValidateAiTrading(AiTradingOptions options)
     }
 
     return true;
+}
+
+static void AddGameSettingsOptions<TOptions>(IServiceCollection services, string sectionName)
+    where TOptions : class, new()
+{
+    services.AddSingleton<IOptions<TOptions>>(serviceProvider =>
+        new GameSettingsOptions<TOptions>(
+            serviceProvider.GetRequiredService<GameSettingsService>(),
+            sectionName));
+}
+
+static void ValidateDefaultRandomChanceRates(IConfiguration configuration)
+{
+    var options = configuration.GetSection(RandomChanceRatesOptions.SectionName)
+        .Get<RandomChanceRatesOptions>() ?? new RandomChanceRatesOptions();
+    var stableChance = options.EventTriggerChances.AuditorIssueOnStable;
+    var bigMoveChance = options.EventTriggerChances.AuditorIssueOnBigMove;
+    var crisisMultiplier = options.ChanceModifiers.CrisisAuditorIssueMultiplier;
+    if (double.IsFinite(stableChance)
+        && double.IsFinite(bigMoveChance)
+        && double.IsFinite(crisisMultiplier)
+        && stableChance is >= 0d and <= 0.5d
+        && bigMoveChance is >= 0d and <= 0.5d
+        && crisisMultiplier >= 0d
+        && stableChance * crisisMultiplier <= 0.5d
+        && bigMoveChance * crisisMultiplier <= 0.5d)
+    {
+        return;
+    }
+
+    throw new OptionsValidationException(
+        Options.DefaultName,
+        typeof(RandomChanceRatesOptions),
+        ["Auditor Extra outcome chances, including crisis adjustment, must remain between 0% and 50% to preserve symmetry."]);
 }
 
 static bool SqliteDatabaseExists(string connectionString)

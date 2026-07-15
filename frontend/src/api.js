@@ -5,8 +5,9 @@ async function request(path, options) {
 
   if (!response.ok) {
     let message = `Request failed (${response.status})`
+    let body = null
     try {
-      const body = await response.json()
+      body = await response.json()
       if (body?.error) {
         message = body.error
       }
@@ -14,7 +15,9 @@ async function request(path, options) {
       // Response had no JSON error body; keep the status-based message.
     }
 
-    throw new Error(message)
+    const error = new Error(message)
+    error.fieldErrors = body?.errors
+    throw error
   }
 
   const text = await response.text()
@@ -59,6 +62,8 @@ function toQuery(params) {
 
 export const api = {
   getHealth: () => get('/health'),
+  getSettings: () => get('/settings'),
+  updateSettings: (payload) => put('/settings', payload),
   getMarket: () => get('/market'),
   getCompanies: () => get('/companies'),
   getCompaniesPaged: (params = {}) => get(`/companies/paged${toQuery(params)}`),
@@ -129,6 +134,7 @@ export const api = {
   getParticipantAiCalls: (participantId, page = 1, pageSize = 20) =>
     get(`/participants/${participantId}/ai-calls${toQuery({ page, pageSize })}`),
   getParticipantAiCall: (participantId, callId) => get(`/participants/${participantId}/ai-calls/${callId}`),
+  getParticipantAiDecisionQuality: (participantId) => get(`/participants/${participantId}/ai-decision-quality`),
   seedMarket: () => post('/market/seed'),
   resetMarket: () => post('/market/reset'),
   pauseMarket: () => post('/market/pause'),

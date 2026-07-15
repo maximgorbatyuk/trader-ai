@@ -6,14 +6,14 @@ using TraderAi.Models;
 namespace TraderAi.Services;
 
 // Gives the company population a life cycle. Once per cycle it may delist one failing company and, separately, may
-// list one new one. Nothing closes during the market's first NoClosureBeforeCycle cycles, giving fresh listings
-// time to establish. Closure is deterministic and draws nothing: past that grace period a company qualifies when
-// its price fell in at least 16 of the last 20 recorded per-cycle closes, or its three most recent auditor ratings
-// are all High/Extra. At most one company closes per cycle — the worst performer when several qualify — and when
-// the market is full at the 300 cap with nothing failing on its own, the single worst sub-threshold performer is
-// delisted to make room. A company worth at least ProtectionCapFraction of total market capitalisation is never
-// closed: a would-be-closed one instead has its price cut ProtectedCompanyPriceDropPercent% (via MarketImpactService)
-// and stays listed. A
+// list one new one. Nothing closes during the market's first five trading days, and each listing gets the same
+// five-day protection from delisting and lifecycle repricing. Closure is deterministic and draws nothing: past
+// those grace periods a company qualifies when its price fell in at least 16 of the last 20 recorded per-cycle
+// closes, or its three most recent auditor ratings are all High/Extra. At most one company closes per cycle — the
+// worst performer when several qualify — and when the market is full at the 300 cap with nothing failing on its
+// own, the single worst sub-threshold mature performer is delisted to make room. A company worth at least
+// ProtectionCapFraction of total market capitalisation is never closed: a would-be-closed one instead has its price
+// cut ProtectedCompanyPriceDropPercent% (via MarketImpactService) and stays listed. A
 // closed company's orders are cancelled (buy reservations released), its holdings zeroed with no payout, and it is
 // filtered out of the live market while its row survives for history. Appearance is the only random part: the base
 // chance to mint a new company each cycle is a population tier — 10% below 50 live companies, 5% below 100, 1% at
@@ -47,8 +47,9 @@ public sealed class CompanyLifecycleService(
     // ...or when its RiskStreakLength most recent ratings are all High or Extra.
     private const int RiskStreakLength = 3;
 
-    // No company is closed while the market is this young.
-    private const int NoClosureBeforeCycle = 100;
+    // Market-wide and per-listing lifecycle protection use trading days so breaks and cycle-count changes do not
+    // shorten either grace period.
+    private const int SafePeriodTradingDays = 5;
 
     // A company worth at least this fraction of total market capitalisation is never closed; a would-be-closed one
     // has its price cut ProtectedCompanyPriceDropPercent% instead.
@@ -101,11 +102,21 @@ public sealed class CompanyLifecycleService(
         DateTime now,
         Crisis? activeCrisis)
     {
-        // Fresh listings get a grace period before any delisting can touch the market.
-        if (currentCycleNumber <= NoClosureBeforeCycle || liveCompanies.Count == 0)
+        if (liveCompanies.Count == 0)
         {
             return false;
         }
+
+        var currentTradingDayNumber = await TradingDayNumberForCycleAsync(currentCycleId);
+        if (currentTradingDayNumber is int marketDayNumber
+            && marketDayNumber is >= 1 and <= SafePeriodTradingDays)
+        {
+            return false;
+        }
+
+        var freshCompanyIds = currentTradingDayNumber is int currentDayNumber
+            ? await FreshCompanyIdsAsync(liveCompanies, currentDayNumber)
+            : [];
 
         var capByCompany = await CapitalizationByCompanyAsync(liveCompanies);
         var riskStreakCompanyIds = await RiskStreakCompanyIdsAsync();
@@ -124,7 +135,8 @@ public sealed class CompanyLifecycleService(
             protectionThreshold > 0m && capByCompany.GetValueOrDefault(companyId) >= protectionThreshold;
 
         var qualifiers = liveCompanies
-            .Where(company => !pendingCompanyIds.Contains(company.Id)
+            .Where(company => !freshCompanyIds.Contains(company.Id)
+                && !pendingCompanyIds.Contains(company.Id)
                 && (HasDeclineStreak(closesByCompany.GetValueOrDefault(company.Id))
                 || riskStreakCompanyIds.Contains(company.Id))
             )
@@ -151,7 +163,9 @@ public sealed class CompanyLifecycleService(
             // Pressure valve: the market is full and nothing failed on its own. Only sub-threshold companies are
             // removable, so a large-cap is never delisted just to make room; if all are protected, nothing happens.
             var removable = liveCompanies
-                .Where(company => !IsProtected(company.Id) && !pendingCompanyIds.Contains(company.Id))
+                .Where(company => !freshCompanyIds.Contains(company.Id)
+                    && !IsProtected(company.Id)
+                    && !pendingCompanyIds.Contains(company.Id))
                 .ToList();
             if (removable.Count == 0)
             {
@@ -164,6 +178,32 @@ public sealed class CompanyLifecycleService(
         }
 
         return false;
+    }
+
+    private async Task<int?> TradingDayNumberForCycleAsync(int cycleId) =>
+        await (from cycle in dbContext.MarketCycles
+               join day in dbContext.TradingDays on cycle.TradingDayId equals day.Id
+               where cycle.Id == cycleId
+               select (int?)day.DayNumber)
+            .SingleOrDefaultAsync();
+
+    private async Task<HashSet<int>> FreshCompanyIdsAsync(
+        IReadOnlyList<Company> liveCompanies,
+        int currentDayNumber)
+    {
+        var liveCompanyIds = liveCompanies.Select(company => company.Id).ToList();
+        var listingDays = await (from company in dbContext.Companies
+                                 where liveCompanyIds.Contains(company.Id) && company.CreatedInCycleId.HasValue
+                                 join cycle in dbContext.MarketCycles on company.CreatedInCycleId equals (int?)cycle.Id
+                                 join day in dbContext.TradingDays on cycle.TradingDayId equals day.Id
+                                 select new { company.Id, day.DayNumber })
+            .ToListAsync();
+
+        return listingDays
+            .Where(listing => listing.DayNumber <= currentDayNumber
+                && currentDayNumber - listing.DayNumber < SafePeriodTradingDays)
+            .Select(listing => listing.Id)
+            .ToHashSet();
     }
 
     // Market cap per live company = latest price × issued shares; a company with no price snapshot counts as zero.

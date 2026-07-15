@@ -5,6 +5,8 @@ namespace TraderAi.Data;
 
 public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
+    public DbSet<GameSetting> GameSettings => Set<GameSetting>();
+
     public DbSet<Company> Companies => Set<Company>();
 
     public DbSet<Participant> Participants => Set<Participant>();
@@ -97,6 +99,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<GameSetting>()
+            .HasKey(setting => setting.Key);
+
+        modelBuilder.Entity<GameSetting>()
+            .Property(setting => setting.Key)
+            .HasMaxLength(256);
+
         modelBuilder.Entity<NewsPost>()
             .HasMany(newsPost => newsPost.Industries)
             .WithOne()

@@ -25,7 +25,11 @@ A Company is the listed asset in the game. It issues shares, belongs to an indus
 ## Lifecycle
 
 - The market's company roster is not fixed. New companies can list over time and failing companies can be delisted, up to a maximum number of live companies.
+- During the market's first five trading days, lifecycle rules neither delist companies nor apply the lifecycle price reduction used instead of delisting certain companies. Those delisting and price-reduction checks begin on Day 6.
 - A newly listed company starts, like any company, with a random share supply, a random starting price, an industry, and a name, and its listing is announced on the Newswire.
+- Every newly listed company has its own five-trading-day lifecycle safe period, independent of the market-wide first-five-day period. A company listed on Day N is protected through Day N+4 and becomes eligible for lifecycle action on Day N+5.
+- During this safe period, the company is excluded from delisting for recent declines or poor ratings and from forced delisting when the market is at maximum size. It also cannot receive that lifecycle price reduction.
+- The safe period applies only to lifecycle actions. Trades and other market events can still move the company's price.
 - After a company lists, there is a quiet stretch during which no new company can appear; past it, the chance of a new listing rises a little each cycle until one appears, which restarts the quiet stretch.
 - A company is delisted when its price has fallen in most of the recent cycles, or when its most recent risk ratings are poor several times in a row. At most one company is delisted per cycle.
 - When the market is already at its maximum size and nothing has failed on its own, the worst-performing company is delisted to make room for new listings.

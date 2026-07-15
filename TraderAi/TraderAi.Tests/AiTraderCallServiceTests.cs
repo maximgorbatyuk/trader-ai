@@ -240,6 +240,75 @@ public sealed class AiTraderCallServiceTests : IDisposable
         Assert.Equal(ids.OrderByDescending(id => id).ToList(), ids);
     }
 
+    [Fact]
+    public async Task DecisionQualitySummaryReportsReliabilityValidityAndExecutedNotional()
+    {
+        const int participantId = 42;
+        AddCall(participantId, AiTraderCallStatus.Completed, applied: 3, rejected: 1);
+        AddCall(participantId, AiTraderCallStatus.Completed, applied: 2, rejected: 2);
+        AddCall(participantId, AiTraderCallStatus.InvalidJson);
+        AddCall(participantId, AiTraderCallStatus.HttpError);
+        AddCall(participantId, AiTraderCallStatus.Pending);
+        AddCall(participantId + 1, AiTraderCallStatus.Completed, applied: 9, rejected: 9);
+        context.ShareTransactions.AddRange(
+            Trade(buyerId: participantId, totalCost: 50m),
+            Trade(buyerId: participantId, totalCost: 100m),
+            Trade(buyerId: participantId + 1, totalCost: 9999m));
+        await context.SaveChangesAsync();
+
+        var summary = await service.GetDecisionQualityAsync(participantId);
+
+        Assert.Equal(4, summary.CallAttempts);
+        Assert.Equal(2, summary.CompletedCalls);
+        Assert.Equal(1, summary.InvalidJsonCalls);
+        Assert.Equal(1, summary.OtherFailedCalls);
+        Assert.Equal(0.5, summary.CallCompletionRate);
+        Assert.Equal(8, summary.ProposedOrders);
+        Assert.Equal(5, summary.AppliedOrders);
+        Assert.Equal(3, summary.RejectedOrders);
+        Assert.Equal(0.625, summary.ProposalAcceptanceRate);
+        Assert.Equal(150m, summary.ExecutedBuyNotional);
+    }
+
+    [Fact]
+    public async Task DecisionQualitySummaryIsZeroedWhenNoActivity()
+    {
+        var summary = await service.GetDecisionQualityAsync(999);
+
+        Assert.Equal(0, summary.CallAttempts);
+        Assert.Equal(0d, summary.CallCompletionRate);
+        Assert.Equal(0d, summary.ProposalAcceptanceRate);
+        Assert.Equal(0m, summary.ExecutedBuyNotional);
+    }
+
+    private void AddCall(int participantId, AiTraderCallStatus status, int applied = 0, int rejected = 0)
+        => context.AiTraderCalls.Add(new AiTraderCall
+        {
+            ParticipantId = participantId,
+            ParticipantName = "Trader",
+            ProviderId = "glm",
+            ProviderLabel = "GLM",
+            Model = "glm-4.6",
+            PromptHash = "hash",
+            RequestJson = "{}",
+            Status = status,
+            AppliedOrders = applied,
+            RejectedOrders = rejected,
+            RequestedAt = DateTime.UtcNow,
+        });
+
+    private static ShareTransaction Trade(int buyerId, decimal totalCost) => new()
+    {
+        BuyerId = buyerId,
+        CompanyId = 1,
+        Quantity = 1,
+        Price = totalCost,
+        TotalCost = totalCost,
+        CreatedInCycleId = 1,
+        CreatedAt = DateTime.UtcNow,
+        UpdatedAt = DateTime.UtcNow,
+    };
+
     private static AiTraderCallDescriptor Descriptor(int participantId = 1) => new(
         participantId,
         "Trader",

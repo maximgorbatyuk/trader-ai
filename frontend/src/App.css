@@ -243,6 +243,40 @@
   margin-left: 0;
 }
 
+.topbar-settings-link {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
+}
+
+.topbar-settings-link:hover {
+  border-color: var(--border-2);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.topbar-settings-link.is-active {
+  border-color: var(--border-2);
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.topbar-settings-link svg {
+  width: 1.125rem;
+  height: 1.125rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .conn {
   display: inline-flex;
   align-items: center;
@@ -355,6 +389,217 @@
   width: min(1760px, 90%);
   margin: 0 auto;
   padding: var(--s-5) 0 var(--s-10);
+}
+
+/* ---- Settings ---- */
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.settings-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding-bottom: var(--s-4);
+  border-bottom: 1px solid var(--border-2);
+}
+
+.settings-header h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-xl);
+  line-height: 1.2;
+}
+
+.settings-header p {
+  max-width: 70ch;
+  margin: var(--s-1) 0 0;
+  color: var(--muted);
+  font-size: var(--t-sm);
+  text-wrap: pretty;
+}
+
+.settings-loading {
+  min-height: 42vh;
+}
+
+.settings-save-status {
+  align-self: flex-end;
+  margin: calc(-1 * var(--s-2)) 0 0;
+  padding: var(--s-1) var(--s-2);
+  border-radius: var(--radius-sm);
+  background: var(--info-soft);
+  color: var(--info-text);
+  font-size: var(--t-xs);
+  font-weight: 700;
+}
+
+.settings-validation-list {
+  display: grid;
+  flex: 0 0 100%;
+  gap: var(--s-1);
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-5);
+}
+
+.settings-validation-list li {
+  display: grid;
+  gap: 2px;
+}
+
+.settings-validation-list code {
+  font-size: var(--t-2xs);
+  font-weight: 700;
+}
+
+.settings-section {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.settings-section-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.settings-section-header h2,
+.settings-subsection h3 {
+  margin: 0;
+  color: var(--ink);
+}
+
+.settings-section-header h2 {
+  font-size: var(--t-md);
+}
+
+.settings-count {
+  color: var(--muted);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+
+.settings-subsection + .settings-subsection {
+  border-top: 1px solid var(--border-2);
+}
+
+.settings-subsection h3 {
+  padding: var(--s-2) var(--s-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-3);
+  font-size: var(--t-sm);
+}
+
+.settings-table-wrap {
+  overflow-x: auto;
+}
+
+.settings-table {
+  table-layout: fixed;
+  min-width: 760px;
+}
+
+.settings-table thead th:first-child,
+.settings-table tbody th {
+  width: 24%;
+}
+
+.settings-table thead th:nth-child(2) {
+  width: 48%;
+}
+
+.settings-table thead th:last-child {
+  width: 28%;
+}
+
+.settings-table tbody th,
+.settings-table tbody td {
+  padding: var(--s-3) var(--s-4);
+  vertical-align: top;
+}
+
+.settings-table tbody tr.is-dirty th,
+.settings-table tbody tr.is-dirty td {
+  background: var(--attention-soft);
+}
+
+.settings-table tbody th label {
+  display: block;
+  line-height: 1.35;
+}
+
+.settings-key {
+  display: block;
+  overflow-wrap: anywhere;
+  margin-top: var(--s-1);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: 500;
+}
+
+.settings-description {
+  max-width: 72ch;
+  color: var(--text);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.settings-value {
+  min-width: 14rem;
+}
+
+.settings-input {
+  max-width: 22rem;
+}
+
+.settings-list-input {
+  min-height: 5rem;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  line-height: 1.45;
+}
+
+.settings-checkbox {
+  width: 1.125rem;
+  height: 1.125rem;
+  margin: var(--s-2) 0;
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+
+.settings-field-error {
+  display: block;
+  margin-top: var(--s-1);
+  color: var(--down-text);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+
+.settings-input[aria-invalid='true'] {
+  border-color: var(--down);
+  background: var(--down-soft);
+}
+
+@media (max-width: 760px) {
+  .settings-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-header .btn {
+    align-self: flex-start;
+  }
 }
 
 /* ---- Footer ---- */
