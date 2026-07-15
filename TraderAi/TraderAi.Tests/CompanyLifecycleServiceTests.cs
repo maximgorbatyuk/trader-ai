@@ -418,23 +418,210 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task NoCompanyClosesInsideTheGracePeriod()
+    public async Task MarketDayFivePreventsLifecycleRepricingAndNews()
     {
-        // A company that fully qualifies to close (21 declining closes) is untouched while the market is still in
-        // its first 100 cycles. The 0.99 appearance roll misses so nothing lists either.
-        var cycles = await AddCyclesAsync(21);
-        var current = cycles[^1];
+        var current = await AddCycleForTradingDayAsync(cycleNumber: 200, dayNumber: 5);
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
-        var company = await AddCompanyAsync();
-        await AddDecliningSnapshotsAsync(company.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+        var company = await AddCompanyAsync(issuedShares: 1_000_000);
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        var snapshotCount = await context.PriceSnapshots.CountAsync();
 
         await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
-        var refreshed = await context.Companies.AsNoTracking().SingleAsync();
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == company.Id);
         Assert.Null(refreshed.ClosedInCycleId);
-        Assert.Equal(1, await context.Companies.CountAsync());
+        Assert.Equal(snapshotCount, await context.PriceSnapshots.CountAsync());
+        Assert.Equal(0, await context.NewsPosts.CountAsync(post => post.Scope == NewsImpactScope.Company));
+    }
+
+    [Fact]
+    public async Task MarketDaySixPermitsLifecycleRepricing()
+    {
+        var current = await AddCycleForTradingDayAsync(cycleNumber: 200, dayNumber: 6);
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var company = await AddCompanyAsync(issuedShares: 1_000_000);
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var latest = await context.PriceSnapshots.AsNoTracking()
+            .Where(snapshot => snapshot.CompanyId == company.Id)
+            .OrderByDescending(snapshot => snapshot.Id)
+            .FirstAsync();
+        Assert.Equal(40m, latest.Price);
+        Assert.Equal(1, await context.NewsPosts.CountAsync(post => post.Scope == NewsImpactScope.Company));
+    }
+
+    [Theory]
+    [InlineData(10)]
+    [InlineData(11)]
+    [InlineData(12)]
+    [InlineData(13)]
+    [InlineData(14)]
+    public async Task LateListedCompanyIsUntouchedDuringItsFirstFiveTradingDays(int currentDayNumber)
+    {
+        var listingCycle = await AddCycleForTradingDayAsync(cycleNumber: 200, dayNumber: 10);
+        var current = currentDayNumber == 10
+            ? listingCycle
+            : await AddCycleForTradingDayAsync(cycleNumber: 200 + currentDayNumber - 10, dayNumber: currentDayNumber);
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var company = await AddCompanyAsync(issuedShares: 1_000_000, createdInCycleId: listingCycle.Id);
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        var snapshotCount = await context.PriceSnapshots.CountAsync();
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == company.Id);
+        Assert.Null(refreshed.ClosedInCycleId);
+        Assert.Equal(snapshotCount, await context.PriceSnapshots.CountAsync());
+        Assert.Equal(0, await context.NewsPosts.CountAsync(post => post.Scope == NewsImpactScope.Company));
+    }
+
+    [Fact]
+    public async Task TradingDaysNotCycleDistanceControlFreshness()
+    {
+        var listingCycle = await AddCycleForTradingDayAsync(cycleNumber: 200, dayNumber: 10);
+        for (var tradingCycleNumber = 2; tradingCycleNumber <= 20; tradingCycleNumber++)
+        {
+            context.MarketCycles.Add(new MarketCycle
+            {
+                CycleNumber = 199 + tradingCycleNumber,
+                TradingDayId = listingCycle.TradingDayId,
+                TradingCycleNumber = tradingCycleNumber,
+                Status = CycleStatus.Completed,
+                StartedAt = DateTime.UtcNow,
+            });
+        }
+        await context.SaveChangesAsync();
+
+        var current = await AddCycleForTradingDayAsync(cycleNumber: 900, dayNumber: 14);
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var company = await AddCompanyAsync(issuedShares: 1_000_000, createdInCycleId: listingCycle.Id);
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        var snapshotCount = await context.PriceSnapshots.CountAsync();
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == company.Id);
+        Assert.Null(refreshed.ClosedInCycleId);
+        Assert.Equal(snapshotCount, await context.PriceSnapshots.CountAsync());
+        Assert.Equal(0, await context.NewsPosts.CountAsync(post => post.Scope == NewsImpactScope.Company));
+    }
+
+    [Fact]
+    public async Task LateListedCompanyBecomesEligibleOnItsSixthTradingDay()
+    {
+        var listingCycle = await AddCycleForTradingDayAsync(cycleNumber: 200, dayNumber: 10);
+        var current = await AddCycleForTradingDayAsync(cycleNumber: 205, dayNumber: 15);
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var company = await AddCompanyAsync(issuedShares: 1_000_000, createdInCycleId: listingCycle.Id);
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var latest = await context.PriceSnapshots.AsNoTracking()
+            .Where(snapshot => snapshot.CompanyId == company.Id)
+            .OrderByDescending(snapshot => snapshot.Id)
+            .FirstAsync();
+        Assert.Equal(40m, latest.Price);
+        Assert.Equal(1, await context.NewsPosts.CountAsync(post => post.Scope == NewsImpactScope.Company));
+    }
+
+    [Fact]
+    public async Task FullMarketPressureSkipsFreshWorstPerformer()
+    {
+        var listingCycle = await AddCycleForTradingDayAsync(cycleNumber: 199, dayNumber: 16);
+        var current = await AddCycleForTradingDayAsync(cycleNumber: 200, dayNumber: 20);
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var companies = await AddCompaniesAsync(300);
+
+        var dominant = companies[0];
+        dominant.IssuedSharesCount = 1_000_000;
+        var freshWorst = companies[150];
+        freshWorst.CreatedInCycleId = listingCycle.Id;
+        await context.SaveChangesAsync();
+
+        await AddSnapshotAsync(dominant.Id, price: 1_000m, listingCycle);
+        await AddSnapshotAsync(freshWorst.Id, price: 100m, listingCycle);
+        await AddSnapshotAsync(freshWorst.Id, price: 20m, current);
+        var matureNextWorst = companies[200];
+        await AddSnapshotAsync(matureNextWorst.Id, price: 100m, listingCycle);
+        await AddSnapshotAsync(matureNextWorst.Id, price: 40m, current);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshedFresh = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == freshWorst.Id);
+        var refreshedMature = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == matureNextWorst.Id);
+        Assert.Null(refreshedFresh.ClosedInCycleId);
+        Assert.Equal(current.Id, refreshedMature.ClosedInCycleId);
+    }
+
+    [Fact]
+    public async Task LegacyCompanyWithoutListingCycleRemainsEligible()
+    {
+        var current = await AddCycleForTradingDayAsync(cycleNumber: 200, dayNumber: 20);
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(current);
+        var company = await AddCompanyAsync(createdInCycleId: null);
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == company.Id);
+        Assert.Equal(current.Id, refreshed.ClosedInCycleId);
+    }
+
+    [Fact]
+    public async Task CompanyWithUnmappedListingCycleRemainsEligible()
+    {
+        var listingCycle = await AddCycleAsync(100);
+        var current = await AddCycleForTradingDayAsync(cycleNumber: 200, dayNumber: 20);
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(current);
+        var company = await AddCompanyAsync(createdInCycleId: listingCycle.Id);
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == company.Id);
+        Assert.Equal(current.Id, refreshed.ClosedInCycleId);
     }
 
     [Fact]
@@ -535,6 +722,33 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         return cycles;
     }
 
+    private async Task<MarketCycle> AddCycleForTradingDayAsync(int cycleNumber, int dayNumber)
+    {
+        var day = new TradingDay
+        {
+            DayNumber = dayNumber,
+            State = TradingSessionState.Trading,
+            OpenedInCycleId = 0,
+        };
+        context.TradingDays.Add(day);
+        await context.SaveChangesAsync();
+
+        var cycle = new MarketCycle
+        {
+            CycleNumber = cycleNumber,
+            TradingDayId = day.Id,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Running,
+            StartedAt = DateTime.UtcNow,
+        };
+        context.MarketCycles.Add(cycle);
+        await context.SaveChangesAsync();
+
+        day.OpenedInCycleId = cycle.Id;
+        await context.SaveChangesAsync();
+        return cycle;
+    }
+
     private async Task SetupMarketAsync(MarketCycle currentCycle, int lastAppearanceCycleNumber, int closuresSinceLastAppearance = 0)
     {
         var now = DateTime.UtcNow;
@@ -556,7 +770,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await context.SaveChangesAsync();
     }
 
-    private async Task<Company> AddCompanyAsync(int issuedShares = 1000)
+    private async Task<Company> AddCompanyAsync(int issuedShares = 1000, int? createdInCycleId = null)
     {
         var now = DateTime.UtcNow;
         var company = new Company
@@ -564,7 +778,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
             Name = $"Acme {Guid.NewGuid():N}",
             IndustryId = industryId,
             IssuedSharesCount = issuedShares,
-            CreatedInCycleId = null,
+            CreatedInCycleId = createdInCycleId,
             CreatedAt = now,
             UpdatedAt = now,
         };

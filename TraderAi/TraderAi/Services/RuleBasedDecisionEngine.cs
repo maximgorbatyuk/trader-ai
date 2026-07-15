@@ -103,7 +103,8 @@ public sealed class RuleBasedDecisionEngine(
 
         if (automatedExposure?.Position == AutomatedExposurePosition.Below && actionableBuyCandidates.Count > 0)
         {
-            buyTarget ??= actionableBuyCandidates[0];
+            // A signal fixes the target without another draw; only the no-signal fallback diversifies it.
+            buyTarget ??= actionableBuyCandidates[random.Next(actionableBuyCandidates.Count)];
             buyPull = Math.Max(buyPull, BelowTargetBuyPull);
         }
 
