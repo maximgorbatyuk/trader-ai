@@ -360,7 +360,7 @@
 /* ---- Footer ---- */
 .footer {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(9rem, 1fr) minmax(9rem, 1fr);
+  grid-template-columns: minmax(0, 2fr) repeat(3, minmax(9rem, 1fr));
   gap: var(--s-6);
   width: min(1760px, 90%);
   margin: 0 auto;

@@ -4,14 +4,29 @@ import { api } from './api'
 
 const REPOSITORY_URL = 'https://github.com/maximgorbatyuk/trader-ai'
 const FOOTER_LINK_GROUPS = [
-  [
-    { label: 'Concept', href: `${REPOSITORY_URL}/blob/main/docs/domain.md` },
-    { label: 'About', href: `${REPOSITORY_URL}#trader-ai` },
-  ],
-  [
-    { label: 'Github', href: REPOSITORY_URL },
-    { label: 'Issues', href: `${REPOSITORY_URL}/issues` },
-  ],
+  {
+    ariaLabel: 'Project links',
+    links: [
+      { label: 'Concept', href: `${REPOSITORY_URL}/blob/main/docs/domain.md` },
+      { label: 'About', href: `${REPOSITORY_URL}#trader-ai` },
+    ],
+  },
+  {
+    ariaLabel: 'Repository links',
+    links: [
+      { label: 'Github', href: REPOSITORY_URL },
+      { label: 'Issues', href: `${REPOSITORY_URL}/issues` },
+    ],
+  },
+  {
+    ariaLabel: 'AI provider usage',
+    links: [
+      { label: 'MiniMax', href: 'https://platform.minimax.io/console/usage' },
+      { label: 'GLM', href: 'https://z.ai/manage-apikey/coding-plan/personal/usage' },
+      { label: 'OpenAI', href: 'https://platform.openai.com/usage' },
+      { label: 'Claude', href: 'https://platform.claude.com/usage' },
+    ],
+  },
 ]
 
 const STATUS_TONE = {
@@ -142,12 +157,8 @@ export function Footer() {
         </p>
       </div>
 
-      {FOOTER_LINK_GROUPS.map((links, index) => (
-        <nav
-          className="footer-links"
-          aria-label={index === 0 ? 'Project links' : 'Repository links'}
-          key={index === 0 ? 'project' : 'repository'}
-        >
+      {FOOTER_LINK_GROUPS.map(({ ariaLabel, links }) => (
+        <nav className="footer-links" aria-label={ariaLabel} key={ariaLabel}>
           <ul>
             {links.map((link) => (
               <li key={link.label}>
