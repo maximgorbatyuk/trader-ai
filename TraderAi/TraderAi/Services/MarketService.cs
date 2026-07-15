@@ -2855,6 +2855,7 @@ public sealed class MarketService(
         await dbContext.OrderFills.ExecuteDeleteAsync();
         await dbContext.DividendPayouts.ExecuteDeleteAsync();
         await dbContext.CorporateCashTransactions.ExecuteDeleteAsync();
+        await dbContext.StockDenominationEvents.ExecuteDeleteAsync();
         await dbContext.PriceBandStates.ExecuteDeleteAsync();
         await dbContext.MoneyTransactions.ExecuteDeleteAsync();
         await dbContext.PriceSnapshots.ExecuteDeleteAsync();
@@ -2881,7 +2882,7 @@ public sealed class MarketService(
         await dbContext.Database.ExecuteSqlRawAsync(
             "DELETE FROM sqlite_sequence WHERE name IN (" +
             "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
-            "'ShareTransactions', 'MoneyTransactions', 'DividendPayouts', 'CorporateCashTransactions', 'PriceBandStates', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
+            "'ShareTransactions', 'MoneyTransactions', 'DividendPayouts', 'CorporateCashTransactions', 'StockDenominationEvents', 'PriceBandStates', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', 'CrisisEvents', " +
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
             "'CollectiveFunds', 'CollectiveFundParticipants', 'CollectiveFundMembershipEvents', 'ParticipantWorthSnapshots', " +

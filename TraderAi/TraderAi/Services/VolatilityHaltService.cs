@@ -134,13 +134,23 @@ public sealed class VolatilityHaltService(
     private async Task<Dictionary<int, decimal>> ReferencePricesAsync(int currentCycleNumber, int windowCycles)
     {
         var firstCycle = Math.Max(1, currentCycleNumber - windowCycles + 1);
-        return await dbContext.ShareTransactions
-            .Join(
-                dbContext.MarketCycles,
-                transaction => transaction.CreatedInCycleId,
-                cycle => cycle.Id,
-                (transaction, cycle) => new { transaction.CompanyId, transaction.Price, cycle.CycleNumber })
-            .Where(row => row.CycleNumber >= firstCycle && row.CycleNumber <= currentCycleNumber)
+        var eligibleTrades =
+            from transaction in dbContext.ShareTransactions
+            join transactionCycle in dbContext.MarketCycles
+                on transaction.CreatedInCycleId equals transactionCycle.Id
+            where transactionCycle.CycleNumber >= firstCycle
+                && transactionCycle.CycleNumber <= currentCycleNumber
+                && !dbContext.StockDenominationEvents.Any(denominationEvent =>
+                    denominationEvent.CompanyId == transaction.CompanyId
+                    && denominationEvent.EffectiveInCycleNumber > transactionCycle.CycleNumber
+                    && denominationEvent.EffectiveInCycleNumber <= currentCycleNumber)
+            select new
+            {
+                transaction.CompanyId,
+                transaction.Price,
+            };
+
+        return await eligibleTrades
             .GroupBy(row => row.CompanyId)
             .ToDictionaryAsync(group => group.Key, group => group.Average(row => row.Price));
     }

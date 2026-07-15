@@ -107,11 +107,13 @@ A science investigation is a positive sector event. It raises affected companies
 
 Auditors review companies during the pre-match window. A severe finding can directly drop a company's price and trigger buyer order revisions before that cycle's automated decisions and matching. An issue-free review can instead raise expectations, lift the price, and cancel eligible participant sell orders so owners can re-form asks around the new level; player and bankrupt-owner orders remain untouched.
 
-### Stock Splits
+### Stock Splits And Reverse Splits
 
 When a company's per-share price grows too high, a stock split can re-denominate the shares. The split increases share counts and lowers the per-share price proportionally, preserving each holder's total value and the company's total market value.
 
-The split-adjusted price is recorded as a new price point. The unsold float is re-denominated in place, while participant orders for the split company are cancelled so trading can restart around the adjusted price.
+A reverse split applies the same rules in the other direction when a per-share price becomes too low. Whole-share division can discard a sub-share remainder, so holder value and capitalization can decrease by that small remainder.
+
+The adjusted price is recorded as a new price point. The unsold float and current LULD reference and band are re-denominated in place, while participant orders are cancelled so trading can restart around the adjusted price. Earlier trades remain unchanged as historical facts but stop contributing to the rolling LULD reference; the first new order and trade therefore use only the new price scale.
 
 ## Actions That Do Not Directly Set Price
 

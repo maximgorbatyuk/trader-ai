@@ -56,6 +56,72 @@ public sealed class LuldStateMachineTests : IDisposable
     }
 
     [Fact]
+    public async Task RollingReferenceStartsAtTheLatestDenominationCycle()
+    {
+        var seed = await SeedAsync(5);
+        AddTrade(seed, 1, 100m);
+        AddTrade(seed, 2, 120m);
+        AddTrade(seed, 3, 25m);
+        AddTrade(seed, 4, 27m);
+        context.StockDenominationEvents.Add(new StockDenominationEvent
+        {
+            CompanyId = seed.Company.Id,
+            ActionType = StockDenominationActionType.Split,
+            Ratio = 4,
+            IssuedSharesBefore = 1_000,
+            IssuedSharesAfter = 4_000,
+            PriceBefore = 100m,
+            PriceAfter = 25m,
+            EffectiveInCycleId = seed.CycleIds[3],
+            EffectiveInCycleNumber = 3,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+
+        await Service().ProcessForCycleAsync(seed.CycleIds[5], 5, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var state = await context.PriceBandStates.SingleAsync();
+        Assert.Equal(26m, state.ReferencePrice);
+        Assert.Equal(24.7m, state.LowerBandPrice);
+        Assert.Equal(27.3m, state.UpperBandPrice);
+    }
+
+    [Fact]
+    public async Task AdjustedSnapshotIsTheFallbackWhenNoPostActionTradeExists()
+    {
+        var seed = await SeedAsync(4);
+        AddTrade(seed, 2, 100m);
+        context.StockDenominationEvents.Add(new StockDenominationEvent
+        {
+            CompanyId = seed.Company.Id,
+            ActionType = StockDenominationActionType.Split,
+            Ratio = 4,
+            IssuedSharesBefore = 1_000,
+            IssuedSharesAfter = 4_000,
+            PriceBefore = 100m,
+            PriceAfter = 25m,
+            EffectiveInCycleId = seed.CycleIds[3],
+            EffectiveInCycleNumber = 3,
+            CreatedAt = DateTime.UtcNow,
+        });
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = seed.Company.Id,
+            Price = 25m,
+            Capitalization = 100_000m,
+            CreatedInCycleId = seed.CycleIds[3],
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+
+        await Service().ProcessForCycleAsync(seed.CycleIds[4], 4, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(25m, (await context.PriceBandStates.SingleAsync()).ReferencePrice);
+    }
+
+    [Fact]
     public async Task PersistentExcessBuyDemandRatchetsTheReferenceEachCycle()
     {
         var seed = await SeedAsync(3);

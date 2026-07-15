@@ -88,6 +88,83 @@ public sealed class StockSplitServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SplitRedenominatesPriceBandWithoutChangingLuldPhase()
+    {
+        var (cycle, company) = await SeedAsync(price: 1200m);
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = company.Id,
+            State = LuldState.TradingPause,
+            LimitDirection = PriceLimitDirection.Upper,
+            ReferencePrice = 1200m,
+            LowerBandPrice = 1020m,
+            UpperBandPrice = 1380m,
+            LimitStateStartedCycleNumber = 90,
+            PauseUntilCycleNumber = 250,
+            UpdatedInCycleId = cycle.Id,
+        });
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var state = await context.PriceBandStates.AsNoTracking().SingleAsync();
+        Assert.Equal(300m, state.ReferencePrice);
+        Assert.Equal(255m, state.LowerBandPrice);
+        Assert.Equal(345m, state.UpperBandPrice);
+        Assert.Equal(LuldState.TradingPause, state.State);
+        Assert.Equal(PriceLimitDirection.Upper, state.LimitDirection);
+        Assert.Equal(90, state.LimitStateStartedCycleNumber);
+        Assert.Equal(250, state.PauseUntilCycleNumber);
+        Assert.Equal(cycle.Id, state.UpdatedInCycleId);
+    }
+
+    [Fact]
+    public async Task SplitRecordsThePriceBandRebaseAsAnAppendOnlyEvent()
+    {
+        var (cycle, company) = await SeedAsync(price: 1200m);
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = company.Id,
+            State = LuldState.LimitState,
+            LimitDirection = PriceLimitDirection.Upper,
+            ReferencePrice = 1200m,
+            LowerBandPrice = 1020m,
+            UpperBandPrice = 1380m,
+            LimitStateStartedCycleNumber = 99,
+            UpdatedInCycleId = cycle.Id,
+        });
+        await context.SaveChangesAsync();
+
+        var now = DateTime.UtcNow;
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, now);
+        await context.SaveChangesAsync();
+
+        var denominationEvent = await context.StockDenominationEvents.AsNoTracking().SingleAsync();
+        Assert.Equal(company.Id, denominationEvent.CompanyId);
+        Assert.Equal(StockDenominationActionType.Split, denominationEvent.ActionType);
+        Assert.Equal(Ratio, denominationEvent.Ratio);
+        Assert.Equal(1000, denominationEvent.IssuedSharesBefore);
+        Assert.Equal(4000, denominationEvent.IssuedSharesAfter);
+        Assert.Equal(1200m, denominationEvent.PriceBefore);
+        Assert.Equal(300m, denominationEvent.PriceAfter);
+        Assert.Equal(LuldState.LimitState, denominationEvent.LuldState);
+        Assert.Equal(PriceLimitDirection.Upper, denominationEvent.LimitDirection);
+        Assert.Equal(1200m, denominationEvent.ReferencePriceBefore);
+        Assert.Equal(300m, denominationEvent.ReferencePriceAfter);
+        Assert.Equal(1020m, denominationEvent.LowerBandPriceBefore);
+        Assert.Equal(255m, denominationEvent.LowerBandPriceAfter);
+        Assert.Equal(1380m, denominationEvent.UpperBandPriceBefore);
+        Assert.Equal(345m, denominationEvent.UpperBandPriceAfter);
+        Assert.Equal(99, denominationEvent.LimitStateStartedCycleNumber);
+        Assert.Null(denominationEvent.PauseUntilCycleNumber);
+        Assert.Equal(cycle.Id, denominationEvent.PreviousPriceBandUpdatedInCycleId);
+        Assert.Equal(cycle.Id, denominationEvent.EffectiveInCycleId);
+        Assert.Equal(cycle.CycleNumber, denominationEvent.EffectiveInCycleNumber);
+        Assert.Equal(now, denominationEvent.CreatedAt);
+    }
+
+    [Fact]
     public async Task SplitCancelsParticipantOrdersAndRedenominatesTheFloat()
     {
         var (cycle, company) = await SeedAsync(price: 1200m);
@@ -211,6 +288,60 @@ public sealed class StockSplitServiceTests : IDisposable
         Assert.Equal(800m, refreshedHolding.AverageCost);
         Assert.Equal(capBefore, refreshedCompany.IssuedSharesCount * newPrice);
         Assert.Equal(worthBefore, refreshedHolding.Quantity * newPrice);
+    }
+
+    [Fact]
+    public async Task ReverseSplitRedenominatesPriceBandWithoutChangingLuldPhase()
+    {
+        var (cycle, company) = await SeedAsync(price: 4m);
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = company.Id,
+            State = LuldState.LimitState,
+            LimitDirection = PriceLimitDirection.Lower,
+            ReferencePrice = 4m,
+            LowerBandPrice = 3.4m,
+            UpperBandPrice = 4.6m,
+            LimitStateStartedCycleNumber = 95,
+            PauseUntilCycleNumber = null,
+            UpdatedInCycleId = cycle.Id,
+        });
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var state = await context.PriceBandStates.AsNoTracking().SingleAsync();
+        Assert.Equal(16m, state.ReferencePrice);
+        Assert.Equal(13.6m, state.LowerBandPrice);
+        Assert.Equal(18.4m, state.UpperBandPrice);
+        Assert.Equal(LuldState.LimitState, state.State);
+        Assert.Equal(PriceLimitDirection.Lower, state.LimitDirection);
+        Assert.Equal(95, state.LimitStateStartedCycleNumber);
+        Assert.Null(state.PauseUntilCycleNumber);
+        Assert.Equal(cycle.Id, state.UpdatedInCycleId);
+    }
+
+    [Fact]
+    public async Task ReverseSplitRecordsAnEventWhenNoPriceBandExistsYet()
+    {
+        var (cycle, company) = await SeedAsync(price: 4m);
+
+        await Service(enabled: true).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var denominationEvent = await context.StockDenominationEvents.AsNoTracking().SingleAsync();
+        Assert.Equal(StockDenominationActionType.ReverseSplit, denominationEvent.ActionType);
+        Assert.Equal(Ratio, denominationEvent.Ratio);
+        Assert.Equal(1000, denominationEvent.IssuedSharesBefore);
+        Assert.Equal(250, denominationEvent.IssuedSharesAfter);
+        Assert.Equal(4m, denominationEvent.PriceBefore);
+        Assert.Equal(16m, denominationEvent.PriceAfter);
+        Assert.Null(denominationEvent.LuldState);
+        Assert.Null(denominationEvent.ReferencePriceBefore);
+        Assert.Null(denominationEvent.ReferencePriceAfter);
+        Assert.Equal(cycle.Id, denominationEvent.EffectiveInCycleId);
+        Assert.Equal(cycle.CycleNumber, denominationEvent.EffectiveInCycleNumber);
     }
 
     [Fact]
