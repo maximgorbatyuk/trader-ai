@@ -45,19 +45,113 @@
   font-size: var(--t-sm);
 }
 
-/* Stored JSON is plain text in a scrollable region so a wide payload never widens the dialog. */
+.ai-call-section-title {
+  margin: 0;
+}
+
+.ai-call-prose {
+  max-width: 75ch;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-sm);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-decision-table {
+  min-width: 760px;
+  font-size: var(--t-sm);
+}
+
+.ai-decision-table tbody td {
+  vertical-align: top;
+}
+
+.ai-decision-reason {
+  min-width: 300px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-call-technical {
+  gap: 0;
+}
+
+.ai-call-technical > .ai-call-section-title {
+  margin-bottom: var(--s-1);
+}
+
+.ai-call-disclosure {
+  border-top: 1px solid var(--border);
+}
+
+.ai-call-disclosure:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-call-disclosure > summary {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) 0;
+  color: var(--ink);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.ai-call-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ai-call-disclosure > summary::before {
+  color: var(--muted);
+  content: '▸';
+}
+
+.ai-call-disclosure[open] > summary::before {
+  content: '▾';
+}
+
+.ai-call-disclosure > summary:hover {
+  background: var(--surface-2);
+}
+
+.ai-call-disclosure > summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.ai-call-disclosure-state {
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  font-weight: 500;
+}
+
+.ai-call-disclosure > .ai-call-json,
+.ai-call-disclosure > .note {
+  margin-bottom: var(--s-3);
+}
+
+/* Stored JSON wraps within a scrollable region so a wide payload never widens the dialog or needs horizontal scrolling. */
 .ai-call-json {
   margin: 0;
-  max-height: 240px;
+  max-height: 360px;
   overflow: auto;
   padding: var(--s-2) var(--s-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
   font-size: var(--t-2xs);
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .modal-ai-call {
-  width: min(760px, 96vw);
+  width: min(1080px, 96vw);
+  max-height: min(92vh, 1040px);
 }

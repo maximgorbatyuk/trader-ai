@@ -14,7 +14,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     private static readonly DateTimeOffset Now = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
 
     private static readonly string ValidDecision =
-        "{\"summary\":\"Buy a strong company.\",\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"limitPrice\":100,\"reason\":\"r\"}]}";
+        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"limitPrice\":100,\"reason\":\"r\"}]}";
 
     private readonly string databasePath;
     private readonly ServiceProvider provider;
@@ -44,6 +44,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         services.AddScoped<IDecisionEngine, NoOpDecisionEngine>();
         services.AddScoped<MatchingEngine>();
         services.AddScoped<MarginService>();
+        services.AddScoped<AutomatedBuyOrderPolicy>();
         services.AddScoped<TradingClockService>();
         services.AddScoped<MarketService>();
         services.AddScoped<AiMarketSnapshotBuilder>();
@@ -70,6 +71,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         services.Configure<TradeFeeOptions>(_ => { });
         services.Configure<SettlementOptions>(_ => { });
         services.Configure<MarginOptions>(options => options.Enabled = false);
+        services.Configure<AutomatedTradingOptions>(_ => { });
         services.Configure<VolatilityHaltOptions>(_ => { });
         services.Configure<TradingClockOptions>(options =>
         {

@@ -6,13 +6,17 @@ namespace TraderAi.Services;
 // Baseline trader: each tick it makes one global choice — buy, sell, or do nothing. Recent price moves
 // and order-book demand bias that choice toward buying risers or selling fallers, with stronger
 // reactions at extreme long-range moves, and otherwise the choice is a uniform pick among the open
-// actions. Order size comes from the injected sizer, buyers bid 1–5% above and sellers ask 1–5% below
-// the last price so orders cross, and an LLM-backed engine can later implement the same interface.
+// actions. Legacy orders keep their randomized pricing; enriched Individuals cross the best available ask or
+// place a bounded in-band passive bid, and an LLM-backed engine can implement the same pure interface.
 public sealed class RuleBasedDecisionEngine(
     ITradeSizer tradeSizer,
     IOptions<RandomChanceRatesOptions> chanceRates,
-    Random random) : IDecisionEngine
+    Random random,
+    AutomatedBuyOrderPolicy? automatedBuyOrderPolicy = null) : IDecisionEngine
 {
+    private readonly AutomatedBuyOrderPolicy automatedBuyOrderPolicy = automatedBuyOrderPolicy
+        ?? new AutomatedBuyOrderPolicy(Options.Create(new AutomatedTradingOptions()));
+
     // Recent (one-cycle) move maps to a buy/sell pull, ramping with the size of the move up to a cap; a
     // ~5% move alone reaches the cap.
     private const double RecentMoveScale = 4.0;
@@ -35,6 +39,7 @@ public sealed class RuleBasedDecisionEngine(
     // Caps keep any single side from saturating the random draw once several pulls stack.
     private const double MaxBuyPull = 0.80;
     private const double MaxSellPull = 0.80;
+    private const double BelowTargetBuyPull = 0.60;
 
     // Risk profile scales the signal pulls: a high-risk trader reacts harder to price moves, a low-risk
     // one holds back. Medium leaves the pull untouched so its behaviour matches the signal alone.
@@ -69,19 +74,38 @@ public sealed class RuleBasedDecisionEngine(
                 && context.SharesOwnedByCompany.GetValueOrDefault(quote.CompanyId) > 0)
             .ToList();
 
-        var buyCandidates = context.AvailableCash > 0m
+        var automatedExposure = AutomatedExposure(context);
+        var automatedBuyBlocked = automatedExposure is not null
+            && automatedExposure.CurrentExposurePercent >= automatedExposure.Target.MaximumExposurePercent;
+        var buyCandidates = context.AvailableCash > 0m && !automatedBuyBlocked
             ? context.Companies
                 .Where(quote => quote.Bounds is not null
-                    && !context.CompaniesWithOpenOrders.Contains(quote.CompanyId))
+                    && !context.CompaniesWithOpenOrders.Contains(quote.CompanyId)
+                    && !(UsesAutomatedBuyPolicy(context) && quote.IndividualBuyBlockedForBatch))
                 .ToList()
             : [];
+        var actionableBuyCandidates = buyCandidates;
+        if (automatedExposure?.Position == AutomatedExposurePosition.Below)
+        {
+            var executableCandidates = buyCandidates.Where(HasExecutableAsk).ToList();
+            if (executableCandidates.Count > 0)
+            {
+                actionableBuyCandidates = executableCandidates;
+            }
+        }
 
-        var (buyTarget, buyPull) = StrongestBuy(context, buyCandidates);
+        var (buyTarget, buyPull) = StrongestBuy(context, actionableBuyCandidates);
         var (sellTarget, sellPull) = StrongestSell(sellCandidates);
 
         var riskFactor = RiskPullFactor(context.Participant.RiskProfile);
         buyPull = Math.Min(MaxBuyPull, buyPull * riskFactor);
         sellPull *= riskFactor;
+
+        if (automatedExposure?.Position == AutomatedExposurePosition.Below && actionableBuyCandidates.Count > 0)
+        {
+            buyTarget ??= actionableBuyCandidates[0];
+            buyPull = Math.Max(buyPull, BelowTargetBuyPull);
+        }
 
         // Debt leans the trader toward selling to repay; the pull scales with how deep the debt runs against
         // its worth and with risk appetite, and it needs some holding worth selling before it applies.
@@ -132,7 +156,7 @@ public sealed class RuleBasedDecisionEngine(
             }
         }
 
-        if (buyCandidates.Count > 0)
+        if (actionableBuyCandidates.Count > 0)
         {
             for (var copy = 0; copy < actionWeight; copy++)
             {
@@ -143,7 +167,9 @@ public sealed class RuleBasedDecisionEngine(
         var intent = actions[random.Next(actions.Count)] switch
         {
             TradeAction.Sell => BuildSell(context, sellCandidates[random.Next(sellCandidates.Count)]),
-            TradeAction.Buy => BuildBuy(context, buyCandidates[random.Next(buyCandidates.Count)]),
+            TradeAction.Buy => BuildBuy(
+                context,
+                actionableBuyCandidates[random.Next(actionableBuyCandidates.Count)]),
             _ => null,
         };
 
@@ -348,6 +374,11 @@ public sealed class RuleBasedDecisionEngine(
 
     private OrderIntent? BuildBuy(DecisionContext context, CompanyQuote quote)
     {
+        if (UsesAutomatedBuyPolicy(context))
+        {
+            return BuildAutomatedIndividualBuy(context, quote);
+        }
+
         var buyLimit = PickLimitPrice(quote, OrderType.Buy);
         if (buyLimit <= 0m)
         {
@@ -363,9 +394,53 @@ public sealed class RuleBasedDecisionEngine(
             : null;
     }
 
-    // Pricing draws, in order: one draw decides inside-band versus a waiting outer segment (OutsideBandOrder
-    // chance), then one draw places the price — the 1-5% reference offset clamped to the active band, or a uniform
-    // point across the outer segments. Both sides may use either outer segment.
+    private OrderIntent? BuildAutomatedIndividualBuy(DecisionContext context, CompanyQuote quote)
+    {
+        var bestAsk = quote.BestExecutableSellPrice.GetValueOrDefault();
+        var hasExecutableAsk = HasExecutableAsk(quote);
+        var buyLimit = hasExecutableAsk
+            ? bestAsk
+            : PickInsideLimitPrice(quote, OrderType.Buy);
+        var envelope = automatedBuyOrderPolicy.BuildBuyEnvelope(new AutomatedBuyOrderInput(
+            context.Participant.RiskProfile,
+            context.NetWorth,
+            context.HoldingsValue,
+            context.ReservedBuyNotional,
+            context.AvailableBalance,
+            context.BuyingPower,
+            context.MarginLiability,
+            buyLimit,
+            quote.IssuedShares,
+            hasExecutableAsk ? quote.BestExecutableSellQuantity : 0));
+        if (envelope is null)
+        {
+            return null;
+        }
+
+        var sizedQuantity = tradeSizer.Size(context.Participant.Temperament, envelope.MaximumQuantity);
+        var quantity = Math.Clamp(sizedQuantity, envelope.MinimumQuantity, envelope.MaximumQuantity);
+        return new OrderIntent(OrderType.Buy, quote.CompanyId, quantity, buyLimit);
+    }
+
+    private AutomatedExposureAssessment? AutomatedExposure(DecisionContext context) =>
+        UsesAutomatedBuyPolicy(context)
+            ? automatedBuyOrderPolicy.AssessExposure(
+                context.Participant.RiskProfile,
+                context.NetWorth,
+                context.HoldingsValue)
+            : null;
+
+    private static bool UsesAutomatedBuyPolicy(DecisionContext context) =>
+        context.Participant.Type == ParticipantType.Individual && context.HasAutomatedTradingData;
+
+    private static bool HasExecutableAsk(CompanyQuote quote) =>
+        quote.BestExecutableSellPrice is decimal bestAsk
+        && quote.BestExecutableSellQuantity > 0
+        && quote.Bounds!.IsWithinActiveBand(bestAsk);
+
+    // Legacy pricing draws, in order: one draw decides inside-band versus a waiting outer segment
+    // (OutsideBandOrder chance), then one draw places the price. Automated Individual buys bypass this path so
+    // funds and old callers retain their exact random sequence.
     private decimal PickLimitPrice(CompanyQuote quote, OrderType type)
     {
         var bounds = quote.Bounds!;
@@ -374,6 +449,12 @@ public sealed class RuleBasedDecisionEngine(
             return OuterSegmentPrice(bounds);
         }
 
+        return PickInsideLimitPrice(quote, type);
+    }
+
+    private decimal PickInsideLimitPrice(CompanyQuote quote, OrderType type)
+    {
+        var bounds = quote.Bounds!;
         var pricingReference = Math.Max(quote.Price, bounds.ReferencePrice);
         var inside = type == OrderType.Buy
             ? Round(pricingReference * (1m + RandomOffset()))

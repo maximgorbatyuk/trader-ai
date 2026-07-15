@@ -24,14 +24,27 @@ public static class AiDecisionJson
         error = null;
 
         AiTradeDecision? parsed;
+        JsonDocument document;
         try
         {
+            document = JsonDocument.Parse(content);
             parsed = JsonSerializer.Deserialize<AiTradeDecision>(content, Options);
         }
         catch (JsonException exception)
         {
             error = exception.Message;
             return false;
+        }
+
+        using (document)
+        {
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("cancelOrderIds", out var cancelOrderIds)
+                || cancelOrderIds.ValueKind != JsonValueKind.Array)
+            {
+                error = "A cancelOrderIds array is required.";
+                return false;
+            }
         }
 
         if (parsed is null)
@@ -55,6 +68,24 @@ public static class AiDecisionJson
         if (parsed.Orders.Length > maxOrders)
         {
             error = $"A decision may contain at most {maxOrders} orders.";
+            return false;
+        }
+
+        if (parsed.CancelOrderIds.Length > maxOrders)
+        {
+            error = $"A decision may contain at most {maxOrders} cancelOrderIds.";
+            return false;
+        }
+
+        if (parsed.CancelOrderIds.Distinct().Count() != parsed.CancelOrderIds.Length)
+        {
+            error = "Each cancelOrderIds value must be unique.";
+            return false;
+        }
+
+        if (parsed.CancelOrderIds.Any(orderId => orderId <= 0))
+        {
+            error = "Each cancelOrderIds value must be positive.";
             return false;
         }
 

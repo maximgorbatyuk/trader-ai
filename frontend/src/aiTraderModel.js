@@ -84,3 +84,50 @@ export function formatStoredJson(value) {
     return String(value)
   }
 }
+
+function parseStoredObject(value) {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function extractThinking(response) {
+  const message = response?.choices?.[0]?.message
+  if (!message || typeof message !== 'object') {
+    return ''
+  }
+
+  const dedicatedReasoning = message.reasoning_content ?? message.reasoningContent
+  if (isNonBlank(dedicatedReasoning)) {
+    return dedicatedReasoning.trim()
+  }
+
+  if (!isNonBlank(message.content)) {
+    return ''
+  }
+
+  const match = message.content.match(/<think>([\s\S]*?)<\/think>/i)
+  return match ? match[1].trim() : ''
+}
+
+export function parseAiCallPresentation(responseBody, decisionJson) {
+  const response = parseStoredObject(responseBody)
+  const decision = parseStoredObject(decisionJson)
+  const orders = Array.isArray(decision?.orders)
+    ? decision.orders.filter((order) => order && typeof order === 'object'
+      && Number.isInteger(order.companyId) && order.companyId > 0)
+    : []
+
+  return {
+    thinking: extractThinking(response),
+    summary: typeof decision?.summary === 'string' ? decision.summary : '',
+    orders,
+  }
+}

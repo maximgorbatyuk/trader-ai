@@ -118,3 +118,70 @@ test('formatStoredJson pretty-prints json and never evaluates content', async ()
   assert.equal(formatStoredJson('<script>alert(1)</script>'), '<script>alert(1)</script>')
   assert.equal(formatStoredJson(''), '')
 })
+
+test('AI call presentation extracts multiline thinking from the provider content', async () => {
+  const { parseAiCallPresentation } = await loadModule()
+  const responseBody = JSON.stringify({
+    choices: [{
+      message: {
+        content: '<think>\nFirst observation.\n\nSecond observation.\n</think>\n{"summary":"Done","orders":[]}',
+      },
+    }],
+  })
+
+  assert.equal(
+    parseAiCallPresentation(responseBody, null).thinking,
+    'First observation.\n\nSecond observation.',
+  )
+})
+
+test('AI call presentation reads a dedicated reasoning field', async () => {
+  const { parseAiCallPresentation } = await loadModule()
+  const responseBody = JSON.stringify({
+    choices: [{ message: { reasoning_content: 'Compare value.\nCheck risk.', content: '{"summary":"Done"}' } }],
+  })
+
+  assert.equal(parseAiCallPresentation(responseBody, null).thinking, 'Compare value.\nCheck risk.')
+})
+
+test('AI call presentation preserves summary line breaks', async () => {
+  const { parseAiCallPresentation } = await loadModule()
+  const decisionJson = JSON.stringify({ summary: 'Portfolio reviewed.\nFive orders selected.', orders: [] })
+
+  assert.equal(
+    parseAiCallPresentation(null, decisionJson).summary,
+    'Portfolio reviewed.\nFive orders selected.',
+  )
+})
+
+test('AI call presentation exposes decision rows', async () => {
+  const { parseAiCallPresentation } = await loadModule()
+  const decisionJson = JSON.stringify({
+    summary: 'Buy selectively.',
+    orders: [{
+      side: 'Buy',
+      companyId: 117,
+      quantity: 20000,
+      limitPrice: 308.86,
+      reason: 'Strong sector momentum.',
+    }],
+  })
+
+  assert.deepEqual(parseAiCallPresentation(null, decisionJson).orders, [{
+    side: 'Buy',
+    companyId: 117,
+    quantity: 20000,
+    limitPrice: 308.86,
+    reason: 'Strong sector momentum.',
+  }])
+})
+
+test('AI call presentation safely handles malformed stored payloads', async () => {
+  const { parseAiCallPresentation } = await loadModule()
+
+  assert.deepEqual(parseAiCallPresentation('not json', '{broken'), {
+    thinking: '',
+    summary: '',
+    orders: [],
+  })
+})

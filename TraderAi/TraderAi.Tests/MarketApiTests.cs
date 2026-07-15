@@ -1098,6 +1098,96 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task ParticipantCashMovementsArePagedNewestFirst()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int participantId;
+            int oldestId;
+            int middleId;
+            int newestId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var cycleId = await db.MarketCycles
+                    .OrderByDescending(cycle => cycle.Id)
+                    .Select(cycle => cycle.Id)
+                    .FirstAsync();
+                var participant = new Participant
+                {
+                    Name = "Cash Pager",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    InitialBalance = 1_000m,
+                    CurrentBalance = 1_000m,
+                    SettledCashBalance = 1_000m,
+                    IsActive = true,
+                };
+                db.Participants.Add(participant);
+                await db.SaveChangesAsync();
+                participantId = participant.Id;
+
+                var createdAt = DateTime.UtcNow;
+                var oldest = new MoneyTransaction
+                {
+                    ParticipantId = participantId,
+                    Type = MoneyTransactionType.Credit,
+                    Amount = 10m,
+                    CreatedInCycleId = cycleId,
+                    CreatedAt = createdAt,
+                };
+                var middle = new MoneyTransaction
+                {
+                    ParticipantId = participantId,
+                    Type = MoneyTransactionType.Credit,
+                    Amount = 20m,
+                    CreatedInCycleId = cycleId,
+                    CreatedAt = createdAt.AddSeconds(1),
+                };
+                var newest = new MoneyTransaction
+                {
+                    ParticipantId = participantId,
+                    Type = MoneyTransactionType.Credit,
+                    Amount = 30m,
+                    CreatedInCycleId = cycleId,
+                    CreatedAt = createdAt.AddSeconds(2),
+                };
+                db.MoneyTransactions.AddRange(oldest, middle, newest);
+                await db.SaveChangesAsync();
+                oldestId = oldest.Id;
+                middleId = middle.Id;
+                newestId = newest.Id;
+            }
+
+            var firstPage = await client.GetFromJsonAsync<PagedMoneyTransactionsDto>(
+                $"/participants/{participantId}/money-transactions/paged?page=1&pageSize=2");
+            Assert.Equal(3, firstPage!.Total);
+            Assert.Equal([newestId, middleId], firstPage.Items.Select(item => item.Id));
+            Assert.Equal(1, firstPage.Page);
+            Assert.Equal(2, firstPage.PageSize);
+
+            var secondPage = await client.GetFromJsonAsync<PagedMoneyTransactionsDto>(
+                $"/participants/{participantId}/money-transactions/paged?page=2&pageSize=2");
+            Assert.Equal(oldestId, Assert.Single(secondPage!.Items).Id);
+            Assert.Equal(2, secondPage.Page);
+            Assert.Equal(2, secondPage.PageSize);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CompanyDetailReturnsPriceAndOwnershipSplit()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -2816,6 +2906,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         bool IsFounder);
 
     private sealed record MoneyTransactionDto(int Id, string Type, decimal Amount, int CreatedInCycleId);
+
+    private sealed record PagedMoneyTransactionsDto(MoneyTransactionDto[] Items, int Total, int Page, int PageSize);
 
     private sealed record ActivityDto(
         int CycleNumber,

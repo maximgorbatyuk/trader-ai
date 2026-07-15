@@ -5,6 +5,7 @@ Margin buying uses a participant-level margin account. It is separate from expli
 ## Rules
 
 - Every active participant type, including the Player and Collective Funds, can have one margin account.
+- The account model remains available to all participant types, but discretionary automation is restricted. Low- and Medium-risk Individuals and AI Agents buy with cash only; High-risk automated traders may use margin only while total margin liability remains within 10% of net worth. Player orders and Collective Fund behavior keep their existing rules.
 - Buying power is based on account equity, existing holdings, current margin liability, the initial margin rate, and cash already reserved by open buy orders.
 - The default initial margin rate is 50%. An order may reserve cash and margin buying power only up to the amount available under that requirement.
 - When a fill costs more than the buyer's unreserved cash, the shortfall becomes margin debit. The participant's economic cash balance remains non-negative.

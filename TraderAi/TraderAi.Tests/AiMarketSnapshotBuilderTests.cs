@@ -118,6 +118,297 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.Equal(5, holding.SettledQuantity);
     }
 
+    [Fact]
+    public async Task BuildsSharedPolicyEnvelopeExecutableAskExposureAndParticipantFeedback()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var participant = await context.Participants.SingleAsync(candidate => candidate.Id == seed.AiParticipantId);
+        participant.CurrentBalance = 100_000m;
+        participant.SettledCashBalance = 100_000m;
+        participant.RiskProfile = RiskProfile.Medium;
+
+        var rival = await context.Participants.SingleAsync(candidate => candidate.Name == "Rival");
+        context.Orders.Add(new Order
+        {
+            ParticipantId = rival.Id,
+            CompanyId = seed.Company2Id,
+            Type = OrderType.Sell,
+            Status = OrderStatus.Open,
+            Quantity = 20,
+            LimitPrice = 90m,
+            CreatedInCycleId = (await context.Markets.SingleAsync()).CurrentCycleId!.Value,
+        });
+        context.AiTraderCalls.AddRange(
+            new AiTraderCall
+            {
+                ParticipantId = seed.AiParticipantId,
+                ParticipantName = participant.Name,
+                ProviderId = "glm",
+                ProviderLabel = "GLM",
+                Model = "model",
+                SnapshotCycleId = 35,
+                SnapshotCycleNumber = 35,
+                PromptHash = "hash",
+                RequestJson = "{}",
+                ApplicationResultJson =
+                    "{\"configurationStillCurrent\":true,\"cancellations\":[{\"applied\":false,\"rejectionReason\":\"Order is already closed.\"}],\"orders\":[{\"applied\":false,\"rejectionReason\":\"Quantity exceeds the current envelope.\"}]}",
+                Status = AiTraderCallStatus.Completed,
+                RequestedAt = DateTime.UtcNow,
+            },
+            new AiTraderCall
+            {
+                ParticipantId = rival.Id,
+                ParticipantName = rival.Name,
+                ProviderId = "glm",
+                ProviderLabel = "GLM",
+                Model = "model",
+                SnapshotCycleId = 35,
+                SnapshotCycleNumber = 35,
+                PromptHash = "other-hash",
+                RequestJson = "{}",
+                Error = "Other participant error.",
+                Status = AiTraderCallStatus.InvalidJson,
+                RequestedAt = DateTime.UtcNow.AddSeconds(1),
+            });
+        await context.SaveChangesAsync();
+
+        var snapshot = await Builder().BuildAsync(seed.AiParticipantId);
+
+        Assert.NotNull(snapshot);
+        var exposure = Assert.IsType<AiExposureSnapshot>(snapshot!.Participant.Exposure);
+        Assert.Equal("Below", exposure.Position);
+        Assert.Equal(35m, exposure.MinimumPercent);
+        Assert.Equal(55m, exposure.MaximumPercent);
+
+        var company = snapshot.Companies.Single(candidate => candidate.CompanyId == seed.Company2Id);
+        Assert.Equal(2_000, company.IssuedShares);
+        Assert.Equal(90m, company.BestExecutableSellPrice);
+        Assert.Equal(20, company.BestExecutableSellQuantity);
+        Assert.NotNull(company.BuyEnvelope);
+        Assert.Equal(90m, company.BuyEnvelope!.OrderPrice);
+        Assert.Equal(5, company.BuyEnvelope.MinimumQuantity);
+        Assert.Equal(20, company.BuyEnvelope.MaximumQuantity);
+        Assert.False(company.BuyEnvelope.IsPassive);
+
+        var feedback = Assert.Single(snapshot.RecentApplicationFeedback);
+        Assert.Equal(35, feedback.SnapshotCycleNumber);
+        Assert.Contains("Quantity exceeds the current envelope.", feedback.RejectionReasons);
+        Assert.Contains("Order is already closed.", feedback.RejectionReasons);
+        Assert.DoesNotContain(snapshot.RecentApplicationFeedback,
+            item => item.RejectionReasons.Contains("Other participant error."));
+    }
+
+    [Fact]
+    public async Task ExecutableAskAndEnvelopeUseSupplyResidualAfterOlderCrossingDemand()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var ai = await context.Participants.SingleAsync(candidate => candidate.Id == seed.AiParticipantId);
+        ai.CurrentBalance = 100_000m;
+        ai.SettledCashBalance = 100_000m;
+        ai.RiskProfile = RiskProfile.Medium;
+        var buyer = await context.Participants.SingleAsync(candidate => candidate.Name == "Rival");
+        var seller = new Participant
+        {
+            Name = "Seller",
+            Type = ParticipantType.Individual,
+            IsActive = true,
+            CurrentBalance = 1_000m,
+            SettledCashBalance = 1_000m,
+        };
+        context.Participants.Add(seller);
+        await context.SaveChangesAsync();
+        var cycleId = (await context.Markets.SingleAsync()).CurrentCycleId!.Value;
+        var ask = new Order
+        {
+            ParticipantId = seller.Id,
+            CompanyId = seed.Company2Id,
+            Type = OrderType.Sell,
+            Status = OrderStatus.Open,
+            Quantity = 10,
+            LimitPrice = 90m,
+            CreatedInCycleId = cycleId,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-2),
+        };
+        var olderCrossingBuy = new Order
+        {
+            ParticipantId = buyer.Id,
+            CompanyId = seed.Company2Id,
+            Type = OrderType.Buy,
+            Status = OrderStatus.Open,
+            Quantity = 10,
+            LimitPrice = 90m,
+            ReservedCashAmount = 900m,
+            CreatedInCycleId = cycleId,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-1),
+        };
+        context.Orders.AddRange(ask, olderCrossingBuy);
+        buyer.ReservedBalance += 900m;
+        await context.SaveChangesAsync();
+
+        var fullyShadowed = await Builder().BuildAsync(seed.AiParticipantId);
+
+        var fullyShadowedCompany = fullyShadowed!.Companies
+            .Single(company => company.CompanyId == seed.Company2Id);
+        Assert.Null(fullyShadowedCompany.BestExecutableSellPrice);
+        Assert.Equal(0, fullyShadowedCompany.BestExecutableSellQuantity);
+        Assert.NotNull(fullyShadowedCompany.BuyEnvelope);
+        Assert.True(fullyShadowedCompany.BuyEnvelope!.IsPassive);
+
+        olderCrossingBuy.Quantity = 4;
+        olderCrossingBuy.ReservedCashAmount = 360m;
+        buyer.ReservedBalance = 360m;
+        await context.SaveChangesAsync();
+
+        var partiallyShadowed = await Builder().BuildAsync(seed.AiParticipantId);
+
+        var partiallyShadowedCompany = partiallyShadowed!.Companies
+            .Single(company => company.CompanyId == seed.Company2Id);
+        Assert.Equal(90m, partiallyShadowedCompany.BestExecutableSellPrice);
+        Assert.Equal(6, partiallyShadowedCompany.BestExecutableSellQuantity);
+        Assert.NotNull(partiallyShadowedCompany.BuyEnvelope);
+        Assert.False(partiallyShadowedCompany.BuyEnvelope!.IsPassive);
+        Assert.Equal(6, partiallyShadowedCompany.BuyEnvelope.MaximumQuantity);
+    }
+
+    [Fact]
+    public async Task OpenOrdersTellTheModelWhichCancellationsAreServiceOwned()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var ai = await context.Participants.SingleAsync(candidate => candidate.Id == seed.AiParticipantId);
+        var market = await context.Markets.SingleAsync();
+        var cycleId = market.CurrentCycleId!.Value;
+        var account = new MarginAccount
+        {
+            ParticipantId = ai.Id,
+            InitialMarginRate = 0.5m,
+            MaintenanceMarginRate = 0.25m,
+            Status = MarginAccountStatus.UnderCall,
+        };
+        var bank = new Bank { Name = "Snapshot bank", Balance = 1_000m };
+        context.AddRange(account, bank);
+        await context.SaveChangesAsync();
+        var marginCall = new MarginCall
+        {
+            MarginAccountId = account.Id,
+            OpenedInTradingDayId = market.CurrentTradingDayId!.Value,
+            OpenedInCycleId = cycleId,
+            Status = MarginCallStatus.Open,
+            CreatedAt = DateTime.UtcNow,
+        };
+        var loan = new Loan
+        {
+            BankId = bank.Id,
+            ParticipantId = ai.Id,
+            Principal = 100m,
+            RemainingPrincipal = 100m,
+            TermCycles = 10,
+            ScheduledInstallment = 10m,
+            Status = LoanStatus.Open,
+            OpenedInCycleId = cycleId,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.AddRange(marginCall, loan);
+        await context.SaveChangesAsync();
+        context.Orders.AddRange(
+            new Order
+            {
+                ParticipantId = ai.Id,
+                CompanyId = seed.Company2Id,
+                Type = OrderType.Sell,
+                Status = OrderStatus.Open,
+                Quantity = 1,
+                LimitPrice = 90m,
+                RelatedMarginCallId = marginCall.Id,
+                CreatedInCycleId = cycleId,
+            },
+            new Order
+            {
+                ParticipantId = ai.Id,
+                CompanyId = seed.Company2Id,
+                Type = OrderType.Sell,
+                Status = OrderStatus.Open,
+                Quantity = 1,
+                LimitPrice = 91m,
+                RelatedLoanId = loan.Id,
+                CreatedInCycleId = cycleId,
+            });
+        await context.SaveChangesAsync();
+
+        var snapshot = await Builder().BuildAsync(seed.AiParticipantId);
+
+        var ordinary = snapshot!.Participant.OpenOrders.Single(order => order.CompanyId == seed.Company1Id);
+        Assert.True(ordinary.CanCancel);
+        Assert.Null(ordinary.CancellationRestriction);
+        var marginOwned = snapshot.Participant.OpenOrders.Single(order => order.LimitPrice == 90m);
+        Assert.False(marginOwned.CanCancel);
+        Assert.Equal("MarginCall", marginOwned.CancellationRestriction);
+        var loanOwned = snapshot.Participant.OpenOrders.Single(order => order.LimitPrice == 91m);
+        Assert.False(loanOwned.CanCancel);
+        Assert.Equal("LoanDistress", loanOwned.CancellationRestriction);
+    }
+
+    [Fact]
+    public async Task SnapshotDoesNotAdvertiseAnEnvelopeAboveEarlierDemandPriority()
+    {
+        var seed = await SeedPriorityCeilingScenarioAsync(includeResidualAsk: true);
+
+        var snapshot = await Builder().BuildAsync(seed.AiParticipantId);
+
+        var company = snapshot!.Companies.Single(candidate => candidate.CompanyId == seed.Company2Id);
+        Assert.Equal("Below", snapshot.Participant.Exposure!.Position);
+        Assert.Equal(91m, company.BestExecutableSellPrice);
+        Assert.Equal(10, company.BestExecutableSellQuantity);
+        Assert.Equal(90m, company.MaximumPrioritySafeBuyPrice);
+        Assert.Null(company.BuyEnvelope);
+    }
+
+    [Fact]
+    public async Task PriorityCeilingProvidesPassiveGuidanceWhenNoResidualAskExists()
+    {
+        var seed = await SeedPriorityCeilingScenarioAsync(includeResidualAsk: false);
+
+        var snapshot = await Builder().BuildAsync(seed.AiParticipantId);
+
+        var company = snapshot!.Companies.Single(candidate => candidate.CompanyId == seed.Company2Id);
+        Assert.Equal(100m, company.CurrentPrice);
+        Assert.Null(company.BestExecutableSellPrice);
+        Assert.Equal(0, company.BestExecutableSellQuantity);
+        Assert.Equal(90m, company.MaximumPrioritySafeBuyPrice);
+        Assert.NotNull(company.BuyEnvelope);
+        Assert.Equal(90m, company.BuyEnvelope!.OrderPrice);
+        Assert.True(company.BuyEnvelope.IsPassive);
+        Assert.Equal("CurrentOpenOrdersBeforeCancellations", company.BuyEnvelope.StateBasis);
+    }
+
+    [Fact]
+    public async Task WithinExposureUsesPassivePriorityCeilingBelowResidualAsk()
+    {
+        var seed = await SeedPriorityCeilingScenarioAsync(includeResidualAsk: true);
+        var ai = await context.Participants.SingleAsync(candidate => candidate.Id == seed.AiParticipantId);
+        ai.CurrentBalance = 16_500m;
+        ai.SettledCashBalance = 16_500m;
+        ai.ReservedBalance = 0m;
+        var holding = await context.Holdings.SingleAsync(candidate =>
+            candidate.ParticipantId == ai.Id && candidate.CompanyId == seed.Company1Id);
+        holding.Quantity = 100;
+        holding.SettledQuantity = 100;
+        var ownOrder = await context.Orders.SingleAsync(candidate =>
+            candidate.ParticipantId == ai.Id && candidate.Status == OrderStatus.Open);
+        ownOrder.Status = OrderStatus.Cancelled;
+        ownOrder.ReservedCashAmount = 0m;
+        await context.SaveChangesAsync();
+
+        var snapshot = await Builder().BuildAsync(seed.AiParticipantId);
+
+        Assert.Equal("Within", snapshot!.Participant.Exposure!.Position);
+        var company = snapshot.Companies.Single(candidate => candidate.CompanyId == seed.Company2Id);
+        Assert.Equal(91m, company.BestExecutableSellPrice);
+        Assert.Equal(90m, company.MaximumPrioritySafeBuyPrice);
+        Assert.NotNull(company.BuyEnvelope);
+        Assert.Equal(90m, company.BuyEnvelope!.OrderPrice);
+        Assert.True(company.BuyEnvelope.IsPassive);
+    }
+
     private AiMarketSnapshotBuilder Builder() => new(
         context,
         new MarginService(context, Options.Create(new MarginOptions { Enabled = false })),
@@ -131,7 +422,83 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Options.Create(new TradeFeeOptions { Enabled = true, FeeRate = 0.005m }),
         Options.Create(new SettlementOptions { SettlementLagTradingDays = 1 }),
         Options.Create(new MarginOptions { Enabled = false }),
-        Options.Create(new VolatilityHaltOptions()));
+        Options.Create(new VolatilityHaltOptions()),
+        new AutomatedBuyOrderPolicy(Options.Create(new AutomatedTradingOptions())));
+
+    private async Task<MarketSeed> SeedPriorityCeilingScenarioAsync(bool includeResidualAsk)
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var ai = await context.Participants.SingleAsync(candidate => candidate.Id == seed.AiParticipantId);
+        ai.CurrentBalance = 100_000m;
+        ai.SettledCashBalance = 100_000m;
+        ai.RiskProfile = RiskProfile.Medium;
+        var buyer = await context.Participants.SingleAsync(candidate => candidate.Name == "Rival");
+        var seller = new Participant
+        {
+            Name = "Priority seller",
+            Type = ParticipantType.Individual,
+            IsActive = true,
+            CurrentBalance = 1_000m,
+            SettledCashBalance = 1_000m,
+        };
+        context.Participants.Add(seller);
+        await context.SaveChangesAsync();
+        var cycleId = (await context.Markets.SingleAsync()).CurrentCycleId!.Value;
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = seed.Company2Id,
+            Price = 100m,
+            Capitalization = 200_000m,
+            CreatedInCycleId = cycleId,
+        });
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = seed.Company2Id,
+            State = LuldState.Normal,
+            ReferencePrice = 100m,
+            LowerBandPrice = 85m,
+            UpperBandPrice = 115m,
+            UpdatedInCycleId = cycleId,
+        });
+        context.Orders.Add(new Order
+        {
+            ParticipantId = seller.Id,
+            CompanyId = seed.Company2Id,
+            Type = OrderType.Sell,
+            Status = OrderStatus.Open,
+            Quantity = 10,
+            LimitPrice = 90m,
+            CreatedInCycleId = cycleId,
+        });
+        if (includeResidualAsk)
+        {
+            context.Orders.Add(new Order
+            {
+                ParticipantId = seller.Id,
+                CompanyId = seed.Company2Id,
+                Type = OrderType.Sell,
+                Status = OrderStatus.Open,
+                Quantity = 10,
+                LimitPrice = 91m,
+                CreatedInCycleId = cycleId,
+            });
+        }
+        context.Orders.Add(new Order
+        {
+            ParticipantId = buyer.Id,
+            CompanyId = seed.Company2Id,
+            Type = OrderType.Buy,
+            Status = OrderStatus.Open,
+            Quantity = 10,
+            LimitPrice = 90m,
+            ReservedCashAmount = 900m,
+            CreatedInCycleId = cycleId,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-1),
+        });
+        buyer.ReservedBalance += 900m;
+        await context.SaveChangesAsync();
+        return seed;
+    }
 
     private async Task<MarketSeed> SeedThirtyFiveCycleMarketAsync()
     {

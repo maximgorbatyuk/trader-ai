@@ -98,10 +98,19 @@ public sealed class MarketService(
     MarginService? marginService = null,
     IOptions<VolatilityHaltOptions>? volatilityHaltOptions = null,
     IOptions<CollectiveFundOptions>? collectiveFundOptions = null,
-    PrimaryIssuanceService? primaryIssuanceService = null)
+    PrimaryIssuanceService? primaryIssuanceService = null,
+    AutomatedBuyOrderPolicy? automatedBuyOrderPolicy = null,
+    IOptions<AiTradingOptions>? aiTradingOptions = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
+
+    private sealed class ExecutableAskLevel(decimal price, long remainingQuantity)
+    {
+        public decimal Price { get; } = price;
+
+        public long RemainingQuantity { get; set; } = remainingQuantity;
+    }
 
     // Company cash-window chance/rate values fall back to the built-in defaults for reduced-argument tests.
     private readonly RandomChanceRatesOptions chanceRateValues = chanceRates?.Value ?? new RandomChanceRatesOptions();
@@ -120,12 +129,18 @@ public sealed class MarketService(
     private readonly VolatilityHaltOptions volatilityHaltOptionValues =
         volatilityHaltOptions?.Value ?? new VolatilityHaltOptions();
 
+    private readonly AutomatedBuyOrderPolicy automatedBuyPolicy =
+        automatedBuyOrderPolicy ?? new AutomatedBuyOrderPolicy(Options.Create(new AutomatedTradingOptions()));
+
+    private readonly int maxAiCancellationIds = Math.Max(
+        1,
+        aiTradingOptions?.Value.MaxOrdersPerDecision ?? new AiTradingOptions().MaxOrdersPerDecision);
+
     // How far back the long-range price move is measured for the engine's extreme-move reactions.
     private const int LongRangeWindowCycles = 10;
 
-    // Order ageing: a resting order is force-cancelled once this old, and from RepriceFromAge it is
-    // chased toward the market by RepriceStep with a probability that climbs the longer it stays
-    // unfilled (see RepriceChance), so a stubborn order is cut more aggressively before the cap.
+    // Order ageing: a resting automated order is force-cancelled once this old. Non-AI automated orders may
+    // be chased toward the market before the cap, while AI orders keep the exact price they selected.
     private const int OrderMaxAgeCycles = 15;
     private const int OrderRepriceFromAge = 1;
     private const decimal RepriceStep = 0.10m;
@@ -174,10 +189,9 @@ public sealed class MarketService(
         decimal limitPrice) =>
         WithLockAsync(() => PlaceOrderCoreAsync(participantId, companyId, type, quantity, limitPrice));
 
-    // Applies an AI trader's decision through the ordinary order path. It reacquires the market lock, reloads the
-    // trader, its configuration, and current market state into an OrderBookContext, and places each order with the
-    // same validation any order faces. A stale configuration revision or an ineligible participant applies nothing;
-    // each order commits independently, so one invalid order never rolls back a valid one.
+    // Revalidation and explicit cancellations share the market lock so stale reservations are released before
+    // replacement orders are assessed. Exact AI prices and quantities are either accepted unchanged through the
+    // ordinary order path or rejected independently against the shared automated-buy policy.
     public Task<AiDecisionApplicationResult> ApplyAiDecisionAsync(
         int participantId,
         int configurationRevision,
@@ -201,11 +215,21 @@ public sealed class MarketService(
             && participant is { IsActive: true, IsBankrupt: false, Type: ParticipantType.AIAgent };
         if (!stillCurrent)
         {
-            return new AiDecisionApplicationResult(false, []);
+            return new AiDecisionApplicationResult(false, [], []);
         }
 
         var priceByCompany = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
         var boundsByCompany = await ResolveOrderPriceBoundsByCompanyAsync(priceByCompany);
+        var holdings = await dbContext.Holdings
+            .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
+            .Select(holding => new { holding.CompanyId, holding.Quantity })
+            .ToListAsync();
+        var holdingsValue = holdings.Sum(holding =>
+            holding.Quantity * priceByCompany.GetValueOrDefault(holding.CompanyId));
+        var loanLiability = (await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext))
+            .GetValueOrDefault(participantId);
+        var marginLiability = (await MarginService.LiabilityByParticipantAsync(dbContext))
+            .GetValueOrDefault(participantId);
         var context = new OrderBookContext
         {
             Market = market!,
@@ -213,21 +237,125 @@ public sealed class MarketService(
             Participant = participant!,
             PriceByCompany = priceByCompany,
             BoundsByCompany = boundsByCompany,
+            HoldingsValue = holdingsValue,
+            LoanLiability = loanLiability,
+            MarginLiability = marginLiability,
         };
 
+        var cancellationResults = new AiCancellationApplicationResult?[decision.CancelOrderIds.Length];
+        var uniqueIds = new List<int>(Math.Min(decision.CancelOrderIds.Length, maxAiCancellationIds));
+        var seenIds = new HashSet<int>();
+        for (var index = 0; index < decision.CancelOrderIds.Length; index++)
+        {
+            var orderId = decision.CancelOrderIds[index];
+            if (!seenIds.Add(orderId))
+            {
+                cancellationResults[index] = new AiCancellationApplicationResult(
+                    orderId, false, "Duplicate cancellation ID was rejected.");
+                continue;
+            }
+
+            if (uniqueIds.Count >= maxAiCancellationIds)
+            {
+                cancellationResults[index] = new AiCancellationApplicationResult(
+                    orderId, false, $"Cancellation limit is {maxAiCancellationIds} unique order IDs per decision.");
+                continue;
+            }
+
+            uniqueIds.Add(orderId);
+        }
+
+        var ordersById = await dbContext.Orders
+            .Where(order => uniqueIds.Contains(order.Id))
+            .ToDictionaryAsync(order => order.Id);
+        var appliedCancellation = false;
+        for (var index = 0; index < decision.CancelOrderIds.Length; index++)
+        {
+            if (cancellationResults[index] is not null)
+            {
+                continue;
+            }
+
+            var orderId = decision.CancelOrderIds[index];
+            ordersById.TryGetValue(orderId, out var order);
+            if (order?.ParticipantId != participantId)
+            {
+                cancellationResults[index] = new AiCancellationApplicationResult(
+                    orderId, false, "Order does not belong to this AI trader.");
+                continue;
+            }
+
+            if (order.Status != OrderStatus.Open && order.Status != OrderStatus.PartiallyFilled)
+            {
+                cancellationResults[index] = new AiCancellationApplicationResult(
+                    orderId, false, "Only an open or partially filled order can be cancelled.");
+                continue;
+            }
+
+            if (order.RelatedMarginCallId is not null)
+            {
+                cancellationResults[index] = new AiCancellationApplicationResult(
+                    orderId, false, "Margin-call orders are managed by the risk service and cannot be cancelled.");
+                continue;
+            }
+
+            if (order.RelatedLoanId is not null)
+            {
+                cancellationResults[index] = new AiCancellationApplicationResult(
+                    orderId, false, "Loan-distress orders are managed by the risk service and cannot be cancelled.");
+                continue;
+            }
+
+            OrderCancellation.Cancel(dbContext, order, participant!, context.CurrentCycleId);
+            cancellationResults[index] = new AiCancellationApplicationResult(orderId, true, null);
+            appliedCancellation = true;
+        }
+
+        if (appliedCancellation)
+        {
+            await dbContext.SaveChangesAsync();
+        }
+
+        var (executableAskLevelsByCompany, priorBuyPriorityLimitByCompany) =
+            await BuildAiExecutableAskContextAsync(context);
         var results = new List<AiOrderApplicationResult>(decision.Orders.Length);
         for (var index = 0; index < decision.Orders.Length; index++)
         {
             var order = decision.Orders[index];
-            var placement = await PlaceOrderCoreAsync(
-                participantId,
-                order.CompanyId,
-                order.Side,
-                order.Quantity,
-                order.LimitPrice,
-                context.PriceByCompany,
-                deferSave: false,
-                context.BoundsByCompany);
+            var validationError = order.Side == OrderType.Buy
+                ? await ValidateAiBuyOrderAsync(
+                    context,
+                    executableAskLevelsByCompany,
+                    priorBuyPriorityLimitByCompany,
+                    order)
+                : null;
+            var placement = validationError is null
+                ? await PlaceOrderCoreAsync(
+                    participantId,
+                    order.CompanyId,
+                    order.Side,
+                    order.Quantity,
+                    order.LimitPrice,
+                    context.PriceByCompany,
+                    deferSave: false,
+                    context.BoundsByCompany)
+                : PlaceOrderResult.Fail(validationError);
+
+            if (placement.Success && order.Side == OrderType.Buy)
+            {
+                var consumedQuantity = ConsumeExecutableAskLevels(
+                    executableAskLevelsByCompany,
+                    order.CompanyId,
+                    order.LimitPrice,
+                    order.Quantity);
+                if (consumedQuantity > 0)
+                {
+                    UpdatePriorBuyPriorityLimit(
+                        priorBuyPriorityLimitByCompany,
+                        order.CompanyId,
+                        order.LimitPrice);
+                }
+            }
 
             results.Add(new AiOrderApplicationResult(
                 index,
@@ -241,7 +369,179 @@ public sealed class MarketService(
                 placement.Error));
         }
 
-        return new AiDecisionApplicationResult(true, results.ToArray());
+        return new AiDecisionApplicationResult(
+            true,
+            cancellationResults.Select(result => result!).ToArray(),
+            results.ToArray());
+    }
+
+    private async Task<string?> ValidateAiBuyOrderAsync(
+        OrderBookContext context,
+        IReadOnlyDictionary<int, List<ExecutableAskLevel>> executableAskLevelsByCompany,
+        IReadOnlyDictionary<int, decimal> priorBuyPriorityLimitByCompany,
+        AiTradeOrderDecision order)
+    {
+        var company = await dbContext.Companies
+            .FirstOrDefaultAsync(candidate => candidate.Id == order.CompanyId);
+        if (company is null)
+        {
+            return "Company not found.";
+        }
+
+        if (company.ClosedInCycleId is not null)
+        {
+            return "This company is delisted.";
+        }
+
+        if (!context.BoundsByCompany.TryGetValue(order.CompanyId, out var bounds))
+        {
+            return "No reference price is available for this company yet.";
+        }
+
+        if (!bounds.IsWithinAllowedRange(order.LimitPrice))
+        {
+            return $"Limit price must be between ${bounds.AllowedMinimumPrice:F2} and ${bounds.AllowedMaximumPrice:F2}.";
+        }
+
+        if (!bounds.IsWithinActiveBand(order.LimitPrice))
+        {
+            return $"AI buy limit price must stay inside the active band ${bounds.ActiveLowerPrice:F2}–${bounds.ActiveUpperPrice:F2}.";
+        }
+
+        var netWorth = context.Participant.CurrentBalance
+            + context.HoldingsValue
+            - context.LoanLiability
+            - context.MarginLiability;
+        var availableCash = context.Participant.AvailableBalance;
+        var orderNotional = order.LimitPrice * order.Quantity;
+
+        if (context.Participant.RiskProfile != RiskProfile.High
+            && orderNotional > Math.Max(0m, availableCash))
+        {
+            return "Margin is only available to High risk automated traders.";
+        }
+
+        var buyingPower = marginService is null
+            ? Math.Max(0m, availableCash)
+            : (await marginService.GetReadOnlyMetricsAsync(context.Participant, context.HoldingsValue)).BuyingPower;
+
+        var executableSells = executableAskLevelsByCompany.GetValueOrDefault(order.CompanyId) ?? [];
+        var bestSellPrice = executableSells.Count == 0 ? null : (decimal?)executableSells[0].Price;
+        if (priorBuyPriorityLimitByCompany.TryGetValue(order.CompanyId, out var priorPriorityLimit)
+            && order.LimitPrice > priorPriorityLimit)
+        {
+            return $"Buy limit price would violate earlier demand priority above ${priorPriorityLimit:F2}.";
+        }
+
+        var exposure = automatedBuyPolicy.AssessExposure(
+            context.Participant.RiskProfile,
+            netWorth,
+            context.HoldingsValue);
+        if (exposure?.Position == AutomatedExposurePosition.Below
+            && bestSellPrice is decimal bestAsk
+            && order.LimitPrice < bestAsk)
+        {
+            return $"Below-target buy must cross the best executable sell at ${bestAsk:F2}.";
+        }
+
+        var executableQuantity = executableSells
+            .Where(candidate => candidate.Price <= order.LimitPrice)
+            .Sum(candidate => candidate.RemainingQuantity);
+        var envelope = automatedBuyPolicy.BuildBuyEnvelope(new AutomatedBuyOrderInput(
+            context.Participant.RiskProfile,
+            netWorth,
+            context.HoldingsValue,
+            context.Participant.ReservedBalance,
+            availableCash,
+            buyingPower,
+            context.MarginLiability,
+            order.LimitPrice,
+            company.IssuedSharesCount,
+            (int)Math.Min(executableQuantity, int.MaxValue)));
+        if (envelope is null)
+        {
+            return "Buy order exceeds the automated exposure, reserved-order, cash, or margin limits.";
+        }
+
+        if (order.Quantity < envelope.MinimumQuantity)
+        {
+            return $"Buy quantity must be at least {envelope.MinimumQuantity} for the current envelope.";
+        }
+
+        if (order.Quantity > envelope.MaximumQuantity)
+        {
+            return $"Buy quantity must be at most {envelope.MaximumQuantity} for the current envelope.";
+        }
+
+        return null;
+    }
+
+    private async Task<(
+        IReadOnlyDictionary<int, List<ExecutableAskLevel>> LevelsByCompany,
+        Dictionary<int, decimal> PriorBuyPriorityLimitByCompany)> BuildAiExecutableAskContextAsync(
+        OrderBookContext context)
+    {
+        var openSells = await dbContext.Orders.AsNoTracking()
+            .Where(order => order.Type == OrderType.Sell
+                && order.ParticipantId != context.Participant.Id
+                && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
+            .Select(order => new
+            {
+                order.CompanyId,
+                order.LimitPrice,
+                RemainingQuantity = order.Quantity - order.FilledQuantity,
+            })
+            .ToListAsync();
+
+        var levelsByCompany = openSells
+            .Where(order => order.RemainingQuantity > 0
+                && context.BoundsByCompany.TryGetValue(order.CompanyId, out var bounds)
+                && bounds.IsWithinActiveBand(order.LimitPrice))
+            .GroupBy(order => order.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .GroupBy(order => order.LimitPrice)
+                    .OrderBy(level => level.Key)
+                    .Select(level => new ExecutableAskLevel(
+                        level.Key,
+                        level.Sum(order => (long)order.RemainingQuantity)))
+                    .ToList());
+
+        var openBuys = await dbContext.Orders.AsNoTracking()
+            .Where(order => order.Type == OrderType.Buy
+                && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
+            .Select(order => new
+            {
+                order.Id,
+                order.CompanyId,
+                order.LimitPrice,
+                order.CreatedAt,
+                RemainingQuantity = order.Quantity - order.FilledQuantity,
+            })
+            .ToListAsync();
+
+        var priorityLimitByCompany = new Dictionary<int, decimal>();
+        foreach (var buy in openBuys
+                     .Where(order => order.RemainingQuantity > 0
+                         && context.BoundsByCompany.TryGetValue(order.CompanyId, out var bounds)
+                         && bounds.IsWithinActiveBand(order.LimitPrice))
+                     .OrderByDescending(order => order.LimitPrice)
+                     .ThenBy(order => order.CreatedAt)
+                     .ThenBy(order => order.Id))
+        {
+            var consumedQuantity = ConsumeExecutableAskLevels(
+                levelsByCompany,
+                buy.CompanyId,
+                buy.LimitPrice,
+                buy.RemainingQuantity);
+            if (consumedQuantity > 0)
+            {
+                UpdatePriorBuyPriorityLimit(priorityLimitByCompany, buy.CompanyId, buy.LimitPrice);
+            }
+        }
+
+        return (levelsByCompany, priorityLimitByCompany);
     }
 
     public Task<AdvanceCycleResult> AdvanceCycleAsync() =>
@@ -512,7 +812,9 @@ public sealed class MarketService(
             {
                 CancelOrder(order, participant, currentCycleId);
             }
-            else if (bounds is not null && random.NextDouble() < RepriceChance(age))
+            else if (participant.Type != ParticipantType.AIAgent
+                && bounds is not null
+                && random.NextDouble() < RepriceChance(age))
             {
                 Reprice(order, participant, bounds, currentCycleId);
             }
@@ -621,11 +923,8 @@ public sealed class MarketService(
     private void CancelOrder(Order order, Participant participant, int currentCycleId)
         => OrderCancellation.Cancel(dbContext, order, participant, currentCycleId);
 
-    // A stale order is chased one RepriceStep toward the market and then clamped into the active band, so it can
-    // never compound past the band into the runaway limits the old unbounded step produced. A sell already inside
-    // or above the band steps down to cross sooner; one resting below the band climbs toward it. A buy mirrors
-    // that, stepping up unless it sits above the band. The result stays inside the active band, hence the allowed
-    // range too.
+    // A stale non-AI order is chased one RepriceStep toward the market and clamped into the active band. AI orders
+    // bypass this path because their submitted limit remains authoritative for the order's lifetime.
     private void Reprice(Order order, Participant participant, OrderPriceBounds bounds, int currentCycleId)
     {
         var now = DateTime.UtcNow;
@@ -2111,6 +2410,14 @@ public sealed class MarketService(
             .ToHashSet();
 
         var snapshots = await dbContext.PriceSnapshots.AsNoTracking().ToListAsync();
+        // A trading halt removes order eligibility, not economic value, so portfolio and margin valuation keep
+        // the latest price for every active company independently from the tradable quote map.
+        var valuationPriceByCompany = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
+        foreach (var closedCompanyId in closedCompanyIds)
+        {
+            valuationPriceByCompany.Remove(closedCompanyId);
+        }
+
         var quoteCompanyIds = snapshots
             .Select(snapshot => snapshot.CompanyId)
             .Where(companyId => !closedCompanyIds.Contains(companyId) && !haltedCompanyIds.Contains(companyId))
@@ -2123,6 +2430,9 @@ public sealed class MarketService(
                 industry => industry.Id,
                 (company, industry) => new { company.Id, industry.SentimentValue })
             .ToDictionaryAsync(pair => pair.Id, pair => pair.SentimentValue);
+        var issuedSharesByCompany = await dbContext.Companies.AsNoTracking()
+            .Where(company => quoteCompanyIds.Contains(company.Id))
+            .ToDictionaryAsync(company => company.Id, company => company.IssuedSharesCount);
         var quotes = snapshots
             .GroupBy(snapshot => snapshot.CompanyId)
             .Where(group => !closedCompanyIds.Contains(group.Key) && !haltedCompanyIds.Contains(group.Key))
@@ -2192,11 +2502,98 @@ public sealed class MarketService(
         // Bounds are resolved once for the whole batch and carried on the quote, so the pure engine prices against
         // them and the deferred writes validate against the same map without any per-order band query.
         var boundsByCompany = await ResolveOrderPriceBoundsByCompanyAsync(priceByCompany);
+        var openSellRows = await dbContext.Orders.AsNoTracking()
+            .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                && order.Type == OrderType.Sell
+                && quoteCompanyIds.Contains(order.CompanyId))
+            .Select(order => new
+            {
+                order.CompanyId,
+                order.LimitPrice,
+                RemainingQuantity = order.Quantity - order.FilledQuantity,
+            })
+            .ToListAsync();
+        // Decisions are staged before matching, so Individuals share these transient price levels rather than
+        // each treating the same ask shares as independently available. Funds retain their legacy quote view.
+        var executableAskLevelsByCompany = openSellRows
+            .Where(order => order.RemainingQuantity > 0
+                && boundsByCompany.TryGetValue(order.CompanyId, out var bounds)
+                && bounds.IsWithinActiveBand(order.LimitPrice))
+            .GroupBy(order => order.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .GroupBy(order => order.LimitPrice)
+                    .OrderBy(level => level.Key)
+                    .Select(level => new ExecutableAskLevel(
+                        level.Key,
+                        level.Sum(order => (long)order.RemainingQuantity)))
+                    .ToList());
+        var openBuyRows = await dbContext.Orders.AsNoTracking()
+            .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                && order.Type == OrderType.Buy
+                && quoteCompanyIds.Contains(order.CompanyId))
+            .Select(order => new
+            {
+                order.Id,
+                order.CompanyId,
+                order.LimitPrice,
+                order.CreatedAt,
+                RemainingQuantity = order.Quantity - order.FilledQuantity,
+            })
+            .ToListAsync();
+        // Shadow consumption keeps deferred decisions behind demand that MatchingEngine will process first.
+        // The lowest consuming limit is the boundary a later bid must not jump.
+        var priorBuyPriorityLimitByCompany = new Dictionary<int, decimal>();
+        foreach (var companyBuys in openBuyRows
+                     .Where(order => order.RemainingQuantity > 0
+                         && boundsByCompany.TryGetValue(order.CompanyId, out var bounds)
+                         && bounds.IsWithinActiveBand(order.LimitPrice))
+                     .GroupBy(order => order.CompanyId))
+        {
+            foreach (var buy in companyBuys
+                         .OrderByDescending(order => order.LimitPrice)
+                         .ThenBy(order => order.CreatedAt)
+                         .ThenBy(order => order.Id))
+            {
+                // Seller identity is intentionally absent from the aggregated levels, so a potential self-cross
+                // reserves supply conservatively; MatchingEngine still owns cancellation and persisted fills.
+                var consumedQuantity = ConsumeExecutableAskLevels(
+                    executableAskLevelsByCompany,
+                    buy.CompanyId,
+                    buy.LimitPrice,
+                    buy.RemainingQuantity);
+                if (consumedQuantity > 0)
+                {
+                    UpdatePriorBuyPriorityLimit(
+                        priorBuyPriorityLimitByCompany,
+                        buy.CompanyId,
+                        buy.LimitPrice);
+                }
+            }
+        }
+
         quotes = quotes
-            .Select(quote => quote with { Bounds = boundsByCompany.GetValueOrDefault(quote.CompanyId) })
+            .Select(quote =>
+            {
+                var bestAsk = executableAskLevelsByCompany.TryGetValue(quote.CompanyId, out var levels)
+                    && levels.Count > 0
+                        ? levels[0]
+                        : null;
+                return quote with
+                {
+                    Bounds = boundsByCompany.GetValueOrDefault(quote.CompanyId),
+                    IssuedShares = issuedSharesByCompany.GetValueOrDefault(quote.CompanyId),
+                    BestExecutableSellPrice = bestAsk?.Price,
+                    BestExecutableSellQuantity = bestAsk is not null
+                        ? (int)Math.Clamp(bestAsk.RemainingQuantity, 0L, int.MaxValue)
+                        : 0,
+                };
+            })
             .ToList();
 
         var loanLiabilityByParticipant = await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext);
+        var marginLiabilityByParticipant = await MarginService.LiabilityByParticipantAsync(dbContext);
         var fundStatusByParticipantId = await dbContext.CollectiveFunds
             .ToDictionaryAsync(fund => fund.ParticipantId, fund => fund.Status);
 
@@ -2231,9 +2628,39 @@ public sealed class MarketService(
             }
 
             var openLoanLiability = loanLiabilityByParticipant.GetValueOrDefault(trader.Id);
+            var marginLiability = marginLiabilityByParticipant.GetValueOrDefault(trader.Id);
             var buyingPower = marginService is null
                 ? trader.AvailableBalance
-                : await marginService.GetBuyingPowerAsync(trader.Id, priceByCompany);
+                : await marginService.GetBuyingPowerAsync(trader.Id, valuationPriceByCompany);
+            var holdingsValue = holdingsByOwner.TryGetValue(trader.Id, out var holdings)
+                ? holdings.Sum(holding => holding.Value * valuationPriceByCompany.GetValueOrDefault(holding.Key))
+                : 0m;
+            var decisionQuotes = trader.Type == ParticipantType.Individual
+                ? quotes.Select(quote =>
+                {
+                    var bestAsk = executableAskLevelsByCompany.TryGetValue(quote.CompanyId, out var levels)
+                        && levels.Count > 0
+                            ? levels[0]
+                            : null;
+                    var buyBlockedForBatch = priorBuyPriorityLimitByCompany.TryGetValue(
+                            quote.CompanyId,
+                            out var priorBuyLimit)
+                        && (bestAsk is null || bestAsk.Price > priorBuyLimit);
+                    if (buyBlockedForBatch)
+                    {
+                        bestAsk = null;
+                    }
+
+                    return quote with
+                    {
+                        BestExecutableSellPrice = bestAsk?.Price,
+                        BestExecutableSellQuantity = bestAsk is not null
+                            ? (int)Math.Clamp(bestAsk.RemainingQuantity, 0L, int.MaxValue)
+                            : 0,
+                        IndividualBuyBlockedForBatch = buyBlockedForBatch,
+                    };
+                }).ToList()
+                : quotes;
             var context = new DecisionContext(
                 trader,
                 AvailableCashForDecisions(
@@ -2243,11 +2670,18 @@ public sealed class MarketService(
                     holdingsByOwner,
                     priceByCompany,
                     buyingPower),
-                quotes,
+                decisionQuotes,
                 holdingsByOwner.GetValueOrDefault(trader.Id, NoHoldings),
                 openOrdersByParticipant.GetValueOrDefault(trader.Id, NoOpenOrders),
                 crisisActive,
-                openLoanLiability);
+                openLoanLiability,
+                HoldingsValue: holdingsValue,
+                NetWorth: trader.CurrentBalance + holdingsValue - openLoanLiability - marginLiability,
+                AvailableBalance: trader.AvailableBalance,
+                BuyingPower: buyingPower,
+                MarginLiability: marginLiability,
+                ReservedBuyNotional: trader.ReservedBalance,
+                HasAutomatedTradingData: true);
 
             foreach (var intent in decisionEngine.Decide(context))
             {
@@ -2266,12 +2700,68 @@ public sealed class MarketService(
                 if (result.Success)
                 {
                     ordersPlaced++;
+                    if ((trader.Type == ParticipantType.Individual
+                            || trader.Type == ParticipantType.CollectiveFund)
+                        && intent.Type == OrderType.Buy
+                        && boundsByCompany.TryGetValue(intent.CompanyId, out var bounds)
+                        && bounds.IsWithinActiveBand(intent.LimitPrice))
+                    {
+                        var consumedQuantity = ConsumeExecutableAskLevels(
+                            executableAskLevelsByCompany,
+                            intent.CompanyId,
+                            intent.LimitPrice,
+                            result.Order!.Quantity);
+                        if (consumedQuantity > 0)
+                        {
+                            UpdatePriorBuyPriorityLimit(
+                                priorBuyPriorityLimitByCompany,
+                                intent.CompanyId,
+                                intent.LimitPrice);
+                        }
+                    }
                 }
             }
         }
 
         await dbContext.SaveChangesAsync();
         return RunDecisionsResult.Ok(ordersPlaced);
+    }
+
+    private static void UpdatePriorBuyPriorityLimit(
+        IDictionary<int, decimal> priorityLimitByCompany,
+        int companyId,
+        decimal buyLimit)
+    {
+        priorityLimitByCompany[companyId] = priorityLimitByCompany.TryGetValue(companyId, out var existingLimit)
+            ? Math.Min(existingLimit, buyLimit)
+            : buyLimit;
+    }
+
+    private static long ConsumeExecutableAskLevels(
+        IReadOnlyDictionary<int, List<ExecutableAskLevel>> levelsByCompany,
+        int companyId,
+        decimal buyLimit,
+        long buyQuantity)
+    {
+        if (buyQuantity <= 0 || !levelsByCompany.TryGetValue(companyId, out var levels))
+        {
+            return 0;
+        }
+
+        var requestedQuantity = buyQuantity;
+        while (buyQuantity > 0 && levels.Count > 0 && levels[0].Price <= buyLimit)
+        {
+            var level = levels[0];
+            var consumed = Math.Min(buyQuantity, level.RemainingQuantity);
+            level.RemainingQuantity -= consumed;
+            buyQuantity -= consumed;
+            if (level.RemainingQuantity == 0)
+            {
+                levels.RemoveAt(0);
+            }
+        }
+
+        return requestedQuantity - buyQuantity;
     }
 
     // A fund member hands its buying to the fund — cash is zeroed so the engine can only sell its own shares.

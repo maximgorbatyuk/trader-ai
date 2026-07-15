@@ -59,11 +59,16 @@ builder.Services.AddScoped<BehaviorAuditService>();
 builder.Services.AddScoped<TradingClockService>();
 builder.Services.AddScoped<SettlementService>();
 builder.Services.AddScoped<MarginService>();
+builder.Services.AddScoped<AutomatedBuyOrderPolicy>();
 builder.Services.AddSingleton<MarketCycleLock>();
 builder.Services.Configure<MarketLoopOptions>(builder.Configuration.GetSection(MarketLoopOptions.SectionName));
 builder.Services.Configure<TradingClockOptions>(builder.Configuration.GetSection(TradingClockOptions.SectionName));
 builder.Services.Configure<SettlementOptions>(builder.Configuration.GetSection(SettlementOptions.SectionName));
 builder.Services.Configure<MarginOptions>(builder.Configuration.GetSection(MarginOptions.SectionName));
+builder.Services.AddOptions<AutomatedTradingOptions>()
+    .Bind(builder.Configuration.GetSection(AutomatedTradingOptions.SectionName))
+    .Validate(options => options.IsValid(), "AutomatedTrading percentages and exposure ranges are invalid.")
+    .ValidateOnStart();
 builder.Services.Configure<NewsOptions>(builder.Configuration.GetSection(NewsOptions.SectionName));
 builder.Services.Configure<CrisisOptions>(builder.Configuration.GetSection(CrisisOptions.SectionName));
 builder.Services.Configure<ScienceInvestigationOptions>(builder.Configuration.GetSection(ScienceInvestigationOptions.SectionName));
@@ -73,7 +78,13 @@ builder.Services.Configure<MarketExitOptions>(builder.Configuration.GetSection(M
 builder.Services.Configure<StockSplitOptions>(builder.Configuration.GetSection(StockSplitOptions.SectionName));
 builder.Services.Configure<AuditorOptions>(builder.Configuration.GetSection(AuditorOptions.SectionName));
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
-builder.Services.Configure<PrimaryIssuanceOptions>(builder.Configuration.GetSection(PrimaryIssuanceOptions.SectionName));
+builder.Services.AddOptions<PrimaryIssuanceOptions>()
+    .Bind(builder.Configuration.GetSection(PrimaryIssuanceOptions.SectionName))
+    .Validate(options => !options.Enabled
+        || (options.FloatScarcityThresholdPercent is > 0m and <= 100m
+            && options.MaximumDailyIssuancePercent is > 0m and <= 100m),
+        "Enabled PrimaryIssuance percentages must be greater than 0 and no more than 100.")
+    .ValidateOnStart();
 builder.Services.Configure<CompanyLifecycleOptions>(builder.Configuration.GetSection(CompanyLifecycleOptions.SectionName));
 builder.Services.Configure<LoanOptions>(builder.Configuration.GetSection(LoanOptions.SectionName));
 builder.Services.Configure<TradeFeeOptions>(builder.Configuration.GetSection(TradeFeeOptions.SectionName));

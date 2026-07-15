@@ -41,6 +41,297 @@ public sealed class RuleBasedDecisionEngineTests
     }
 
     [Fact]
+    public void IndividualBelowTargetCanBuyInAFlatMarket()
+    {
+        var intents = EngineWith([0.50d], [0])
+            .Decide(AutomatedContextFor(
+                riskProfile: RiskProfile.Medium,
+                netWorth: 10_000m,
+                holdingsValue: 0m,
+                availableBalance: 10_000m,
+                buyingPower: 10_000m,
+                bestAskPrice: 100m,
+                bestAskQuantity: 100,
+                issuedShares: 10_000));
+
+        Assert.Collection(intents, intent => Assert.Equal(OrderType.Buy, intent.Type));
+    }
+
+    [Fact]
+    public void IndividualAtOrAboveMaximumExposureNeverBuys()
+    {
+        foreach (var holdingsValue in new[] { 5_500m, 6_000m })
+        {
+            var intents = EngineWith([0.05d, 0.50d, 0d], [0])
+                .Decide(AutomatedContextFor(
+                    riskProfile: RiskProfile.Medium,
+                    netWorth: 10_000m,
+                    holdingsValue: holdingsValue,
+                    availableBalance: 10_000m - holdingsValue,
+                    buyingPower: 10_000m - holdingsValue,
+                    bestAskPrice: 100m,
+                    bestAskQuantity: 100,
+                    issuedShares: 10_000,
+                    priceChangePct: 0.10m));
+
+            Assert.Empty(intents);
+        }
+    }
+
+    [Fact]
+    public void IndividualBelowTargetCanStillSkip()
+    {
+        var intents = EngineWith([0.90d], [0])
+            .Decide(AutomatedContextFor(
+                riskProfile: RiskProfile.Medium,
+                netWorth: 10_000m,
+                holdingsValue: 0m,
+                availableBalance: 10_000m,
+                buyingPower: 10_000m,
+                bestAskPrice: 100m,
+                bestAskQuantity: 100,
+                issuedShares: 10_000));
+
+        Assert.Empty(intents);
+    }
+
+    [Fact]
+    public void IndividualBelowTargetPrefersExecutableSupplyOverAStrongerPassiveSignal()
+    {
+        var participant = NewParticipant(100_000m, riskProfile: RiskProfile.Medium);
+        var context = new DecisionContext(
+            participant,
+            AvailableCash: 100_000m,
+            [
+                new CompanyQuote(
+                    1,
+                    Price: 100m,
+                    PriceChangePct: 0.10m,
+                    NetShareDemand: 1_000,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000),
+                new CompanyQuote(
+                    2,
+                    Price: 100m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000,
+                    BestExecutableSellPrice: 103m,
+                    BestExecutableSellQuantity: 5),
+                new CompanyQuote(
+                    3,
+                    Price: 100m,
+                    PriceChangePct: 0.02m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000,
+                    BestExecutableSellPrice: 104m,
+                    BestExecutableSellQuantity: 4),
+            ],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: 0m,
+            NetWorth: 100_000m,
+            AvailableBalance: 100_000m,
+            BuyingPower: 100_000m,
+            HasAutomatedTradingData: true);
+
+        var intent = Assert.Single(EngineWith([0.05d, 0d]).Decide(context));
+
+        Assert.Equal(3, intent.CompanyId);
+        Assert.Equal(104m, intent.LimitPrice);
+        Assert.Equal(4, intent.Quantity);
+    }
+
+    [Fact]
+    public void IndividualBuyCrossesTheBestAskAndCapsToItsAvailableQuantity()
+    {
+        var intents = EngineWith([0.05d, 0.50d, 0d])
+            .Decide(AutomatedContextFor(
+                riskProfile: RiskProfile.Medium,
+                netWorth: 100_000m,
+                holdingsValue: 0m,
+                availableBalance: 100_000m,
+                buyingPower: 100_000m,
+                bestAskPrice: 105m,
+                bestAskQuantity: 3,
+                issuedShares: 10_000,
+                priceChangePct: 0.10m));
+
+        Assert.Collection(intents, intent =>
+        {
+            Assert.Equal(105m, intent.LimitPrice);
+            Assert.Equal(3, intent.Quantity);
+        });
+    }
+
+    // An executable ask removes all pricing randomness: the engine draws only once for the global action choice.
+    [Fact]
+    public void IndividualBestAskBuyDrawsOnlyTheDecisionRoll()
+    {
+        var random = new ScriptedRandom([0.05d], []);
+        var engine = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            random);
+
+        var intent = Assert.Single(engine.Decide(AutomatedContextFor(
+            riskProfile: RiskProfile.Medium,
+            netWorth: 100_000m,
+            holdingsValue: 0m,
+            availableBalance: 100_000m,
+            buyingPower: 100_000m,
+            bestAskPrice: 105m,
+            bestAskQuantity: 3,
+            issuedShares: 10_000)));
+
+        Assert.Equal(105m, intent.LimitPrice);
+        Assert.Equal(1, random.DoubleDrawCount);
+        Assert.Equal(0, random.IntegerDrawCount);
+        Assert.Equal(0, random.RemainingDoubleDraws);
+        Assert.Equal(0, random.RemainingIntegerDraws);
+    }
+
+    [Fact]
+    public void IndividualWithoutASellerUsesAnInsideBandPassiveCap()
+    {
+        var bounds = Bounds(100m);
+        var intents = EngineWith([0.05d, 0.05d, 0d])
+            .Decide(AutomatedContextFor(
+                riskProfile: RiskProfile.High,
+                netWorth: 100_000m,
+                holdingsValue: 0m,
+                availableBalance: 100_000m,
+                buyingPower: 100_000m,
+                bestAskPrice: null,
+                bestAskQuantity: 0,
+                issuedShares: 10_000,
+                priceChangePct: 0.10m));
+
+        Assert.Collection(intents, intent =>
+        {
+            Assert.True(bounds.IsWithinActiveBand(intent.LimitPrice));
+            Assert.Equal(25, intent.Quantity);
+        });
+    }
+
+    // A passive bid draws the global action and one inside-band offset; it never consumes the legacy
+    // inside-versus-outside draw.
+    [Fact]
+    public void IndividualPassiveBuyDrawsDecisionAndInsidePriceOnly()
+    {
+        var random = new ScriptedRandom([0.05d, 0d], []);
+        var engine = new RuleBasedDecisionEngine(
+            new MaxTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            random);
+
+        var intent = Assert.Single(engine.Decide(AutomatedContextFor(
+            riskProfile: RiskProfile.High,
+            netWorth: 100_000m,
+            holdingsValue: 0m,
+            availableBalance: 100_000m,
+            buyingPower: 100_000m,
+            bestAskPrice: null,
+            bestAskQuantity: 0,
+            issuedShares: 10_000)));
+
+        Assert.True(Bounds(100m).IsWithinActiveBand(intent.LimitPrice));
+        Assert.Equal(2, random.DoubleDrawCount);
+        Assert.Equal(0, random.IntegerDrawCount);
+        Assert.Equal(0, random.RemainingDoubleDraws);
+        Assert.Equal(0, random.RemainingIntegerDraws);
+    }
+
+    [Fact]
+    public void IndividualBelowTargetEnforcesTheMeaningfulMinimumQuantity()
+    {
+        var engine = new RuleBasedDecisionEngine(
+            new OneTradeSizer(),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ScriptedRandom([0.05d, 0.50d, 0d], []));
+
+        var intents = engine.Decide(AutomatedContextFor(
+            riskProfile: RiskProfile.Medium,
+            netWorth: 1_000_000m,
+            holdingsValue: 0m,
+            availableBalance: 1_000_000m,
+            buyingPower: 1_000_000m,
+            bestAskPrice: 100m,
+            bestAskQuantity: 100,
+            issuedShares: 100_000,
+            priceChangePct: 0.10m));
+
+        Assert.Equal(25, Assert.Single(intents).Quantity);
+    }
+
+    [Theory]
+    [InlineData(RiskProfile.Low)]
+    [InlineData(RiskProfile.Medium)]
+    public void LowAndMediumRiskIndividualsCannotSpendMarginBuyingPower(RiskProfile riskProfile)
+    {
+        var intent = Assert.Single(EngineWith([0.05d, 0.50d, 0d])
+            .Decide(AutomatedContextFor(
+                riskProfile: riskProfile,
+                netWorth: 1_000_000m,
+                holdingsValue: 0m,
+                availableBalance: 1_000m,
+                buyingPower: 100_000m,
+                bestAskPrice: 100m,
+                bestAskQuantity: 1_000,
+                issuedShares: 100_000,
+                priceChangePct: 0.10m)));
+
+        Assert.True(intent.Quantity * intent.LimitPrice <= 1_000m);
+    }
+
+    [Fact]
+    public void HighRiskIndividualMarginUseIsBoundedByThePolicy()
+    {
+        var intent = Assert.Single(EngineWith([0.05d, 0.50d, 0d])
+            .Decide(AutomatedContextFor(
+                riskProfile: RiskProfile.High,
+                netWorth: 100_000m,
+                holdingsValue: 0m,
+                availableBalance: 1_000m,
+                buyingPower: 100_000m,
+                bestAskPrice: 100m,
+                bestAskQuantity: 1_000,
+                issuedShares: 100_000,
+                priceChangePct: 0.10m)));
+
+        Assert.Equal(3_000m, intent.Quantity * intent.LimitPrice);
+    }
+
+    [Fact]
+    public void CollectiveFundRetainsLegacyOutsideBandPricingAndSizing()
+    {
+        var participant = NewParticipant(5_000m);
+        participant.Type = ParticipantType.CollectiveFund;
+        var context = new DecisionContext(
+            participant,
+            AvailableCash: 5_000m,
+            [new CompanyQuote(
+                1,
+                Price: 100m,
+                PriceChangePct: 0.10m,
+                Bounds: Bounds(100m),
+                IssuedShares: 10_000,
+                BestExecutableSellPrice: 100m,
+                BestExecutableSellQuantity: 2)],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: 0m,
+            NetWorth: 5_000m,
+            AvailableBalance: 5_000m,
+            BuyingPower: 5_000m,
+            HasAutomatedTradingData: true);
+
+        var intent = Assert.Single(EngineWith([0.05d, 0.05d, 0d]).Decide(context));
+
+        Assert.Equal(75m, intent.LimitPrice);
+        Assert.Equal(66, intent.Quantity);
+    }
+
+    [Fact]
     public void ActiveCrisisPullsConservativeLowRiskTradersBackFromBuying()
     {
         var calm = CountBuysUnderCrisis(Temperament.Conservative, RiskProfile.Low, crisisActive: false);
@@ -228,8 +519,8 @@ public sealed class RuleBasedDecisionEngineTests
         Assert.Equal(0, random.IntegerDrawCount);
     }
 
-    private static RuleBasedDecisionEngine EngineWith(double[] doubles) =>
-        new(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), new ScriptedRandom(doubles, []));
+    private static RuleBasedDecisionEngine EngineWith(double[] doubles, int[]? ints = null) =>
+        new(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), new ScriptedRandom(doubles, ints ?? []));
 
     [Fact]
     public void WithNoSignalBothBuyingAndSellingStayReachable()
@@ -576,6 +867,49 @@ public sealed class RuleBasedDecisionEngineTests
             new HashSet<int>(companiesWithOpenOrders ?? []));
     }
 
+    private static DecisionContext AutomatedContextFor(
+        RiskProfile riskProfile,
+        decimal netWorth,
+        decimal holdingsValue,
+        decimal availableBalance,
+        decimal buyingPower,
+        decimal? bestAskPrice,
+        int bestAskQuantity,
+        int issuedShares,
+        decimal priceChangePct = 0m,
+        decimal marginLiability = 0m,
+        decimal reservedBuyNotional = 0m)
+    {
+        const int companyId = 1;
+        var price = 100m;
+        var sharesOwned = holdingsValue > 0m ? (int)(holdingsValue / price) : 0;
+        var participant = NewParticipant(availableBalance + reservedBuyNotional, riskProfile: riskProfile);
+        participant.ReservedBalance = reservedBuyNotional;
+
+        return new DecisionContext(
+            participant,
+            AvailableCash: buyingPower,
+            [new CompanyQuote(
+                companyId,
+                price,
+                PriceChangePct: priceChangePct,
+                Bounds: Bounds(price),
+                IssuedShares: issuedShares,
+                BestExecutableSellPrice: bestAskPrice,
+                BestExecutableSellQuantity: bestAskQuantity)],
+            sharesOwned > 0
+                ? new Dictionary<int, int> { [companyId] = sharesOwned }
+                : new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: holdingsValue,
+            NetWorth: netWorth,
+            AvailableBalance: availableBalance,
+            BuyingPower: buyingPower,
+            MarginLiability: marginLiability,
+            ReservedBuyNotional: reservedBuyNotional,
+            HasAutomatedTradingData: true);
+    }
+
     // Bounds for the approved -15%/+10% band and -25%/+15% allowed range, attached to every test quote so the
     // engine treats the company as priceable.
     private static OrderPriceBounds Bounds(decimal price) =>
@@ -604,6 +938,10 @@ public sealed class RuleBasedDecisionEngineTests
 
         public int IntegerDrawCount { get; private set; }
 
+        public int RemainingDoubleDraws => doubles.Count;
+
+        public int RemainingIntegerDraws => ints.Count;
+
         public override double NextDouble()
         {
             DoubleDrawCount++;
@@ -615,5 +953,10 @@ public sealed class RuleBasedDecisionEngineTests
             IntegerDrawCount++;
             return ints.Dequeue();
         }
+    }
+
+    private sealed class OneTradeSizer : ITradeSizer
+    {
+        public int Size(Temperament temperament, int maxQuantity) => Math.Min(1, maxQuantity);
     }
 }

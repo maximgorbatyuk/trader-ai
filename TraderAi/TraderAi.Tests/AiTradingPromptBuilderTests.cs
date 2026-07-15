@@ -40,6 +40,19 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Assert.Contains("exactly one JSON object", system);
         Assert.Contains("at most 10 orders", system);
         Assert.Contains("advance the objective", system);
+        Assert.Contains("cancelOrderIds", system);
+        Assert.Contains("exact limitPrice and quantity", system);
+        Assert.Contains("recomputed at that exact price", system);
+        Assert.Contains("maximumPrioritySafeBuyPrice", system);
+        Assert.Contains("passive bid at the priority ceiling", system);
+        Assert.Contains("before cancelOrderIds", system);
+        Assert.Contains("replacement may be rejected", system);
+        Assert.Contains("buyEnvelope", system);
+        Assert.Contains("executable sell", system);
+        Assert.Contains("stale", system);
+        Assert.Contains("CanCancel is true", system);
+        Assert.Contains("at most 10 unique order IDs", system);
+        Assert.Contains("rejected", system);
         Assert.Contains("\"summary\"", system);
         Assert.Contains("\"orders\"", system);
         foreach (var document in CoreDocuments)
@@ -56,6 +69,8 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
 
         using var document = JsonDocument.Parse(prompt.UserMessage);
         Assert.Equal(5, document.RootElement.GetProperty("market").GetProperty("cycleNumber").GetInt32());
+        Assert.Equal(10, document.RootElement.GetProperty("companies")[0]
+            .GetProperty("buyEnvelope").GetProperty("maximumQuantity").GetInt32());
         Assert.DoesNotContain("\n", prompt.UserMessage);
         Assert.DoesNotContain("AGENTS", prompt.UserMessage);
         Assert.DoesNotContain("apiKey", prompt.UserMessage);
@@ -115,15 +130,20 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Market: new AiMarketState(5, 1, 5, 205, "Trading", isFinalDecisionOfDay, null),
         Settings: new AiMarketSettings(0.005m, 1, true, 0.5m, 0.25m, 10),
         Participant: new AiParticipantSnapshot(
-            1, "Balanced", "Medium", 1000m, 1000m, 0m, 0m, 1000m, 1000m, 0m, 0m, 1000m, [], []),
+            1, "Balanced", "Medium", 1000m, 1000m, 0m, 0m, 1000m, 1000m, 0m, 0m, 1000m, [], [],
+            new AiExposureSnapshot(0m, 35m, 55m, "Below")),
         Companies: new[]
         {
-            new AiCompanySnapshot(1, "Acme", 1, "Tech", 100m, 10_000m, "Normal", 75m, 125m, 85m, 115m, []),
+            new AiCompanySnapshot(
+                1, "Acme", 1, "Tech", 100m, 10_000m, "Normal", 75m, 125m, 85m, 115m,
+                100, 100m, 10, null,
+                new AiBuyEnvelopeSnapshot(100m, 1_000m, 2, 10, false, "CurrentOpenOrdersBeforeCancellations"), []),
         },
         Industries: new[] { new AiIndustrySnapshot(1, "Tech", 50) },
         OrderBook: new AiOrderBookSnapshot([], []),
         CapitalizationHistory: [],
-        SentimentHistory: []);
+        SentimentHistory: [],
+        RecentApplicationFeedback: []);
 
     public void Dispose()
     {

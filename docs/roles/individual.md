@@ -4,11 +4,13 @@ An Individual is the default automated trader in the simulation. It represents a
 
 ## Rules
 
-- An Individual can buy, sell, hold shares, receive dividends, and use margin within its buying power. A margin fill increases a separate margin debit, not an explicit term loan.
+- An Individual can buy, sell, hold shares, and receive dividends. Its automated Low- and Medium-risk buys use cash only; a High-risk Individual may use margin, with total margin liability capped at 10% of net worth. A margin fill increases a separate margin debit, not an explicit term loan.
 - Its automated trading is shaped by temperament and risk profile: aggressive and high-risk traders act more often and in larger sizes, while conservative and low-risk traders wait more often and trade in smaller sizes.
 - Each automated decision is one action for the cycle: buy, sell, or wait. It does not place a new order for a company where it already has an open order, and order validation prevents opposite-side interest from the same owner from crossing.
 - Buy orders reserve cash at the limit price. Sell orders can list only shares the trader owns and has not already listed in another open sell order.
-- Most of its discretionary orders are priced inside the executable band; roughly one in ten rests just outside the band in the allowed order range, on either side, and waits for the band to reach it. Every order must stay inside the allowed range. See [LULD price controls](../rules/luld.md).
+- Automated buys target a soft share-exposure band based on risk: 20–35% of net worth for Low, 35–55% for Medium, and 50–70% for High. Existing open-buy reservations reduce the remaining headroom; above the upper bound the trader does not create another discretionary buy.
+- Below the lower bound, buy pull increases and the trader prefers the best residual executable ask. If no executable seller exists, it can place only a small in-band passive bid. Earlier allocated demand keeps its price-time priority, so a later generated order cannot jump it. See [Participant rules](../participant-rules.md) for the shared size and exposure limits.
+- Discretionary sells retain the wider personality-driven pricing behavior, including occasional limits in the allowed waiting range outside the executable band. Every order must stay inside the allowed range. See [LULD price controls](../rules/luld.md).
 - A completed trade changes the economic position immediately and settles cash and share delivery on T+1. The trader may resell a same-day purchase, while settled and pending quantities remain distinct.
 - Short selling is planned for later and is not implemented.
 - Loans are serviced from available, unreserved cash; assessed fees, overdue interest, and principal are allocated separately so the remaining liability reconciles with net worth.
