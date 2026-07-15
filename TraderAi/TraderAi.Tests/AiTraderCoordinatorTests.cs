@@ -174,6 +174,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     public async Task InvalidJsonRetainsRawResponseAndSetsError()
     {
         var seed = await SeedMarketAsync();
+        Settings().MaxInvalidJsonRetries = 0;
         const string malformed = "{\"summary\":\"x\",\"orders\":}";
         fakeClient.OnSend = _ => Task.FromResult(Success(malformed));
 
@@ -183,6 +184,49 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         var call = await Db().AiTraderCalls.SingleAsync();
         Assert.Equal(malformed, call.ResponseBody);
         Assert.NotNull(call.Error);
+        Assert.Equal(AiTraderRuntimeStatus.Error, Runtime().Get(seed.ParticipantId).Status);
+    }
+
+    [Fact]
+    public async Task InvalidJsonIsRetriedWithinTheSameCycleThenCompletes()
+    {
+        var seed = await SeedMarketAsync();
+        Settings().MaxInvalidJsonRetries = 1;
+        var valid = ValidDecision.Replace("COMPANY", seed.CompanyId.ToString());
+        var calls = 0;
+        fakeClient.OnSend = _ =>
+        {
+            calls++;
+            return Task.FromResult(Success(calls == 1 ? "{\"summary\":\"x\",\"orders\":}" : valid));
+        };
+
+        var status = await Coordinator().ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+
+        Assert.Equal(AiTraderCallStatus.Completed, status);
+        Assert.Equal(2, calls);
+        Assert.Equal(2, await Db().AiTraderCalls.CountAsync());
+        Assert.Equal(1, await Db().Orders.CountAsync());
+        Assert.Equal(AiTraderRuntimeStatus.Waiting, Runtime().Get(seed.ParticipantId).Status);
+    }
+
+    [Fact]
+    public async Task InvalidJsonRetriesAreBoundedThenSurfaceTheError()
+    {
+        var seed = await SeedMarketAsync();
+        Settings().MaxInvalidJsonRetries = 2;
+        var calls = 0;
+        fakeClient.OnSend = _ =>
+        {
+            calls++;
+            return Task.FromResult(Success("{\"summary\":\"x\",\"orders\":}"));
+        };
+
+        var status = await Coordinator().ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+
+        Assert.Equal(AiTraderCallStatus.InvalidJson, status);
+        Assert.Equal(3, calls);
+        Assert.Equal(3, await Db().AiTraderCalls.CountAsync());
+        Assert.Equal(0, await Db().Orders.CountAsync());
         Assert.Equal(AiTraderRuntimeStatus.Error, Runtime().Get(seed.ParticipantId).Status);
     }
 

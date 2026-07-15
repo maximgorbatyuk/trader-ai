@@ -85,6 +85,34 @@ export function formatStoredJson(value) {
   }
 }
 
+// Shapes the backend decision-quality summary for display: whole-percent rates and an activity flag that hides the
+// strip for a trader that has never called a provider. Money is left numeric so the caller formats it with the shared
+// money helper.
+export function formatDecisionQuality(summary) {
+  if (!summary || typeof summary !== 'object') {
+    return null
+  }
+
+  const num = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+  const rate = (value) => `${Math.round(num(value) * 100)}%`
+  const callAttempts = num(summary.callAttempts)
+  const proposedOrders = num(summary.proposedOrders)
+  const executedBuyNotional = num(summary.executedBuyNotional)
+
+  return {
+    hasActivity: callAttempts > 0 || proposedOrders > 0 || executedBuyNotional > 0,
+    callCompletion: rate(summary.callCompletionRate),
+    completedCalls: num(summary.completedCalls),
+    callAttempts,
+    invalidJsonCalls: num(summary.invalidJsonCalls),
+    proposalAcceptance: rate(summary.proposalAcceptanceRate),
+    appliedOrders: num(summary.appliedOrders),
+    proposedOrders,
+    rejectedOrders: num(summary.rejectedOrders),
+    executedBuyNotional,
+  }
+}
+
 function parseStoredObject(value) {
   if (value === null || value === undefined || value === '') {
     return null

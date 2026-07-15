@@ -134,6 +134,7 @@ export const api = {
   getParticipantAiCalls: (participantId, page = 1, pageSize = 20) =>
     get(`/participants/${participantId}/ai-calls${toQuery({ page, pageSize })}`),
   getParticipantAiCall: (participantId, callId) => get(`/participants/${participantId}/ai-calls/${callId}`),
+  getParticipantAiDecisionQuality: (participantId) => get(`/participants/${participantId}/ai-decision-quality`),
   seedMarket: () => post('/market/seed'),
   resetMarket: () => post('/market/reset'),
   pauseMarket: () => post('/market/pause'),

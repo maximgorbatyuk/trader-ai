@@ -52,8 +52,16 @@ public sealed class AiTradingPromptBuilder(
             "- A buyEnvelope whose stateBasis is CurrentOpenOrdersBeforeCancellations is computed before cancelOrderIds. "
             + "Cancellations are applied first, then exact price and quantity limits are recomputed; a replacement may be rejected.");
         builder.AppendLine(
+            "- Every order in one response draws from the same cash, exposure headroom, and executable supply. Each "
+            + "buyEnvelope is computed as if it were your only new order this turn, so budget across the whole batch: "
+            + "sizing several buys each to its own maximumQuantity exhausts those shared limits and gets the later orders rejected.");
+        builder.AppendLine(
             "- Use the best executable sell price and buyEnvelope to deploy capital deliberately. When exposure is "
             + "Below and an executable sell exists, a buy must cross that seller rather than rest unrealistically.");
+        builder.AppendLine(
+            "- Exposure fields currentPercent, minimumPercent, and maximumPercent use a 0-100 scale, so a currentPercent "
+            + "of 0.267 means 0.267% of net worth, not 27%. The position field, Below/Within/Above, is the authoritative "
+            + "signal of where you stand relative to the target band.");
         builder.AppendLine(
             $"- Put at most {maxOrders} unique order IDs from stale or unrealistic participant.openOrders in "
             + "cancelOrderIds before replacing them. "

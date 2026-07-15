@@ -18,6 +18,10 @@ public sealed class AiTradingOptions
 
     public int MaxOrdersPerDecision { get; set; } = 10;
 
+    // A malformed provider reply wastes a whole scheduled decision. Resending the same request a bounded number of
+    // times within the cycle recovers most of them because provider sampling usually returns valid JSON on retry.
+    public int MaxInvalidJsonRetries { get; set; } = 1;
+
     public int HistoryCycles { get; set; } = 30;
 
     public int RetryBaseDelaySeconds { get; set; } = 5;

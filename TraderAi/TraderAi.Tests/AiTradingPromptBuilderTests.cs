@@ -49,6 +49,11 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Assert.Contains("replacement may be rejected", system);
         Assert.Contains("buyEnvelope", system);
         Assert.Contains("executable sell", system);
+        Assert.Contains("0-100 scale", system);
+        Assert.Contains("0.267 means", system);
+        Assert.Contains("position field", system);
+        Assert.Contains("same cash, exposure headroom, and executable supply", system);
+        Assert.Contains("budget across the whole batch", system);
         Assert.Contains("stale", system);
         Assert.Contains("CanCancel is true", system);
         Assert.Contains("at most 10 unique order IDs", system);

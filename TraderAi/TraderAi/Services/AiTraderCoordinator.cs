@@ -300,15 +300,31 @@ public sealed class AiTraderCoordinator(
             stoppingToken, runtimeState.BeginCall(participantId));
 
         AiProviderResponse? response = null;
-        var execution = await callService.ExecuteAsync(
-            descriptor,
-            options.Value.MaxOrdersPerDecision,
-            async token =>
+        AiTraderCallExecution execution;
+        var invalidJsonRetriesRemaining = Math.Max(0, options.Value.MaxInvalidJsonRetries);
+        while (true)
+        {
+            execution = await callService.ExecuteAsync(
+                descriptor,
+                options.Value.MaxOrdersPerDecision,
+                async token =>
+                {
+                    response = await client.SendAsync(prepared, apiKey, token);
+                    return response;
+                },
+                linked.Token);
+
+            // A malformed reply wastes the whole scheduled decision; retry the same request a bounded number of times
+            // before surfacing the error, and stop early if the call was cancelled by a mid-flight configuration edit.
+            if (execution.Status != AiTraderCallStatus.InvalidJson
+                || invalidJsonRetriesRemaining <= 0
+                || linked.Token.IsCancellationRequested)
             {
-                response = await client.SendAsync(prepared, apiKey, token);
-                return response;
-            },
-            linked.Token);
+                break;
+            }
+
+            invalidJsonRetriesRemaining--;
+        }
 
         if (execution.Status == AiTraderCallStatus.Completed && execution.Decision is not null)
         {

@@ -38,6 +38,18 @@ public sealed record AiTraderCallSummary(
 
 public sealed record AiTraderCallPage(IReadOnlyList<AiTraderCallSummary> Items, int Total, int Page, int PageSize);
 
+public sealed record AiDecisionQualitySummary(
+    int CallAttempts,
+    int CompletedCalls,
+    int InvalidJsonCalls,
+    int OtherFailedCalls,
+    double CallCompletionRate,
+    int ProposedOrders,
+    int AppliedOrders,
+    int RejectedOrders,
+    double ProposalAcceptanceRate,
+    decimal ExecutedBuyNotional);
+
 // Writes and reads the AI-call audit log with short, serialized writes under the market lock. A Pending row is
 // always saved before the provider is contacted, so a failed insert stops the call and a crash leaves a Pending
 // row that startup recovery marks Abandoned. Parsed decisions and application results are stored with the same
@@ -260,6 +272,55 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
     public Task<AiTraderCall?> GetCallAsync(int participantId, long callId)
         => dbContext.AiTraderCalls
             .FirstOrDefaultAsync(call => call.Id == callId && call.ParticipantId == participantId);
+
+    // Read-only decision-quality summary for one AI trader: provider-call reliability (JSON completion), order-proposal
+    // validity (acceptance), and capital actually deployed. Executed notional is realized buy trades rather than order
+    // count, because order count overstates useful activity when few orders fill.
+    public async Task<AiDecisionQualitySummary> GetDecisionQualityAsync(int participantId)
+    {
+        var statusCounts = await dbContext.AiTraderCalls
+            .Where(call => call.ParticipantId == participantId)
+            .GroupBy(call => call.Status)
+            .Select(group => new
+            {
+                Status = group.Key,
+                Count = group.Count(),
+                Applied = group.Sum(call => call.AppliedOrders),
+                Rejected = group.Sum(call => call.RejectedOrders),
+            })
+            .ToListAsync();
+
+        int Count(params AiTraderCallStatus[] statuses)
+            => statusCounts.Where(entry => statuses.Contains(entry.Status)).Sum(entry => entry.Count);
+
+        var completed = Count(AiTraderCallStatus.Completed);
+        var invalidJson = Count(AiTraderCallStatus.InvalidJson);
+        var otherFailed = Count(AiTraderCallStatus.HttpError, AiTraderCallStatus.TimedOut);
+
+        // A call is an attempt only once it has a terminal provider verdict; in-flight, deferred, operator-cancelled,
+        // and restart-abandoned calls are not reliability signals.
+        var attempts = completed + invalidJson + otherFailed;
+
+        var applied = statusCounts.Sum(entry => entry.Applied);
+        var rejected = statusCounts.Sum(entry => entry.Rejected);
+        var proposed = applied + rejected;
+
+        var executedBuyNotional = await dbContext.ShareTransactions
+            .Where(trade => trade.BuyerId == participantId)
+            .SumAsync(trade => (decimal?)trade.TotalCost) ?? 0m;
+
+        return new AiDecisionQualitySummary(
+            attempts,
+            completed,
+            invalidJson,
+            otherFailed,
+            attempts == 0 ? 0d : (double)completed / attempts,
+            proposed,
+            applied,
+            rejected,
+            proposed == 0 ? 0d : (double)applied / proposed,
+            executedBuyNotional);
+    }
 
     private static AiTraderCallStatus MapStatus(AiProviderCallOutcome outcome) => outcome switch
     {

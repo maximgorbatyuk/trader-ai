@@ -537,6 +537,10 @@ public static class MarketEndpoints
             int participantId, int? page, int? pageSize, AiTraderCallService callService) =>
             Results.Ok(await callService.GetPageAsync(participantId, page ?? 1, pageSize ?? 20)));
 
+        app.MapGet("/participants/{participantId:int}/ai-decision-quality", async (
+            int participantId, AiTraderCallService callService) =>
+            Results.Ok(await callService.GetDecisionQualityAsync(participantId)));
+
         app.MapGet("/participants/{participantId:int}/ai-calls/{callId:long}", async (
             int participantId, long callId, AiTraderCallService callService) =>
         {
