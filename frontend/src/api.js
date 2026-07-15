@@ -114,6 +114,8 @@ export const api = {
     get(`/participants/${participantId}/settlements${toQuery({ status, page, pageSize })}`),
   getParticipantMoneyTransactions: (participantId, take = 10) =>
     get(`/participants/${participantId}/money-transactions?take=${take}`),
+  getParticipantMoneyTransactionsPaged: (participantId, page = 1, pageSize = 10) =>
+    get(`/participants/${participantId}/money-transactions/paged${toQuery({ page, pageSize })}`),
   getMoneyTransactionDetail: (participantId, transactionId) =>
     get(`/participants/${participantId}/money-transactions/${transactionId}`),
   getParticipantWorthHistory: (participantId, take) =>

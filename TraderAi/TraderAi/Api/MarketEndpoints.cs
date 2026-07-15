@@ -847,6 +847,38 @@ public static class MarketEndpoints
             return Results.Ok(response);
         });
 
+        app.MapGet("/participants/{participantId:int}/money-transactions/paged", async (
+            int participantId,
+            int? page,
+            int? pageSize,
+            AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 10, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var query = dbContext.MoneyTransactions
+                .Where(transaction => transaction.ParticipantId == participantId);
+            var total = await query.CountAsync();
+            var transactions = await query
+                .OrderByDescending(transaction => transaction.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            var items = transactions
+                .Select(transaction => new MoneyTransactionResponse(
+                    transaction.Id,
+                    transaction.Type.ToString(),
+                    transaction.Amount,
+                    transaction.RelatedOrderId,
+                    transaction.RelatedShareTransactionId,
+                    transaction.RelatedLoanId,
+                    transaction.CreatedInCycleId,
+                    transaction.CreatedAt))
+                .ToArray();
+
+            return Results.Ok(new PagedMoneyTransactionsResponse(items, total, pageIndex, size));
+        });
+
         // One cash movement, enriched on open with whatever it links to: the order and settled trade for a
         // trade-driven row, the loan behind a loan row, or the per-company breakdown behind a dividend. The list
         // endpoint stays lean; this resolves names and related detail only when a row is inspected.
@@ -3245,6 +3277,12 @@ public sealed record MoneyTransactionResponse(
     int? RelatedLoanId,
     int CreatedInCycleId,
     DateTime CreatedAt);
+
+public sealed record PagedMoneyTransactionsResponse(
+    MoneyTransactionResponse[] Items,
+    int Total,
+    int Page,
+    int PageSize);
 
 public sealed record MoneyTransactionDetailResponse(
     int Id,

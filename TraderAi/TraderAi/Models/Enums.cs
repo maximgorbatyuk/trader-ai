@@ -94,6 +94,12 @@ public enum CorporateCashTransactionType
     ClosureDistribution,
 }
 
+public enum StockDenominationActionType
+{
+    Split,
+    ReverseSplit,
+}
+
 public enum LuldState
 {
     Normal,

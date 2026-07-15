@@ -19,9 +19,11 @@ import { cashSettlement, quantitySettlement } from './marketAccounting'
 import { maintenanceStanding } from './marginModel'
 import { FavoriteCompaniesTable } from './FavoriteCompaniesTable'
 import { favoriteCompanies } from './favoriteCompanies'
+import { CompanyModal } from './CompanyModal'
 
 const POLL_INTERVAL_MS = 2500
 const WORTH_HISTORY_POINTS = 64
+const CASH_MOVEMENT_PAGE_SIZE = 10
 const TEMPERAMENTS = ['Aggressive', 'Balanced', 'Conservative']
 const RISK_PROFILES = ['High', 'Medium', 'Low']
 const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund', Player: 'Player' }
@@ -43,12 +45,12 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
   const [holdings, setHoldings] = useState([])
   const [orders, setOrders] = useState([])
   const [trades, setTrades] = useState([])
-  const [cashMoves, setCashMoves] = useState([])
   const [companies, setCompanies] = useState([])
   const [worthHistory, setWorthHistory] = useState([])
   const [loans, setLoans] = useState([])
   const [settlements, setSettlements] = useState([])
   const [loanStatus, setLoanStatus] = useState('active')
+  const [modalCompanyId, setModalCompanyId] = useState(null)
 
   // The profile selects are editable, so polling must not overwrite an unsaved edit.
   const [form, setForm] = useState({ temperament: '', riskProfile: '' })
@@ -62,12 +64,11 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, holdingsData, orderData, tradeData, cashData, companyData, worthData, loanData, settlementData] = await Promise.all([
+      const [detailData, holdingsData, orderData, tradeData, companyData, worthData, loanData, settlementData] = await Promise.all([
         api.getParticipant(participantId),
         api.getHoldings(participantId),
         api.getParticipantOrders(participantId, 100),
         api.getParticipantShareTransactions(participantId),
-        api.getParticipantMoneyTransactions(participantId),
         api.getCompanies(),
         api.getParticipantWorthHistory(participantId),
         api.getParticipantLoans(participantId, { status: loanStatus }),
@@ -78,7 +79,6 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
       setHoldings(holdingsData)
       setOrders(orderData)
       setTrades(tradeData)
-      setCashMoves(cashData)
       setCompanies(companyData)
       setWorthHistory(worthData ?? [])
       setLoans(loanData ?? [])
@@ -124,6 +124,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
 
   const companyNameById = new Map(companies.map((company) => [company.id, company.name]))
   const companyName = (companyId) => companyNameById.get(companyId) ?? `#${companyId}`
+  const modalCompany = companies.find((company) => company.id === modalCompanyId) ?? null
 
   const marketValue = holdings.reduce((sum, holding) => sum + holding.marketValue, 0)
   const costBasis = holdings.reduce((sum, holding) => sum + holding.costBasis, 0)
@@ -243,7 +244,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
         </>
       ) : null}
 
-      <HoldingsPanel holdings={holdings} />
+      <HoldingsPanel holdings={holdings} onSelectCompany={setModalCompanyId} />
 
       {showFavoriteCompanies ? (
         <Panel
@@ -258,21 +259,32 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
       <MarginPanel margin={detail.margin} />
 
       <Panel title="Pending settlements" count={`${formatInt(settlements.length)}`} className="panel-holdings">
-        <SettlementsTable settlements={settlements} />
+        <SettlementsTable settlements={settlements} onSelectCompany={setModalCompanyId} />
       </Panel>
 
       <IndustryHoldingsPanel holdings={holdings} companies={companies} />
 
       <div className="grid-detail">
-        <OrdersPanel orders={orders} companyName={companyName} />
-        <CashPanel moves={cashMoves} participantId={participantId} />
+        <OrdersPanel orders={orders} companyName={companyName} onSelectCompany={setModalCompanyId} />
+        <CashPanel key={participantId} participantId={participantId} />
       </div>
 
       <LoansPanel loans={loans} status={loanStatus} onStatusChange={setLoanStatus} />
 
       <FundMembershipHistoryPanel participantId={participantId} isFund={detail.type === 'CollectiveFund'} />
 
-      <TradesPanel trades={trades} participantId={participantId} companyName={companyName} />
+      <TradesPanel trades={trades} participantId={participantId} companyName={companyName} onSelectCompany={setModalCompanyId} />
+
+      {modalCompany ? (
+        <CompanyModal
+          company={modalCompany}
+          onClose={() => setModalCompanyId(null)}
+          onFavoriteChanged={(isFavorite) => {
+            setCompanies((current) => current.map((company) =>
+              company.id === modalCompany.id ? { ...company, isFavorite } : company))
+          }}
+        />
+      ) : null}
     </section>
   )
 }
@@ -465,7 +477,31 @@ function MemberLeaveCountdown({ member }) {
   return formatSignedInt(member.leaveCountdownTradingDays)
 }
 
-function HoldingsPanel({ holdings }) {
+// A company name that opens the shared company modal. Click and key events are stopped so it works inside a
+// clickable row (Recent trades) without also triggering that row's own dialog.
+function CompanyNameCell({ companyId, companyName, onSelectCompany }) {
+  if (!onSelectCompany) {
+    return <span className="cell-ellipsis">{companyName}</span>
+  }
+  return (
+    <button
+      type="button"
+      className="cell-name-btn cell-ellipsis"
+      onClick={(event) => {
+        event.stopPropagation()
+        onSelectCompany(companyId)
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
+      }}
+      title={`Open ${companyName} details`}
+    >
+      {companyName}
+    </button>
+  )
+}
+
+function HoldingsPanel({ holdings, onSelectCompany }) {
   const totalShares = holdings.reduce((sum, holding) => sum + holding.shares, 0)
 
   return (
@@ -504,8 +540,12 @@ function HoldingsPanel({ holdings }) {
                 const quantity = quantitySettlement(holding.shares, holding.settledShares)
                 return (
                   <tr key={holding.companyId}>
-                    <th scope="row" className="cell-ellipsis">
-                      {holding.companyName}
+                    <th scope="row">
+                      <CompanyNameCell
+                        companyId={holding.companyId}
+                        companyName={holding.companyName}
+                        onSelectCompany={onSelectCompany}
+                      />
                     </th>
                     <td className="num ta-r">{formatInt(quantity.economic)}</td>
                     <td className="num ta-r">{formatInt(quantity.settled)}</td>
@@ -538,7 +578,7 @@ function IndustryHoldingsPanel({ holdings, companies }) {
   )
 }
 
-function OrdersPanel({ orders, companyName }) {
+function OrdersPanel({ orders, companyName, onSelectCompany }) {
   // Latest first: order ids increase over time, so a descending id sort keeps the newest orders on page one.
   const { pageRows, page, pageCount, setPage } = useClientTable(orders, {
     pageSize: 10,
@@ -571,8 +611,12 @@ function OrdersPanel({ orders, companyName }) {
                 {pageRows.map((order) => (
                   <tr key={order.id}>
                     <td className={`tone-${order.type === 'Buy' ? 'up' : 'down'}`}>{order.type}</td>
-                    <th scope="row" className="cell-ellipsis">
-                      {companyName(order.companyId)}
+                    <th scope="row">
+                      <CompanyNameCell
+                        companyId={order.companyId}
+                        companyName={companyName(order.companyId)}
+                        onSelectCompany={onSelectCompany}
+                      />
                     </th>
                     <td className="num ta-r">
                       {order.filledQuantity}
@@ -592,7 +636,7 @@ function OrdersPanel({ orders, companyName }) {
   )
 }
 
-function TradesPanel({ trades, participantId, companyName }) {
+function TradesPanel({ trades, participantId, companyName, onSelectCompany }) {
   const [selectedTrade, setSelectedTrade] = useState(null)
 
   return (
@@ -636,8 +680,12 @@ function TradesPanel({ trades, participantId, companyName }) {
                     }}
                   >
                     <td className={`tone-${bought ? 'up' : 'down'}`}>{bought ? 'Bought' : 'Sold'}</td>
-                    <th scope="row" className="cell-ellipsis">
-                      {companyName(trade.companyId)}
+                    <th scope="row">
+                      <CompanyNameCell
+                        companyId={trade.companyId}
+                        companyName={companyName(trade.companyId)}
+                        onSelectCompany={onSelectCompany}
+                      />
                     </th>
                     <td className="num ta-r">{formatInt(trade.quantity)}</td>
                     <td className="num ta-r">{formatMoney(trade.price)}</td>
@@ -843,53 +891,107 @@ function FundMembershipHistoryPanel({ participantId, isFund }) {
   )
 }
 
-function CashPanel({ moves, participantId }) {
+function CashPanel({ participantId }) {
+  const [ready, setReady] = useState(false)
+  const [data, setData] = useState(null)
+  const [page, setPage] = useState(1)
+  const [loadError, setLoadError] = useState(null)
   const [selectedMove, setSelectedMove] = useState(null)
+  const requestSequence = useRef(0)
+
+  const loadMoves = useCallback(async () => {
+    const requestId = ++requestSequence.current
+    try {
+      const result = await api.getParticipantMoneyTransactionsPaged(participantId, page, CASH_MOVEMENT_PAGE_SIZE)
+      if (requestId !== requestSequence.current) return
+
+      const resultPageCount = Math.max(1, Math.ceil(result.total / (result.pageSize || CASH_MOVEMENT_PAGE_SIZE)))
+      if (page > resultPageCount) {
+        setPage(resultPageCount)
+        return
+      }
+
+      setData(result)
+      setLoadError(null)
+    } catch (error) {
+      if (requestId !== requestSequence.current) return
+      setLoadError(error.message)
+    } finally {
+      if (requestId === requestSequence.current) setReady(true)
+    }
+  }, [participantId, page])
+
+  useEffect(() => {
+    const initialId = setTimeout(loadMoves, 0)
+    const intervalId = setInterval(loadMoves, POLL_INTERVAL_MS)
+    return () => {
+      clearTimeout(initialId)
+      clearInterval(intervalId)
+      requestSequence.current += 1
+    }
+  }, [loadMoves])
+
+  const moves = data?.items ?? []
+  const total = data?.total ?? 0
+  const pageCount = Math.max(1, Math.ceil(total / (data?.pageSize || CASH_MOVEMENT_PAGE_SIZE)))
+  const displayedPage = data?.page ?? page
 
   return (
-    <Panel title="Cash movements" count={`last ${moves.length}`} className="panel-cash">
-      {moves.length === 0 ? (
+    <Panel title="Cash movements" count={ready ? `${formatInt(total)} total · newest first` : 'loading'} className="panel-cash">
+      {loadError && data != null ? <p className="note">Unable to refresh cash movements: {loadError}</p> : null}
+      {!ready && data == null ? (
+        <p className="note">Loading cash movements…</p>
+      ) : loadError && data == null ? (
+        <p className="note">Unable to load cash movements: {loadError}</p>
+      ) : total === 0 ? (
         <p className="note">No cash movements yet.</p>
       ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Type</th>
-                <th scope="col" className="ta-r">
-                  Amount
-                </th>
-                <th scope="col" className="ta-r">
-                  Cycle
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {moves.map((move) => (
-                <tr
-                  key={move.id}
-                  className="tbl-row-click"
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Open details for ${CASH_LABEL[move.type] ?? move.type} of ${formatMoney(move.amount)}`}
-                  onClick={() => setSelectedMove(move)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      setSelectedMove(move)
-                    }
-                  }}
-                >
-                  <td>
-                    <span className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</span>
-                  </td>
-                  <td className="num ta-r">{formatMoney(move.amount)}</td>
-                  <td className="num ta-r">#{move.createdInCycleId}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          {moves.length === 0 ? (
+            <p className="note">No cash movements on this page.</p>
+          ) : (
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th scope="col">Type</th>
+                    <th scope="col" className="ta-r">
+                      Amount
+                    </th>
+                    <th scope="col" className="ta-r">
+                      Cycle
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {moves.map((move) => (
+                    <tr
+                      key={move.id}
+                      className="tbl-row-click"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Open details for ${CASH_LABEL[move.type] ?? move.type} of ${formatMoney(move.amount)}`}
+                      onClick={() => setSelectedMove(move)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          setSelectedMove(move)
+                        }
+                      }}
+                    >
+                      <td>
+                        <span className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</span>
+                      </td>
+                      <td className="num ta-r">{formatMoney(move.amount)}</td>
+                      <td className="num ta-r">#{move.createdInCycleId}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <Pager page={displayedPage} pageCount={pageCount} onPage={setPage} />
+        </>
       )}
       {selectedMove ? (
         <MoneyTransactionModal

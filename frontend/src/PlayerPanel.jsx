@@ -788,7 +788,7 @@ function ActorTabs({ participantId, canCancelOrders, members, holdings, attentio
         {activeKey === 'cash' ? <CashMovesTab moves={cashMoves} participantId={participantId} /> : null}
         {activeKey === 'settlements' ? (
           <div className="modal-section player-section">
-            <SettlementsTable settlements={settlements} />
+            <SettlementsTable settlements={settlements} onSelectCompany={onSelectCompany} />
           </div>
         ) : null}
         {activeKey === 'loans' ? (

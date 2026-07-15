@@ -68,7 +68,7 @@ public sealed class StockSplitService(
                 // The overflow guard keeps a runaway price from splitting past the 32-bit share fields.
                 if ((long)company.IssuedSharesCount * SplitRatio <= MaxIssuedShares)
                 {
-                    await SplitAsync(company, price, currentCycleId, now);
+                    await SplitAsync(company, price, currentCycleId, currentCycleNumber, now);
                 }
             }
             else if (price is > 0m and < MergePriceThreshold)
@@ -76,16 +76,34 @@ public sealed class StockSplitService(
                 // The floor guard keeps a stuck penny price from merging the float toward zero.
                 if (company.IssuedSharesCount / SplitRatio >= MinIssuedShares)
                 {
-                    await MergeAsync(company, price, currentCycleId, now);
+                    await MergeAsync(company, price, currentCycleId, currentCycleNumber, now);
                 }
             }
         }
     }
 
-    private async Task SplitAsync(Company company, decimal price, int currentCycleId, DateTime now)
+    private async Task SplitAsync(
+        Company company,
+        decimal price,
+        int currentCycleId,
+        int currentCycleNumber,
+        DateTime now)
     {
+        var issuedSharesBefore = company.IssuedSharesCount;
         company.IssuedSharesCount *= SplitRatio;
         company.UpdatedAt = now;
+
+        var splitPrice = Round(price / SplitRatio);
+        await RedenominatePriceBandAndRecordEventAsync(
+            company,
+            StockDenominationActionType.Split,
+            issuedSharesBefore,
+            price,
+            splitPrice,
+            1m / SplitRatio,
+            currentCycleId,
+            currentCycleNumber,
+            now);
 
         // Positions: more shares at a proportionally lower average cost, so total cost basis and worth are unchanged.
         var holdings = await dbContext.Holdings.Where(holding => holding.CompanyId == company.Id).ToListAsync();
@@ -127,7 +145,6 @@ public sealed class StockSplitService(
 
         // The split-adjusted price becomes the company's current quote; capitalisation is unchanged (the price
         // fell by the ratio while the share count rose by it), so the capitalisation chart stays continuous.
-        var splitPrice = Round(price / SplitRatio);
         dbContext.PriceSnapshots.Add(new PriceSnapshot
         {
             CompanyId = company.Id,
@@ -149,8 +166,14 @@ public sealed class StockSplitService(
         });
     }
 
-    private async Task MergeAsync(Company company, decimal price, int currentCycleId, DateTime now)
+    private async Task MergeAsync(
+        Company company,
+        decimal price,
+        int currentCycleId,
+        int currentCycleNumber,
+        DateTime now)
     {
+        var issuedSharesBefore = company.IssuedSharesCount;
         var holdings = await dbContext.Holdings.Where(holding => holding.CompanyId == company.Id).ToListAsync();
         var ownedBefore = holdings.Sum(holding => holding.Quantity);
 
@@ -171,6 +194,18 @@ public sealed class StockSplitService(
         company.IssuedSharesCount = ownedAfter + floatBefore / SplitRatio;
         company.LastMergedInCycleId = currentCycleId;
         company.UpdatedAt = now;
+
+        var mergePrice = Round(price * SplitRatio);
+        await RedenominatePriceBandAndRecordEventAsync(
+            company,
+            StockDenominationActionType.ReverseSplit,
+            issuedSharesBefore,
+            price,
+            mergePrice,
+            SplitRatio,
+            currentCycleId,
+            currentCycleNumber,
+            now);
 
         var openOrders = await dbContext.Orders
             .Where(order => order.CompanyId == company.Id
@@ -202,7 +237,6 @@ public sealed class StockSplitService(
 
         // Multiplying the price while the share count fell by the same ratio leaves capitalisation unchanged,
         // save for the tiny value of the floored-away fractional shares.
-        var mergePrice = Round(price * SplitRatio);
         dbContext.PriceSnapshots.Add(new PriceSnapshot
         {
             CompanyId = company.Id,
@@ -238,6 +272,56 @@ public sealed class StockSplitService(
         order.FilledQuantity /= SplitRatio;
         order.LimitPrice = Round(order.LimitPrice * SplitRatio);
         order.UpdatedAt = now;
+    }
+
+    private async Task RedenominatePriceBandAndRecordEventAsync(
+        Company company,
+        StockDenominationActionType actionType,
+        int issuedSharesBefore,
+        decimal priceBefore,
+        decimal priceAfter,
+        decimal priceMultiplier,
+        int currentCycleId,
+        int currentCycleNumber,
+        DateTime now)
+    {
+        var state = await dbContext.PriceBandStates.FindAsync(company.Id);
+        var denominationEvent = new StockDenominationEvent
+        {
+            CompanyId = company.Id,
+            ActionType = actionType,
+            Ratio = SplitRatio,
+            IssuedSharesBefore = issuedSharesBefore,
+            IssuedSharesAfter = company.IssuedSharesCount,
+            PriceBefore = priceBefore,
+            PriceAfter = priceAfter,
+            EffectiveInCycleId = currentCycleId,
+            EffectiveInCycleNumber = currentCycleNumber,
+            CreatedAt = now,
+        };
+
+        if (state is not null)
+        {
+            denominationEvent.LuldState = state.State;
+            denominationEvent.LimitDirection = state.LimitDirection;
+            denominationEvent.ReferencePriceBefore = state.ReferencePrice;
+            denominationEvent.LowerBandPriceBefore = state.LowerBandPrice;
+            denominationEvent.UpperBandPriceBefore = state.UpperBandPrice;
+            denominationEvent.LimitStateStartedCycleNumber = state.LimitStateStartedCycleNumber;
+            denominationEvent.PauseUntilCycleNumber = state.PauseUntilCycleNumber;
+            denominationEvent.PreviousPriceBandUpdatedInCycleId = state.UpdatedInCycleId;
+
+            state.ReferencePrice = Round(state.ReferencePrice * priceMultiplier);
+            state.LowerBandPrice = Round(state.LowerBandPrice * priceMultiplier);
+            state.UpperBandPrice = Round(state.UpperBandPrice * priceMultiplier);
+            state.UpdatedInCycleId = currentCycleId;
+
+            denominationEvent.ReferencePriceAfter = state.ReferencePrice;
+            denominationEvent.LowerBandPriceAfter = state.LowerBandPrice;
+            denominationEvent.UpperBandPriceAfter = state.UpperBandPrice;
+        }
+
+        dbContext.StockDenominationEvents.Add(denominationEvent);
     }
 
     private void CancelParticipantOrder(Order order, Participant owner, int currentCycleId, DateTime now)

@@ -23,7 +23,9 @@ When a demo market is seeded, each company receives an initial price and issued 
 
 Company-originated float has no participant seller. When a trader buys from that float, the buyer receives shares and pays cash, no trader receives the proceeds, and the issuer receives the primary proceeds on T+1 settlement.
 
-When unsold issuer float falls below its scarcity threshold, the company can add a small percentage of its current issued supply and place the new shares in one company-originated sell order at the current price. A company can do this at most once per trading day, and issuance stops once unsold float is no longer scarce. The order uses ordinary matching, so the new supply absorbs participant cash instead of distributing free holdings.
+When unsold issuer float is strictly below 10% of issued shares, the company can answer executable unmet buy demand from active, non-bankrupt Individuals and AI Agents. Before issuing, it shadow-matches compatible resting sell supply with the same price-time and self-cross rules as normal matching; Player and Collective Fund demand does not trigger new supply. The company issues at most once per trading day, and the quantity is the smaller of remaining demand and 25% of issued shares rounded up.
+
+The new shares enter one company-originated sell order at the exact current price and use ordinary matching, so they absorb participant cash instead of distributing free holdings. Issuance is deferred while the company is in Limit State, Trading Pause, or Reopening, and its proceeds reach issuer cash through normal T+1 settlement.
 
 ## Matching Price
 
@@ -52,17 +54,21 @@ This means the market does not calculate one global clearing price from total de
 
 ## Order Prices
 
-Automated discretionary traders form ordinary in-band orders around the higher of the latest company price and the active LULD reference, biasing buys above and sells below it so orders have a chance to cross and a demand ratchet can lift later price formation. The exact target, side, and quantity depend on recent price movement, long-range movement, order-book imbalance, available cash, holdings, debt pressure, temperament, and risk profile.
+Rule-based Individuals form automated buys from their risk-specific exposure headroom. They cross the best residual in-band ask when one is available; otherwise they can place only a small bounded passive bid inside the executable band. Orders generated earlier in the same decision batch retain their price-time shadow, so a later buy cannot jump demand that has already been allocated.
+
+Configured AI Agents receive the same live exposure and execution envelope but choose their own exact side, company, price, quantity, and reason. When earlier demand has priority over lower-priced supply, the envelope can offer a passive bid at that priority ceiling instead of suggesting an unsafe crossing price. The backend either accepts the exact choice or rejects it; it does not clamp the model's order into compliance. Collective Funds and rule-based sell decisions retain their existing personality-, momentum-, and book-aware pricing.
 
 Every participant order — the player's and an automated one — must rest inside the allowed order range around the LULD reference, and a price beyond it is rejected. Continuous matching still only crosses orders inside the narrower executable band, so an order in the allowed range but outside the band waits until the band reaches it. See [LULD price controls](luld.md).
 
-Most automated discretionary orders are priced inside the executable band; roughly one in ten instead rests in one of the two waiting segments just outside it, on either side, so some interest sits ahead of the band. Both buys and sells may use either waiting segment. Forced orders that must execute — margin-call, bankruptcy, loan-distress, and fund cash-raising sells — are pulled onto the nearest band edge, and issuer float rests at the listing reference, so none of them deliberately wait outside the band.
+Rule-based Individual buys stay inside the executable band. Rule-based sells and Collective Fund orders may still use a waiting segment just outside it, while forced orders that must execute — margin-call, bankruptcy, loan-distress, and fund cash-raising sells — are pulled onto the nearest band edge. Issuer float rests at its listing reference, so none of those forced or issuer orders deliberately wait outside the band.
 
-Resting automated orders can also move toward the market before matching, always clamped into the executable band so a stale order never compounds past it:
+Resting rule-based automated and fund orders can also move toward the market before matching, always clamped into the executable band so a stale order never compounds past it:
 
 - A sell steps toward the band to cross, or climbs toward it when it rests below.
 - A buy steps up toward the band, or down toward it when it rests above, reserving or releasing the cash difference.
 - Very old automated orders can be cancelled, and any participant order left beyond the allowed range after the band moves is cancelled with its reservation released.
+
+Accepted AI Agent orders are not re-priced by this maintenance step: their exact buy or sell limit remains unchanged while they rest, and a buy reservation stays tied to that limit. They can still fill, be cancelled by the agent, expire at the automated age cap, or be cancelled by structural market rules such as an invalid allowed range or stock split.
 
 The human player's orders are not automatically aged or re-priced by ordinary maintenance, but they remain subject to the universal allowed-range validity check.
 
@@ -101,11 +107,13 @@ A science investigation is a positive sector event. It raises affected companies
 
 Auditors review companies during the pre-match window. A severe finding can directly drop a company's price and trigger buyer order revisions before that cycle's automated decisions and matching. An issue-free review can instead raise expectations, lift the price, and cancel eligible participant sell orders so owners can re-form asks around the new level; player and bankrupt-owner orders remain untouched.
 
-### Stock Splits
+### Stock Splits And Reverse Splits
 
 When a company's per-share price grows too high, a stock split can re-denominate the shares. The split increases share counts and lowers the per-share price proportionally, preserving each holder's total value and the company's total market value.
 
-The split-adjusted price is recorded as a new price point. The unsold float is re-denominated in place, while participant orders for the split company are cancelled so trading can restart around the adjusted price.
+A reverse split applies the same rules in the other direction when a per-share price becomes too low. Whole-share division can discard a sub-share remainder, so holder value and capitalization can decrease by that small remainder.
+
+The adjusted price is recorded as a new price point. The unsold float and current LULD reference and band are re-denominated in place, while participant orders are cancelled so trading can restart around the adjusted price. Earlier trades remain unchanged as historical facts but stop contributing to the rolling LULD reference; the first new order and trade therefore use only the new price scale.
 
 ## Actions That Do Not Directly Set Price
 

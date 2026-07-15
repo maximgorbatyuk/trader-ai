@@ -17,6 +17,12 @@ public sealed class OrderBookContext
     public required IReadOnlyDictionary<int, decimal> PriceByCompany { get; init; }
 
     public required IReadOnlyDictionary<int, OrderPriceBounds> BoundsByCompany { get; init; }
+
+    public required decimal HoldingsValue { get; init; }
+
+    public required decimal LoanLiability { get; init; }
+
+    public required decimal MarginLiability { get; init; }
 }
 
 public sealed record AiOrderApplicationResult(
@@ -30,4 +36,12 @@ public sealed record AiOrderApplicationResult(
     int? CreatedOrderId,
     string? RejectionReason);
 
-public sealed record AiDecisionApplicationResult(bool ConfigurationStillCurrent, AiOrderApplicationResult[] Orders);
+public sealed record AiCancellationApplicationResult(
+    int OrderId,
+    bool Applied,
+    string? RejectionReason);
+
+public sealed record AiDecisionApplicationResult(
+    bool ConfigurationStillCurrent,
+    AiCancellationApplicationResult[] Cancellations,
+    AiOrderApplicationResult[] Orders);

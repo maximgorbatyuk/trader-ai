@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from './api'
-import { formatStoredJson } from './aiTraderModel'
-import { aiCallStatusLabel } from './format'
+import { formatStoredJson, parseAiCallPresentation } from './aiTraderModel'
+import { aiCallStatusLabel, formatInt, formatMoney } from './format'
 
 function formatTimestamp(value) {
   if (!value) return '—'
@@ -9,13 +10,12 @@ function formatTimestamp(value) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString()
 }
 
-// Lazily loads and shows one AI call's full request, raw response, parsed decision, and application results in
-// labelled scrollable text regions. Nothing is ever rendered as HTML. Contributes the dialog chrome
-// (backdrop/Escape close, scroll lock, focus trap) shared by the other detail modals.
+// Keeps presentation derivation client-side so the provider audit payload and backend response contract remain unchanged.
 export function AiTraderCallModal({ participantId, callId, onClose }) {
   const dialogRef = useRef(null)
   const closeRef = useRef(null)
   const [call, setCall] = useState(null)
+  const [companyNames, setCompanyNames] = useState(() => new Map())
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -27,6 +27,22 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
         if (active) {
           setCall(data)
           setError(null)
+
+          const companyIds = [...new Set(
+            parseAiCallPresentation(null, data?.decisionJson).orders.map((order) => order.companyId),
+          )]
+          Promise.all(companyIds.map(async (companyId) => {
+            try {
+              const company = await api.getCompany(companyId)
+              return [companyId, company?.name ?? null]
+            } catch {
+              return [companyId, null]
+            }
+          })).then((entries) => {
+            if (active) {
+              setCompanyNames(new Map(entries.filter(([, name]) => name)))
+            }
+          })
         }
       })
       .catch((loadError) => {
@@ -74,7 +90,7 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
     }
 
     const focusable = dialogRef.current?.querySelectorAll(
-      'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      'a[href], button:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
     )
     if (!focusable || focusable.length === 0) {
       return
@@ -92,6 +108,8 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
   }
 
   const titleId = `ai-call-modal-title-${callId}`
+  const presentation = parseAiCallPresentation(call?.responseBody, call?.decisionJson)
+  const summary = presentation.summary || call?.summary || ''
 
   return (
     <div className="modal-backdrop" onClick={onBackdropClick}>
@@ -153,15 +171,70 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
 
               {call.error ? (
                 <section className="modal-section">
-                  <span className="map-stat-label">Error</span>
+                  <h3 className="map-stat-label ai-call-section-title">Error</h3>
                   <p className="command-error">{call.error}</p>
                 </section>
               ) : null}
 
-              <CallJsonRegion label="Request" value={call.requestJson} />
-              <CallJsonRegion label="Raw response" value={call.responseBody} />
-              <CallJsonRegion label="Parsed decision" value={call.decisionJson} />
-              <CallJsonRegion label="Application result" value={call.applicationResultJson} />
+              <section className="modal-section">
+                <h3 className="map-stat-label ai-call-section-title">Thinking</h3>
+                {presentation.thinking ? (
+                  <p className="ai-call-prose">{presentation.thinking}</p>
+                ) : (
+                  <p className="note">Not recorded.</p>
+                )}
+              </section>
+
+              <section className="modal-section">
+                <h3 className="map-stat-label ai-call-section-title">Summary</h3>
+                {summary ? <p className="ai-call-prose">{summary}</p> : <p className="note">Not recorded.</p>}
+              </section>
+
+              <section className="modal-section">
+                <h3 className="map-stat-label ai-call-section-title" id={`ai-call-decision-${callId}`}>
+                  Parsed decision
+                </h3>
+                {presentation.orders.length > 0 ? (
+                  <div className="tbl-wrap">
+                    <table className="tbl ai-decision-table" aria-labelledby={`ai-call-decision-${callId}`}>
+                      <thead>
+                        <tr>
+                          <th scope="col">Side</th>
+                          <th scope="col">Company</th>
+                          <th scope="col" className="ta-r">Quantity</th>
+                          <th scope="col" className="ta-r">Limit price</th>
+                          <th scope="col">Reason</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {presentation.orders.map((order, index) => (
+                          <tr key={`${order.companyId}-${index}`}>
+                            <td><span className="tag">{order.side ?? '—'}</span></td>
+                            <td>
+                              <Link className="cell-link" to={`/companies/${order.companyId}`} onClick={onClose}>
+                                {companyNames.get(order.companyId) ?? `Company #${order.companyId}`}
+                              </Link>
+                            </td>
+                            <td className="num ta-r">{formatInt(order.quantity)}</td>
+                            <td className="num ta-r">{formatMoney(order.limitPrice)}</td>
+                            <td className="ai-decision-reason">{order.reason ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="note">No orders recorded.</p>
+                )}
+              </section>
+
+              <section className="modal-section ai-call-technical">
+                <h3 className="map-stat-label ai-call-section-title">Technical details</h3>
+                <CallJsonDisclosure label="Raw request" value={call.requestJson} />
+                <CallJsonDisclosure label="Raw response" value={call.responseBody} />
+                <CallJsonDisclosure label="Parsed decision" value={call.decisionJson} />
+                <CallJsonDisclosure label="Application result" value={call.applicationResultJson} />
+              </section>
             </>
           ) : null}
         </div>
@@ -176,12 +249,15 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
   )
 }
 
-function CallJsonRegion({ label, value }) {
+function CallJsonDisclosure({ label, value }) {
   const text = formatStoredJson(value)
   return (
-    <section className="modal-section">
-      <span className="map-stat-label">{label}</span>
+    <details className="ai-call-disclosure">
+      <summary>
+        <span>{label}</span>
+        <span className="ai-call-disclosure-state">{text ? 'JSON' : 'Not recorded'}</span>
+      </summary>
       {text ? <pre className="ai-call-json">{text}</pre> : <p className="note">Not recorded.</p>}
-    </section>
+    </details>
   )
 }

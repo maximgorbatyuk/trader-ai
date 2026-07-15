@@ -33,6 +33,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<PriceBandState> PriceBandStates => Set<PriceBandState>();
 
+    public DbSet<StockDenominationEvent> StockDenominationEvents => Set<StockDenominationEvent>();
+
     public DbSet<PriceSnapshot> PriceSnapshots => Set<PriceSnapshot>();
 
     public DbSet<Market> Markets => Set<Market>();
@@ -264,6 +266,22 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasOne(company => company.PriceBandState)
             .WithOne(state => state.Company)
             .HasForeignKey<PriceBandState>(state => state.CompanyId);
+
+        modelBuilder.Entity<StockDenominationEvent>()
+            .HasOne<Company>()
+            .WithMany()
+            .HasForeignKey(denominationEvent => denominationEvent.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<StockDenominationEvent>()
+            .HasOne<MarketCycle>()
+            .WithMany()
+            .HasForeignKey(denominationEvent => denominationEvent.EffectiveInCycleId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<StockDenominationEvent>()
+            .HasIndex(denominationEvent => new { denominationEvent.CompanyId, denominationEvent.EffectiveInCycleNumber })
+            .IsUnique();
 
         modelBuilder.Entity<SettlementInstruction>()
             .HasOne(instruction => instruction.ShareTransaction)

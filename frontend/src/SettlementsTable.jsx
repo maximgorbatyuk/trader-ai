@@ -1,7 +1,7 @@
 import { formatInt, formatMoney } from './format'
 import { settlementLabel } from './marketAccounting'
 
-export function SettlementsTable({ settlements, emptyNote = 'No pending settlements.' }) {
+export function SettlementsTable({ settlements, emptyNote = 'No pending settlements.', onSelectCompany }) {
   if (settlements.length === 0) {
     return <p className="note note-sm">{emptyNote}</p>
   }
@@ -23,7 +23,20 @@ export function SettlementsTable({ settlements, emptyNote = 'No pending settleme
           {settlements.map((settlement) => (
             <tr key={settlement.id}>
               <td className={`tone-${settlement.side === 'Buy' ? 'up' : 'down'}`}>{settlement.side}</td>
-              <th scope="row" className="cell-ellipsis">{settlement.companyName}</th>
+              <th scope="row" className={onSelectCompany ? undefined : 'cell-ellipsis'}>
+                {onSelectCompany ? (
+                  <button
+                    type="button"
+                    className="cell-name-btn cell-ellipsis"
+                    onClick={() => onSelectCompany(settlement.companyId)}
+                    title={`Open ${settlement.companyName} details`}
+                  >
+                    {settlement.companyName}
+                  </button>
+                ) : (
+                  settlement.companyName
+                )}
+              </th>
               <td className="num ta-r">{formatInt(settlement.quantity)}</td>
               <td className="num ta-r">{formatMoney(settlement.cashAmount)}</td>
               <td className="num ta-r">Day {formatInt(settlement.tradeDayNumber)}</td>

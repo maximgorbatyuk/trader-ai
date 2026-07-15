@@ -88,6 +88,58 @@ public sealed class OrderMaintenanceTests : IDisposable
     }
 
     [Fact]
+    public async Task AiBuyKeepsItsExactLimitAndReservationUntilItExpires()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var bob = await context.Participants.FirstAsync(participant => participant.Name == "Bob");
+        bob.Type = ParticipantType.AIAgent;
+        await context.SaveChangesAsync();
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new FixedRoll(0d));
+
+        var placed = await market.PlaceOrderAsync(bob.Id, company.Id, OrderType.Buy, 2, 100m);
+        await StepAsync(market, 2);
+
+        var order = await context.Orders.FindAsync(placed.Order!.Id);
+        Assert.Equal(OrderStatus.Open, order!.Status);
+        Assert.Equal(100m, order.LimitPrice);
+        Assert.Equal(200m, order.ReservedCashAmount);
+        await context.Entry(bob).ReloadAsync();
+        Assert.Equal(200m, bob.ReservedBalance);
+        Assert.DoesNotContain(await context.MoneyTransactions
+            .Where(transaction => transaction.RelatedOrderId == order.Id)
+            .ToListAsync(), transaction => (transaction.Description ?? string.Empty)
+                .Contains("reprice", StringComparison.OrdinalIgnoreCase));
+
+        await StepAsync(market, 14);
+
+        await context.Entry(order).ReloadAsync();
+        await context.Entry(bob).ReloadAsync();
+        Assert.Equal(OrderStatus.Cancelled, order.Status);
+        Assert.Equal(100m, order.LimitPrice);
+        Assert.Equal(0m, order.ReservedCashAmount);
+        Assert.Equal(0m, bob.ReservedBalance);
+    }
+
+    [Fact]
+    public async Task AiSellKeepsItsExactLimitWhileResting()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var alice = await context.Participants.FirstAsync(participant => participant.Name == "Alice");
+        alice.Type = ParticipantType.AIAgent;
+        await context.SaveChangesAsync();
+        var company = await context.Companies.FirstAsync();
+        var market = Service(new FixedRoll(0d));
+
+        var placed = await market.PlaceOrderAsync(alice.Id, company.Id, OrderType.Sell, 2, 100m);
+        await StepAsync(market, 2);
+
+        var order = await context.Orders.FindAsync(placed.Order!.Id);
+        Assert.Equal(OrderStatus.Open, order!.Status);
+        Assert.Equal(100m, order.LimitPrice);
+    }
+
+    [Fact]
     public async Task CashStarvedHolderLiquidatesHalfOfItsPriciestHolding()
     {
         await SeedStarvedHolderAsync(cash: 10m, cheapPrice: 50m, dearPrice: 200m, sharesEach: 4);

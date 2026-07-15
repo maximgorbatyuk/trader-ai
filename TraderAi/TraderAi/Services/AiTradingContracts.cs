@@ -5,9 +5,25 @@ namespace TraderAi.Services;
 
 // The exact assistant-content contract. Property names are explicit so the wire format never depends on a
 // global naming policy, and deserialization is strict (see AiDecisionJson).
-public sealed record AiTradeDecision(
-    [property: JsonPropertyName("summary")] string Summary,
-    [property: JsonPropertyName("orders")] AiTradeOrderDecision[] Orders);
+public sealed record AiTradeDecision
+{
+    [JsonConstructor]
+    public AiTradeDecision(string summary, AiTradeOrderDecision[] orders, int[]? cancelOrderIds = null)
+    {
+        Summary = summary;
+        Orders = orders;
+        CancelOrderIds = cancelOrderIds ?? [];
+    }
+
+    [JsonPropertyName("summary")]
+    public string Summary { get; init; }
+
+    [JsonPropertyName("orders")]
+    public AiTradeOrderDecision[] Orders { get; init; }
+
+    [JsonPropertyName("cancelOrderIds")]
+    public int[] CancelOrderIds { get; init; }
+}
 
 public sealed record AiTradeOrderDecision(
     [property: JsonPropertyName("side")] OrderType Side,

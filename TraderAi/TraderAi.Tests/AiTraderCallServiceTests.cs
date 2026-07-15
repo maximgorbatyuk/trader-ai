@@ -11,7 +11,7 @@ public sealed class AiTraderCallServiceTests : IDisposable
     private const int MaxOrders = 10;
 
     private const string ValidDecision =
-        "{\"summary\":\"Buy a strong company.\",\"orders\":[{\"side\":\"Buy\",\"companyId\":1,\"quantity\":2,\"limitPrice\":3,\"reason\":\"r\"}]}";
+        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"orders\":[{\"side\":\"Buy\",\"companyId\":1,\"quantity\":2,\"limitPrice\":3,\"reason\":\"r\"}]}";
 
     private readonly SqliteConnection connection;
     private readonly AppDbContext context;
@@ -101,7 +101,7 @@ public sealed class AiTraderCallServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ProseOnlyReplyIsRecordedAsCompletedNoOrderWaitDecision()
+    public async Task ProseOnlyReplyIsRejectedByTheStrictFreshResponseContract()
     {
         // The exact GLM reply that previously failed with "'L' is an invalid start of a value": reasoning in prose
         // with no JSON object at all. It must now record a completed no-order decision, never a parse error.
@@ -120,16 +120,14 @@ public sealed class AiTraderCallServiceTests : IDisposable
         var execution = await service.ExecuteAsync(Descriptor(), MaxOrders,
             _ => Task.FromResult(Ok(prose, prose)), CancellationToken.None);
 
-        Assert.Equal(AiTraderCallStatus.Completed, execution.Status);
-        Assert.NotNull(execution.Decision);
-        Assert.Empty(execution.Decision!.Orders);
-        Assert.StartsWith("Looking at this portfolio", execution.Decision.Summary);
-        Assert.Contains("attractively-priced companies with positive catalysts", execution.Decision.Summary);
+        Assert.Equal(AiTraderCallStatus.InvalidJson, execution.Status);
+        Assert.Null(execution.Decision);
 
         var stored = await context.AiTraderCalls.SingleAsync();
-        Assert.Equal(AiTraderCallStatus.Completed, stored.Status);
-        Assert.NotNull(stored.DecisionJson);
-        Assert.Null(stored.Error);
+        Assert.Equal(AiTraderCallStatus.InvalidJson, stored.Status);
+        Assert.Null(stored.DecisionJson);
+        Assert.NotNull(stored.Error);
+        Assert.Equal(prose, stored.ResponseBody);
     }
 
     [Fact]
@@ -158,6 +156,18 @@ public sealed class AiTraderCallServiceTests : IDisposable
         Assert.Equal(AiTraderCallStatus.Completed, stored.Status);
         Assert.Equal(1, stored.AppliedOrders);
         Assert.NotNull(stored.AppliedAt);
+    }
+
+    [Fact]
+    public void StoredLegacyDecisionWithoutCancelOrderIdsDefaultsToEmpty()
+    {
+        const string legacy =
+            "{\"summary\":\"Legacy plan.\",\"orders\":[{\"side\":\"Buy\",\"companyId\":1,\"quantity\":2,\"limitPrice\":3,\"reason\":\"r\"}]}";
+
+        var decision = service.DeserializeDecision(legacy);
+
+        Assert.NotNull(decision);
+        Assert.Empty(decision!.CancelOrderIds);
     }
 
     [Fact]
