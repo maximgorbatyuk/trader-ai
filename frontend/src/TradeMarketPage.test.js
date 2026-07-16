@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 import { createServer } from 'vite'
 
-test('places filled orders directly after the live order book', async (t) => {
+test('shows filled orders without the live order book', async (t) => {
   const server = await createServer({
     root: new URL('..', import.meta.url).pathname,
     logLevel: 'silent',
@@ -30,10 +30,8 @@ test('places filled orders directly after the live order book', async (t) => {
   )
 
   const markup = renderToStaticMarkup(page)
-  const orderBookIndex = markup.indexOf('Order book')
-  const filledOrdersIndex = markup.indexOf('Filled orders / settlements')
 
-  assert.ok(orderBookIndex >= 0)
-  assert.ok(filledOrdersIndex > orderBookIndex)
+  assert.equal(markup.indexOf('Order book'), -1)
+  assert.ok(markup.indexOf('Filled orders / settlements') >= 0)
   assert.match(markup, /No orders have been filled yet\./)
 })

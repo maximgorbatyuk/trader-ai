@@ -395,7 +395,7 @@
 .settings-page {
   display: flex;
   flex-direction: column;
-  gap: var(--s-4);
+  gap: var(--s-6);
 }
 
 .settings-header {
@@ -488,6 +488,7 @@
 }
 
 .settings-subsection + .settings-subsection {
+  margin-top: var(--s-5);
   border-top: 1px solid var(--border-2);
 }
 
@@ -522,7 +523,7 @@
 
 .settings-table tbody th,
 .settings-table tbody td {
-  padding: var(--s-3) var(--s-4);
+  padding: var(--s-4) var(--s-4);
   vertical-align: top;
 }
 
@@ -549,7 +550,7 @@
 .settings-description {
   max-width: 72ch;
   color: var(--text);
-  font-size: var(--t-sm);
+  font-size: var(--t-base);
   line-height: 1.5;
   text-wrap: pretty;
 }
