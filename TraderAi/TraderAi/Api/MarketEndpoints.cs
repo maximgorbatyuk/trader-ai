@@ -1258,6 +1258,25 @@ public static class MarketEndpoints
             return Results.Ok(transactions.Select(ToShareTransactionResponse).ToArray());
         });
 
+        app.MapGet("/transactions/shares/paged", async (int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var total = await dbContext.ShareTransactions.CountAsync();
+            var transactions = await dbContext.ShareTransactions
+                .Include(transaction => transaction.SettlementInstruction)
+                .OrderByDescending(transaction => transaction.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            return Results.Ok(new PagedShareTransactionsResponse(
+                transactions.Select(ToShareTransactionResponse).ToArray(),
+                total,
+                pageIndex,
+                size));
+        });
+
         app.MapGet("/prices/{companyId:int}", async (int companyId, AppDbContext dbContext) =>
         {
             var snapshots = await dbContext.PriceSnapshots
@@ -3353,6 +3372,12 @@ public sealed record ShareTransactionResponse(
     int? TradeDayNumber,
     int? DueDayNumber,
     string? SettlementStatus);
+
+public sealed record PagedShareTransactionsResponse(
+    ShareTransactionResponse[] Items,
+    int Total,
+    int Page,
+    int PageSize);
 
 public sealed record SettlementInstructionResponse(
     int Id,

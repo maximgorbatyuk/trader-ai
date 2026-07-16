@@ -42,6 +42,7 @@ public static class GameSettingsCatalog
                 "MaximumIssuedSharesPerOrderPercent", "MaximumPassiveBidIssuedSharesPercent",
                 "MinimumMeaningfulQuantityPercent", "MaximumHighRiskMarginLiabilityPercent",
                 "PassiveBuyPremiumMinPercent", "PassiveBuyPremiumMaxPercent",
+                "BuyOrdersPerCycleMin", "BuyOrdersPerCycleMax",
             ],
             ["News"] = ["Enabled", "CyclesBetweenPosts"],
             ["Crisis"] = ["Enabled"],
@@ -173,6 +174,8 @@ public static class GameSettingsCatalog
         "AiTrading:RetryBaseDelaySeconds",
         "AiTrading:RetryMaxDelaySeconds",
         "AiTrading:AuthErrorRetrySeconds",
+        "AutomatedTrading:BuyOrdersPerCycleMin",
+        "AutomatedTrading:BuyOrdersPerCycleMax",
     ];
 
     private static readonly IReadOnlyDictionary<string, string> Descriptions =

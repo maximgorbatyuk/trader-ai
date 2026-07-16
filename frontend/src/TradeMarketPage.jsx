@@ -7,9 +7,12 @@ import { MarketMapPanel } from './MarketMapPanel'
 import { OrdersActivity } from './OrdersActivity'
 import { LatestNews } from './LatestNews'
 import { OrderBookPanel } from './OrderBook'
+import { FilledOrdersTable } from './FilledOrdersTable'
 import { emptyActorHintFor, holdingByCompany, holdingCompanyIdSet, resolveActor } from './actor'
+import { formatInt } from './format'
 
 const POLL_INTERVAL_MS = 1500
+const FILLED_ORDERS_PAGE_SIZE = 20
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
 const TABS = [
   { key: 'map', label: 'Market map' },
@@ -27,6 +30,8 @@ function TradeMarketPage() {
   const [activity, setActivity] = useState([])
   const [news, setNews] = useState([])
   const [orders, setOrders] = useState([])
+  const [filledOrders, setFilledOrders] = useState({ items: [], total: 0, page: 1, pageSize: FILLED_ORDERS_PAGE_SIZE })
+  const [filledOrdersPage, setFilledOrdersPage] = useState(1)
   const [player, setPlayer] = useState(null)
   const [playerHoldingCompanyIds, setPlayerHoldingCompanyIds] = useState(() => new Set())
   const [actorHoldingCompanyIds, setActorHoldingCompanyIds] = useState(() => new Set())
@@ -36,12 +41,13 @@ function TradeMarketPage() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [companyData, participantData, activityData, newsData, orderData, playerData] = await Promise.all([
+      const [companyData, participantData, activityData, newsData, orderData, filledOrderData, playerData] = await Promise.all([
         api.getCompanies(),
         api.getParticipants(),
         api.getCycleActivity(),
         api.getNews(10),
         api.getOrders('open'),
+        api.getShareTransactionsPaged(filledOrdersPage, FILLED_ORDERS_PAGE_SIZE),
         api.getPlayer(),
       ])
       setCompanies(companyData)
@@ -49,7 +55,13 @@ function TradeMarketPage() {
       setActivity(activityData)
       setNews(newsData)
       setOrders(orderData)
+      setFilledOrders(filledOrderData)
       setPlayer(playerData)
+
+      const pageCount = Math.max(1, Math.ceil(filledOrderData.total / FILLED_ORDERS_PAGE_SIZE))
+      if (filledOrdersPage > pageCount) {
+        setFilledOrdersPage(pageCount)
+      }
 
       if (playerData) {
         const holdings = await api.getHoldings(playerData.id)
@@ -68,7 +80,7 @@ function TradeMarketPage() {
     } catch {
       // Keep the last known state when a refresh fails; the shell surfaces the offline status.
     }
-  }, [actorKind])
+  }, [actorKind, filledOrdersPage])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)
@@ -193,6 +205,25 @@ function TradeMarketPage() {
           emptyActorHint={emptyActorHint}
           onTraded={loadAll}
         />
+      </div>
+
+      <div className="dashboard">
+        <Panel
+          title="Filled orders / settlements"
+          count={`${formatInt(filledOrders.total)} fill${filledOrders.total === 1 ? '' : 's'}`}
+          className="panel-trades"
+        >
+          <FilledOrdersTable
+            transactions={filledOrders.items}
+            total={filledOrders.total}
+            page={filledOrdersPage}
+            pageSize={FILLED_ORDERS_PAGE_SIZE}
+            participantNameById={participantNameById}
+            companyNameById={companyNameById}
+            onPage={setFilledOrdersPage}
+            onSelectCompany={onSelectCompany}
+          />
+        </Panel>
       </div>
     </main>
   )

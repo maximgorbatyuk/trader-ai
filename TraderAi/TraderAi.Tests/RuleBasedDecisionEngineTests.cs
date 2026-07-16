@@ -487,6 +487,37 @@ public sealed class RuleBasedDecisionEngineTests
     }
 
     [Fact]
+    public void ADecidedBuyFansOutToDistinctCompaniesUpToTheConfiguredCount()
+    {
+        var participant = NewParticipant(100_000m, riskProfile: RiskProfile.High);
+        var context = new DecisionContext(
+            participant,
+            AvailableCash: 100_000m,
+            [
+                new CompanyQuote(1, Price: 100m, Bounds: Bounds(100m), IssuedShares: 10_000,
+                    BestExecutableSellPrice: 100m, BestExecutableSellQuantity: 50, OpenSellQuantity: 50),
+                new CompanyQuote(2, Price: 100m, Bounds: Bounds(100m), IssuedShares: 10_000,
+                    BestExecutableSellPrice: 100m, BestExecutableSellQuantity: 50, OpenSellQuantity: 50),
+                new CompanyQuote(3, Price: 100m, Bounds: Bounds(100m), IssuedShares: 10_000,
+                    BestExecutableSellPrice: 100m, BestExecutableSellQuantity: 50, OpenSellQuantity: 50),
+            ],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: 0m,
+            NetWorth: 100_000m,
+            AvailableBalance: 100_000m,
+            BuyingPower: 100_000m,
+            HasAutomatedTradingData: true);
+        var options = new AutomatedTradingOptions { BuyOrdersPerCycleMin = 3, BuyOrdersPerCycleMax = 3 };
+
+        var intents = EngineWith([0.1d], [0], automatedTradingOptions: options).Decide(context);
+
+        Assert.Equal(3, intents.Count);
+        Assert.All(intents, intent => Assert.Equal(OrderType.Buy, intent.Type));
+        Assert.Equal(3, intents.Select(intent => intent.CompanyId).Distinct().Count());
+    }
+
+    [Fact]
     public void IndividualUniformFallbackAppliesThePassiveBuyChance()
     {
         var chanceRates = new RandomChanceRatesOptions();

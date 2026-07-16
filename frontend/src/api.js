@@ -87,6 +87,8 @@ export const api = {
   getCycles: () => get('/cycles'),
   getCycleActivity: () => get('/cycles/activity'),
   getShareTransactions: (take) => get(take ? `/transactions/shares?take=${take}` : '/transactions/shares'),
+  getShareTransactionsPaged: (page = 1, pageSize = 20) =>
+    get(`/transactions/shares/paged${toQuery({ page, pageSize })}`),
   getPrices: (companyId) => get(`/prices/${companyId}`),
   getNews: (take = 30) => get(`/news?take=${take}`),
   getNewsPaged: (page = 1, pageSize = 20) => get(`/news/paged?page=${page}&pageSize=${pageSize}`),

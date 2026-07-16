@@ -22,6 +22,11 @@ public sealed class AutomatedTradingOptions
     public decimal PassiveBuyPremiumMinPercent { get; set; } = 1m;
     public decimal PassiveBuyPremiumMaxPercent { get; set; } = 15m;
 
+    // The class default is a single buy per decision; the deployed default in appsettings widens the range so a
+    // buying participant places a random cluster of orders.
+    public int BuyOrdersPerCycleMin { get; set; } = 1;
+    public int BuyOrdersPerCycleMax { get; set; } = 1;
+
     public bool IsValid() =>
         IsExposureRangeValid(LowMinimumExposurePercent, LowMaximumExposurePercent)
         && IsExposureRangeValid(MediumMinimumExposurePercent, MediumMaximumExposurePercent)
@@ -36,7 +41,10 @@ public sealed class AutomatedTradingOptions
         && IsPositivePercentage(MaximumHighRiskMarginLiabilityPercent)
         && IsPercentage(PassiveBuyPremiumMinPercent)
         && IsPercentage(PassiveBuyPremiumMaxPercent)
-        && PassiveBuyPremiumMinPercent <= PassiveBuyPremiumMaxPercent;
+        && PassiveBuyPremiumMinPercent <= PassiveBuyPremiumMaxPercent
+        && BuyOrdersPerCycleMin >= 0
+        && BuyOrdersPerCycleMax >= BuyOrdersPerCycleMin
+        && BuyOrdersPerCycleMax <= 100;
 
     public AutomatedTradingTarget GetTarget(RiskProfile riskProfile) => riskProfile switch
     {

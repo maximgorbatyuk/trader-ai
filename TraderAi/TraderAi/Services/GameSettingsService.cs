@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -57,7 +58,14 @@ public sealed class GameSettingsService(
         where TOptions : class, new()
     {
         var current = snapshot ?? throw new InvalidOperationException("Game settings have not been initialized.");
-        return current.Configuration.GetSection(sectionName).Get<TOptions>() ?? new TOptions();
+
+        // Options are read on the hot per-cycle path; bind once per snapshot and reuse the result instead of
+        // reflecting over configuration on every access. The immutable snapshot is swapped on update, so its
+        // cache is discarded with it.
+        return (TOptions)current.BoundOptions.GetOrAdd(
+            sectionName,
+            static (key, configuration) => configuration.GetSection(key).Get<TOptions>() ?? new TOptions(),
+            current.Configuration);
     }
 
     public IReadOnlyList<GameSettingValue> GetAll()
@@ -438,5 +446,8 @@ public sealed class GameSettingsService(
 
     private sealed record SettingsSnapshot(
         IConfigurationRoot Configuration,
-        IReadOnlyList<GameSettingValue> Values);
+        IReadOnlyList<GameSettingValue> Values)
+    {
+        public ConcurrentDictionary<string, object> BoundOptions { get; } = new(StringComparer.Ordinal);
+    }
 }

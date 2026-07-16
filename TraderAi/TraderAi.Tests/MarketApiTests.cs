@@ -389,6 +389,71 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task MarketShareTransactionsArePagedNewestFirst()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var participants = await db.Participants.OrderBy(participant => participant.Id).Take(2).ToArrayAsync();
+                var company = await db.Companies.OrderBy(company => company.Id).FirstAsync();
+                var cycle = await db.MarketCycles.OrderByDescending(marketCycle => marketCycle.Id).FirstAsync();
+                var createdAt = DateTime.UtcNow;
+                var trades = Enumerable.Range(1, 3)
+                    .Select(quantity => new ShareTransaction
+                    {
+                        SellerId = participants[0].Id,
+                        BuyerId = participants[1].Id,
+                        CompanyId = company.Id,
+                        Quantity = quantity,
+                        Price = 10m,
+                        TotalCost = quantity * 10m,
+                        CreatedInCycleId = cycle.Id,
+                        CreatedAt = createdAt.AddSeconds(quantity),
+                        UpdatedAt = createdAt.AddSeconds(quantity),
+                    })
+                    .ToArray();
+                db.ShareTransactions.AddRange(trades);
+                await db.SaveChangesAsync();
+                db.SettlementInstructions.AddRange(
+                    new SettlementInstruction { ShareTransactionId = trades[0].Id, BuyerId = participants[1].Id, SellerId = participants[0].Id, CompanyId = company.Id, Quantity = 1, CashAmount = 10m, TradeDayNumber = 1, DueDayNumber = 2, Status = SettlementStatus.Pending, CreatedInCycleId = cycle.Id, CreatedAt = createdAt.AddSeconds(1) },
+                    new SettlementInstruction { ShareTransactionId = trades[1].Id, BuyerId = participants[1].Id, SellerId = participants[0].Id, CompanyId = company.Id, Quantity = 2, CashAmount = 20m, TradeDayNumber = 1, DueDayNumber = 2, Status = SettlementStatus.Pending, CreatedInCycleId = cycle.Id, CreatedAt = createdAt.AddSeconds(2) },
+                    new SettlementInstruction { ShareTransactionId = trades[2].Id, BuyerId = participants[1].Id, SellerId = participants[0].Id, CompanyId = company.Id, Quantity = 3, CashAmount = 30m, TradeDayNumber = 1, DueDayNumber = 2, Status = SettlementStatus.Settled, CreatedInCycleId = cycle.Id, CreatedAt = createdAt.AddSeconds(3), SettledAt = createdAt.AddDays(1) });
+                await db.SaveChangesAsync();
+            }
+
+            var firstPage = await client.GetFromJsonAsync<PagedShareTransactionsDto>(
+                "/transactions/shares/paged?page=1&pageSize=2");
+            Assert.Equal(3, firstPage!.Total);
+            Assert.Equal(1, firstPage.Page);
+            Assert.Equal(2, firstPage.PageSize);
+            Assert.Equal([3, 2], firstPage.Items.Select(transaction => transaction.Quantity));
+            Assert.Equal("Settled", firstPage.Items[0].SettlementStatus);
+
+            var secondPage = await client.GetFromJsonAsync<PagedShareTransactionsDto>(
+                "/transactions/shares/paged?page=2&pageSize=2");
+            Assert.Single(secondPage!.Items);
+            Assert.Equal(1, secondPage.Items[0].Quantity);
+
+            var boundedPage = await client.GetFromJsonAsync<PagedShareTransactionsDto>(
+                "/transactions/shares/paged?page=0&pageSize=999");
+            Assert.Equal(1, boundedPage!.Page);
+            Assert.Equal(100, boundedPage.PageSize);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task PlayerAndParticipantContractsExposeAccountLevelMargin()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -2793,6 +2858,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         int? TradeDayNumber,
         int? DueDayNumber,
         string? SettlementStatus);
+
+    private sealed record PagedShareTransactionsDto(ShareTransactionDto[] Items, int Total, int Page, int PageSize);
 
     private sealed record SettlementDto(
         int Id,
