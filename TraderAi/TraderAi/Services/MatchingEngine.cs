@@ -39,7 +39,7 @@ public sealed class MatchingEngine(
     // is enabled and a participant sell could be a fund sale, so an ordinary book never touches the table.
     private Dictionary<int, CollectiveFund>? fundsBySellerId;
 
-    public async Task<int> RunAsync(MarketCycle cycle)
+    public async Task<int> RunAsync(MarketCycle cycle, bool holdOrdersCreatedThisCycle = false)
     {
         var now = DateTime.UtcNow;
         var tradeDayNumber = settlementService is null || cycle.TradingDayId <= 0
@@ -59,6 +59,14 @@ public sealed class MatchingEngine(
         var openOrders = await dbContext.Orders
             .Where(order => order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
             .ToListAsync();
+
+        // An order rests at least one cycle before it can cross, so an order born this cycle is visible in
+        // the book to the player and other participants before it becomes matchable. This also excludes it
+        // from the reopening auction below, which draws from the same order set.
+        if (holdOrdersCreatedThisCycle)
+        {
+            openOrders = openOrders.Where(order => order.CreatedInCycleId != cycle.Id).ToList();
+        }
 
         if (feeEnabled && feeRate > 0m
             && openOrders.Any(order => order.Type == OrderType.Sell && order.ParticipantId != null))

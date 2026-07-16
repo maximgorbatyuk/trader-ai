@@ -244,10 +244,14 @@ public sealed class NewsServiceTests : IDisposable
         Assert.True((await news.PublishManualNewsAsync(
             new ManualNewsRequest(NewsImpactScope.Company, FinanceTheme, NewsImpactDirection.Increase, 5m, company.Id, null))).Success);
 
-        var tick = await market.RunCycleTickAsync();
-        await market.RunCycleTickAsync();
+        // The live tick holds orders created this cycle for a cycle, so the match-before-news ordering is
+        // driven through the advance directly: one decision pass observes the pre-match price, the advance
+        // matches then applies news, and the next decision pass sees the news-moved price carried forward.
+        await market.GenerateDecisionsAsync();
+        var advance = await market.AdvanceCycleAsync();
+        await market.GenerateDecisionsAsync();
 
-        Assert.Equal(1, tick.FillCount);
+        Assert.Equal(1, advance.FillCount);
         Assert.Equal(105m, await LatestPriceAsync(company.Id));
         Assert.Equal([100m, 100m, 105m, 105m], decisions.ObservedPrices);
         Assert.Equal(firstCycleId, (await context.NewsPosts.SingleAsync()).ImpactAppliedInCycleId);

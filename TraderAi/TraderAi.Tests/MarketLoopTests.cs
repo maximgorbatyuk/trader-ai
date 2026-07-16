@@ -34,12 +34,21 @@ public sealed class MarketLoopTests : IDisposable
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
 
-        var tick = await marketService.RunCycleTickAsync();
+        // The decision pass lists a buy and a sell in the first cycle; both rest one cycle before they can
+        // cross, so the first tick only places them and the second tick matches them.
+        var placingTick = await marketService.RunCycleTickAsync();
 
-        Assert.True(tick.Ran);
-        Assert.Equal(2, tick.OrdersPlaced);
-        Assert.Equal(1, tick.FillCount);
-        Assert.Equal(1, tick.CompletedCycleNumber);
+        Assert.True(placingTick.Ran);
+        Assert.Equal(2, placingTick.OrdersPlaced);
+        Assert.Equal(0, placingTick.FillCount);
+        Assert.Equal(1, placingTick.CompletedCycleNumber);
+        Assert.Equal(0, await context.ShareTransactions.CountAsync());
+
+        var matchingTick = await marketService.RunCycleTickAsync();
+
+        Assert.True(matchingTick.Ran);
+        Assert.Equal(1, matchingTick.FillCount);
+        Assert.Equal(2, matchingTick.CompletedCycleNumber);
         Assert.Equal(1, await context.ShareTransactions.CountAsync());
     }
 

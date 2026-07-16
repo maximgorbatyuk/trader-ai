@@ -23,6 +23,10 @@ The pre-match order is intentional:
 
 Do not reorder these phases without reviewing which prices, ratings, holdings, orders, and crisis state each later service is expected to observe. Preserve existing save boundaries where a later database query must see an earlier phase's staged changes.
 
+## Order resting
+
+In the live tick (`RunCycleTickAsync` → `DecideAndAdvanceCoreAsync`), matching passes `holdNewOrders`, so any order created during the current cycle — the decision pass's bids and asks, forced service sells, and newly issued float alike — rests until a later cycle's matching. This makes every order visible in the book to the player and other participants for at least one cycle before it can cross. Price, rating, holding, and cash effects staged by the pre-match services still take effect in the same cycle; only match eligibility of the newly created orders is deferred. The manual `AdvanceCycleAsync` path and direct `MatchingEngine.RunAsync(cycle)` calls default to no hold and keep crossing whatever is already in the book.
+
 ## Service shape and randomness
 
 - Per-cycle services are opt-in through their options and stage changes on the shared `AppDbContext` unless the orchestrator explicitly saves between phases.

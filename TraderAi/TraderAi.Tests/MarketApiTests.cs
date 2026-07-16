@@ -2770,8 +2770,9 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             // exact-count assertions.
             builder.UseSetting("MarketLoop:Enabled", "false");
 
-            // A manual tick decides then matches; the no-op engine removes generated trades so these
-            // tests settle only the order they place by hand and can assert exact counts.
+            // The no-op engine removes generated trades so these tests settle only the order they place by
+            // hand and can assert exact counts. Settlement goes through the manual advance (see RunCycleAsync),
+            // which crosses the book immediately; the live tick's one-cycle order hold is covered elsewhere.
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<IDecisionEngine>();
@@ -2780,12 +2781,15 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         });
     }
 
-    private static async Task<CycleTickResult> RunCycleAsync(WebApplicationFactory<Program> configuredFactory)
+    // Settles hand-placed orders through the manual advance, which crosses the book in the same cycle. The
+    // live tick (RunCycleTickAsync) holds orders created this cycle for one cycle before matching; that timing
+    // is covered by MarketLoopTests, so these projection tests keep a deterministic single-cycle settle.
+    private static async Task<AdvanceCycleResult> RunCycleAsync(WebApplicationFactory<Program> configuredFactory)
     {
         using var scope = configuredFactory.Services.CreateScope();
         var marketService = scope.ServiceProvider.GetRequiredService<MarketService>();
         await marketService.SetStatusAsync(MarketStatus.Running);
-        return await marketService.RunCycleTickAsync();
+        return await marketService.AdvanceCycleAsync();
     }
 
     private sealed record ParticipantDto(
