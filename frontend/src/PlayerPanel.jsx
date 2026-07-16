@@ -209,6 +209,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
             cashMoves={cashMoves}
             settlements={settlements}
             companies={companies}
+            showFavoriteCompanies
             onSelectCompany={onSelectCompany}
             onRefresh={refresh}
           />

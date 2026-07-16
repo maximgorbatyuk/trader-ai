@@ -24,7 +24,7 @@ The UI follows the product design direction in [Product](../PRODUCT.md): a light
 
 ## Runtime game settings
 
-Simulation-facing and AI-provider settings are persisted in the `GameSettings` table. `appsettings.json` remains the version-controlled source of defaults: startup inserts catalogued keys that are missing from the table without replacing operator changes already stored there. Infrastructure configuration such as connection strings, logging, archive retention, API keys, and documentation paths remains outside this mechanism.
+Simulation-facing and AI-provider settings are persisted in the `GameSettings` table. `appsettings.json` remains the version-controlled source of defaults: startup inserts catalogued keys that are missing from the table without replacing operator changes already stored there. The shared system prompt every AI trader receives is one such editable setting; because its default text is large, that default is defined in code and supplied as the configuration default rather than inlined in `appsettings.json`. Infrastructure configuration such as connection strings, logging, archive retention, API keys, and documentation paths remains outside this mechanism.
 
 The settings catalog owns the editable key allowlist, value type, human-readable name, and description in code. Database rows contain only the stable key and its JSON value, which keeps presentation metadata reviewable with the behavior it documents while avoiding duplicated labels in seeded data.
 

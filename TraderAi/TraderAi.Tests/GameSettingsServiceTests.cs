@@ -251,6 +251,57 @@ public sealed class GameSettingsServiceTests
         Assert.Equal("Z.AI", Assert.Single(catalog.All).Label);
     }
 
+    [Fact]
+    public void CatalogExposesAiSystemPromptSettingsAsMultilineText()
+    {
+        var configuration = Configuration(
+            ("AiTrading:SystemPromptTemplate", "You are a trader. Include at most {maxOrders} orders."),
+            ("AiTrading:FinalDecisionInstruction", "This is your final decision of the day."));
+
+        var definitions = GameSettingsCatalog.Create(configuration);
+
+        var template = Assert.Single(definitions, definition => definition.Key == "AiTrading:SystemPromptTemplate");
+        Assert.Equal(GameSettingValueType.MultilineText, template.ValueType);
+        Assert.NotEmpty(template.Description);
+        var instruction = Assert.Single(
+            definitions,
+            definition => definition.Key == "AiTrading:FinalDecisionInstruction");
+        Assert.Equal(GameSettingValueType.MultilineText, instruction.ValueType);
+    }
+
+    [Fact]
+    public async Task AiSystemPromptSeedsFromDefaultAndUpdatesThroughDatabase()
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        IDbContextFactory<AppDbContext> factory = new TestDbContextFactory(dbOptions);
+        await using (var context = await factory.CreateDbContextAsync())
+        {
+            await context.Database.EnsureCreatedAsync();
+        }
+
+        var service = new GameSettingsService(factory, Configuration(
+            ("AiTrading:Enabled", "true"),
+            ("AiTrading:SystemPromptTemplate", "Seeded prompt with at most {maxOrders} orders."),
+            ("AiTrading:FinalDecisionInstruction", "Seeded end-of-day guidance."),
+            ("AiTrading:Providers:glm:DisplayName", "GLM"),
+            ("AiTrading:Providers:glm:Endpoint", "https://api.example.com/chat"),
+            ("AiTrading:Providers:glm:Models:0", "glm-4.6")));
+        await service.InitializeAsync();
+        var options = new GameSettingsOptions<AiTradingOptions>(service, AiTradingOptions.SectionName);
+
+        Assert.Equal("Seeded prompt with at most {maxOrders} orders.", options.Value.SystemPromptTemplate);
+
+        using var updated = JsonDocument.Parse("\"Deploy the whole balance in {maxOrders} large orders.\"");
+        await service.UpdateAsync(new Dictionary<string, JsonElement>
+        {
+            ["AiTrading:SystemPromptTemplate"] = updated.RootElement.Clone(),
+        });
+
+        Assert.Equal("Deploy the whole balance in {maxOrders} large orders.", options.Value.SystemPromptTemplate);
+    }
+
     private static IConfiguration Configuration(params (string Key, string Value)[] values) =>
         new ConfigurationBuilder()
             .AddInMemoryCollection(values.ToDictionary(value => value.Key, value => (string?)value.Value))

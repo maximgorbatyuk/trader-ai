@@ -23,6 +23,14 @@ const string ReactDevelopmentCorsPolicy = "ReactDevelopment";
 
 var builder = WebApplication.CreateBuilder(args);
 
+// The default AI system prompt is too large to keep readable in appsettings.json, so its single source of truth is
+// AiTradingOptions and it is injected here as the configuration default the game-settings catalog seeds from.
+builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+{
+    ["AiTrading:SystemPromptTemplate"] = AiTradingOptions.DefaultSystemPromptTemplate,
+    ["AiTrading:FinalDecisionInstruction"] = AiTradingOptions.DefaultFinalDecisionInstruction,
+});
+
 var connectionString = ResolveSqliteConnectionString(
     builder.Configuration.GetConnectionString("DefaultConnection") ?? "Data Source=App_Data/trader-ai.db",
     builder.Environment.ContentRootPath);

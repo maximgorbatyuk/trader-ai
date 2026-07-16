@@ -571,6 +571,16 @@
   line-height: 1.45;
 }
 
+.settings-prompt-input {
+  max-width: none;
+  width: 100%;
+  min-height: 20rem;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+}
+
 .settings-checkbox {
   width: 1.125rem;
   height: 1.125rem;
@@ -1231,6 +1241,13 @@
 .chart-tick-x {
   text-anchor: middle;
   font-size: 9px;
+}
+
+.chart-axis-title {
+  text-anchor: middle;
+  fill: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 /* ---- Activity heatmap ---- */
@@ -2227,6 +2244,29 @@
   color: var(--up-text);
   font-size: 0.7em;
   vertical-align: middle;
+}
+
+/* Companies the active actor funded a big investment in: a slight green wash with a leading accent that keeps
+   it distinct from the sell-into-bid wash, paired with an "Invested" tag so the flag is never colour alone. */
+.book-row.is-invested {
+  background: color-mix(in oklch, var(--up-soft) 40%, var(--surface));
+  box-shadow: inset 3px 0 0 var(--up-text);
+}
+
+.book-row.is-invested:hover {
+  background: color-mix(in oklch, var(--up-soft) 65%, var(--surface));
+}
+
+.tag-invested {
+  background: var(--up-soft);
+  color: var(--up-text);
+}
+
+.book-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
 }
 
 /* ---- Responsive ---- */

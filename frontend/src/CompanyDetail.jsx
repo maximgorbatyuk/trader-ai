@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
-import { formatInt, formatMoney, formatSigned, ratingTrend, toneOf } from './format'
+import { formatCompactMoney, formatInt, formatMoney, formatSigned, ratingTrend, toneOf } from './format'
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
 import { RatingBadge } from './RatingBadge'
@@ -664,7 +664,9 @@ function EmissionsPanel({ emissions }) {
 }
 
 function PriceChartPanel({ name, prices }) {
-  const values = prices.map((snapshot) => snapshot.price)
+  const capSnapshots = prices.filter((snapshot) => snapshot.capitalization != null)
+  const values = capSnapshots.map((snapshot) => snapshot.capitalization)
+  const cycles = capSnapshots.map((snapshot) => snapshot.createdInCycleNumber)
   const last = values.at(-1)
   const first = values.at(0)
   const low = values.length ? Math.min(...values) : undefined
@@ -675,12 +677,12 @@ function PriceChartPanel({ name, prices }) {
 
   return (
     <Panel
-      title={`Price · ${name}`}
+      title={`Capitalization · ${name}`}
       count={`${prices.length} snapshot${prices.length === 1 ? '' : 's'}`}
       className="panel-chart"
     >
       {values.length < 2 ? (
-        <p className="note">Not enough price history yet. Start the loop or step a cycle to record trades.</p>
+        <p className="note">Not enough capitalization history yet. Start the loop or step a cycle to record trades.</p>
       ) : (
         <>
           <div className="quote">
@@ -694,7 +696,15 @@ function PriceChartPanel({ name, prices }) {
               </span>
             </span>
           </div>
-          <LineChart values={values.slice(-PRICE_HISTORY_POINTS)} tone={tone} />
+          <LineChart
+            values={values.slice(-PRICE_HISTORY_POINTS)}
+            cycles={cycles.slice(-PRICE_HISTORY_POINTS)}
+            tone={tone}
+            formatValue={formatCompactMoney}
+            xLabel="Cycle"
+            yLabel="Capitalization"
+            label={`Capitalization history for ${name}`}
+          />
           <dl className="quote-meta">
             <div>
               <dt>Open</dt>

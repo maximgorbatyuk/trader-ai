@@ -1327,6 +1327,7 @@ public static class MarketEndpoints
                 .OrderBy(snapshot => snapshot.Id)
                 .ToListAsync();
 
+            var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
             var response = snapshots
                 .Select(snapshot => new PriceSnapshotResponse(
                     snapshot.Id,
@@ -1334,6 +1335,7 @@ public static class MarketEndpoints
                     snapshot.Price,
                     snapshot.Capitalization,
                     snapshot.CreatedInCycleId,
+                    cycleNumbersById.GetValueOrDefault(snapshot.CreatedInCycleId),
                     snapshot.CreatedAt))
                 .ToArray();
 
@@ -3504,7 +3506,7 @@ public sealed record PagedSettlementInstructionsResponse(
     int Page,
     int PageSize);
 
-public sealed record PriceSnapshotResponse(int Id, int CompanyId, decimal Price, decimal? Capitalization, int CreatedInCycleId, DateTime CreatedAt);
+public sealed record PriceSnapshotResponse(int Id, int CompanyId, decimal Price, decimal? Capitalization, int CreatedInCycleId, int CreatedInCycleNumber, DateTime CreatedAt);
 
 public sealed record ParticipantWorthPointResponse(
     int CreatedInCycleId,

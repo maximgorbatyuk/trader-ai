@@ -162,7 +162,8 @@ public sealed class GameSettingsService(
                 => "Enter a whole number.",
             GameSettingValueType.Decimal when value.ValueKind != JsonValueKind.Number || !value.TryGetDecimal(out _)
                 => "Enter a number.",
-            GameSettingValueType.Text when value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())
+            GameSettingValueType.Text or GameSettingValueType.MultilineText
+                when value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())
                 => "Enter a value.",
             GameSettingValueType.Url when value.ValueKind != JsonValueKind.String
                 || !Uri.TryCreate(value.GetString(), UriKind.Absolute, out var uri)

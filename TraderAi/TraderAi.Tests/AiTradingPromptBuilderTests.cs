@@ -54,6 +54,8 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Assert.Contains("position field", system);
         Assert.Contains("same cash, exposure headroom, and executable supply", system);
         Assert.Contains("budget across the whole batch", system);
+        Assert.Contains("Do not leave abundant cash idle", system);
+        Assert.Contains("sized toward its buyEnvelope", system);
         Assert.Contains("stale", system);
         Assert.Contains("CanCancel is true", system);
         Assert.Contains("at most 10 unique order IDs", system);
@@ -97,6 +99,28 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
     }
 
     [Fact]
+    public void SystemMessageUsesConfiguredTemplateWithMaxOrdersSubstituted()
+    {
+        var builder = Builder(
+            maxOrders: 7,
+            new AiTradingOptions
+            {
+                SystemPromptTemplate = "Deploy the whole $2B and place at most {maxOrders} large orders.",
+                FinalDecisionInstruction = "Custom end-of-day guidance.",
+            });
+
+        var ordinary = builder.Build(Snapshot(isFundMember: false));
+        var planning = builder.Build(Snapshot(isFundMember: false, isFinalDecisionOfDay: true));
+
+        Assert.Contains("Deploy the whole $2B and place at most 7 large orders.", ordinary.SystemMessage);
+        Assert.DoesNotContain("{maxOrders}", ordinary.SystemMessage);
+        Assert.Contains("The response must match this JSON schema exactly:", ordinary.SystemMessage);
+        Assert.Contains("## Source: docs/roles/ai-agent.md", ordinary.SystemMessage);
+        Assert.DoesNotContain("Custom end-of-day guidance.", ordinary.SystemMessage);
+        Assert.Contains("Custom end-of-day guidance.", planning.SystemMessage);
+    }
+
+    [Fact]
     public void SystemMessageHashIsStableSha256()
     {
         var builder = Builder(maxOrders: 10);
@@ -107,7 +131,7 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Assert.Equal(first.SystemMessageHash, second.SystemMessageHash);
     }
 
-    private AiTradingPromptBuilder Builder(int maxOrders)
+    private AiTradingPromptBuilder Builder(int maxOrders, AiTradingOptions? options = null)
     {
         tempRoot = Path.Combine(Path.GetTempPath(), "ai-prompt-" + Guid.NewGuid().ToString("N"));
         foreach (var document in CoreDocuments)
@@ -124,9 +148,9 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
             TimeProvider.System,
             NullLogger<AiPromptDocumentationProvider>.Instance);
 
-        return new AiTradingPromptBuilder(
-            documentation,
-            Options.Create(new AiTradingOptions { MaxOrdersPerDecision = maxOrders }));
+        options ??= new AiTradingOptions();
+        options.MaxOrdersPerDecision = maxOrders;
+        return new AiTradingPromptBuilder(documentation, Options.Create(options));
     }
 
     private static AiMarketSnapshot Snapshot(bool isFundMember, bool isFinalDecisionOfDay = false) => new(

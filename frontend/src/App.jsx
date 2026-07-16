@@ -26,6 +26,7 @@ function App() {
   const [playerHoldingCompanyIds, setPlayerHoldingCompanyIds] = useState(() => new Set())
   const [actorHoldingCompanyIds, setActorHoldingCompanyIds] = useState(() => new Set())
   const [actorHoldingByCompany, setActorHoldingByCompany] = useState(() => new Map())
+  const [actorInvestedCompanyIds, setActorInvestedCompanyIds] = useState(() => new Set())
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
 
   const loadAll = useCallback(async () => {
@@ -60,10 +61,15 @@ function App() {
         const activeHoldings = activeId == null ? [] : activeId === playerData.id ? holdings : await api.getHoldings(activeId)
         setActorHoldingCompanyIds(holdingCompanyIdSet(activeHoldings))
         setActorHoldingByCompany(holdingByCompany(activeHoldings))
+
+        // Big-investment deals the active actor funded, so the order book can flag that actor's stakes.
+        const activeInvestments = activeId == null ? [] : (await api.getParticipantInvestments(activeId)) ?? []
+        setActorInvestedCompanyIds(new Set(activeInvestments.map((investment) => investment.companyId)))
       } else {
         setPlayerHoldingCompanyIds(new Set())
         setActorHoldingCompanyIds(new Set())
         setActorHoldingByCompany(new Map())
+        setActorInvestedCompanyIds(new Set())
       }
     } catch {
       // Keep the last known state when a refresh fails; the shell surfaces the offline status.
@@ -147,6 +153,7 @@ function App() {
                     actor={actor}
                     actorHoldingCompanyIds={actorHoldingCompanyIds}
                     actorHoldingByCompany={actorHoldingByCompany}
+                    actorInvestedCompanyIds={actorInvestedCompanyIds}
                     emptyActorHint={emptyActorHint}
                     onTraded={loadAll}
                   />

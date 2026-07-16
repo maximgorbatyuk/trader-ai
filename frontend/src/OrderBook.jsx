@@ -45,6 +45,7 @@ export function OrderBookPanel({
   actor,
   actorHoldingCompanyIds,
   actorHoldingByCompany,
+  actorInvestedCompanyIds,
   emptyActorHint,
   onTraded,
 }) {
@@ -156,12 +157,19 @@ export function OrderBookPanel({
           actor={actor}
           actorHoldingCompanyIds={actorHoldingCompanyIds}
           actorHoldingByCompany={actorHoldingByCompany}
+          actorInvestedCompanyIds={actorInvestedCompanyIds}
           sortKey={activeSort.key}
           sortDirection={activeSort.direction}
           onToggleSort={toggleSort}
           onTrade={setTradeOrder}
         />
       </div>
+      {actor != null ? (
+        <p className="note note-sm book-legend">
+          <span className="tag tag-invested">Invested</span> marks companies you funded a big investment in; their
+          rows are shaded green. Trading as your managed fund shows the fund&apos;s stakes instead.
+        </p>
+      ) : null}
       {tradeOrder ? (
         <TradeOrderModal
           key={tradeOrder.id}
@@ -191,6 +199,7 @@ function OrderSide({
   actor,
   actorHoldingCompanyIds,
   actorHoldingByCompany,
+  actorInvestedCompanyIds,
   sortKey,
   sortDirection,
   onToggleSort,
@@ -227,10 +236,13 @@ function OrderSide({
         ? sellableQuantity * (order.limitPrice - holding.averageCost)
         : null
     const traderLabel = isOwn ? 'You' : traderName(order.participantId, participantNameById)
+    // The active actor funded a big investment in this company; flagged the same for both sides of its book.
+    const invested = !!actorInvestedCompanyIds?.has(order.companyId)
 
     return {
       order,
       isOwn,
+      invested,
       company,
       remaining,
       availability,
@@ -284,6 +296,7 @@ function OrderSide({
             const {
               order,
               isOwn,
+              invested,
               company,
               remaining,
               availability,
@@ -341,7 +354,7 @@ function OrderSide({
                 ? `Buy ${remaining} ${companyName} shares at ${formatMoney(order.limitPrice)}`
                 : `Sell ${remaining} ${companyName} shares at ${formatMoney(order.limitPrice)}`
             const rowLabel = `Open order details. ${actionLabel}.${actionable ? '' : ` ${availability.reason}`}`
-            const rowClass = `book-row tbl-row-click${actionable ? ' is-actionable' : ''}${isOwn ? ' is-own' : ''}${sellable ? ' is-sellable' : ''}`
+            const rowClass = `book-row tbl-row-click${actionable ? ' is-actionable' : ''}${isOwn ? ' is-own' : ''}${sellable ? ' is-sellable' : ''}${invested ? ' is-invested' : ''}`
             return (
               <tr
                 key={order.id}
@@ -413,6 +426,11 @@ function OrderSide({
                       ) : null}
                       {traderLabel}
                     </span>
+                    {invested ? (
+                      <span className="tag tag-invested" title="You funded a big investment in this company">
+                        Invested
+                      </span>
+                    ) : null}
                     {side === 'Sell' && isBankrupt ? <span className="tag tag-bankrupt">Bankrupt</span> : null}
                     {bandStatusLabel ? <span className="tag tag-flag">{bandStatusLabel}</span> : null}
                     {luldAffected ? <span className="tag tag-flag">{luld.indicator} {luld.label}</span> : null}

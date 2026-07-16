@@ -238,6 +238,17 @@ function SettingInput({ setting, id, value, disabled, invalid, errorId, onChange
       />
     )
   }
+  if (setting.valueType === 'MultilineText') {
+    return (
+      <textarea
+        {...common}
+        className="select settings-input settings-prompt-input"
+        rows="16"
+        value={value ?? ''}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    )
+  }
   return (
     <input
       {...common}

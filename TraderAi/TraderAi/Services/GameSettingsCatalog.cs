@@ -11,6 +11,7 @@ public enum GameSettingValueType
     Text,
     Url,
     StringList,
+    MultilineText,
 }
 
 public sealed record GameSettingDefinition(
@@ -80,7 +81,7 @@ public static class GameSettingsCatalog
             [
                 "Enabled", "ScanIntervalMilliseconds", "RequestTimeoutSeconds", "MaxConcurrentRequests",
                 "MaxOrdersPerDecision", "HistoryCycles", "RetryBaseDelaySeconds", "RetryMaxDelaySeconds",
-                "AuthErrorRetrySeconds",
+                "AuthErrorRetrySeconds", "SystemPromptTemplate", "FinalDecisionInstruction",
             ],
             ["RandomChanceRates"] = [],
         };
@@ -182,6 +183,12 @@ public static class GameSettingsCatalog
         "AutomatedTrading:BuyOrdersPerCycleMax",
     ];
 
+    private static readonly HashSet<string> MultilineTextKeys =
+    [
+        "AiTrading:SystemPromptTemplate",
+        "AiTrading:FinalDecisionInstruction",
+    ];
+
     private static readonly IReadOnlyDictionary<string, string> Descriptions =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -237,6 +244,8 @@ public static class GameSettingsCatalog
             ["AiTrading:RetryBaseDelaySeconds"] = "Sets the initial delay before retrying a failed AI provider request.",
             ["AiTrading:RetryMaxDelaySeconds"] = "Caps the retry delay for repeated AI provider failures.",
             ["AiTrading:AuthErrorRetrySeconds"] = "Sets the retry delay after an AI provider authentication error.",
+            ["AiTrading:SystemPromptTemplate"] = "Sets the shared base instructions every AI trader receives; \"{maxOrders}\" is replaced with the per-decision order cap.",
+            ["AiTrading:FinalDecisionInstruction"] = "Sets the extra guidance appended to an AI trader's end-of-day planning decision.",
         };
 
     public static IReadOnlyList<GameSettingDefinition> Create(IConfiguration configuration)
@@ -339,6 +348,11 @@ public static class GameSettingsCatalog
         if (key.EndsWith(":Endpoint", StringComparison.Ordinal))
         {
             return GameSettingValueType.Url;
+        }
+
+        if (MultilineTextKeys.Contains(key))
+        {
+            return GameSettingValueType.MultilineText;
         }
 
         if (bool.TryParse(value, out _))
