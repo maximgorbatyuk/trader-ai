@@ -2,12 +2,13 @@ import { useCallback, useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
-import { formatInt, formatMoney } from './format'
-import { Footer, TopBar } from './Chrome'
+import { formatInt, formatMoney, formatSigned, toneOf } from './format'
+import { TopBar } from './Chrome'
 import { createTradingClock, formatTradingClock, interpolateTradingClock, shouldKeepTradingClock } from './tradingClock'
 
 const SHELL_POLL_INTERVAL_MS = 1500
 const WORTH_GLYPH = { up: '▲', down: '▼' }
+const CHANGE_GLYPH = { up: '▲', down: '▼', flat: '◆' }
 const ACTOR_TABS = [
   { key: 'player', label: 'Player' },
   { key: 'fund', label: 'Managed fund' },
@@ -44,9 +45,30 @@ function worthToneOf(change) {
   return change > 0 ? 'up' : 'down'
 }
 
-// Layout route: the persistent left sidebar, the shared top navbar and footer, and the routed page between
-// them. The shell owns the market poll and the Start/Pause/Reset actions so the navbar can drive them on
-// every page; pages read the market state and actions through the outlet context.
+// One labelled cash/worth delta in the sidebar wallet, coloured and glyphed by direction so the sign never
+// rides on colour alone; a non-numeric value (before the first completed cycle) shows an em dash.
+function SidebarChangeStat({ label, value }) {
+  const tone = typeof value === 'number' ? toneOf(value) : 'flat'
+  return (
+    <div className="sidebar-stat">
+      <span className="map-stat-label">{label}</span>
+      <span className={`sidebar-stat-value num tone-${tone}`}>
+        {typeof value === 'number' ? (
+          <>
+            <span aria-hidden="true">{CHANGE_GLYPH[tone]} </span>
+            {formatSigned(value)}
+          </>
+        ) : (
+          '—'
+        )}
+      </span>
+    </div>
+  )
+}
+
+// Layout route: the persistent left sidebar, the shared top navbar, and the routed page between them. The
+// shell owns the market poll and the Start/Pause/Reset actions so the navbar can drive them on every page;
+// pages read the market state and actions through the outlet context.
 export function AppShell() {
   const [player, setPlayer] = useState(null)
   const [market, setMarket] = useState(null)
@@ -122,6 +144,13 @@ export function AppShell() {
   const tradingClock = formatTradingClock(interpolateTradingClock(tradingClockSnapshot, clockNowMs))
   const showFund = actorKind === 'fund'
   const hasFund = player?.fundParticipantId != null
+  const performanceStats = showFund
+    ? [
+        { key: 'cashLast', label: 'Cash · last cycle', value: player?.fundLastCycleMoneyChange },
+      ]
+    : [
+        { key: 'cashLast', label: 'Cash · last cycle', value: player?.lastCycleMoneyChange },
+      ]
 
   return (
     <div className={`app-shell${marketActive ? ' is-market-active' : ''}`}>
@@ -219,23 +248,21 @@ export function AppShell() {
                 </div>
               </>
             )}
+            {!(showFund && !hasFund) ? (
+              <div className="sidebar-perf">
+                {performanceStats.map((stat) => (
+                  <SidebarChangeStat key={stat.key} label={stat.label} value={stat.value} />
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </aside>
       <div className="app">
-        <TopBar
-          connected={connected}
-          ready={ready}
-          market={market}
-          pending={pending}
-          tradingClock={tradingClock}
-          runAction={runAction}
-          resetMarket={resetMarket}
-        />
+        <TopBar market={market} pending={pending} tradingClock={tradingClock} runAction={runAction} />
         <Outlet
-          context={{ market, connected, ready, pending, actionError, runAction, player, actorKind, setActorKind }}
+          context={{ market, connected, ready, pending, actionError, runAction, resetMarket, player, actorKind, setActorKind }}
         />
-        <Footer />
       </div>
     </div>
   )

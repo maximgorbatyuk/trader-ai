@@ -1,12 +1,26 @@
 import { Link } from 'react-router-dom'
 import { formatCompactMoney, formatInt, formatMoney } from './format'
+import { SortHeader } from './TableControls'
 
 // Shared table for big-investment deals. The identity columns shown depend on context: the company page hides
 // the company column, a participant page hides the investor column, and the market feed shows both. The first
-// visible identity column is the row header for accessibility.
-export function InvestmentsTable({ investments, showCompany = true, showInvestor = true, emptyLabel = 'No investments yet.' }) {
+// visible identity column is the row header for accessibility. Passing sort props (participant detail) turns the
+// numeric columns and Company into sortable, server-driven headers; without them the headers render statically.
+export function InvestmentsTable({ investments, showCompany = true, showInvestor = true, sortKey, sortDir, onToggleSort, emptyLabel = 'No investments yet.' }) {
   if (!investments || investments.length === 0) {
     return <p className="note">{emptyLabel}</p>
+  }
+
+  const sortable = typeof onToggleSort === 'function'
+  const header = (label, columnKey, align = 'right') => {
+    if (sortable && columnKey) {
+      return <SortHeader label={label} columnKey={columnKey} sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} align={align} />
+    }
+    return (
+      <th scope="col" className={align === 'right' ? 'ta-r' : undefined}>
+        {label}
+      </th>
+    )
   }
 
   return (
@@ -14,14 +28,14 @@ export function InvestmentsTable({ investments, showCompany = true, showInvestor
       <table className="tbl">
         <thead>
           <tr>
-            {showCompany ? <th scope="col">Company</th> : null}
-            {showInvestor ? <th scope="col">Investor</th> : null}
-            <th scope="col" className="ta-r">Deal value</th>
-            <th scope="col" className="ta-r">Shares</th>
-            <th scope="col" className="ta-r">Stake</th>
-            <th scope="col" className="ta-r">Cap before</th>
-            <th scope="col" className="ta-r">Cap after</th>
-            <th scope="col" className="ta-r">When</th>
+            {showCompany ? header('Company', 'company', 'left') : null}
+            {showInvestor ? header('Investor', null, 'left') : null}
+            {header('Deal value', 'dealValue')}
+            {header('Shares', 'shares')}
+            {header('Stake', 'stake')}
+            {header('Cap before', 'capBefore')}
+            {header('Cap after', 'capAfter')}
+            {header('When', 'when')}
           </tr>
         </thead>
         <tbody>

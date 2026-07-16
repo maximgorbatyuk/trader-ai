@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
@@ -11,7 +11,8 @@ import { NewsModal } from './NewsModal'
 import { OrderForm } from './OrderForm'
 import { InvestmentsTable } from './InvestmentsTable'
 import { TradeModal } from './TradeModal'
-import { Pager } from './TableControls'
+import { Pager, SortHeader } from './TableControls'
+import { useClientTable } from './useClientTable'
 import { corporateCashMovementPresentation } from './cashMovements'
 import { luldPresentation } from './marketAccounting'
 import { FavoriteCompanyToggle } from './FavoriteCompanyToggle'
@@ -19,6 +20,20 @@ import { FavoriteCompanyToggle } from './FavoriteCompanyToggle'
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
 const CORPORATE_CASH_PAGE_SIZE = 10
+const TAB_PAGE_SIZE = 10
+
+// The tabbed detail sections, in display order. Each key selects one existing panel below the tab strip.
+const DETAIL_TABS = [
+  { key: 'capitalization', label: 'Capitalization' },
+  { key: 'cash', label: 'Cash movements' },
+  { key: 'shareholders', label: 'Shareholders' },
+  { key: 'orders', label: 'Recent orders' },
+  { key: 'trades', label: 'Recent trades' },
+  { key: 'emissions', label: 'Share emissions' },
+  { key: 'ratings', label: 'Risk ratings' },
+  { key: 'investments', label: 'Investments received' },
+  { key: 'news', label: 'Related news' },
+]
 
 function formatPct(fraction) {
   if (typeof fraction !== 'number') return '—'
@@ -41,8 +56,9 @@ function priceVsReference(price, reference) {
   return formatPct((price - reference) / reference)
 }
 
-// The company detail block: identity, a price-history chart, ownership and shareholders, and recent orders
-// and trades. Owns its own polling keyed on companyId so it can sit under the Companies table and swap as the
+// The company detail block: identity with market controls, an always-visible quick-stats bar, and a tabbed
+// section holding the price chart, ownership and shareholders, orders and trades, and the related history
+// tables. Owns its own polling keyed on companyId so it can sit under the Companies table and swap as the
 // selected company changes.
 export function CompanyDetail({ companyId }) {
   const [ready, setReady] = useState(false)
@@ -59,6 +75,8 @@ export function CompanyDetail({ companyId }) {
   const [corporateCashMovements, setCorporateCashMovements] = useState({ items: [], total: 0, page: 1, pageSize: 10 })
   const [corporateCashPage, setCorporateCashPage] = useState(1)
   const [selectedNews, setSelectedNews] = useState(null)
+  const [activeTab, setActiveTab] = useState('capitalization')
+  const [action, setAction] = useState(null)
   const [player, setPlayer] = useState(null)
   const [playerOwned, setPlayerOwned] = useState(0)
   const [fundOwned, setFundOwned] = useState(0)
@@ -157,6 +175,23 @@ export function CompanyDetail({ companyId }) {
   const changeTone = toneOf(detail.priceChangePct)
   const riskTrend = ratingTrend(detail.currentRating, detail.previousRating)
   const luld = luldPresentation(detail.luldState)
+  const showLuld = detail.luldState && detail.luldState !== 'Normal'
+
+  const canAct = Boolean(player) && !detail.isClosed
+  const canSell = playerOwned > 0 || fundOwned > 0
+  const fund =
+    player && player.fundParticipantId != null
+      ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance, margin: player.fundMargin }
+      : null
+  const companyForOrder = {
+    id: companyId,
+    currentPrice: detail.currentPrice,
+    luldState: detail.luldState,
+    lowerBandPrice: detail.lowerBandPrice,
+    upperBandPrice: detail.upperBandPrice,
+    minimumOrderPrice: detail.minimumOrderPrice,
+    maximumOrderPrice: detail.maximumOrderPrice,
+  }
 
   return (
     <section className="detail-stack" aria-label={`${detail.name} details`}>
@@ -178,29 +213,20 @@ export function CompanyDetail({ companyId }) {
         </div>
       ) : null}
 
-      {detail.luldState && detail.luldState !== 'Normal' ? (
-        <div className="banner" role="status">
-          <strong>{luld.indicator} {luld.label}.</strong>
-          <span>
-            Reference {formatMoney(detail.referencePrice)} · band {formatMoney(detail.lowerBandPrice)}–
-            {formatMoney(detail.upperBandPrice)}
-            {detail.luldState === 'TradingPause' ? ` · ${formatInt(detail.remainingPauseSeconds)} trading seconds left` : ''}.
-            {' '}{luld.executionNote}
-          </span>
-        </div>
-      ) : null}
-
-      <section className="command" aria-label="Company identity">
+      <section className="command command-compact" aria-label="Company identity">
         <div className="command-id">
           <span className="command-label">Company</span>
           <h2 className="command-name">{detail.name}</h2>
           {player ? (
-            <FavoriteCompanyToggle
-              companyId={detail.id}
-              companyName={detail.name}
-              isFavorite={detail.isFavorite}
-              onChanged={(isFavorite) => setDetail((current) => ({ ...current, isFavorite }))}
-            />
+            <div className="command-buttons">
+              <FavoriteCompanyToggle
+                companyId={detail.id}
+                companyName={detail.name}
+                isFavorite={detail.isFavorite}
+                onChanged={(isFavorite) => setDetail((current) => ({ ...current, isFavorite }))}
+              />
+              {canAct ? <CompanyActions canSell={canSell} onSelect={setAction} /> : null}
+            </div>
           ) : null}
         </div>
         <dl className="statbar">
@@ -209,48 +235,9 @@ export function CompanyDetail({ companyId }) {
             <dd>{detail.industryName ?? '—'}</dd>
           </div>
           <div className="stat">
-            <dt>Price</dt>
-            <dd className="num">{formatMoney(detail.currentPrice)}</dd>
-          </div>
-          <div className="stat">
-            <dt>Change</dt>
-            <dd className={`num tone-${changeTone}`}>
-              <span aria-hidden="true">{changeTone === 'up' ? '▲ ' : changeTone === 'down' ? '▼ ' : ''}</span>
-              {formatPct(detail.priceChangePct)}
-            </dd>
-          </div>
-          <div className="stat">
-            <dt>Issued shares</dt>
-            <dd className="num">{formatInt(detail.issuedSharesCount)}</dd>
-          </div>
-          <div className="stat">
-            <dt>Market cap</dt>
-            <dd className="num">{formatMoney(detail.marketCap)}</dd>
-          </div>
-          <div className="stat">
-            <dt>Issuer cash</dt>
-            <dd className="num">{formatMoney(detail.issuerCash)}</dd>
-          </div>
-          <div className="stat">
             <dt>Price control</dt>
             <dd className={`tone-${luld.tone}`}>
               <span aria-hidden="true">{luld.indicator} </span>{luld.label}
-            </dd>
-          </div>
-          <div className="stat">
-            <dt>Executable band</dt>
-            <dd className="num">
-              {detail.lowerBandPrice != null && detail.upperBandPrice != null
-                ? `${formatMoney(detail.lowerBandPrice)}–${formatMoney(detail.upperBandPrice)}`
-                : '—'}
-            </dd>
-          </div>
-          <div className="stat">
-            <dt>Allowed order range</dt>
-            <dd className="num">
-              {detail.minimumOrderPrice != null && detail.maximumOrderPrice != null
-                ? `${formatMoney(detail.minimumOrderPrice)}–${formatMoney(detail.maximumOrderPrice)}`
-                : '—'}
             </dd>
           </div>
           <div className="stat">
@@ -271,67 +258,363 @@ export function CompanyDetail({ companyId }) {
             </dd>
           </div>
         </dl>
+        <CompanyQuickStats detail={detail} changeTone={changeTone} />
+        {showLuld ? (
+          <p className="command-status" role="status">
+            <strong>
+              {luld.indicator} {luld.label}.
+            </strong>{' '}
+            Reference {formatMoney(detail.referencePrice)} · band {formatMoney(detail.lowerBandPrice)}–
+            {formatMoney(detail.upperBandPrice)}
+            {detail.luldState === 'TradingPause' ? ` · ${formatInt(detail.remainingPauseSeconds)} trading seconds left` : ''}.
+            {' '}{luld.executionNote}
+          </p>
+        ) : null}
       </section>
 
-      <PriceChartPanel name={detail.name} prices={prices} />
-
-      <CorporateCashMovementsPanel
-        movements={corporateCashMovements}
-        page={corporateCashPage}
-        onPage={setCorporateCashPage}
+      <CompanyDetailTabs
+        activeTab={activeTab}
+        onTab={setActiveTab}
+        detail={detail}
+        prices={prices}
+        corporateCashMovements={corporateCashMovements}
+        corporateCashPage={corporateCashPage}
+        onCorporateCashPage={setCorporateCashPage}
+        shareholders={shareholders}
+        orders={orders}
+        trades={trades}
+        emissions={emissions}
+        ratings={ratings}
+        investments={investments}
+        news={news}
+        onSelectNews={setSelectedNews}
       />
 
-      {player && !detail.isClosed ? (
-        <TradePanel
-          companyId={companyId}
-          currentPrice={detail.currentPrice}
-          player={player}
-          playerOwned={playerOwned}
-          fundOwned={fundOwned}
-          luldState={detail.luldState}
-          lowerBandPrice={detail.lowerBandPrice}
-          upperBandPrice={detail.upperBandPrice}
-          minimumOrderPrice={detail.minimumOrderPrice}
-          maximumOrderPrice={detail.maximumOrderPrice}
-          onPlaced={loadAll}
-        />
+      {canAct && action === 'buy' ? (
+        <ActionDialog label="Order" title={`Buy ${detail.name}`} onClose={() => setAction(null)}>
+          <OrderForm key={`buy-${companyId}`} player={player} fund={fund} company={companyForOrder} side="Buy" onPlaced={loadAll} />
+        </ActionDialog>
       ) : null}
 
-      {player && !detail.isClosed ? (
-        <InvestmentPanel
-          companyId={companyId}
-          currentPrice={detail.currentPrice}
-          marketCap={detail.marketCap}
-          player={player}
-          onPlaced={loadAll}
-        />
+      {canAct && action === 'sell' ? (
+        <ActionDialog label="Order" title={`Sell ${detail.name}`} onClose={() => setAction(null)}>
+          <OrderForm
+            key={`sell-${companyId}`}
+            player={player}
+            fund={fund}
+            company={companyForOrder}
+            side="Sell"
+            playerMaxQuantity={playerOwned}
+            fundMaxQuantity={fundOwned}
+            onPlaced={loadAll}
+          />
+        </ActionDialog>
       ) : null}
 
-      <div className="grid-detail">
-        <OwnershipPanel detail={detail} />
-        <ShareholdersPanel shareholders={shareholders} />
-      </div>
-
-      <OrdersPanel orders={orders} currentPrice={detail.currentPrice} issuedShares={detail.issuedSharesCount} />
-      <TradesPanel trades={trades} companyName={detail.name} />
-
-      <div className="grid-detail">
-        <RatingHistoryPanel ratings={ratings} />
-        <EmissionsPanel emissions={emissions} />
-      </div>
-
-      <Panel title="Investments received" count={`${investments.length}`} className="panel-trades">
-        <InvestmentsTable
-          investments={investments}
-          showCompany={false}
-          emptyLabel="No capital-raise investments in this company yet."
-        />
-      </Panel>
-
-      <RelatedNewsPanel news={news} onSelect={setSelectedNews} />
+      {canAct && action === 'invest' ? (
+        <ActionDialog label="Capital raise" title={`Invest in ${detail.name}`} onClose={() => setAction(null)}>
+          <InvestmentForm
+            companyId={companyId}
+            currentPrice={detail.currentPrice}
+            marketCap={detail.marketCap}
+            player={player}
+            onPlaced={loadAll}
+          />
+        </ActionDialog>
+      ) : null}
 
       {selectedNews ? <NewsModal post={selectedNews} onClose={() => setSelectedNews(null)} /> : null}
     </section>
+  )
+}
+
+// The Actions menu under the favorite toggle: a single button that reveals Buy/Sell/Make investment, each of
+// which opens its own dialog. Sell is disabled when neither the player nor the fund owns shares.
+function CompanyActions({ canSell, onSelect }) {
+  const [open, setOpen] = useState(false)
+  const buttonRef = useRef(null)
+  const menuRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return undefined
+    function onPointerDown(event) {
+      if (buttonRef.current?.contains(event.target) || menuRef.current?.contains(event.target)) return
+      setOpen(false)
+    }
+    function onKeyDown(event) {
+      if (event.key === 'Escape') {
+        setOpen(false)
+        buttonRef.current?.focus()
+      }
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  function choose(next) {
+    setOpen(false)
+    onSelect(next)
+  }
+
+  return (
+    <div className="command-actions">
+      <button
+        ref={buttonRef}
+        type="button"
+        className="btn actions-toggle"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        Actions
+        <span className="actions-caret" aria-hidden="true">▾</span>
+      </button>
+      {open ? (
+        <div className="actions-menu" role="menu" ref={menuRef} aria-label="Company actions">
+          <button type="button" role="menuitem" className="actions-menu-item" onClick={() => choose('buy')}>
+            Buy shares
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="actions-menu-item"
+            disabled={!canSell}
+            onClick={() => choose('sell')}
+          >
+            Sell shares
+          </button>
+          <button type="button" role="menuitem" className="actions-menu-item" onClick={() => choose('invest')}>
+            Make investment
+          </button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+// Shared dialog shell for the company actions: backdrop dismissal, Escape to close, a focus trap, and focus
+// restored to the trigger on close. Mirrors the news/trade modals so the action dialogs behave the same.
+function ActionDialog({ label, title, onClose, children }) {
+  const dialogRef = useRef(null)
+
+  useEffect(() => {
+    function onKeyDown(event) {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+    }
+  }, [onClose])
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement
+    const focusable = dialogRef.current?.querySelector(
+      'input, select, textarea, a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )
+    focusable?.focus()
+    return () => {
+      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus()
+    }
+  }, [])
+
+  function onBackdropClick(event) {
+    if (event.target === event.currentTarget) onClose()
+  }
+
+  // Keep Tab focus inside the dialog by wrapping it at the first and last focusable controls.
+  function onDialogKeyDown(event) {
+    if (event.key !== 'Tab') return
+    const focusable = dialogRef.current?.querySelectorAll(
+      'input, select, textarea, a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )
+    if (!focusable || focusable.length === 0) return
+    const first = focusable[0]
+    const lastFocusable = focusable[focusable.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      lastFocusable.focus()
+    } else if (!event.shiftKey && document.activeElement === lastFocusable) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
+  const titleId = `action-dialog-title-${label.replace(/\s+/g, '-').toLowerCase()}`
+
+  return (
+    <div className="modal-backdrop" onClick={onBackdropClick}>
+      <div
+        className="modal modal-action"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        ref={dialogRef}
+        onKeyDown={onDialogKeyDown}
+      >
+        <header className="modal-head">
+          <div className="command-id">
+            <span className="command-label">{label}</span>
+            <h2 className="command-name" id={titleId}>
+              {title}
+            </h2>
+          </div>
+          <button type="button" className="btn" onClick={onClose}>
+            Close
+          </button>
+        </header>
+        <div className="modal-body">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+// The market snapshot as the identity bar's second row: a full-width numeric statbar so price and market cap
+// stay on screen no matter which detail tab is open.
+function CompanyQuickStats({ detail, changeTone }) {
+  return (
+    <dl className="statbar command-metrics" aria-label="Company market stats">
+      <div className="stat">
+        <dt>Price</dt>
+        <dd className="num">{formatMoney(detail.currentPrice)}</dd>
+      </div>
+      <div className="stat">
+        <dt>Change</dt>
+        <dd className={`num tone-${changeTone}`}>
+          <span aria-hidden="true">{changeTone === 'up' ? '▲ ' : changeTone === 'down' ? '▼ ' : ''}</span>
+          {formatPct(detail.priceChangePct)}
+        </dd>
+      </div>
+      <div className="stat">
+        <dt>Issued shares</dt>
+        <dd className="num">{formatInt(detail.issuedSharesCount)}</dd>
+      </div>
+      <div className="stat">
+        <dt>Market cap</dt>
+        <dd className="num">{formatMoney(detail.marketCap)}</dd>
+      </div>
+      <div className="stat">
+        <dt>Issuer cash</dt>
+        <dd className="num">{formatMoney(detail.issuerCash)}</dd>
+      </div>
+      <div className="stat">
+        <dt>Executable band</dt>
+        <dd className="num">
+          {detail.lowerBandPrice != null && detail.upperBandPrice != null
+            ? `${formatMoney(detail.lowerBandPrice)}–${formatMoney(detail.upperBandPrice)}`
+            : '—'}
+        </dd>
+      </div>
+      <div className="stat">
+        <dt>Allowed order range</dt>
+        <dd className="num">
+          {detail.minimumOrderPrice != null && detail.maximumOrderPrice != null
+            ? `${formatMoney(detail.minimumOrderPrice)}–${formatMoney(detail.maximumOrderPrice)}`
+            : '—'}
+        </dd>
+      </div>
+    </dl>
+  )
+}
+
+function CompanyDetailTabs({
+  activeTab,
+  onTab,
+  detail,
+  prices,
+  corporateCashMovements,
+  corporateCashPage,
+  onCorporateCashPage,
+  shareholders,
+  orders,
+  trades,
+  emissions,
+  ratings,
+  investments,
+  news,
+  onSelectNews,
+}) {
+  const tabRefs = useRef({})
+
+  function focusTab(key) {
+    onTab(key)
+    tabRefs.current[key]?.focus()
+  }
+
+  function onTabKeyDown(event) {
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      event.preventDefault()
+      const index = DETAIL_TABS.findIndex((tab) => tab.key === activeTab)
+      const delta = event.key === 'ArrowRight' ? 1 : -1
+      focusTab(DETAIL_TABS[(index + delta + DETAIL_TABS.length) % DETAIL_TABS.length].key)
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      focusTab(DETAIL_TABS[0].key)
+    } else if (event.key === 'End') {
+      event.preventDefault()
+      focusTab(DETAIL_TABS[DETAIL_TABS.length - 1].key)
+    }
+  }
+
+  return (
+    <div className="detail-tabs">
+      <div className="tabbar">
+        <div className="tabs" role="tablist" aria-label="Company detail sections" onKeyDown={onTabKeyDown}>
+          {DETAIL_TABS.map((tab) => {
+            const selected = tab.key === activeTab
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                role="tab"
+                id={`companytab-${tab.key}`}
+                aria-selected={selected}
+                aria-controls={`companypanel-${tab.key}`}
+                tabIndex={selected ? 0 : -1}
+                ref={(element) => {
+                  tabRefs.current[tab.key] = element
+                }}
+                className={`tab${selected ? ' is-active' : ''}`}
+                onClick={() => onTab(tab.key)}
+              >
+                {tab.label}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+      <div
+        className="tabpanel"
+        role="tabpanel"
+        id={`companypanel-${activeTab}`}
+        aria-labelledby={`companytab-${activeTab}`}
+      >
+        {activeTab === 'capitalization' ? <PriceChartPanel name={detail.name} prices={prices} /> : null}
+        {activeTab === 'cash' ? (
+          <CorporateCashMovementsPanel
+            movements={corporateCashMovements}
+            page={corporateCashPage}
+            onPage={onCorporateCashPage}
+          />
+        ) : null}
+        {activeTab === 'shareholders' ? <ShareholdersPanel shareholders={shareholders} detail={detail} /> : null}
+        {activeTab === 'orders' ? (
+          <OrdersPanel orders={orders} currentPrice={detail.currentPrice} issuedShares={detail.issuedSharesCount} />
+        ) : null}
+        {activeTab === 'trades' ? <TradesPanel trades={trades} companyName={detail.name} /> : null}
+        {activeTab === 'emissions' ? <EmissionsPanel emissions={emissions} /> : null}
+        {activeTab === 'ratings' ? <RatingHistoryPanel ratings={ratings} /> : null}
+        {activeTab === 'investments' ? <InvestmentsReceivedPanel investments={investments} /> : null}
+        {activeTab === 'news' ? <RelatedNewsPanel news={news} onSelect={onSelectNews} /> : null}
+      </div>
+    </div>
   )
 }
 
@@ -382,67 +665,12 @@ function CorporateCashMovementsPanel({ movements, page, onPage }) {
   )
 }
 
-// Trade the company as the player or, if the player runs a fund, through the fund. Buy/Sell reveal the shared
-// order form; a placed order refreshes the page so the new order and balances show at once.
-function TradePanel({ companyId, currentPrice, player, playerOwned, fundOwned, luldState, lowerBandPrice, upperBandPrice, minimumOrderPrice, maximumOrderPrice, onPlaced }) {
-  const [side, setSide] = useState('none')
-  const fund =
-    player.fundParticipantId != null
-      ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance, margin: player.fundMargin }
-      : null
-  const canSell = playerOwned > 0 || fundOwned > 0
-  const company = { id: companyId, currentPrice, luldState, lowerBandPrice, upperBandPrice, minimumOrderPrice, maximumOrderPrice }
-
-  return (
-    <Panel title="Trade" className="panel-orders-list">
-      <div className="order-actions">
-        <button
-          type="button"
-          className="btn btn-primary"
-          aria-expanded={side === 'buy'}
-          onClick={() => setSide((current) => (current === 'buy' ? 'none' : 'buy'))}
-        >
-          Buy shares
-        </button>
-        {canSell ? (
-          <button
-            type="button"
-            className="btn"
-            aria-expanded={side === 'sell'}
-            onClick={() => setSide((current) => (current === 'sell' ? 'none' : 'sell'))}
-          >
-            Sell shares
-          </button>
-        ) : null}
-      </div>
-      {side === 'buy' ? (
-        <OrderForm key={`buy-${companyId}`} player={player} fund={fund} company={company} side="Buy" onPlaced={onPlaced} />
-      ) : null}
-      {side === 'sell' ? (
-        <OrderForm
-          key={`sell-${companyId}`}
-          player={player}
-          fund={fund}
-          company={company}
-          side="Sell"
-          playerMaxQuantity={playerOwned}
-          fundMaxQuantity={fundOwned}
-          onPlaced={onPlaced}
-        />
-      ) : null}
-    </Panel>
-  )
-}
-
-// Mirrors the backend BigInvestmentFractionMin default; the server validation is authoritative if an operator
-// retunes it, so this only sizes the on-screen hint.
-const MIN_INVESTMENT_FRACTION = 0.4
-
 // Fund a company with a big investment as the player or the managed fund: the company mints new shares at the
 // current price and hands them over in one filled deal. A minimum of 40% of market cap is required, matching the
 // server rule; a successful deal refreshes the page so the new shares, cash, rating, and news show at once.
-function InvestmentPanel({ companyId, currentPrice, marketCap, player, onPlaced }) {
-  const [open, setOpen] = useState(false)
+const MIN_INVESTMENT_FRACTION = 0.4
+
+function InvestmentForm({ companyId, currentPrice, marketCap, player, onPlaced }) {
   const [amount, setAmount] = useState('')
   const [submittingActor, setSubmittingActor] = useState(null)
   const [error, setError] = useState(null)
@@ -482,145 +710,153 @@ function InvestmentPanel({ companyId, currentPrice, marketCap, player, onPlaced 
   }
 
   return (
-    <Panel title="Invest capital" className="panel-orders-list">
-      <div className="order-actions">
-        <button
-          type="button"
-          className="btn"
-          aria-expanded={open}
-          onClick={() => setOpen((current) => !current)}
-        >
-          Make investment
-        </button>
+    <form
+      className="modal-section player-section"
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (!disabledFor(actors[0])) submitFor(actors[0])
+      }}
+    >
+      <span className="map-stat-label">Buy newly issued shares at {formatMoney(currentPrice)}</span>
+      <div className="field">
+        <span>Amount</span>
+        <input
+          className="select num"
+          type="number"
+          min="0"
+          step="0.01"
+          placeholder="0.00"
+          aria-label="Investment amount"
+          value={amount}
+          onChange={(event) => setAmount(event.target.value)}
+        />
       </div>
-      {open ? (
-        <form
-          className="modal-section player-section"
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (!disabledFor(actors[0])) submitFor(actors[0])
-          }}
-        >
-          <span className="map-stat-label">Buy newly issued shares at {formatMoney(currentPrice)}</span>
-          <div className="field">
-            <span>Amount</span>
-            <input
-              className="select num"
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="0.00"
-              aria-label="Investment amount"
-              value={amount}
-              onChange={(event) => setAmount(event.target.value)}
-            />
-          </div>
-          <p className="note note-sm">
-            {minAmount != null ? `Minimum ${formatMoney(minAmount)} (40% of market cap).` : 'Minimum 40% of market cap.'}
-            {shares > 0 ? ` ≈ ${formatInt(shares)} new shares.` : ''}
-          </p>
-          <p className="note note-sm">{actors.map((actor) => `${actor.label}: ${formatMoney(actor.balance)} available`).join(' · ')}</p>
-          {error ? (
-            <p className="command-error" role="alert">
-              {error}
-            </p>
-          ) : null}
-          {confirmation ? (
-            <p className="note note-sm" role="status">
-              {confirmation}
-            </p>
-          ) : null}
-          <div className="order-actions">
-            {actors.map((actor) => (
-              <button
-                key={actor.key}
-                type={actor.key === 'player' ? 'submit' : 'button'}
-                className="btn btn-primary"
-                disabled={disabledFor(actor)}
-                onClick={actor.key === 'player' ? undefined : () => submitFor(actor)}
-              >
-                {submittingActor === actor.key ? 'Investing…' : actors.length > 1 ? `Invest as ${actor.label.toLowerCase()}` : 'Invest'}
-              </button>
-            ))}
-          </div>
-        </form>
+      <p className="note note-sm">
+        {minAmount != null ? `Minimum ${formatMoney(minAmount)} (40% of market cap).` : 'Minimum 40% of market cap.'}
+        {shares > 0 ? ` ≈ ${formatInt(shares)} new shares.` : ''}
+      </p>
+      <p className="note note-sm">{actors.map((actor) => `${actor.label}: ${formatMoney(actor.balance)} available`).join(' · ')}</p>
+      {error ? (
+        <p className="command-error" role="alert">
+          {error}
+        </p>
       ) : null}
+      {confirmation ? (
+        <p className="note note-sm" role="status">
+          {confirmation}
+        </p>
+      ) : null}
+      <div className="order-actions">
+        {actors.map((actor) => (
+          <button
+            key={actor.key}
+            type={actor.key === 'player' ? 'submit' : 'button'}
+            className="btn btn-primary"
+            disabled={disabledFor(actor)}
+            onClick={actor.key === 'player' ? undefined : () => submitFor(actor)}
+          >
+            {submittingActor === actor.key ? 'Investing…' : actors.length > 1 ? `Invest as ${actor.label.toLowerCase()}` : 'Invest'}
+          </button>
+        ))}
+      </div>
+    </form>
+  )
+}
+
+function InvestmentsReceivedPanel({ investments }) {
+  return (
+    <Panel title="Investments received" count={`${investments.length}`} className="panel-trades">
+      <InvestmentsTable
+        investments={investments}
+        showCompany={false}
+        emptyLabel="No capital-raise investments in this company yet."
+      />
     </Panel>
   )
 }
 
 function RelatedNewsPanel({ news, onSelect }) {
+  const { pageRows, page, pageCount, setPage } = useClientTable(news, { pageSize: TAB_PAGE_SIZE })
+
   return (
     <Panel title="Related news" count={`${news.length}`} className="panel-orders-list">
       {news.length === 0 ? (
         <p className="note">No news for this company or its industry yet.</p>
       ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col" className="ta-r">
-                  Impact
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {news.map((post) => (
-                <tr key={post.id}>
-                  <th scope="row">
-                    <button
-                      type="button"
-                      className="cell-name-btn"
-                      onClick={() => onSelect(post)}
-                      title={`Open ${post.title}`}
-                    >
-                      {post.title}
-                    </button>
+        <>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col" className="ta-r">
+                    Impact
                   </th>
-                  <td className="ta-r">
-                    <NewsImpact post={post} />
-                  </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {pageRows.map((post) => (
+                  <tr key={post.id}>
+                    <th scope="row">
+                      <button
+                        type="button"
+                        className="cell-name-btn"
+                        onClick={() => onSelect(post)}
+                        title={`Open ${post.title}`}
+                      >
+                        {post.title}
+                      </button>
+                    </th>
+                    <td className="ta-r">
+                      <NewsImpact post={post} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
       )}
     </Panel>
   )
 }
 
 function RatingHistoryPanel({ ratings }) {
+  const { pageRows, page, pageCount, setPage } = useClientTable(ratings, { pageSize: TAB_PAGE_SIZE })
+
   return (
-    <Panel title="Risk ratings" count={`last ${ratings.length}`} className="panel-orders-list">
+    <Panel title="Risk ratings" count={`${ratings.length}`} className="panel-orders-list">
       {ratings.length === 0 ? (
         <p className="note">No auditor has reviewed this company yet.</p>
       ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Result</th>
-                <th scope="col">Auditor</th>
-                <th scope="col" className="ta-r">
-                  Cycles ago
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {ratings.map((rating) => (
-                <tr key={rating.id}>
-                  <td>
-                    <RatingBadge rating={rating.rating} impactPercent={rating.impactPercent} />
-                  </td>
-                  <td className="cell-ellipsis">{rating.auditorName}</td>
-                  <td className="num ta-r">{formatInt(rating.cyclesAgo)}</td>
+        <>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Result</th>
+                  <th scope="col">Auditor</th>
+                  <th scope="col" className="ta-r">
+                    Cycles ago
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {pageRows.map((rating) => (
+                  <tr key={rating.id}>
+                    <td>
+                      <RatingBadge rating={rating.rating} impactPercent={rating.impactPercent} />
+                    </td>
+                    <td className="cell-ellipsis">{rating.auditorName}</td>
+                    <td className="num ta-r">{formatInt(rating.cyclesAgo)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
       )}
     </Panel>
   )
@@ -669,8 +905,6 @@ function PriceChartPanel({ name, prices }) {
   const cycles = capSnapshots.map((snapshot) => snapshot.createdInCycleNumber)
   const last = values.at(-1)
   const first = values.at(0)
-  const low = values.length ? Math.min(...values) : undefined
-  const high = values.length ? Math.max(...values) : undefined
   const change = values.length >= 2 ? last - first : 0
   const changePct = first ? (change / first) * 100 : 0
   const tone = toneOf(change)
@@ -705,27 +939,14 @@ function PriceChartPanel({ name, prices }) {
             yLabel="Capitalization"
             label={`Capitalization history for ${name}`}
           />
-          <dl className="quote-meta">
-            <div>
-              <dt>Open</dt>
-              <dd className="num">{formatMoney(first)}</dd>
-            </div>
-            <div>
-              <dt>Low</dt>
-              <dd className="num">{formatMoney(low)}</dd>
-            </div>
-            <div>
-              <dt>High</dt>
-              <dd className="num">{formatMoney(high)}</dd>
-            </div>
-          </dl>
         </>
       )}
     </Panel>
   )
 }
 
-function OwnershipPanel({ detail }) {
+// The float summary that used to be its own card, now shown at the top of the Shareholders tab.
+function OwnershipSummary({ detail }) {
   const rows = [
     { label: 'Issued shares', value: formatInt(detail.issuedSharesCount) },
     { label: 'Held by issuer', value: formatInt(detail.sharesHeldByIssuer) },
@@ -735,7 +956,8 @@ function OwnershipPanel({ detail }) {
   const floatPct = detail.issuedSharesCount > 0 ? detail.sharesOutstanding / detail.issuedSharesCount : 0
 
   return (
-    <Panel title="Ownership" count="Float" className="panel-bank">
+    <div className="ownership-summary">
+      <span className="map-stat-label">Ownership</span>
       <dl className="kv">
         {rows.map((row) => (
           <div className="kv-row" key={row.label}>
@@ -748,52 +970,56 @@ function OwnershipPanel({ detail }) {
           <dd className="num">{formatPct(floatPct)}</dd>
         </div>
       </dl>
-    </Panel>
+    </div>
   )
 }
 
-function ShareholdersPanel({ shareholders }) {
+function ShareholdersPanel({ shareholders, detail }) {
+  const { pageRows, sortKey, sortDir, toggleSort, page, pageCount, setPage } = useClientTable(shareholders, {
+    pageSize: TAB_PAGE_SIZE,
+    initialSortKey: 'shares',
+    initialSortDir: 'desc',
+  })
+
   return (
     <Panel title="Shareholders" count={`${shareholders.length}`} className="panel-holdings">
+      <OwnershipSummary detail={detail} />
       {shareholders.length === 0 ? (
         <p className="note">No participant owns shares yet.</p>
       ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Owner</th>
-                <th scope="col" className="ta-r">
-                  Shares
-                </th>
-                <th scope="col" className="ta-r">
-                  % issued
-                </th>
-                <th scope="col" className="ta-r">
-                  Value
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {shareholders.map((holder) => (
-                <tr key={holder.ownerId}>
-                  <th scope="row" className="cell-ellipsis">
-                    <Link
-                      className="cell-link"
-                      to={`/traders/${holder.ownerId}`}
-                      title={`Open ${holder.ownerName} trader page`}
-                    >
-                      {holder.ownerName}
-                    </Link>
-                  </th>
-                  <td className="num ta-r">{formatInt(holder.shares)}</td>
-                  <td className="num ta-r">{formatPct(holder.pctOfIssued)}</td>
-                  <td className="num ta-r">{formatMoney(holder.marketValue)}</td>
+        <>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Owner</th>
+                  <SortHeader label="Shares" columnKey="shares" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="% issued" columnKey="pctOfIssued" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Value" columnKey="marketValue" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {pageRows.map((holder) => (
+                  <tr key={holder.ownerId}>
+                    <th scope="row" className="cell-ellipsis">
+                      <Link
+                        className="cell-link"
+                        to={`/traders/${holder.ownerId}`}
+                        title={`Open ${holder.ownerName} trader page`}
+                      >
+                        {holder.ownerName}
+                      </Link>
+                    </th>
+                    <td className="num ta-r">{formatInt(holder.shares)}</td>
+                    <td className="num ta-r">{formatPct(holder.pctOfIssued)}</td>
+                    <td className="num ta-r">{formatMoney(holder.marketValue)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
       )}
     </Panel>
   )

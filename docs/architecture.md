@@ -14,7 +14,7 @@ The simulation is intentionally local and requires no authentication. That keeps
 
 ## Frontend application shell
 
-All pages live beneath one shared application shell. The shell keeps the sidebar, top navigation, footer, market controls, selected trading actor, and shared market state mounted while the active route changes. Pages render only their content area and own any polling that is specific to their data.
+All pages live beneath one shared application shell. The shell keeps the sidebar, top navigation, market controls, selected trading actor, and shared market state mounted while the active route changes. Pages render only their content area and own any polling that is specific to their data.
 
 Roster pages and detail pages are separate routes. A roster is optimized for finding and sorting entities, while a detail route is the single full view of one participant, company, industry, crisis, or other entity. Deep links resolve to those detail routes rather than rebuilding the same detail surface in multiple modals.
 

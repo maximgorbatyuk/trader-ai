@@ -4,7 +4,7 @@ The root `AGENTS.md` also applies here. Read `PRODUCT.md` before changing UI beh
 
 ## Application shell and routing
 
-- Keep every page beneath the pathless layout rendered by `AppShell`; shared navigation, top bar, footer, market controls, and selected actor stay mounted there.
+- Keep every page beneath the pathless layout rendered by `AppShell`; shared navigation, top bar, market controls, and selected actor stay mounted there.
 - `AppShell` owns the shared market poll and exposes market state and actions through outlet context. Dashboard and trade-market pages must not add their own `/market` polling loops.
 - A route page renders only `<main className="main">`. Page-specific polling uses an immediate load plus an interval and cleans up on unmount so it remains StrictMode-safe.
 - Trader, company, industry, crisis, and player detail surfaces use standalone routes. Point deep links to those routes rather than creating another full-detail modal.
@@ -15,6 +15,7 @@ The root `AGENTS.md` also applies here. Read `PRODUCT.md` before changing UI beh
 - Keep roster tables presentational. Pages own server-side paging, filters, and sorting; small participant tables use `useClientTable`, `SortHeader`, and `Pager`.
 - Reuse `OrderForm`, `PercentButtons`, and `resolveActor` for player and managed-fund trading. Do not fork separate order logic for the two actors.
 - Reuse `IndustryHoldingsTable`, `cashMovements.js`, and the established detail components instead of duplicating their calculations or labels.
+- Build new compact dialogs on the shared `Modal` shell (backdrop, Escape, body scroll lock, focus trap); the larger content dialogs (`CompanyModal`, `TradeModal`, `MoneyTransactionModal`) keep their own shells.
 - The player has dashboard and standalone-page surfaces, not a player modal.
 
 ## Product UI

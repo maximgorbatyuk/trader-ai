@@ -39,8 +39,11 @@
 
 .sidebar-nav {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: var(--s-1);
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* Roster links are grouped under section headers so the growing nav stays scannable. */
@@ -142,6 +145,15 @@
   font-weight: 700;
 }
 
+/* The moved cash/worth performance deltas, set off from the balance figures above with a light divider. */
+.sidebar-perf {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--border);
+}
+
 /* Player / fund actor switch pinned above the sidebar stats; a segmented toggle, not colour-coded chrome. */
 .actor-switch {
   display: grid;
@@ -218,17 +230,6 @@
   font-size: var(--t-md);
 }
 
-.brand-tag {
-  padding-left: var(--s-2);
-  margin-left: var(--s-1);
-  border-left: 1px solid var(--border-2);
-  color: var(--muted);
-  font-size: var(--t-2xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
 .topbar-status {
   display: inline-flex;
   flex-wrap: wrap;
@@ -243,7 +244,7 @@
   margin-left: 0;
 }
 
-.topbar-settings-link {
+.topbar-icon-link {
   display: inline-grid;
   place-items: center;
   width: 2rem;
@@ -255,19 +256,19 @@
   transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
 }
 
-.topbar-settings-link:hover {
+.topbar-icon-link:hover {
   border-color: var(--border-2);
   background: var(--surface-2);
   color: var(--ink);
 }
 
-.topbar-settings-link.is-active {
+.topbar-icon-link.is-active {
   border-color: var(--border-2);
   background: var(--surface-3);
   color: var(--ink);
 }
 
-.topbar-settings-link svg {
+.topbar-icon-link svg {
   width: 1.125rem;
   height: 1.125rem;
   fill: none;
@@ -275,59 +276,6 @@
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-
-.conn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-2);
-  padding: 4px 10px;
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-pill);
-  background: var(--surface);
-  color: var(--muted);
-  font-size: var(--t-xs);
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.conn-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-
-.conn-live {
-  color: var(--up-text);
-}
-
-.conn-live .conn-dot {
-  background: var(--up);
-  animation: pulse 2s ease-in-out infinite;
-}
-
-.conn-pending .conn-dot {
-  background: var(--attention);
-}
-
-.conn-down {
-  color: var(--down-text);
-  border-color: color-mix(in oklch, var(--down) 30%, var(--border-2));
-}
-
-.conn-down .conn-dot {
-  background: var(--down);
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
 }
 
 .pill {
@@ -386,7 +334,7 @@
 /* ---- Main shell ---- */
 .main {
   flex: 1;
-  width: min(1760px, 90%);
+  width: min(1880px, 93%);
   margin: 0 auto;
   padding: var(--s-5) 0 var(--s-10);
 }
@@ -497,6 +445,48 @@
   border-bottom: 1px solid var(--border);
   background: var(--surface-3);
   font-size: var(--t-sm);
+}
+
+/* Project / repository / provider-usage links relocated from the old footer; a responsive column grid so
+   the three groups wrap gracefully on narrow screens. */
+.settings-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--s-4) var(--s-6);
+  padding: var(--s-4);
+}
+
+.settings-links-group h3 {
+  margin: 0 0 var(--s-2);
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.settings-links-group ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-links-group a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.75rem;
+  color: var(--ink);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.settings-links-group a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .settings-table-wrap {
@@ -611,66 +601,6 @@
   .settings-header .btn {
     align-self: flex-start;
   }
-}
-
-/* ---- Footer ---- */
-.footer {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) repeat(3, minmax(9rem, 1fr));
-  gap: var(--s-6);
-  width: min(1760px, 90%);
-  margin: 0 auto;
-  padding: var(--s-6) 0 var(--s-8);
-  border-top: 1px solid var(--border);
-}
-
-.footer-brand {
-  min-width: 0;
-}
-
-.footer-title {
-  margin: 0;
-  color: var(--ink);
-  font-size: var(--t-xl);
-  font-weight: 700;
-  line-height: 1.1;
-}
-
-.footer-subtitle {
-  max-width: 44ch;
-  margin: var(--s-2) 0 0;
-  color: var(--muted);
-  font-size: var(--t-sm);
-  line-height: 1.5;
-  text-wrap: pretty;
-}
-
-.footer a {
-  color: var(--ink);
-  font-weight: 600;
-  text-decoration: none;
-}
-
-.footer a:hover {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.footer-links ul {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.footer-links a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 1.75rem;
-  color: var(--text);
-  font-size: var(--t-sm);
 }
 
 /* ---- Transient states ---- */
@@ -826,6 +756,35 @@
   line-height: 1;
 }
 
+/* The numeric market snapshot is the identity bar's second row: a full-width band under a divider so it
+   wraps below the identity/industry row instead of competing with it. */
+.statbar.command-metrics {
+  flex-basis: 100%;
+  margin-top: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--border);
+}
+
+/* A denser variant of the identity/metrics header used only on the company detail page: tighter padding and a
+   step smaller values so the two-row stat block stays compact instead of dominating the page. */
+.command-compact {
+  gap: var(--s-2) var(--s-5);
+  padding: var(--s-2) var(--s-3);
+}
+
+.command-compact .statbar {
+  gap: var(--s-2) var(--s-5);
+}
+
+.command-compact .stat dd {
+  font-size: var(--t-sm);
+}
+
+.command-compact .statbar.command-metrics {
+  margin-top: var(--s-2);
+  padding-top: var(--s-2);
+}
+
 .controls {
   display: flex;
   flex-wrap: wrap;
@@ -839,6 +798,109 @@
   color: var(--down-text);
   font-size: var(--t-sm);
   font-weight: 600;
+}
+
+/* The LULD / trading-pause notice now lives inside the identity block as a full-width row, so the block grows
+   to hold it instead of the notice sitting as a separate banner above the page. */
+.command-status {
+  flex-basis: 100%;
+  margin: var(--s-1) 0 0;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid color-mix(in oklch, var(--down) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--down-soft);
+  color: var(--text);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+
+.command-status strong {
+  color: var(--down-text);
+}
+
+/* Favorite and Actions share one row; nowrap keeps them side by side and widens the identity column to fit. */
+.command-buttons {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  margin-top: var(--s-1);
+}
+
+.command-buttons .favorite-company-toggle,
+.command-buttons .command-actions {
+  margin-top: 0;
+}
+
+/* The Actions menu sits beside the favorite toggle in the identity column and anchors its popup below itself. */
+.command-actions {
+  position: relative;
+  margin-top: var(--s-1);
+}
+
+.actions-toggle {
+  min-height: 28px;
+  padding: var(--s-1) var(--s-2);
+  font-size: var(--t-xs);
+}
+
+.actions-caret {
+  font-size: 0.7em;
+}
+
+.actions-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: var(--z-popover);
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: var(--s-1);
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 24px oklch(0.2 0.012 255 / 0.18);
+}
+
+.actions-menu-item {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.actions-menu-item:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+.actions-menu-item:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
+.actions-menu-item:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+/* The action dialogs hold compact forms, so they run narrower than the shared modal width. */
+.modal-action {
+  width: min(560px, 100%);
+}
+
+/* Float summary folded into the Shareholders tab, above the shareholder table. */
+.ownership-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--border);
 }
 
 /* ---- Buttons & controls ---- */
@@ -1588,6 +1650,16 @@
   align-items: stretch;
 }
 
+/* The map's company/share summary as a caption when the map is embedded in a tab, where the panel header that
+   normally carries it is dropped. */
+.map-embedded-count {
+  margin: 0 0 var(--s-3);
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .market-map {
   position: relative;
   flex: 1 1 0;
@@ -1766,7 +1838,7 @@
 }
 
 /* The order book gets a taller scroll area so more resting orders show at once; overflow still scrolls inside. */
-.panel-book .tbl-scroll {
+.order-book .tbl-scroll {
   max-height: min(60vh, 44rem);
 }
 
@@ -2164,6 +2236,112 @@
   margin-top: var(--s-4);
 }
 
+/* A step smaller than other tab strips so the long roster of actor tabs stays compact on one or two rows. */
+.player-tabs .tab {
+  font-size: var(--t-sm);
+}
+
+/* Identity, worth, and Fund settings sit on one wrapping line above the full-width detail tabs; items wrap
+   onto the next row when the panel is narrow instead of splitting into side-by-side columns. */
+.player-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3) var(--s-5);
+}
+
+/* Identity and worth share one wrapping group so the Fund settings button stays on the header line at the far
+   right rather than dropping to a row of its own. */
+.player-header-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s-3) var(--s-5);
+  min-width: 0;
+}
+
+.player-header-id {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.player-header > .fund-settings-btn {
+  flex: none;
+  align-self: flex-start;
+}
+
+/* Performance as stacked stats: a small uppercase title with the value a step larger beneath it. */
+.summary-stats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin: var(--s-2) 0 0;
+}
+
+.summary-stat dt {
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.summary-stat dd {
+  margin: 1px 0 0;
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+
+/* The total-worth headline doubles as the trigger for the balances dialog; visuals come from .quote-last. */
+.quote-worth-btn {
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.quote-worth-btn:hover {
+  text-decoration: underline;
+}
+
+/* A one-poll green/red wash when worth or cash changes. The global reduced-motion rule zeroes the fade, so
+   the tint appears and clears without animating. */
+.flash-up,
+.flash-down {
+  border-radius: var(--radius-sm);
+  transition: background-color 600ms ease-out, color 600ms ease-out;
+}
+
+.flash-up {
+  background: var(--up-soft);
+  color: var(--up-text);
+}
+
+.flash-down {
+  background: var(--down-soft);
+  color: var(--down-text);
+}
+
+.fund-settings-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  align-self: flex-start;
+}
+
+.fund-settings-btn .icon-gear {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 /* Company name as an in-table trigger for the detail modal. */
 .cell-name-btn {
   display: inline-block;
@@ -2320,16 +2498,6 @@
   }
 }
 
-@media (max-width: 760px) {
-  .footer {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .footer-brand {
-    grid-column: 1 / -1;
-  }
-}
-
 @media (max-width: 560px) {
   .map-layout {
     flex-direction: column;
@@ -2374,15 +2542,6 @@
   .command-id {
     padding-right: 0;
     border-right: 0;
-  }
-
-  .brand-tag {
-    display: none;
-  }
-
-  .footer {
-    grid-template-columns: 1fr;
-    gap: var(--s-4);
   }
 }
 
@@ -3001,6 +3160,47 @@
 .detail-stack > .command,
 .detail-stack > .grid-detail {
   margin-bottom: 0;
+}
+
+/* Extra breathing room between the identity bar and the tab strip on the company page. */
+.detail-stack > .detail-tabs {
+  margin-top: var(--s-3);
+}
+
+/* Shrink the company-page tab labels so the whole detail card fits the viewport height without scrolling. */
+.detail-tabs .tab {
+  font-size: var(--t-xs);
+}
+
+/* On the company page the routed <main> owns the full column so the tabbed card stretches to the bottom of
+   the viewport instead of leaving dead page background beneath it. Scoped to .main-fill so the shared .main
+   and the trader detail block keep their natural height. */
+.main-fill {
+  display: flex;
+  flex-direction: column;
+}
+
+.main-fill .detail-stack {
+  flex: 1;
+  min-height: 0;
+}
+
+.main-fill .detail-tabs {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.main-fill .tabpanel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.main-fill .tabpanel > .panel {
+  flex: 1;
 }
 
 .traders-hint {

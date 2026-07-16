@@ -7,6 +7,7 @@ import TradersPage from './TradersPage.jsx'
 import CompaniesPage from './CompaniesPage.jsx'
 import { AppShell } from './AppShell.jsx'
 import { SettingsPage } from './SettingsPage.jsx'
+import { AboutPage } from './AboutPage.jsx'
 import AuditorsPage from './AuditorsPage.jsx'
 import NewsPage from './NewsPage.jsx'
 import TraderDetailPage from './TraderDetailPage.jsx'
@@ -44,6 +45,7 @@ createRoot(document.getElementById('root')).render(
           <Route path="/banks" element={<BanksPage />} />
           <Route path="/loans" element={<BankLoansPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/about" element={<AboutPage />} />
           <Route path="/departed-traders" element={<Navigate replace to="/traders?view=departed" />} />
           <Route path="/closed-funds" element={<Navigate replace to="/traders?view=closed-funds" />} />
         </Route>

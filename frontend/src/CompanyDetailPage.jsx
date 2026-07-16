@@ -10,7 +10,7 @@ function CompanyDetailPage() {
   const companyId = Number(id)
 
   return (
-    <main className="main">
+    <main className="main main-fill">
       <CompanyDetail key={companyId} companyId={companyId} />
     </main>
   )

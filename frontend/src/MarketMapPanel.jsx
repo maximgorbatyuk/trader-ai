@@ -43,8 +43,9 @@ const RISK_OPTIONS = [
 
 // The dashboard/trade-market treemap: companies sized by capitalisation, coloured by its cycle-over-cycle
 // change, behind a filter bar. Prop-driven and self-contained so both pages can feed it the same data; the two
-// latest news posts sit under the map. onSelectCompany decides whether a tile opens a modal or a detail route.
-export function MarketMapPanel({ companies, participants, playerHoldingCompanyIds, lastDividendTotal, currentCycleNumber, news, onSelectCompany }) {
+// latest news posts sit under the map. onSelectCompany decides whether a tile opens a modal or a detail route;
+// pass `embedded` to render inside another card's tab without the panel chrome.
+export function MarketMapPanel({ companies, participants, playerHoldingCompanyIds, lastDividendTotal, currentCycleNumber, news, onSelectCompany, embedded = false }) {
   // Tile colour tracks the change in a company's total capitalisation, not its per-share price, so a stock
   // split (shares up, price down, capitalisation unchanged) reads as flat rather than a market-wide crash.
   // Anchored to the cycle number, not the poll: the move is measured against the previous cycle's caps and the
@@ -142,13 +143,12 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
   })
 
   const industryLabel = industrySel.size === 0 ? 'All industries' : `${industrySel.size} selected`
+  const countText = mappedCompanies.length
+    ? `${visibleCompanies.length} companies · ${formatInt(totalShares)} shares`
+    : undefined
 
-  return (
-    <Panel
-      title="Market map"
-      count={mappedCompanies.length ? `${visibleCompanies.length} companies · ${formatInt(totalShares)} shares` : undefined}
-      className="panel-map"
-    >
+  const body = (
+    <>
       {mappedCompanies.length === 0 ? (
         <p className="note">Seed the market to see company prices.</p>
       ) : (
@@ -248,6 +248,21 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
         </>
       )}
       <LatestNews news={news} currentCycleNumber={currentCycleNumber} onSelectCompany={onSelectCompany} count={2} />
+    </>
+  )
+
+  if (embedded) {
+    return (
+      <div className="map-embedded">
+        {countText ? <p className="map-embedded-count num">{countText}</p> : null}
+        {body}
+      </div>
+    )
+  }
+
+  return (
+    <Panel title="Market map" count={countText} className="panel-map">
+      {body}
     </Panel>
   )
 }

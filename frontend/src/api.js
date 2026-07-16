@@ -112,6 +112,12 @@ export const api = {
   getIndustryNews: (industryId, take = 20) => get(`/industries/${industryId}/news?take=${take}`),
   createNews: (payload) => post('/news', payload),
   getHoldings: (participantId) => get(`/participants/${participantId}/holdings`),
+  getParticipantHoldingsPaged: (participantId, params = {}) =>
+    get(`/participants/${participantId}/holdings/paged${toQuery(params)}`),
+  getParticipantPortfolioByIndustryPaged: (participantId, params = {}) =>
+    get(`/participants/${participantId}/portfolio-by-industry/paged${toQuery(params)}`),
+  getFundMembersPaged: (participantId, params = {}) =>
+    get(`/participants/${participantId}/fund-members/paged${toQuery(params)}`),
   getCompaniesAttention: (participantId) => get(`/participants/${participantId}/companies-attention`),
   getParticipant: (participantId) => get(`/participants/${participantId}`),
   getParticipantOrders: (participantId, take = 10) => get(`/participants/${participantId}/orders?take=${take}`),
@@ -145,6 +151,8 @@ export const api = {
   investInCompany: (companyId, payload) => post(`/companies/${companyId}/invest`, payload),
   getCompanyInvestments: (companyId, take = 20) => get(`/companies/${companyId}/investments?take=${take}`),
   getParticipantInvestments: (participantId, take = 20) => get(`/participants/${participantId}/investments?take=${take}`),
+  getParticipantInvestmentsPaged: (participantId, params = {}) =>
+    get(`/participants/${participantId}/investments/paged${toQuery(params)}`),
   getInvestments: (take = 50) => get(`/investments?take=${take}`),
   getPlayer: () => get('/player'),
   createPlayer: (payload) => post('/player', payload),

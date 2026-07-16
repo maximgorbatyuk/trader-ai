@@ -8,13 +8,13 @@ import { LineChart } from './LineChart'
 import { CASH_LABEL, CASH_TONE } from './cashMovements'
 import { MoneyTransactionModal } from './MoneyTransactionModal'
 import { IndustryHoldingsTable } from './IndustryHoldingsTable'
-import { groupHoldingsByIndustry } from './industryHoldings'
 import { TradeModal } from './TradeModal'
 import { InvestmentsTable } from './InvestmentsTable'
 import { AiTraderAutomationPanel } from './AiTraderAutomationPanel'
 import { AiTraderCallsPanel } from './AiTraderCallsPanel'
 import { useClientTable } from './useClientTable'
-import { Pager } from './TableControls'
+import { useServerTable } from './useServerTable'
+import { Pager, SortHeader } from './TableControls'
 import { SettlementsTable } from './SettlementsTable'
 import { cashSettlement, quantitySettlement } from './marketAccounting'
 import { maintenanceStanding } from './marginModel'
@@ -43,10 +43,8 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [detail, setDetail] = useState(null)
-  const [holdings, setHoldings] = useState([])
   const [orders, setOrders] = useState([])
   const [trades, setTrades] = useState([])
-  const [investments, setInvestments] = useState([])
   const [companies, setCompanies] = useState([])
   const [worthHistory, setWorthHistory] = useState([])
   const [loans, setLoans] = useState([])
@@ -66,12 +64,10 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, holdingsData, orderData, tradeData, investmentData, companyData, worthData, loanData, settlementData] = await Promise.all([
+      const [detailData, orderData, tradeData, companyData, worthData, loanData, settlementData] = await Promise.all([
         api.getParticipant(participantId),
-        api.getHoldings(participantId),
         api.getParticipantOrders(participantId, 100),
         api.getParticipantShareTransactions(participantId),
-        api.getParticipantInvestments(participantId),
         api.getCompanies(),
         api.getParticipantWorthHistory(participantId),
         api.getParticipantLoans(participantId, { status: loanStatus }),
@@ -79,10 +75,8 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
       ])
 
       setDetail(detailData)
-      setHoldings(holdingsData)
       setOrders(orderData)
       setTrades(tradeData)
-      setInvestments(investmentData ?? [])
       setCompanies(companyData)
       setWorthHistory(worthData ?? [])
       setLoans(loanData ?? [])
@@ -130,8 +124,8 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
   const companyName = (companyId) => companyNameById.get(companyId) ?? `#${companyId}`
   const modalCompany = companies.find((company) => company.id === modalCompanyId) ?? null
 
-  const marketValue = holdings.reduce((sum, holding) => sum + holding.marketValue, 0)
-  const costBasis = holdings.reduce((sum, holding) => sum + holding.costBasis, 0)
+  const marketValue = detail?.holdingsValue ?? 0
+  const costBasis = detail?.holdingsCostBasis ?? 0
   const holdingsPnl = marketValue - costBasis
 
   if (!ready) {
@@ -223,7 +217,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
       <WorthChartPanel worthHistory={worthHistory} />
 
       {detail.collectiveFundStatus ? (
-        <MembersPanel members={detail.collectiveFundMembers ?? []} />
+        <MembersPanel participantId={participantId} />
       ) : null}
 
       <div className="grid-detail">
@@ -248,7 +242,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
         </>
       ) : null}
 
-      <HoldingsPanel holdings={holdings} onSelectCompany={setModalCompanyId} />
+      <HoldingsPanel participantId={participantId} totalShares={detail.sharesOwned} onSelectCompany={setModalCompanyId} />
 
       {showFavoriteCompanies ? (
         <Panel
@@ -266,7 +260,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
         <SettlementsTable settlements={settlements} onSelectCompany={setModalCompanyId} />
       </Panel>
 
-      <IndustryHoldingsPanel holdings={holdings} companies={companies} />
+      <IndustryHoldingsPanel participantId={participantId} />
 
       <div className="grid-detail">
         <OrdersPanel orders={orders} companyName={companyName} onSelectCompany={setModalCompanyId} />
@@ -279,13 +273,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
 
       <TradesPanel trades={trades} participantId={participantId} companyName={companyName} onSelectCompany={setModalCompanyId} />
 
-      <Panel title="Investments made" count={`${investments.length}`} className="panel-trades">
-        <InvestmentsTable
-          investments={investments}
-          showInvestor={false}
-          emptyLabel="This trader has funded no capital-raise investments yet."
-        />
-      </Panel>
+      <InvestmentsPanel participantId={participantId} />
 
       {modalCompany ? (
         <CompanyModal
@@ -303,6 +291,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
 
 function WorthChartPanel({ worthHistory }) {
   const values = worthHistory.map((point) => point.totalWorth)
+  const cycles = worthHistory.map((point) => point.cycleNumber)
   const change = values.length >= 2 ? values.at(-1) - values.at(0) : 0
 
   return (
@@ -314,7 +303,14 @@ function WorthChartPanel({ worthHistory }) {
       {values.length < 2 ? (
         <p className="note">Not enough history yet. Total worth is recorded once per completed cycle.</p>
       ) : (
-        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} formatValue={formatCompactMoney} label="Total worth over time" />
+        <LineChart
+          values={values.slice(-WORTH_HISTORY_POINTS)}
+          cycles={cycles.slice(-WORTH_HISTORY_POINTS)}
+          tone={toneOf(change)}
+          formatValue={formatCompactMoney}
+          xLabel="Cycle"
+          label="Total worth over time"
+        />
       )}
     </Panel>
   )
@@ -417,61 +413,69 @@ function MarginPanel({ margin }) {
   )
 }
 
-function MembersPanel({ members }) {
+function MembersPanel({ participantId }) {
+  const fetchMembers = useCallback(
+    (page, pageSize, sort, sortDir) => api.getFundMembersPaged(participantId, { page, pageSize, sort, sortDir }),
+    [participantId],
+  )
+  const { items, total, page, pageCount, setPage, sortKey, sortDir, toggleSort } = useServerTable(fetchMembers, {
+    pageSize: 10,
+    initialSortKey: 'deposit',
+    initialSortDir: 'desc',
+  })
+
   return (
-    <Panel title="Fund members" count={`${members.length}`} className="panel-holdings">
-      {members.length === 0 ? (
+    <Panel title="Fund members" count={`${formatInt(total)}`} className="panel-holdings">
+      {total === 0 ? (
         <p className="note">No members have joined yet.</p>
       ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Member</th>
-                <th scope="col">Type</th>
-                <th scope="col" className="ta-r">
-                  Joined
-                </th>
-                <th scope="col" className="ta-r">
-                  Deposit
-                </th>
-                <th scope="col" className="ta-r">
-                  Payouts
-                </th>
-                <th
-                  scope="col"
-                  className="ta-r"
-                  title="Trading days until the member becomes eligible to leave (negative), then trading days past that point (positive). Founders never switch."
-                >
-                  Leave in
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {members.map((member) => (
-                <tr key={member.participantId}>
-                  <th scope="row" className="cell-ellipsis">
-                    <Link className="cell-link" to={`/traders/${member.participantId}`}>
-                      {member.name}
-                    </Link>
-                  </th>
-                  <td>
-                    <span className="cell-trader">
-                      <span className="tag">{TYPE_LABEL[member.type] ?? member.type}</span>
-                      {member.isLeaving ? <span className="tag tag-bankrupt">Leaving</span> : null}
-                    </span>
-                  </td>
-                  <td className="num ta-r">cycle {formatInt(member.joinedInCycleNumber)}</td>
-                  <td className="num ta-r">{formatMoney(member.deposit)}</td>
-                  <td className="num ta-r">{formatMoney(member.payouts)}</td>
-                  <td className="num ta-r">
-                    <MemberLeaveCountdown member={member} />
-                  </td>
+        <>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <SortHeader label="Member" columnKey="member" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} align="left" />
+                  <SortHeader label="Type" columnKey="type" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} align="left" />
+                  <SortHeader label="Joined" columnKey="joined" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Deposit" columnKey="deposit" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Payouts" columnKey="payouts" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader
+                    label="Leave in"
+                    columnKey="leave"
+                    sortKey={sortKey}
+                    sortDir={sortDir}
+                    onToggle={toggleSort}
+                    title="Trading days until the member becomes eligible to leave (negative), then trading days past that point (positive). Founders never switch."
+                  />
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {items.map((member) => (
+                  <tr key={member.participantId}>
+                    <th scope="row" className="cell-ellipsis">
+                      <Link className="cell-link" to={`/traders/${member.participantId}`}>
+                        {member.name}
+                      </Link>
+                    </th>
+                    <td>
+                      <span className="cell-trader">
+                        <span className="tag">{TYPE_LABEL[member.type] ?? member.type}</span>
+                        {member.isLeaving ? <span className="tag tag-bankrupt">Leaving</span> : null}
+                      </span>
+                    </td>
+                    <td className="num ta-r">cycle {formatInt(member.joinedInCycleNumber)}</td>
+                    <td className="num ta-r">{formatMoney(member.deposit)}</td>
+                    <td className="num ta-r">{formatMoney(member.payouts)}</td>
+                    <td className="num ta-r">
+                      <MemberLeaveCountdown member={member} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
       )}
     </Panel>
   )
@@ -513,79 +517,124 @@ function CompanyNameCell({ companyId, companyName, onSelectCompany }) {
   )
 }
 
-function HoldingsPanel({ holdings, onSelectCompany }) {
-  const totalShares = holdings.reduce((sum, holding) => sum + holding.shares, 0)
+function HoldingsPanel({ participantId, totalShares, onSelectCompany }) {
+  const fetchHoldings = useCallback(
+    (page, pageSize, sort, sortDir) => api.getParticipantHoldingsPaged(participantId, { page, pageSize, sort, sortDir }),
+    [participantId],
+  )
+  const { items, total, page, pageCount, setPage, sortKey, sortDir, toggleSort } = useServerTable(fetchHoldings, {
+    pageSize: 10,
+    initialSortKey: 'quantity',
+    initialSortDir: 'desc',
+  })
 
   return (
     <Panel title="Shares by company" count={`${formatInt(totalShares)} shares`} className="panel-holdings">
-      {holdings.length === 0 ? (
+      {total === 0 ? (
         <p className="note">This trader holds no shares.</p>
       ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Company</th>
-                <th scope="col" className="ta-r">
-                  Quantity
-                </th>
-                <th scope="col" className="ta-r">
-                  Settled
-                </th>
-                <th scope="col" className="ta-r">
-                  Pending
-                </th>
-                <th scope="col" className="ta-r">
-                  Cost paid
-                </th>
-                <th scope="col" className="ta-r">
-                  Value
-                </th>
-                <th scope="col" className="ta-r">
-                  P/L
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {holdings.map((holding) => {
-                const pnl = holding.marketValue - holding.costBasis
-                const quantity = quantitySettlement(holding.shares, holding.settledShares)
-                return (
-                  <tr key={holding.companyId}>
-                    <th scope="row">
-                      <CompanyNameCell
-                        companyId={holding.companyId}
-                        companyName={holding.companyName}
-                        onSelectCompany={onSelectCompany}
-                      />
-                    </th>
-                    <td className="num ta-r">{formatInt(quantity.economic)}</td>
-                    <td className="num ta-r">{formatInt(quantity.settled)}</td>
-                    <td className="num ta-r">{formatSignedInt(quantity.pending)}</td>
-                    <td className="num ta-r">{formatMoney(holding.costBasis)}</td>
-                    <td className="num ta-r">{formatMoney(holding.marketValue)}</td>
-                    <td className={`num ta-r tone-${toneOf(pnl)}`}>{formatSigned(pnl)}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <SortHeader label="Company" columnKey="company" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} align="left" />
+                  <SortHeader label="Quantity" columnKey="quantity" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Settled" columnKey="settled" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Pending" columnKey="pending" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Cost paid" columnKey="cost" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="Value" columnKey="value" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  <SortHeader label="P/L" columnKey="pnl" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((holding) => {
+                  const pnl = holding.marketValue - holding.costBasis
+                  const quantity = quantitySettlement(holding.shares, holding.settledShares)
+                  return (
+                    <tr key={holding.companyId}>
+                      <th scope="row">
+                        <CompanyNameCell
+                          companyId={holding.companyId}
+                          companyName={holding.companyName}
+                          onSelectCompany={onSelectCompany}
+                        />
+                      </th>
+                      <td className="num ta-r">{formatInt(quantity.economic)}</td>
+                      <td className="num ta-r">{formatInt(quantity.settled)}</td>
+                      <td className="num ta-r">{formatSignedInt(quantity.pending)}</td>
+                      <td className="num ta-r">{formatMoney(holding.costBasis)}</td>
+                      <td className="num ta-r">{formatMoney(holding.marketValue)}</td>
+                      <td className={`num ta-r tone-${toneOf(pnl)}`}>{formatSigned(pnl)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
       )}
     </Panel>
   )
 }
 
-function IndustryHoldingsPanel({ holdings, companies }) {
-  const industryCount = groupHoldingsByIndustry(holdings, companies).length
+function IndustryHoldingsPanel({ participantId }) {
+  const fetchIndustries = useCallback(
+    (page, pageSize, sort, sortDir) => api.getParticipantPortfolioByIndustryPaged(participantId, { page, pageSize, sort, sortDir }),
+    [participantId],
+  )
+  const { items, total, page, pageCount, setPage, sortKey, sortDir, toggleSort } = useServerTable(fetchIndustries, {
+    pageSize: 10,
+    initialSortKey: 'value',
+    initialSortDir: 'desc',
+  })
 
   return (
     <Panel
       title="Portfolio by industry"
-      count={`${formatInt(industryCount)} ${industryCount === 1 ? 'industry' : 'industries'}`}
+      count={`${formatInt(total)} ${total === 1 ? 'industry' : 'industries'}`}
       className="panel-holdings"
     >
-      <IndustryHoldingsTable holdings={holdings} companies={companies} emptyNote="This trader holds no shares." />
+      {total === 0 ? (
+        <p className="note note-sm">This trader holds no shares.</p>
+      ) : (
+        <>
+          <IndustryHoldingsTable rows={items} sortKey={sortKey} sortDir={sortDir} onToggleSort={toggleSort} />
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
+      )}
+    </Panel>
+  )
+}
+
+function InvestmentsPanel({ participantId }) {
+  const fetchInvestments = useCallback(
+    (page, pageSize, sort, sortDir) => api.getParticipantInvestmentsPaged(participantId, { page, pageSize, sort, sortDir }),
+    [participantId],
+  )
+  const { items, total, page, pageCount, setPage, sortKey, sortDir, toggleSort } = useServerTable(fetchInvestments, {
+    pageSize: 10,
+    initialSortKey: 'when',
+    initialSortDir: 'desc',
+  })
+
+  return (
+    <Panel title="Investments made" count={`${formatInt(total)}`} className="panel-trades">
+      {total === 0 ? (
+        <p className="note">This trader has funded no capital-raise investments yet.</p>
+      ) : (
+        <>
+          <InvestmentsTable
+            investments={items}
+            showInvestor={false}
+            sortKey={sortKey}
+            sortDir={sortDir}
+            onToggleSort={toggleSort}
+          />
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
+      )}
     </Panel>
   )
 }

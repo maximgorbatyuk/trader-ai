@@ -4,7 +4,6 @@ import { formatMoney, formatSigned, toneOf } from './format'
 import { LineChart } from './LineChart'
 import { BUY_FILTER_OPTIONS, DEFAULT_BUY_FILTER, filterBuyOrders } from './orderBookFilters'
 import { ORDER_BOOK_DEFAULT_SORT, orderBookOwnedShares, sortOrderBookRows } from './orderBookSort'
-import { Panel } from './Panel'
 import { PercentButtons } from './PercentButtons'
 import { SortHeader } from './TableControls'
 import { affordability } from './marginModel'
@@ -34,7 +33,7 @@ function traderName(id, byId) {
 
 // Sharing the resting book keeps sorting and trade behavior aligned between the dashboard and Trade market page.
 // The inner table scrolls so a long live book stays contained.
-export function OrderBookPanel({
+export function OrderBook({
   orders,
   participantNameById,
   bankruptParticipantIds,
@@ -95,7 +94,7 @@ export function OrderBookPanel({
   }
 
   return (
-    <Panel title="Order book" count={`${orders.length} open`} className="panel-book">
+    <div className="order-book">
       <div className="book-tabs tabs" role="tablist" aria-label="Order book side" onKeyDown={onTabKeyDown}>
         {sides.map((side) => {
           const selected = side.key === activeSide
@@ -182,7 +181,7 @@ export function OrderBookPanel({
           onTraded={onTraded}
         />
       ) : null}
-    </Panel>
+    </div>
   )
 }
 

@@ -6,6 +6,7 @@ import { Pager, SortHeader } from './TableControls'
 import { useClientTable } from './useClientTable'
 import { LineChart } from './LineChart'
 import { CASH_LABEL, CASH_TONE } from './cashMovements'
+import { Modal } from './Modal'
 import { MoneyTransactionModal } from './MoneyTransactionModal'
 import { IndustryHoldingsTable } from './IndustryHoldingsTable'
 import { groupHoldingsByIndustry } from './industryHoldings'
@@ -20,10 +21,6 @@ const WORTH_HISTORY_POINTS = 64
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
 const CHANGE_GLYPH = { up: '▲', down: '▼', flat: '◆' }
 const MEMBER_TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund', Player: 'Player' }
-const ACTOR_TABS = [
-  { key: 'player', label: 'Player' },
-  { key: 'fund', label: 'Managed fund' },
-]
 
 // A signed money delta rendered with a market tone plus a glyph, so the sign never rides on colour alone;
 // a non-numeric value (fewer than two worth snapshots) shows an em dash.
@@ -71,10 +68,10 @@ function fundSubjectOf(fundDetail, worthHistory) {
   }
 }
 
-// The player's live control surface, split into a Player tab and a Player's-Fund tab. The active tab is the
-// shared actor selection (`actorKind`) owned by the app shell, so switching here also flips the sidebar switch
-// and the order book. The panel polls only the active actor's dataset.
-export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKind }) {
+// The player's live control surface. Which actor it shows follows the shared actor selection (`actorKind`)
+// owned by the app shell, whose sidebar carries the Player/Managed-fund switch. It polls only the active
+// actor's dataset and renders the passed-in market map and order book inside its detail tabs.
+export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, marketMap }) {
   const [loading, setLoading] = useState(true)
   const [player, setPlayer] = useState(null)
   const [fundDetail, setFundDetail] = useState(null)
@@ -154,14 +151,11 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
     return () => clearInterval(intervalId)
   }, [refresh])
 
-  const showTabs = !loading && player !== null
   const onFund = actorKind === 'fund'
   const hasFund = player?.fundParticipantId != null
 
   return (
     <div className="player-panel">
-      {showTabs ? <ActorTabStrip actorKind={actorKind} onSelect={setActorKind} /> : null}
-
       {loading ? (
         <p className="note">Loading the player…</p>
       ) : player === null ? (
@@ -171,6 +165,9 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
           key="player"
           subject={player}
           participantId={player.id}
+          player={player}
+          marketMap={marketMap}
+          orderBook={orderBook}
           canCancelOrders
           holdings={holdings}
           orders={orders}
@@ -191,71 +188,31 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, setActorKin
       ) : fundDetail == null ? (
         <p className="note">Loading the fund…</p>
       ) : (
-        <>
-          <ManageFundSection player={player} onRefresh={refresh} />
-          <ActorView
-            key="fund"
-            subject={fundSubjectOf(fundDetail, worthHistory)}
-            participantId={player.fundParticipantId}
-            canCancelOrders
-            members={fundDetail.collectiveFundMembers ?? []}
-            holdings={holdings}
-            orders={orders}
-            attention={attention}
-            loans={loans}
-            loanStatus={loanStatus}
-            onLoanStatusChange={setLoanStatus}
-            worthHistory={worthHistory}
-            cashMoves={cashMoves}
-            settlements={settlements}
-            companies={companies}
-            showFavoriteCompanies
-            onSelectCompany={onSelectCompany}
-            onRefresh={refresh}
-          />
-        </>
+        <ActorView
+          key="fund"
+          subject={fundSubjectOf(fundDetail, worthHistory)}
+          participantId={player.fundParticipantId}
+          player={player}
+          marketMap={marketMap}
+          orderBook={orderBook}
+          isFund
+          canCancelOrders
+          members={fundDetail.collectiveFundMembers ?? []}
+          holdings={holdings}
+          orders={orders}
+          attention={attention}
+          loans={loans}
+          loanStatus={loanStatus}
+          onLoanStatusChange={setLoanStatus}
+          worthHistory={worthHistory}
+          cashMoves={cashMoves}
+          settlements={settlements}
+          companies={companies}
+          showFavoriteCompanies
+          onSelectCompany={onSelectCompany}
+          onRefresh={refresh}
+        />
       )}
-    </div>
-  )
-}
-
-// Player | Player's Fund. Bound to the shared actor selection; arrow keys move focus (roving tabindex) to match
-// the order-book and sub-tab tablists.
-function ActorTabStrip({ actorKind, onSelect }) {
-  const tabRefs = useRef({})
-
-  function focusTab(key) {
-    onSelect(key)
-    tabRefs.current[key]?.focus()
-  }
-
-  function onKeyDown(event) {
-    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
-    event.preventDefault()
-    focusTab(actorKind === 'player' ? 'fund' : 'player')
-  }
-
-  return (
-    <div className="tabs tabbar" role="tablist" aria-label="Trade as" onKeyDown={onKeyDown}>
-      {ACTOR_TABS.map((tab) => {
-        const selected = tab.key === actorKind
-        return (
-          <button
-            key={tab.key}
-            type="button"
-            role="tab"
-            aria-selected={selected}
-            tabIndex={selected ? 0 : -1}
-            ref={(element) => {
-              tabRefs.current[tab.key] = element
-            }}
-            className={`tab${selected ? ' is-active' : ''}`}
-            onClick={() => onSelect(tab.key)}
-          >
-            {tab.label}
-          </button>
-        )
-      })}
     </div>
   )
 }
@@ -373,7 +330,10 @@ function OpenFundForm({ player, onRefresh }) {
   )
 }
 
-function ManageFundSection({ player, onRefresh }) {
+// The fund-management dialog opened from the summary column's Fund settings button: move cash between the
+// player and the fund, buy an advertisement, or close the fund. A successful close dissolves the fund, which
+// unmounts this dialog on the next refresh.
+function FundSettingsModal({ player, onRefresh, onClose }) {
   const [amount, setAmount] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -384,6 +344,7 @@ function ManageFundSection({ player, onRefresh }) {
 
   const withdrawable = player.fundWithdrawable ?? 0
   const amountNum = Number(amount)
+  const titleId = 'fund-settings-modal-title'
 
   async function move(kind) {
     setError(null)
@@ -431,7 +392,7 @@ function ManageFundSection({ player, onRefresh }) {
     }
   }
 
-  // A successful close removes the fund, so this component unmounts on refresh; only reset busy on failure.
+  // A successful close removes the fund, so this dialog unmounts on refresh; only reset busy on failure.
   async function closeFund() {
     setError(null)
     setBusy(true)
@@ -445,111 +406,162 @@ function ManageFundSection({ player, onRefresh }) {
   }
 
   return (
-    <div className="modal-section player-section">
-      <span className="map-stat-label">Move cash</span>
-      <label className="field">
-        <span>Amount (withdraw up to {formatMoney(withdrawable)})</span>
-        <input
-          className="select num"
-          type="number"
-          min="0.01"
-          step="0.01"
-          placeholder="0.00"
-          value={amount}
-          onChange={(event) => setAmount(event.target.value)}
-          aria-label="Fund transfer amount"
-        />
-      </label>
-      {error ? (
-        <p className="command-error" role="alert">
-          {error}
-        </p>
-      ) : null}
-      <div className="order-actions">
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={busy || !(amountNum > 0) || amountNum > (player.availableBalance ?? 0)}
-          onClick={() => move('deposit')}
-        >
-          {busy ? '…' : 'Deposit'}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          disabled={busy || !(amountNum > 0) || amountNum > withdrawable}
-          onClick={() => move('withdraw')}
-        >
-          {busy ? '…' : 'Withdraw'}
-        </button>
-      </div>
-      <div className="modal-section player-section">
-        <div className="player-panel-head">
-          <span className="map-stat-label">Advertise</span>
-          <span className="num" title="How visible the fund is to would-be joiners">
-            Popularity {formatInt(player.fundPopularityIndex ?? 0)}
-          </span>
+    <Modal titleId={titleId} onClose={onClose}>
+      <header className="modal-head">
+        <div className="command-id">
+          <span className="command-label">Fund</span>
+          <h2 className="command-name" id={titleId}>
+            {player.fundName ?? 'Fund settings'}
+          </h2>
         </div>
-        <p className="note note-sm">
-          A paid advertisement lifts the fund&apos;s popularity, drawing more traders to join. It is paid from the
-          fund&apos;s cash and costs less the more the fund has grown.
-        </p>
-        {adError ? (
-          <p className="command-error" role="alert">
-            {adError}
-          </p>
-        ) : null}
-        {adQuote ? (
-          <>
-            <p className="note note-sm">
-              Advertising now costs {formatMoney(adQuote.price)} ({(adQuote.fraction * 100).toFixed(2)}% of fund worth),
-              set by {adQuote.growthPct.toFixed(1)}% growth over the last 20 cycles.
+        <button type="button" className="btn select-sm" onClick={onClose}>
+          Close
+        </button>
+      </header>
+      <div className="modal-body">
+        <div className="modal-section">
+          <span className="map-stat-label">Move cash</span>
+          <label className="field">
+            <span>Amount (withdraw up to {formatMoney(withdrawable)})</span>
+            <input
+              className="select num"
+              type="number"
+              min="0.01"
+              step="0.01"
+              placeholder="0.00"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+              aria-label="Fund transfer amount"
+            />
+          </label>
+          {error ? (
+            <p className="command-error" role="alert">
+              {error}
             </p>
-            <div className="order-actions">
-              <button type="button" className="btn btn-primary" disabled={adBusy} onClick={confirmAdvertise}>
-                {adBusy ? 'Paying…' : 'Confirm & pay'}
-              </button>
-              <button type="button" className="btn" disabled={adBusy} onClick={() => setAdQuote(null)}>
-                Cancel
-              </button>
-            </div>
-          </>
-        ) : (
-          <button type="button" className="btn" disabled={adBusy} onClick={fetchAdQuote}>
-            {adBusy ? 'Checking…' : 'Advertise fund'}
-          </button>
-        )}
-      </div>
-      {confirmingClose ? (
-        <div className="modal-section player-section">
-          <p className="note note-sm">
-            Closing returns members&apos; deposits, hands the fund&apos;s shares and remaining cash to you, and dissolves
-            the fund.
-          </p>
+          ) : null}
           <div className="order-actions">
-            <button type="button" className="btn" disabled={busy} onClick={closeFund}>
-              {busy ? 'Closing…' : 'Confirm close'}
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || !(amountNum > 0) || amountNum > (player.availableBalance ?? 0)}
+              onClick={() => move('deposit')}
+            >
+              {busy ? '…' : 'Deposit'}
             </button>
-            <button type="button" className="btn" disabled={busy} onClick={() => setConfirmingClose(false)}>
-              Cancel
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || !(amountNum > 0) || amountNum > withdrawable}
+              onClick={() => move('withdraw')}
+            >
+              {busy ? '…' : 'Withdraw'}
             </button>
           </div>
         </div>
-      ) : (
-        <button type="button" className="btn" onClick={() => setConfirmingClose(true)}>
-          Close fund
-        </button>
-      )}
-    </div>
+        <div className="modal-section">
+          <div className="player-panel-head">
+            <span className="map-stat-label">Advertise</span>
+            <span className="num" title="How visible the fund is to would-be joiners">
+              Popularity {formatInt(player.fundPopularityIndex ?? 0)}
+            </span>
+          </div>
+          <p className="note note-sm">
+            A paid advertisement lifts the fund&apos;s popularity, drawing more traders to join. It is paid from the
+            fund&apos;s cash and costs less the more the fund has grown.
+          </p>
+          {adError ? (
+            <p className="command-error" role="alert">
+              {adError}
+            </p>
+          ) : null}
+          {adQuote ? (
+            <>
+              <p className="note note-sm">
+                Advertising now costs {formatMoney(adQuote.price)} ({(adQuote.fraction * 100).toFixed(2)}% of fund worth),
+                set by {adQuote.growthPct.toFixed(1)}% growth over the last 20 cycles.
+              </p>
+              <div className="order-actions">
+                <button type="button" className="btn btn-primary" disabled={adBusy} onClick={confirmAdvertise}>
+                  {adBusy ? 'Paying…' : 'Confirm & pay'}
+                </button>
+                <button type="button" className="btn" disabled={adBusy} onClick={() => setAdQuote(null)}>
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : (
+            <button type="button" className="btn" disabled={adBusy} onClick={fetchAdQuote}>
+              {adBusy ? 'Checking…' : 'Advertise fund'}
+            </button>
+          )}
+        </div>
+        <div className="modal-section">
+          {confirmingClose ? (
+            <>
+              <p className="note note-sm">
+                Closing returns members&apos; deposits, hands the fund&apos;s shares and remaining cash to you, and dissolves
+                the fund.
+              </p>
+              <div className="order-actions">
+                <button type="button" className="btn" disabled={busy} onClick={closeFund}>
+                  {busy ? 'Closing…' : 'Confirm close'}
+                </button>
+                <button type="button" className="btn" disabled={busy} onClick={() => setConfirmingClose(false)}>
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : (
+            <button type="button" className="btn" onClick={() => setConfirmingClose(true)}>
+              Close fund
+            </button>
+          )}
+        </div>
+      </div>
+    </Modal>
   )
 }
 
-// One actor's balances, performance, and detail sub-tabs. Reused for the player and the fund; the fund variant
-// passes `members` (adding a Members sub-tab). Both can cancel their open orders through the player-scoped
-// cancel endpoint, which accepts the player's own orders and its managed fund's.
+// A market-tone class ('up'/'down') that stays on for one poll after `value` moves, then clears, so a number
+// briefly flashes green up or red down when it changes. Returns null when steady or on the first render.
+function useChangeFlash(value) {
+  const [tone, setTone] = useState(null)
+  const previous = useRef(value)
+  const timerRef = useRef(null)
+
+  useEffect(() => {
+    if (previous.current != null && typeof value === 'number' && value !== previous.current) {
+      setTone(value > previous.current ? 'up' : 'down')
+      clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => setTone(null), POLL_INTERVAL_MS)
+    }
+    previous.current = value
+    return () => clearTimeout(timerRef.current)
+  }, [value])
+
+  return tone
+}
+
+function GearIcon() {
+  return (
+    <svg className="icon-gear" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  )
+}
+
+// One actor's summary and detail sub-tabs, split into a compact left column and the wider tab column on the
+// right. Reused for the player and the fund; the fund variant (`isFund`) adds the Members sub-tab and a Fund
+// settings dialog. The full balance sheet moves behind a click on the total-worth number. Both actors cancel
+// their open orders through the player-scoped cancel endpoint, which accepts the player's and its fund's orders.
 function ActorView({
   subject,
   participantId,
+  player,
+  isFund,
+  orderBook,
+  marketMap,
   canCancelOrders,
   members,
   holdings,
@@ -566,115 +578,42 @@ function ActorView({
   onSelectCompany,
   onRefresh,
 }) {
+  const [balancesOpen, setBalancesOpen] = useState(false)
+  const [fundSettingsOpen, setFundSettingsOpen] = useState(false)
   const openOrders = orders.filter((order) => OPEN_STATUSES.has(order.status))
-  const lastCycleMissing = subject.lastCycleMoneyChange == null || subject.lastCycleWorthChange == null
-  const worthTone = typeof subject.lastCycleWorthChange === 'number' ? toneOf(subject.lastCycleWorthChange) : null
   const cash = cashSettlement(subject.currentBalance, subject.settledCashBalance)
+  const worthFlash = useChangeFlash(subject.totalWorth)
 
   return (
     <>
-      <div className="player-panel-head">
-        <div className="command-id">
-          <span className="command-name">{subject.name}</span>
+      <div className="player-header">
+        <div className="player-header-main">
+          <div className="player-header-id">
+            <span className="command-name">{subject.name}</span>
+            <button
+              type="button"
+              className={`quote-last num quote-worth-btn${worthFlash ? ` flash-${worthFlash}` : ''}`}
+              onClick={() => setBalancesOpen(true)}
+              title="Show full balances"
+            >
+              {formatMoney(subject.totalWorth)}
+            </button>
+          </div>
         </div>
-        <div className="quote">
-          <strong className="quote-last num">{formatMoney(subject.totalWorth)}</strong>
-          {worthTone ? (
-            <span className={`quote-change num tone-${worthTone}`} title="Change over the last completed cycle">
-              <span aria-hidden="true">{CHANGE_GLYPH[worthTone]} </span>
-              {formatSigned(subject.lastCycleWorthChange)}
-            </span>
-          ) : null}
-        </div>
-      </div>
 
-      <div className="modal-section player-section">
-        <span className="map-stat-label">Balances</span>
-        <dl className="kv">
-          <div className="kv-row">
-            <dt>Initial balance</dt>
-            <dd className="num">{formatMoney(subject.initialBalance)}</dd>
-          </div>
-          <div className="kv-row">
-            <dt>Total cash</dt>
-            <dd className="num">{formatMoney(cash.total)}</dd>
-          </div>
-          <div className="kv-row kv-sub">
-            <dt>Settled cash</dt>
-            <dd className="num">{formatMoney(cash.settled)}</dd>
-          </div>
-          <div className="kv-row kv-sub">
-            <dt>Pending cash</dt>
-            <dd className="num">{formatMoney(cash.pending)}</dd>
-          </div>
-          <div className="kv-row kv-sub">
-            <dt>Available</dt>
-            <dd className="num">{formatMoney(subject.availableBalance)}</dd>
-          </div>
-          <div className="kv-row kv-sub">
-            <dt>Reserved</dt>
-            <dd className="num">{formatMoney(subject.reservedBalance)}</dd>
-          </div>
-          {subject.loanLiability > 0 ? (
-            <div className="kv-row kv-sub">
-              <dt>Explicit term-loan debt</dt>
-              <dd className="num tone-down">−{formatMoney(subject.loanLiability)}</dd>
-            </div>
-          ) : null}
-          <div className="kv-row kv-sub"><dt>Account equity</dt><dd className="num">{formatMoney(subject.margin?.accountEquity ?? subject.totalWorth)}</dd></div>
-          <div className="kv-row kv-sub"><dt>Margin debit</dt><dd className="num">{formatMoney(subject.margin?.debitBalance ?? 0)}</dd></div>
-          <div className="kv-row kv-sub"><dt>Margin interest</dt><dd className="num">{formatMoney(subject.margin?.accruedInterest ?? 0)}</dd></div>
-          <div className="kv-row kv-sub"><dt>Buying power</dt><dd className="num">{formatMoney(subject.margin?.buyingPower ?? subject.availableBalance)}</dd></div>
-          <div className="kv-row kv-total">
-            <dt>Total worth</dt>
-            <dd className="num">{formatMoney(subject.totalWorth)}</dd>
-          </div>
-        </dl>
-      </div>
-
-      <div className="modal-section player-section">
-        <span className="map-stat-label">Performance</span>
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th scope="col">Change</th>
-              <th scope="col" className="ta-r">
-                Overall
-              </th>
-              <th scope="col" className="ta-r">
-                Last cycle
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <th scope="row">Money</th>
-              <td className="ta-r">
-                <ChangeAmount value={subject.overallMoneyChange} />
-              </td>
-              <td className="ta-r">
-                <ChangeAmount value={subject.lastCycleMoneyChange} />
-              </td>
-            </tr>
-            <tr>
-              <th scope="row">Worth</th>
-              <td className="ta-r">
-                <ChangeAmount value={subject.overallWorthChange} />
-              </td>
-              <td className="ta-r">
-                <ChangeAmount value={subject.lastCycleWorthChange} />
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        {lastCycleMissing ? (
-          <p className="note note-sm">Last-cycle figures appear after one completed cycle.</p>
+        {isFund ? (
+          <button type="button" className="btn fund-settings-btn" onClick={() => setFundSettingsOpen(true)}>
+            <GearIcon />
+            Fund settings
+          </button>
         ) : null}
       </div>
 
       <ActorTabs
         participantId={participantId}
         canCancelOrders={canCancelOrders}
+        orderBook={orderBook}
+        marketMap={marketMap}
         members={members}
         holdings={holdings}
         attention={attention}
@@ -691,11 +630,118 @@ function ActorView({
         onSelectCompany={onSelectCompany}
         onRefresh={onRefresh}
       />
+
+      {balancesOpen ? (
+        <BalancesModal subject={subject} cash={cash} onClose={() => setBalancesOpen(false)} />
+      ) : null}
+      {fundSettingsOpen && player ? (
+        <FundSettingsModal player={player} onRefresh={onRefresh} onClose={() => setFundSettingsOpen(false)} />
+      ) : null}
     </>
   )
 }
 
+const PERFORMANCE_STATS = [
+  { key: 'cashOverall', label: 'Cash · overall', field: 'overallMoneyChange' },
+  { key: 'cashLast', label: 'Cash · last cycle', field: 'lastCycleMoneyChange' },
+  { key: 'worthOverall', label: 'Worth · overall', field: 'overallWorthChange' },
+  { key: 'worthLast', label: 'Worth · last cycle', field: 'lastCycleWorthChange' },
+]
+
+// Cash and worth performance (overall and last cycle) as compact label/value stats rather than a table, shown
+// in the balances dialog; the same figures live in the sidebar wallet for the active actor.
+function PerformanceStats({ subject }) {
+  const lastCycleMissing = subject.lastCycleMoneyChange == null || subject.lastCycleWorthChange == null
+  return (
+    <div className="modal-section player-section">
+      <span className="map-stat-label">Performance</span>
+      <dl className="summary-stats">
+        {PERFORMANCE_STATS.map((stat) => (
+          <div className="summary-stat" key={stat.key}>
+            <dt>{stat.label}</dt>
+            <dd>
+              <ChangeAmount value={subject[stat.field]} />
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {lastCycleMissing ? (
+        <p className="note note-sm">Last-cycle figures appear after one completed cycle.</p>
+      ) : null}
+    </div>
+  )
+}
+
+// The full balance sheet plus performance, opened from the total-worth number so the summary column stays compact.
+function BalancesModal({ subject, cash, onClose }) {
+  const titleId = 'balances-modal-title'
+
+  return (
+    <Modal titleId={titleId} onClose={onClose}>
+      <header className="modal-head">
+        <div className="command-id">
+          <span className="command-label">Balances</span>
+          <h2 className="command-name" id={titleId}>
+            {subject.name}
+          </h2>
+        </div>
+        <button type="button" className="btn select-sm" onClick={onClose}>
+          Close
+        </button>
+      </header>
+      <div className="modal-body">
+        <div className="modal-section">
+          <span className="map-stat-label">Balances</span>
+          <dl className="kv">
+            <div className="kv-row">
+              <dt>Initial balance</dt>
+              <dd className="num">{formatMoney(subject.initialBalance)}</dd>
+            </div>
+            <div className="kv-row">
+              <dt>Total cash</dt>
+              <dd className="num">{formatMoney(cash.total)}</dd>
+            </div>
+            <div className="kv-row kv-sub">
+              <dt>Settled cash</dt>
+              <dd className="num">{formatMoney(cash.settled)}</dd>
+            </div>
+            <div className="kv-row kv-sub">
+              <dt>Pending cash</dt>
+              <dd className="num">{formatMoney(cash.pending)}</dd>
+            </div>
+            <div className="kv-row kv-sub">
+              <dt>Available</dt>
+              <dd className="num">{formatMoney(subject.availableBalance)}</dd>
+            </div>
+            <div className="kv-row kv-sub">
+              <dt>Reserved</dt>
+              <dd className="num">{formatMoney(subject.reservedBalance)}</dd>
+            </div>
+            {subject.loanLiability > 0 ? (
+              <div className="kv-row kv-sub">
+                <dt>Explicit term-loan debt</dt>
+                <dd className="num tone-down">−{formatMoney(subject.loanLiability)}</dd>
+              </div>
+            ) : null}
+            <div className="kv-row kv-sub"><dt>Account equity</dt><dd className="num">{formatMoney(subject.margin?.accountEquity ?? subject.totalWorth)}</dd></div>
+            <div className="kv-row kv-sub"><dt>Margin debit</dt><dd className="num">{formatMoney(subject.margin?.debitBalance ?? 0)}</dd></div>
+            <div className="kv-row kv-sub"><dt>Margin interest</dt><dd className="num">{formatMoney(subject.margin?.accruedInterest ?? 0)}</dd></div>
+            <div className="kv-row kv-sub"><dt>Buying power</dt><dd className="num">{formatMoney(subject.margin?.buyingPower ?? subject.availableBalance)}</dd></div>
+            <div className="kv-row kv-total">
+              <dt>Total worth</dt>
+              <dd className="num">{formatMoney(subject.totalWorth)}</dd>
+            </div>
+          </dl>
+        </div>
+        <PerformanceStats subject={subject} />
+      </div>
+    </Modal>
+  )
+}
+
 const BASE_TABS = [
+  { key: 'map', label: 'Market map', hasCount: false },
+  { key: 'orderbook', label: 'Order book', hasCount: false },
   { key: 'assets', label: 'Active assets', hasCount: true },
   { key: 'industries', label: 'By industry', hasCount: true },
   { key: 'attention', label: 'Companies needing attention', hasCount: true },
@@ -712,10 +758,10 @@ const FAVORITES_TAB = { key: 'favorites', label: 'Favorite companies', hasCount:
 // The actor's detail views behind one tab strip so the panel stays compact: the roster tabs carry a live count,
 // and arrow keys move focus between tabs (roving tabindex) to match the order-book tablist. The fund variant
 // appends a Members tab.
-function ActorTabs({ participantId, canCancelOrders, members, holdings, attention, openOrders, loans, margin, loanStatus, onLoanStatusChange, worthHistory, cashMoves, settlements, companies, showFavoriteCompanies, onSelectCompany, onRefresh }) {
+function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, members, holdings, attention, openOrders, loans, margin, loanStatus, onLoanStatusChange, worthHistory, cashMoves, settlements, companies, showFavoriteCompanies, onSelectCompany, onRefresh }) {
   const playerTabs = showFavoriteCompanies ? [...BASE_TABS, FAVORITES_TAB] : BASE_TABS
   const tabs = members ? [...playerTabs, MEMBERS_TAB] : playerTabs
-  const [activeKey, setActiveKey] = useState('assets')
+  const [activeKey, setActiveKey] = useState('map')
   const tabRefs = useRef({})
 
   const industryRows = groupHoldingsByIndustry(holdings, companies)
@@ -775,6 +821,8 @@ function ActorTabs({ participantId, canCancelOrders, members, holdings, attentio
         id={`playerpanel-${activeKey}`}
         aria-labelledby={`playertab-${activeKey}`}
       >
+        {activeKey === 'map' ? marketMap : null}
+        {activeKey === 'orderbook' ? orderBook : null}
         {activeKey === 'assets' ? <HoldingsSection holdings={holdings} onSelectCompany={onSelectCompany} /> : null}
         {activeKey === 'industries' ? (
           <div className="modal-section player-section">

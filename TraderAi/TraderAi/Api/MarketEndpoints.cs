@@ -623,6 +623,133 @@ public static class MarketEndpoints
             return Results.Ok(response);
         });
 
+        // Server-paged, sortable variant of the holdings list. Rows are computed then ordered/paged in memory
+        // because value and P/L depend on the live latest price rather than a stored column.
+        app.MapGet("/participants/{participantId:int}/holdings/paged", async (
+            int participantId, int? page, int? pageSize, string? sort, string? sortDir, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 10, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var descending = !string.Equals(sortDir, "asc", StringComparison.OrdinalIgnoreCase);
+
+            var sharesByCompany = await dbContext.Holdings
+                .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
+                .Select(holding => new
+                {
+                    holding.CompanyId,
+                    Shares = holding.Quantity,
+                    SettledShares = holding.SettledQuantity,
+                    CostBasis = holding.Quantity * holding.AverageCost,
+                })
+                .ToListAsync();
+
+            var companyNameById = await dbContext.Companies
+                .ToDictionaryAsync(company => company.Id, company => company.Name);
+            var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+
+            var rows = sharesByCompany
+                .Select(holding =>
+                {
+                    var currentPrice = latestPriceByCompany.GetValueOrDefault(holding.CompanyId);
+                    return new HoldingResponse(
+                        holding.CompanyId,
+                        companyNameById.GetValueOrDefault(holding.CompanyId, $"#{holding.CompanyId}"),
+                        holding.Shares,
+                        holding.SettledShares,
+                        holding.Shares - holding.SettledShares,
+                        currentPrice,
+                        currentPrice * holding.Shares,
+                        holding.CostBasis);
+                })
+                .ToList();
+
+            IEnumerable<HoldingResponse> ordered = sort switch
+            {
+                "company" => descending
+                    ? rows.OrderByDescending(row => row.CompanyName, StringComparer.OrdinalIgnoreCase)
+                    : rows.OrderBy(row => row.CompanyName, StringComparer.OrdinalIgnoreCase),
+                "settled" => OrderRows(rows, row => row.SettledShares, descending),
+                "pending" => OrderRows(rows, row => row.PendingShares, descending),
+                "cost" => OrderRows(rows, row => row.CostBasis, descending),
+                "value" => OrderRows(rows, row => row.MarketValue, descending),
+                "pnl" => OrderRows(rows, row => row.MarketValue - row.CostBasis, descending),
+                _ => OrderRows(rows, row => row.Shares, descending),
+            };
+
+            var items = ordered.Skip((pageIndex - 1) * size).Take(size).ToArray();
+            return Results.Ok(new PagedHoldingsResponse(items, rows.Count, pageIndex, size));
+        });
+
+        // Server-paged, sortable portfolio-by-industry aggregate. The share of portfolio is always relative to the
+        // whole portfolio's value, so the total is computed across every industry before the page is taken.
+        app.MapGet("/participants/{participantId:int}/portfolio-by-industry/paged", async (
+            int participantId, int? page, int? pageSize, string? sort, string? sortDir, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 10, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var descending = !string.Equals(sortDir, "asc", StringComparison.OrdinalIgnoreCase);
+
+            var holdings = await dbContext.Holdings
+                .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
+                .Select(holding => new
+                {
+                    holding.CompanyId,
+                    Shares = holding.Quantity,
+                    CostBasis = holding.Quantity * holding.AverageCost,
+                })
+                .ToListAsync();
+
+            var industryIdByCompany = await dbContext.Companies
+                .ToDictionaryAsync(company => company.Id, company => company.IndustryId);
+            var industryNameById = await IndustryNameByIdAsync(dbContext);
+            var latestPriceByCompany = await LatestPriceByCompanyAsync(dbContext);
+
+            const string unknownIndustry = "Unknown industry";
+            var buckets = new Dictionary<int, IndustryBucket>();
+            foreach (var holding in holdings)
+            {
+                var industryId = industryIdByCompany.GetValueOrDefault(holding.CompanyId);
+                if (!buckets.TryGetValue(industryId, out var bucket))
+                {
+                    bucket = new IndustryBucket(industryId, industryNameById.GetValueOrDefault(industryId, unknownIndustry));
+                    buckets[industryId] = bucket;
+                }
+
+                bucket.CompanyCount += 1;
+                bucket.Shares += holding.Shares;
+                bucket.Value += latestPriceByCompany.GetValueOrDefault(holding.CompanyId) * holding.Shares;
+                bucket.CostBasis += holding.CostBasis;
+            }
+
+            var totalValue = buckets.Values.Sum(bucket => bucket.Value);
+            var rows = buckets.Values
+                .Select(bucket => new IndustryHoldingResponse(
+                    bucket.IndustryId,
+                    bucket.IndustryName,
+                    bucket.CompanyCount,
+                    bucket.Shares,
+                    bucket.Value,
+                    bucket.CostBasis,
+                    bucket.Value - bucket.CostBasis,
+                    totalValue > 0 ? (double)(bucket.Value / totalValue) : 0d))
+                .ToList();
+
+            IEnumerable<IndustryHoldingResponse> ordered = sort switch
+            {
+                "industry" => descending
+                    ? rows.OrderByDescending(row => row.IndustryName, StringComparer.OrdinalIgnoreCase)
+                    : rows.OrderBy(row => row.IndustryName, StringComparer.OrdinalIgnoreCase),
+                "companies" => OrderRows(rows, row => row.CompanyCount, descending),
+                "shares" => OrderRows(rows, row => row.Shares, descending),
+                "pct" => OrderRows(rows, row => row.Pct, descending),
+                "pnl" => OrderRows(rows, row => row.Pnl, descending),
+                _ => OrderRows(rows, row => row.Value, descending),
+            };
+
+            var items = ordered.Skip((pageIndex - 1) * size).Take(size).ToArray();
+            return Results.Ok(new PagedIndustryHoldingsResponse(items, rows.Count, pageIndex, size));
+        });
+
         // Companies the participant holds that show a warning signal, so they can be watched at a glance: a recent
         // price slide, a bad news or crisis hit, a standing High/Extra risk verdict, or a recent reverse merge.
         app.MapGet("/participants/{participantId:int}/companies-attention", async (int participantId, AppDbContext dbContext) =>
@@ -789,6 +916,67 @@ public static class MarketEndpoints
                 .ToListAsync();
 
             return Results.Ok(await ToInvestmentResponsesAsync(dbContext, investments));
+        });
+
+        // Server-paged, sortable variant of the investments list. Enrichment (names, cycle numbers) happens for the
+        // full set before ordering so the Company column and cycle-derived columns sort correctly across pages.
+        app.MapGet("/participants/{participantId:int}/investments/paged", async (
+            int participantId, int? page, int? pageSize, string? sort, string? sortDir, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 10, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var descending = !string.Equals(sortDir, "asc", StringComparison.OrdinalIgnoreCase);
+
+            var investments = await dbContext.CompanyInvestments
+                .Where(investment => investment.InvestorParticipantId == participantId)
+                .ToListAsync();
+            var rows = await ToInvestmentResponsesAsync(dbContext, investments);
+
+            IEnumerable<InvestmentResponse> ordered = sort switch
+            {
+                "company" => descending
+                    ? rows.OrderByDescending(row => row.CompanyName, StringComparer.OrdinalIgnoreCase)
+                    : rows.OrderBy(row => row.CompanyName, StringComparer.OrdinalIgnoreCase),
+                "dealValue" => OrderRows(rows, row => row.DealValue, descending),
+                "shares" => OrderRows(rows, row => row.SharesIssued, descending),
+                "stake" => OrderRows(rows, row => row.InvestorSharePercent, descending),
+                "capBefore" => OrderRows(rows, row => row.CapitalizationBeforeDeal, descending),
+                "capAfter" => OrderRows(rows, row => row.FinalCapitalization, descending),
+                _ => OrderRows(rows, row => row.Id, descending),
+            };
+
+            var items = ordered.Skip((pageIndex - 1) * size).Take(size).ToArray();
+            return Results.Ok(new PagedInvestmentsResponse(items, rows.Length, pageIndex, size));
+        });
+
+        // Server-paged, sortable fund-members list. Defaults to largest depositor first. Reuses the same member
+        // builder as the participant-detail response, then orders and pages in memory.
+        app.MapGet("/participants/{participantId:int}/fund-members/paged", async (
+            int participantId, int? page, int? pageSize, string? sort, string? sortDir,
+            AppDbContext dbContext, IOptions<CollectiveFundOptions> fundOptions) =>
+        {
+            var size = Math.Clamp(pageSize ?? 10, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var descending = !string.Equals(sortDir, "asc", StringComparison.OrdinalIgnoreCase);
+
+            var (_, members) = await BuildCollectiveFundMembersAsync(dbContext, fundOptions.Value, participantId);
+
+            IEnumerable<CollectiveFundMemberResponse> ordered = sort switch
+            {
+                "member" => descending
+                    ? members.OrderByDescending(row => row.Name, StringComparer.OrdinalIgnoreCase)
+                    : members.OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase),
+                "type" => descending
+                    ? members.OrderByDescending(row => row.Type, StringComparer.OrdinalIgnoreCase)
+                    : members.OrderBy(row => row.Type, StringComparer.OrdinalIgnoreCase),
+                "joined" => OrderRows(members, row => row.JoinedInCycleNumber, descending),
+                "payouts" => OrderRows(members, row => row.Payouts, descending),
+                "leave" => OrderRows(members, row => row.LeaveCountdownTradingDays, descending),
+                _ => OrderRows(members, row => row.Deposit, descending),
+            };
+
+            var items = ordered.Skip((pageIndex - 1) * size).Take(size).ToArray();
+            return Results.Ok(new PagedFundMembersResponse(items, members.Length, pageIndex, size));
         });
 
         app.MapGet("/participants/{participantId:int}/share-transactions", async (int participantId, int? take, AppDbContext dbContext) =>
@@ -2471,6 +2659,7 @@ public static class MarketEndpoints
             participant.AvailableBalance,
             valuation.SharesOwned,
             valuation.HoldingsValue,
+            valuation.CostBasis,
             valuation.LoanLiability,
             valuation.Margin,
             valuation.TotalWorth,
@@ -2540,6 +2729,7 @@ public static class MarketEndpoints
         MarginAccountResponse? fundMargin = null;
         int? fundPendingSettlementCount = null;
         int? fundNextSettlementDueDayNumber = null;
+        decimal? fundLastCycleMoneyChange = null;
         if (managedFund is not null)
         {
             fundPopularityIndex = managedFund.PopularityIndex;
@@ -2565,6 +2755,18 @@ public static class MarketEndpoints
                     Math.Min(fundParticipant.AvailableBalance, fundParticipant.SettledCashBalance) - memberDepositsOwed);
                 fundPendingSettlementCount = fundValuation.PendingSettlementCount;
                 fundNextSettlementDueDayNumber = fundValuation.NextSettlementDueDayNumber;
+
+                // The fund's last-cycle cash delta mirrors the player computation above so the sidebar can show the
+                // active actor's cash performance from this single response.
+                var fundRecentSnapshots = await dbContext.ParticipantWorthSnapshots
+                    .Where(snapshot => snapshot.ParticipantId == fundParticipant.Id)
+                    .OrderByDescending(snapshot => snapshot.Id)
+                    .Take(2)
+                    .ToListAsync();
+                if (fundRecentSnapshots.Count == 2)
+                {
+                    fundLastCycleMoneyChange = fundRecentSnapshots[0].Balance - fundRecentSnapshots[1].Balance;
+                }
             }
         }
 
@@ -2599,7 +2801,8 @@ public static class MarketEndpoints
             fundPopularityIndex,
             fundMargin,
             fundPendingSettlementCount,
-            fundNextSettlementDueDayNumber);
+            fundNextSettlementDueDayNumber,
+            fundLastCycleMoneyChange);
     }
 
     private static async Task<Dictionary<int, ParticipantValuation>> BuildParticipantValuationsAsync(
@@ -2611,7 +2814,7 @@ public static class MarketEndpoints
         var participantIds = participants.Select(participant => participant.Id).ToHashSet();
         var holdings = await dbContext.Holdings
             .Where(holding => participantIds.Contains(holding.ParticipantId) && holding.Quantity > 0)
-            .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
+            .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity, holding.AverageCost })
             .ToListAsync();
         var holdingsByParticipant = holdings
             .GroupBy(holding => holding.ParticipantId)
@@ -2643,6 +2846,7 @@ public static class MarketEndpoints
             var sharesOwned = participantHoldings.Sum(holding => holding.Quantity);
             var companiesOwned = participantHoldings.Select(holding => holding.CompanyId).Distinct().Count();
             var holdingsValue = holdingsValueByParticipant[participant.Id];
+            var costBasis = participantHoldings.Sum(holding => holding.Quantity * holding.AverageCost);
             var metrics = marginMetricsByParticipant[participant.Id];
             var margin = new MarginAccountResponse(
                 metrics.DebitBalance,
@@ -2665,6 +2869,7 @@ public static class MarketEndpoints
                 sharesOwned,
                 companiesOwned,
                 holdingsValue,
+                costBasis,
                 loanLiability,
                 margin,
                 participant.CurrentBalance + holdingsValue - loanLiability - margin.TotalLiability,
@@ -2935,10 +3140,31 @@ public static class MarketEndpoints
         order.ReservedCashAmount,
         order.CreatedInCycleId);
 
+    private static IEnumerable<T> OrderRows<T, TKey>(IEnumerable<T> source, Func<T, TKey> keySelector, bool descending) =>
+        descending ? source.OrderByDescending(keySelector) : source.OrderBy(keySelector);
+
+    // Mutable accumulator for the portfolio-by-industry aggregate; folded into an IndustryHoldingResponse per bucket.
+    private sealed class IndustryBucket
+    {
+        public IndustryBucket(int industryId, string industryName)
+        {
+            IndustryId = industryId;
+            IndustryName = industryName;
+        }
+
+        public int IndustryId { get; }
+        public string IndustryName { get; }
+        public int CompanyCount { get; set; }
+        public int Shares { get; set; }
+        public decimal Value { get; set; }
+        public decimal CostBasis { get; set; }
+    }
+
     private sealed record ParticipantValuation(
         int SharesOwned,
         int CompaniesOwned,
         decimal HoldingsValue,
+        decimal CostBasis,
         decimal LoanLiability,
         MarginAccountResponse Margin,
         decimal TotalWorth,
@@ -3230,6 +3456,7 @@ public sealed record ParticipantDetailResponse(
     decimal AvailableBalance,
     int SharesOwned,
     decimal HoldingsValue,
+    decimal HoldingsCostBasis,
     decimal LoanLiability,
     MarginAccountResponse Margin,
     decimal TotalWorth,
@@ -3346,7 +3573,8 @@ public sealed record PlayerResponse(
     int? FundPopularityIndex,
     MarginAccountResponse? FundMargin,
     int? FundPendingSettlementCount,
-    int? FundNextSettlementDueDayNumber);
+    int? FundNextSettlementDueDayNumber,
+    decimal? FundLastCycleMoneyChange);
 
 public sealed record MarginAccountResponse(
     decimal DebitBalance,
@@ -3397,6 +3625,24 @@ public sealed record HoldingResponse(
     decimal CurrentPrice,
     decimal MarketValue,
     decimal CostBasis);
+
+public sealed record PagedHoldingsResponse(HoldingResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record IndustryHoldingResponse(
+    int IndustryId,
+    string IndustryName,
+    int CompanyCount,
+    int Shares,
+    decimal Value,
+    decimal CostBasis,
+    decimal Pnl,
+    double Pct);
+
+public sealed record PagedIndustryHoldingsResponse(IndustryHoldingResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record PagedInvestmentsResponse(InvestmentResponse[] Items, int Total, int Page, int PageSize);
+
+public sealed record PagedFundMembersResponse(CollectiveFundMemberResponse[] Items, int Total, int Page, int PageSize);
 
 public sealed record MoneyTransactionResponse(
     int Id,

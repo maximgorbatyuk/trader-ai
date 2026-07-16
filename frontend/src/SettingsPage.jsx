@@ -1,8 +1,40 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { api } from './api'
 import { buildSettingsUpdate, groupSettings, toDraftValue } from './settingsModel'
 
+const REPOSITORY_URL = 'https://github.com/maximgorbatyuk/trader-ai'
+const SETTINGS_LINK_GROUPS = [
+  {
+    ariaLabel: 'Project links',
+    title: 'Project',
+    links: [
+      { label: 'Concept', href: `${REPOSITORY_URL}/blob/main/docs/domain.md` },
+      { label: 'About', href: `${REPOSITORY_URL}#trader-ai` },
+    ],
+  },
+  {
+    ariaLabel: 'Repository links',
+    title: 'Repository',
+    links: [
+      { label: 'Github', href: REPOSITORY_URL },
+      { label: 'Issues', href: `${REPOSITORY_URL}/issues` },
+    ],
+  },
+  {
+    ariaLabel: 'AI provider usage',
+    title: 'AI provider usage',
+    links: [
+      { label: 'MiniMax', href: 'https://platform.minimax.io/console/usage' },
+      { label: 'GLM', href: 'https://z.ai/manage-apikey/coding-plan/personal/usage' },
+      { label: 'OpenAI', href: 'https://platform.openai.com/usage' },
+      { label: 'Claude', href: 'https://platform.claude.com/usage' },
+    ],
+  },
+]
+
 export function SettingsPage() {
+  const { runAction, resetMarket, pending } = useOutletContext() ?? {}
   const [settings, setSettings] = useState(null)
   const [drafts, setDrafts] = useState({})
   const [dirtyKeys, setDirtyKeys] = useState(() => new Set())
@@ -11,6 +43,24 @@ export function SettingsPage() {
   const [fieldErrors, setFieldErrors] = useState({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [confirmingReset, setConfirmingReset] = useState(false)
+
+  useEffect(() => {
+    if (!confirmingReset) return undefined
+
+    const timer = setTimeout(() => setConfirmingReset(false), 5000)
+    return () => clearTimeout(timer)
+  }, [confirmingReset])
+
+  function handleResetMarket() {
+    if (!confirmingReset) {
+      setConfirmingReset(true)
+      return
+    }
+
+    setConfirmingReset(false)
+    runAction(resetMarket)
+  }
 
   const load = useCallback(async () => {
     setLoadError(null)
@@ -121,6 +171,28 @@ export function SettingsPage() {
           onChange={updateDraft}
         />
       ))}
+
+      <SettingsLinks />
+
+      <section className="settings-section" aria-labelledby="settings-database">
+        <header className="settings-section-header">
+          <h2 id="settings-database">Database</h2>
+        </header>
+        <div className="settings-subsection">
+          <p className="settings-description">
+            Erase the current market and reseed the demo database. This cannot be undone.
+          </p>
+          <button
+            type="button"
+            className={`btn btn-reset${confirmingReset ? ' btn-reset-armed' : ''}`}
+            disabled={pending}
+            title={confirmingReset ? 'Click again to erase and reseed the demo database' : 'Erase and reseed the demo database'}
+            onClick={handleResetMarket}
+          >
+            {confirmingReset ? 'Confirm reset' : 'Reset DB'}
+          </button>
+        </div>
+      </section>
     </main>
   )
 }
@@ -138,6 +210,34 @@ export function ValidationSummary({ fieldErrors }) {
         </li>
       )))}
     </ul>
+  )
+}
+
+// Project, repository, and AI-provider usage links, moved here from the former global footer so they sit
+// beside the AI-provider settings.
+export function SettingsLinks() {
+  return (
+    <section className="settings-section" aria-labelledby="settings-links">
+      <header className="settings-section-header">
+        <h2 id="settings-links">Links</h2>
+      </header>
+      <div className="settings-links">
+        {SETTINGS_LINK_GROUPS.map(({ ariaLabel, title, links }) => (
+          <nav className="settings-links-group" aria-label={ariaLabel} key={ariaLabel}>
+            <h3>{title}</h3>
+            <ul>
+              {links.map((link) => (
+                <li key={link.label}>
+                  <a href={link.href} target="_blank" rel="noreferrer">
+                    {link.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        ))}
+      </div>
+    </section>
   )
 }
 

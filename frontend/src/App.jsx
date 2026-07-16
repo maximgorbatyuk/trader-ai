@@ -5,17 +5,17 @@ import { api } from './api'
 import { CompanyModal } from './CompanyModal'
 import { PlayerPanel } from './PlayerPanel'
 import { MarketMapPanel } from './MarketMapPanel'
-import { OrderBookPanel } from './OrderBook'
+import { OrderBook } from './OrderBook'
 import { emptyActorHintFor, holdingByCompany, holdingCompanyIdSet, resolveActor } from './actor'
 
 const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
 
-// The main dashboard: market map (with the two latest news), the player control surface, and the order book.
-// The market state, connection, and control actions come from the app shell through the outlet context; this
-// page owns only its own data poll.
+// The main dashboard: the player control surface, with the market map (and the two latest news) and the order
+// book living behind its detail tabs. The market state, connection, and control actions come from the app shell
+// through the outlet context; this page owns only its own data poll.
 function App() {
-  const { market, connected, ready, pending, actionError, runAction, actorKind, setActorKind } = useOutletContext()
+  const { market, connected, ready, pending, actionError, runAction, actorKind } = useOutletContext()
   const [companies, setCompanies] = useState([])
   const [participants, setParticipants] = useState([])
   const [orders, setOrders] = useState([])
@@ -125,37 +125,39 @@ function App() {
                 />
 
                 <div className="dashboard">
-                  <MarketMapPanel
-                    companies={companies}
-                    participants={participants}
-                    playerHoldingCompanyIds={playerHoldingCompanyIds}
-                    lastDividendTotal={market.lastDividendTotal}
-                    currentCycleNumber={market.currentCycleNumber}
-                    news={news}
-                    onSelectCompany={setMapModalCompanyId}
-                  />
-
                   <PlayerPanel
                     companies={companies}
                     onSelectCompany={setMapModalCompanyId}
                     actorKind={actorKind}
-                    setActorKind={setActorKind}
-                  />
-
-                  <OrderBookPanel
-                    orders={openOrders}
-                    participantNameById={participantNameById}
-                    bankruptParticipantIds={bankruptParticipantIds}
-                    companyNameById={companyNameById}
-                    companyPriceById={companyPriceById}
-                    companySharesById={companySharesById}
-                    companyById={companyById}
-                    actor={actor}
-                    actorHoldingCompanyIds={actorHoldingCompanyIds}
-                    actorHoldingByCompany={actorHoldingByCompany}
-                    actorInvestedCompanyIds={actorInvestedCompanyIds}
-                    emptyActorHint={emptyActorHint}
-                    onTraded={loadAll}
+                    marketMap={
+                      <MarketMapPanel
+                        embedded
+                        companies={companies}
+                        participants={participants}
+                        playerHoldingCompanyIds={playerHoldingCompanyIds}
+                        lastDividendTotal={market.lastDividendTotal}
+                        currentCycleNumber={market.currentCycleNumber}
+                        news={news}
+                        onSelectCompany={setMapModalCompanyId}
+                      />
+                    }
+                    orderBook={
+                      <OrderBook
+                        orders={openOrders}
+                        participantNameById={participantNameById}
+                        bankruptParticipantIds={bankruptParticipantIds}
+                        companyNameById={companyNameById}
+                        companyPriceById={companyPriceById}
+                        companySharesById={companySharesById}
+                        companyById={companyById}
+                        actor={actor}
+                        actorHoldingCompanyIds={actorHoldingCompanyIds}
+                        actorHoldingByCompany={actorHoldingByCompany}
+                        actorInvestedCompanyIds={actorInvestedCompanyIds}
+                        emptyActorHint={emptyActorHint}
+                        onTraded={loadAll}
+                      />
+                    }
                   />
                 </div>
               </>

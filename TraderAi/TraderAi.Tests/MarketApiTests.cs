@@ -2168,6 +2168,284 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task HoldingsAndPortfolioPagedEndpointsPageSortAndReportCostBasis()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int playerId;
+            decimal expectedCostBasis = 0m;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
+                db.MarketCycles.Add(cycle);
+                var alpha = new Industry { Name = "Alpha" };
+                var beta = new Industry { Name = "Beta" };
+                db.Industries.AddRange(alpha, beta);
+                await db.SaveChangesAsync();
+
+                var player = new Participant
+                {
+                    Name = "Holder",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    CurrentBalance = 0m,
+                    IsActive = true,
+                };
+                db.Participants.Add(player);
+                await db.SaveChangesAsync();
+                playerId = player.Id;
+
+                // Twelve companies (>page size) split evenly across two industries. Quantity ascends with the index
+                // while the name ascends too, so quantity-desc and name-asc orderings resolve to opposite ends.
+                for (var i = 0; i < 12; i++)
+                {
+                    var company = new Company
+                    {
+                        Name = $"Company {(char)('A' + i)}",
+                        IndustryId = i < 6 ? alpha.Id : beta.Id,
+                        IssuedSharesCount = 1_000,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                    };
+                    db.Companies.Add(company);
+                    await db.SaveChangesAsync();
+
+                    var price = 10m + i;
+                    var averageCost = 9m + i;
+                    var quantity = (i + 1) * 5;
+                    db.PriceSnapshots.Add(new PriceSnapshot { CompanyId = company.Id, Price = price, CreatedInCycleId = cycle.Id, CreatedAt = now });
+                    db.Holdings.Add(new Holding
+                    {
+                        ParticipantId = player.Id,
+                        CompanyId = company.Id,
+                        Quantity = quantity,
+                        SettledQuantity = quantity,
+                        AverageCost = averageCost,
+                    });
+                    expectedCostBasis += quantity * averageCost;
+                }
+
+                await db.SaveChangesAsync();
+            }
+
+            // Default sort is quantity descending; the last-indexed company holds the most shares.
+            var firstPage = await client.GetFromJsonAsync<PagedHoldingsDto>(
+                $"/participants/{playerId}/holdings/paged?page=1&pageSize=10");
+            Assert.Equal(12, firstPage!.Total);
+            Assert.Equal(10, firstPage.Items.Length);
+            Assert.Equal(60, firstPage.Items[0].Shares);
+            Assert.Equal("Company L", firstPage.Items[0].CompanyName);
+
+            var secondPage = await client.GetFromJsonAsync<PagedHoldingsDto>(
+                $"/participants/{playerId}/holdings/paged?page=2&pageSize=10");
+            Assert.Equal(2, secondPage!.Items.Length);
+
+            var byName = await client.GetFromJsonAsync<PagedHoldingsDto>(
+                $"/participants/{playerId}/holdings/paged?sort=company&sortDir=asc&pageSize=10");
+            Assert.Equal("Company A", byName!.Items[0].CompanyName);
+            Assert.Equal(5, byName.Items[0].Shares);
+
+            // Portfolio-by-industry rolls the twelve holdings into two industry buckets.
+            var industries = await client.GetFromJsonAsync<PagedIndustryHoldingsDto>(
+                $"/participants/{playerId}/portfolio-by-industry/paged?pageSize=10");
+            Assert.Equal(2, industries!.Total);
+            Assert.Equal(6, industries.Items[0].CompanyCount);
+            Assert.Equal("Beta", industries.Items[0].IndustryName); // higher-value bucket leads by default
+            Assert.True(Math.Abs(industries.Items.Sum(item => item.Pct) - 1.0) < 1e-6);
+
+            var industriesByName = await client.GetFromJsonAsync<PagedIndustryHoldingsDto>(
+                $"/participants/{playerId}/portfolio-by-industry/paged?sort=industry&sortDir=asc&pageSize=10");
+            Assert.Equal("Alpha", industriesByName!.Items[0].IndustryName);
+
+            // The detail response carries the whole-portfolio cost basis so the client need not load every holding.
+            using var detail = await client.GetFromJsonAsync<JsonDocument>($"/participants/{playerId}");
+            Assert.Equal(expectedCostBasis, detail!.RootElement.GetProperty("holdingsCostBasis").GetDecimal());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task InvestmentsPagedEndpointPagesAndSorts()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int investorId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
+                db.MarketCycles.Add(cycle);
+                var industry = new Industry { Name = "Tech" };
+                db.Industries.Add(industry);
+                await db.SaveChangesAsync();
+
+                var company = new Company { Name = "Acme", IndustryId = industry.Id, IssuedSharesCount = 1_000, CreatedAt = now, UpdatedAt = now };
+                var investor = new Participant
+                {
+                    Name = "Investor",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    CurrentBalance = 0m,
+                    IsActive = true,
+                };
+                db.Companies.Add(company);
+                db.Participants.Add(investor);
+                await db.SaveChangesAsync();
+                investorId = investor.Id;
+
+                for (var i = 0; i < 12; i++)
+                {
+                    db.CompanyInvestments.Add(new CompanyInvestment
+                    {
+                        CompanyId = company.Id,
+                        InvestorParticipantId = investor.Id,
+                        DealValue = (i + 1) * 1_000m,
+                        SharesIssued = (i + 1) * 10,
+                        SharesBeforeDeal = 100,
+                        CapitalizationBeforeDeal = 1_000m,
+                        FinalCapitalization = 2_000m,
+                        InvestorSharePercent = i,
+                        TradingDayNumber = i,
+                        CreatedInCycleId = cycle.Id,
+                        CreatedAt = now,
+                    });
+                }
+
+                await db.SaveChangesAsync();
+            }
+
+            // Default order is newest first (highest id), which is the last-created, highest deal value.
+            var firstPage = await client.GetFromJsonAsync<PagedInvestmentsDto>(
+                $"/participants/{investorId}/investments/paged?page=1&pageSize=10");
+            Assert.Equal(12, firstPage!.Total);
+            Assert.Equal(10, firstPage.Items.Length);
+            Assert.Equal(12_000m, firstPage.Items[0].DealValue);
+
+            var secondPage = await client.GetFromJsonAsync<PagedInvestmentsDto>(
+                $"/participants/{investorId}/investments/paged?page=2&pageSize=10");
+            Assert.Equal(2, secondPage!.Items.Length);
+
+            var byDealAsc = await client.GetFromJsonAsync<PagedInvestmentsDto>(
+                $"/participants/{investorId}/investments/paged?sort=dealValue&sortDir=asc&pageSize=10");
+            Assert.Equal(1_000m, byDealAsc!.Items[0].DealValue);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task FundMembersPagedDefaultsToLargestDepositAndPages()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int fundParticipantId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 3, Status = CycleStatus.Running, StartedAt = now };
+                db.MarketCycles.Add(cycle);
+                await db.SaveChangesAsync();
+
+                var fundParticipant = new Participant
+                {
+                    Name = "Deposit Fund",
+                    Type = ParticipantType.CollectiveFund,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    CurrentBalance = 0m,
+                    IsActive = true,
+                };
+                var mia = NewMember("Mia");
+                var zoe = NewMember("Zoe");
+                var ana = NewMember("Ana");
+                db.Participants.AddRange(fundParticipant, mia, zoe, ana);
+                await db.SaveChangesAsync();
+                fundParticipantId = fundParticipant.Id;
+
+                var fund = new CollectiveFund
+                {
+                    ParticipantId = fundParticipant.Id,
+                    FoundedByParticipantId = mia.Id,
+                    Status = CollectiveFundStatus.Active,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = now,
+                };
+                db.CollectiveFunds.Add(fund);
+                await db.SaveChangesAsync();
+
+                db.CollectiveFundParticipants.AddRange(
+                    new CollectiveFundParticipant { CollectiveFundId = fund.Id, ParticipantId = mia.Id, JoinedAt = now, JoinedInCycleId = cycle.Id, DepositAmount = 5_000m },
+                    new CollectiveFundParticipant { CollectiveFundId = fund.Id, ParticipantId = zoe.Id, JoinedAt = now, JoinedInCycleId = cycle.Id, DepositAmount = 2_000m },
+                    new CollectiveFundParticipant { CollectiveFundId = fund.Id, ParticipantId = ana.Id, JoinedAt = now, JoinedInCycleId = cycle.Id, DepositAmount = 900m });
+                await db.SaveChangesAsync();
+
+                Participant NewMember(string name) => new()
+                {
+                    Name = name,
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    CurrentBalance = 1_000m,
+                    IsActive = true,
+                };
+            }
+
+            // Largest depositor leads by default; paging keeps that order.
+            var firstPage = await client.GetFromJsonAsync<PagedFundMembersDto>(
+                $"/participants/{fundParticipantId}/fund-members/paged?page=1&pageSize=2");
+            Assert.Equal(3, firstPage!.Total);
+            Assert.Equal(2, firstPage.Items.Length);
+            Assert.Equal(5_000m, firstPage.Items[0].Deposit);
+            Assert.Equal(2_000m, firstPage.Items[1].Deposit);
+
+            var secondPage = await client.GetFromJsonAsync<PagedFundMembersDto>(
+                $"/participants/{fundParticipantId}/fund-members/paged?page=2&pageSize=2");
+            Assert.Single(secondPage!.Items);
+            Assert.Equal(900m, secondPage.Items[0].Deposit);
+
+            var byName = await client.GetFromJsonAsync<PagedFundMembersDto>(
+                $"/participants/{fundParticipantId}/fund-members/paged?sort=member&sortDir=asc&pageSize=10");
+            Assert.Equal("Ana", byName!.Items[0].Name);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task LoanEndpointsExposeReconciledArrearsBreakdown()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -3057,6 +3335,28 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal AvailableBalance,
         int SharesOwned,
         bool IsActive);
+
+    private sealed record PagedHoldingsDto(HoldingDto[] Items, int Total, int Page, int PageSize);
+
+    private sealed record IndustryHoldingDto(
+        int IndustryId,
+        string IndustryName,
+        int CompanyCount,
+        int Shares,
+        decimal Value,
+        decimal CostBasis,
+        decimal Pnl,
+        double Pct);
+
+    private sealed record PagedIndustryHoldingsDto(IndustryHoldingDto[] Items, int Total, int Page, int PageSize);
+
+    private sealed record InvestmentDto(int Id, string CompanyName, decimal DealValue, int SharesIssued);
+
+    private sealed record PagedInvestmentsDto(InvestmentDto[] Items, int Total, int Page, int PageSize);
+
+    private sealed record FundMemberDto(int ParticipantId, string Name, decimal Deposit);
+
+    private sealed record PagedFundMembersDto(FundMemberDto[] Items, int Total, int Page, int PageSize);
 
     private sealed record FundDetailDto(int Id, CollectiveFundMemberDto[] CollectiveFundMembers);
 
