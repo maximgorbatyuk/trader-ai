@@ -34,5 +34,6 @@ A Company is the listed asset in the game. It issues shares, belongs to an indus
 - After a company lists, there is a quiet stretch during which no new company can appear; past it, the chance of a new listing rises a little each cycle until one appears, which restarts the quiet stretch.
 - A company is delisted when its price has fallen in most of the recent cycles, or when its most recent risk ratings are poor several times in a row. At most one company is delisted per cycle.
 - When the market is already at its maximum size and nothing has failed on its own, the worst-performing company is delisted to make room for new listings.
+- A company that recently received a big investment is shielded from delisting for the next five trading days, like a freshly listed company. See [Big investment](../logic/big-investment.md).
 - Delisting cancels the company's open orders and wipes out its shares — shareholders recover nothing — and the delisting is announced on the Newswire.
 - A delisted company drops off the live company list and the market map but keeps its history; it is listed on the Closed Companies page and its detail page still opens, marked as delisted.

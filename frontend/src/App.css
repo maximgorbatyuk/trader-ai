@@ -395,7 +395,7 @@
 .settings-page {
   display: flex;
   flex-direction: column;
-  gap: var(--s-4);
+  gap: var(--s-6);
 }
 
 .settings-header {
@@ -488,6 +488,7 @@
 }
 
 .settings-subsection + .settings-subsection {
+  margin-top: var(--s-5);
   border-top: 1px solid var(--border-2);
 }
 
@@ -522,7 +523,7 @@
 
 .settings-table tbody th,
 .settings-table tbody td {
-  padding: var(--s-3) var(--s-4);
+  padding: var(--s-4) var(--s-4);
   vertical-align: top;
 }
 
@@ -549,7 +550,7 @@
 .settings-description {
   max-width: 72ch;
   color: var(--text);
-  font-size: var(--t-sm);
+  font-size: var(--t-base);
   line-height: 1.5;
   text-wrap: pretty;
 }
@@ -1448,6 +1449,17 @@
 
 .map-news.news-ad .map-news-label {
   color: color-mix(in oklch, var(--attention) 72%, black);
+}
+
+/* A capital raise is positive market news, so it takes the up tone; the "Investment" label keeps it non-colour-only. */
+.map-news.news-raise {
+  border-color: var(--up);
+  border-left-color: var(--up);
+  background: var(--up-soft);
+}
+
+.map-news.news-raise .map-news-label {
+  color: var(--up-text);
 }
 
 .map-news-head {

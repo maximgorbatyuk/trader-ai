@@ -72,6 +72,13 @@ public sealed record PlayerFundResult(bool Success, string? Error)
     public static PlayerFundResult Fail(string error) => new(false, error);
 }
 
+public sealed record InvestInCompanyResult(bool Success, int SharesMinted, string? Error)
+{
+    public static InvestInCompanyResult Ok(int sharesMinted) => new(true, sharesMinted, null);
+
+    public static InvestInCompanyResult Fail(string error) => new(false, 0, error);
+}
+
 // What a single advertisement would cost the fund right now: the price (a fraction of fund worth), the fraction
 // itself, the 20-cycle net-worth growth that set it (as a percent), the fund worth it is charged against, and
 // the fund's current popularity.
@@ -116,7 +123,8 @@ public sealed class MarketService(
     IOptions<CollectiveFundOptions>? collectiveFundOptions = null,
     PrimaryIssuanceService? primaryIssuanceService = null,
     AutomatedBuyOrderPolicy? automatedBuyOrderPolicy = null,
-    IOptions<AiTradingOptions>? aiTradingOptions = null)
+    IOptions<AiTradingOptions>? aiTradingOptions = null,
+    BigInvestmentService? bigInvestmentService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -597,6 +605,75 @@ public sealed class MarketService(
     public Task<PlayerFundResult> AdvertiseFundAsync(int fundParticipantId) =>
         WithLockAsync(() => AdvertiseFundCoreAsync(fundParticipantId));
 
+    // A manual big-investment deal for the player or the player's managed fund, sharing the executor and the same
+    // eligibility rules (minimum fraction of capitalisation, settled-cash floor) as the automated per-cycle roll.
+    public Task<InvestInCompanyResult> InvestInCompanyAsync(int participantId, int companyId, decimal amount) =>
+        WithLockAsync(() => InvestInCompanyCoreAsync(participantId, companyId, amount));
+
+    private async Task<InvestInCompanyResult> InvestInCompanyCoreAsync(int participantId, int companyId, decimal amount)
+    {
+        if (bigInvestmentService is null)
+        {
+            return InvestInCompanyResult.Fail("Big investments are not enabled.");
+        }
+
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        if (market is null)
+        {
+            return InvestInCompanyResult.Fail("No market exists.");
+        }
+
+        var investor = await dbContext.Participants.FirstOrDefaultAsync(participant => participant.Id == participantId);
+        if (investor is null)
+        {
+            return InvestInCompanyResult.Fail("Participant not found.");
+        }
+
+        if (investor.Type is not (ParticipantType.Player or ParticipantType.CollectiveFund))
+        {
+            return InvestInCompanyResult.Fail("Only the player or a fund can invest here.");
+        }
+
+        var company = await dbContext.Companies.FirstOrDefaultAsync(candidate => candidate.Id == companyId);
+        if (company is null || company.ClosedInCycleId is not null)
+        {
+            return InvestInCompanyResult.Fail("Company is not available for investment.");
+        }
+
+        if (amount <= 0m)
+        {
+            return InvestInCompanyResult.Fail("Investment amount must be positive.");
+        }
+
+        var latestPriceByCompany = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
+        if (!latestPriceByCompany.TryGetValue(company.Id, out var price) || price <= 0m)
+        {
+            return InvestInCompanyResult.Fail("Company has no current price.");
+        }
+
+        var minFraction = (decimal)chanceRateValues.RandomMagnitudeBands.BigInvestmentFractionMin;
+        var capitalization = price * company.IssuedSharesCount;
+        if (amount < minFraction * capitalization)
+        {
+            return InvestInCompanyResult.Fail($"Investment must be at least {minFraction:P0} of the company's capitalisation.");
+        }
+
+        if (amount > BigInvestmentService.Spendable(investor))
+        {
+            return InvestInCompanyResult.Fail("Investment amount exceeds available cash.");
+        }
+
+        if (Math.Floor(amount / price) < 1m)
+        {
+            return InvestInCompanyResult.Fail("Investment is too small to mint a share.");
+        }
+
+        var shares = await bigInvestmentService.ExecuteDealAsync(
+            investor, company, price, amount, market.CurrentCycleId ?? 0, DateTime.UtcNow);
+        await dbContext.SaveChangesAsync();
+        return InvestInCompanyResult.Ok(shares);
+    }
+
     // Manual loan repayment goes through the cycle lock so it cannot race a running tick's writes.
     public Task<RepayLoanResult> RepayLoanAsync(int loanId, decimal? amount) => WithLockAsync(async () =>
     {
@@ -696,7 +773,7 @@ public sealed class MarketService(
             await ProcessOpeningDayMarginAsync();
             await MaintainOrdersCoreAsync();
             var decisions = await GenerateDecisionsCoreAsync();
-            var advance = await AdvanceCycleCoreAsync();
+            var advance = await AdvanceCycleCoreAsync(holdNewOrders: true);
 
             return CycleTickResult.Executed(
                 decisions.BuyOrdersPlaced,
@@ -870,16 +947,26 @@ public sealed class MarketService(
         }
 
         // Priced issuance runs after free grants so scarcity is measured from the post-emission supply, while
-        // the new issuer order still reaches lifecycle checks, decisions, and matching in this cycle.
+        // the new issuer order still reaches this cycle's lifecycle checks and decisions; like any order placed
+        // this cycle it rests until the next cycle's matching.
         if (primaryIssuanceService is not null)
         {
             await primaryIssuanceService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
             await dbContext.SaveChangesAsync();
         }
 
+        // A participant or fund may fund a company by buying freshly minted shares. Runs before closure so a
+        // just-funded company's delisting protection is honoured this cycle, and its enlarged supply and cash
+        // reach the worth-reading services and this cycle's matching.
+        if (bigInvestmentService is not null)
+        {
+            await bigInvestmentService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
         // Closes at most one failing company and may list a new one. Runs in the same pre-match window so a
-        // delisted company's cancelled orders and wiped holdings, and a new listing's float, all reach the
-        // worth-reading services and this cycle's matching.
+        // delisted company's cancelled orders and wiped holdings reach the worth-reading services this cycle,
+        // while a new listing's float rests until the next cycle's matching.
         if (companyLifecycleService is not null)
         {
             await companyLifecycleService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
@@ -896,15 +983,15 @@ public sealed class MarketService(
             await dbContext.SaveChangesAsync();
         }
 
-        // Runs before this cycle's matching so a wealthy trader's collapse, and a bankrupt trader's cheaper
-        // re-listing, both reach the order book in time to cross the same cycle.
+        // Runs in the pre-match window so a wealthy trader's collapse and a bankrupt trader's cheaper re-listing
+        // reach the book before this cycle's matching; the newly listed fire-sale rests a cycle before it can cross.
         if (bankruptcyService is not null)
         {
             await bankruptcyService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
         }
 
-        // Runs in the same pre-match window so a fund's forced sales, and a new member's freed-up cash, reach
-        // the order book in time to cross this cycle.
+        // Runs in the same pre-match window so a fund's forced sales and a new member's freed-up cash reach the
+        // book before matching; a forced sale placed here rests a cycle before it can cross.
         if (collectiveFundService is not null)
         {
             await collectiveFundService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
@@ -915,7 +1002,7 @@ public sealed class MarketService(
         await dbContext.SaveChangesAsync();
 
         // Departures and their replacements land before this cycle's decision pass, so no ghost bids survive
-        // matching and a replacement can trade the same tick.
+        // matching; a replacement's own new orders rest a cycle before they trade.
         if (marketExitService is not null)
         {
             await marketExitService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
@@ -1557,7 +1644,9 @@ public sealed class MarketService(
         return PlaceOrderResult.Ok(order);
     }
 
-    private async Task<AdvanceCycleResult> AdvanceCycleCoreAsync()
+    // The live tick passes holdNewOrders so orders created this cycle rest until a later cycle's matching;
+    // the manual advance path leaves it off and keeps crossing whatever is already in the book.
+    private async Task<AdvanceCycleResult> AdvanceCycleCoreAsync(bool holdNewOrders = false)
     {
         var market = await dbContext.Markets.FirstOrDefaultAsync();
         if (market?.CurrentCycleId is not int currentCycleId)
@@ -1579,7 +1668,7 @@ public sealed class MarketService(
             currentCycle.StartedAt ??= now;
         }
 
-        var fillCount = await matchingEngine.RunAsync(currentCycle);
+        var fillCount = await matchingEngine.RunAsync(currentCycle, holdNewOrders);
 
         currentCycle.Status = CycleStatus.Completed;
         currentCycle.CompletedAt = now;

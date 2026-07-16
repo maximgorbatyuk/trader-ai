@@ -218,6 +218,18 @@ public static class MarketEndpoints
             return Results.Ok(response);
         });
 
+        app.MapGet("/companies/{companyId:int}/investments", async (int companyId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 20, 1, 100);
+            var investments = await dbContext.CompanyInvestments
+                .Where(investment => investment.CompanyId == companyId)
+                .OrderByDescending(investment => investment.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            return Results.Ok(await ToInvestmentResponsesAsync(dbContext, investments));
+        });
+
         // News related to one company: posts that target it directly plus industry-scoped posts that hit the
         // company's industry, newest first.
         app.MapGet("/companies/{companyId:int}/news", async (int companyId, int? take, AppDbContext dbContext) =>
@@ -767,6 +779,18 @@ public static class MarketEndpoints
             return Results.Ok(orders.Select(ToOrderResponse).ToArray());
         });
 
+        app.MapGet("/participants/{participantId:int}/investments", async (int participantId, int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 20, 1, 100);
+            var investments = await dbContext.CompanyInvestments
+                .Where(investment => investment.InvestorParticipantId == participantId)
+                .OrderByDescending(investment => investment.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            return Results.Ok(await ToInvestmentResponsesAsync(dbContext, investments));
+        });
+
         app.MapGet("/participants/{participantId:int}/share-transactions", async (int participantId, int? take, AppDbContext dbContext) =>
         {
             var limit = Math.Clamp(take ?? 10, 1, 100);
@@ -1097,6 +1121,14 @@ public static class MarketEndpoints
                 : Results.BadRequest(new { error = result.Error });
         });
 
+        app.MapPost("/companies/{companyId:int}/invest", async (int companyId, InvestInCompanyRequest request, MarketService marketService) =>
+        {
+            var result = await marketService.InvestInCompanyAsync(request.ParticipantId, companyId, request.Amount);
+            return result.Success
+                ? Results.Ok(new InvestInCompanyResponse(result.SharesMinted))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
         app.MapGet("/player", async (AppDbContext dbContext, MarginService marginService) =>
             Results.Ok(await BuildPlayerResponseAsync(dbContext, marginService)));
 
@@ -1256,6 +1288,36 @@ public static class MarketEndpoints
                 .ToListAsync();
 
             return Results.Ok(transactions.Select(ToShareTransactionResponse).ToArray());
+        });
+
+        app.MapGet("/investments", async (int? take, AppDbContext dbContext) =>
+        {
+            var limit = Math.Clamp(take ?? 50, 1, 500);
+            var investments = await dbContext.CompanyInvestments
+                .OrderByDescending(investment => investment.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            return Results.Ok(await ToInvestmentResponsesAsync(dbContext, investments));
+        });
+
+        app.MapGet("/transactions/shares/paged", async (int? page, int? pageSize, AppDbContext dbContext) =>
+        {
+            var size = Math.Clamp(pageSize ?? 20, 1, 100);
+            var pageIndex = Math.Max(page ?? 1, 1);
+            var total = await dbContext.ShareTransactions.CountAsync();
+            var transactions = await dbContext.ShareTransactions
+                .Include(transaction => transaction.SettlementInstruction)
+                .OrderByDescending(transaction => transaction.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            return Results.Ok(new PagedShareTransactionsResponse(
+                transactions.Select(ToShareTransactionResponse).ToArray(),
+                total,
+                pageIndex,
+                size));
         });
 
         app.MapGet("/prices/{companyId:int}", async (int companyId, AppDbContext dbContext) =>
@@ -2691,6 +2753,46 @@ public static class MarketEndpoints
             .ToDictionaryAsync(participant => participant.Id, participant => participant.Name);
     }
 
+    // Resolves the investor and company names and cycle numbers a big-investment list needs. The investor name is
+    // left null when the trader has since left the market, so callers fall back to its id; the company name uses an
+    // id fallback because a closed company keeps its row.
+    private static async Task<InvestmentResponse[]> ToInvestmentResponsesAsync(
+        AppDbContext dbContext, IReadOnlyList<CompanyInvestment> investments)
+    {
+        if (investments.Count == 0)
+        {
+            return [];
+        }
+
+        var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
+        var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+        var investorNameById = await ParticipantNamesAsync(dbContext, investments.Select(investment => investment.InvestorParticipantId));
+        var companyIds = investments.Select(investment => investment.CompanyId).Distinct().ToList();
+        var companyNameById = await dbContext.Companies
+            .Where(company => companyIds.Contains(company.Id))
+            .ToDictionaryAsync(company => company.Id, company => company.Name);
+
+        return investments
+            .Select(investment => new InvestmentResponse(
+                investment.Id,
+                investment.CompanyId,
+                companyNameById.GetValueOrDefault(investment.CompanyId, $"#{investment.CompanyId}"),
+                investment.InvestorParticipantId,
+                investorNameById.GetValueOrDefault(investment.InvestorParticipantId),
+                investment.DealValue,
+                investment.SharesIssued,
+                investment.SharesBeforeDeal,
+                investment.TradingDayNumber,
+                investment.CreatedInCycleId,
+                cycleNumbersById.GetValueOrDefault(investment.CreatedInCycleId),
+                Math.Max(0, currentCycleNumber - cycleNumbersById.GetValueOrDefault(investment.CreatedInCycleId)),
+                investment.CapitalizationBeforeDeal,
+                investment.FinalCapitalization,
+                investment.InvestorSharePercent,
+                investment.CreatedAt))
+            .ToArray();
+    }
+
     // The prevailing market price immediately before each trade — the latest price snapshot strictly older than
     // the trade's own snapshot — so a fill can be shown against the market it hit rather than against its own print
     // (a trade and the snapshot it stamps share the same price). Returns transaction id → that earlier price.
@@ -3049,6 +3151,24 @@ public sealed record ShareEmissionResponse(
     int CyclesAgo,
     DateTime CreatedAt);
 
+public sealed record InvestmentResponse(
+    int Id,
+    int CompanyId,
+    string CompanyName,
+    int InvestorParticipantId,
+    string? InvestorName,
+    decimal DealValue,
+    int SharesIssued,
+    int SharesBeforeDeal,
+    int? TradingDayNumber,
+    int CreatedInCycleId,
+    int CreatedInCycleNumber,
+    int CyclesAgo,
+    decimal CapitalizationBeforeDeal,
+    decimal FinalCapitalization,
+    decimal InvestorSharePercent,
+    DateTime CreatedAt);
+
 public sealed record MarketResponse(
     int Id,
     string Name,
@@ -3242,6 +3362,10 @@ public sealed record MarginAccountResponse(
 
 public sealed record PlaceOrderRequest(int ParticipantId, int CompanyId, OrderType Type, int Quantity, decimal LimitPrice);
 
+public sealed record InvestInCompanyRequest(int ParticipantId, decimal Amount);
+
+public sealed record InvestInCompanyResponse(int SharesMinted);
+
 public sealed record OrderResponse(
     int Id,
     int? ParticipantId,
@@ -3353,6 +3477,12 @@ public sealed record ShareTransactionResponse(
     int? TradeDayNumber,
     int? DueDayNumber,
     string? SettlementStatus);
+
+public sealed record PagedShareTransactionsResponse(
+    ShareTransactionResponse[] Items,
+    int Total,
+    int Page,
+    int PageSize);
 
 public sealed record SettlementInstructionResponse(
     int Id,

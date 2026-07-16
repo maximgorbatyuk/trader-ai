@@ -389,6 +389,71 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task MarketShareTransactionsArePagedNewestFirst()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var participants = await db.Participants.OrderBy(participant => participant.Id).Take(2).ToArrayAsync();
+                var company = await db.Companies.OrderBy(company => company.Id).FirstAsync();
+                var cycle = await db.MarketCycles.OrderByDescending(marketCycle => marketCycle.Id).FirstAsync();
+                var createdAt = DateTime.UtcNow;
+                var trades = Enumerable.Range(1, 3)
+                    .Select(quantity => new ShareTransaction
+                    {
+                        SellerId = participants[0].Id,
+                        BuyerId = participants[1].Id,
+                        CompanyId = company.Id,
+                        Quantity = quantity,
+                        Price = 10m,
+                        TotalCost = quantity * 10m,
+                        CreatedInCycleId = cycle.Id,
+                        CreatedAt = createdAt.AddSeconds(quantity),
+                        UpdatedAt = createdAt.AddSeconds(quantity),
+                    })
+                    .ToArray();
+                db.ShareTransactions.AddRange(trades);
+                await db.SaveChangesAsync();
+                db.SettlementInstructions.AddRange(
+                    new SettlementInstruction { ShareTransactionId = trades[0].Id, BuyerId = participants[1].Id, SellerId = participants[0].Id, CompanyId = company.Id, Quantity = 1, CashAmount = 10m, TradeDayNumber = 1, DueDayNumber = 2, Status = SettlementStatus.Pending, CreatedInCycleId = cycle.Id, CreatedAt = createdAt.AddSeconds(1) },
+                    new SettlementInstruction { ShareTransactionId = trades[1].Id, BuyerId = participants[1].Id, SellerId = participants[0].Id, CompanyId = company.Id, Quantity = 2, CashAmount = 20m, TradeDayNumber = 1, DueDayNumber = 2, Status = SettlementStatus.Pending, CreatedInCycleId = cycle.Id, CreatedAt = createdAt.AddSeconds(2) },
+                    new SettlementInstruction { ShareTransactionId = trades[2].Id, BuyerId = participants[1].Id, SellerId = participants[0].Id, CompanyId = company.Id, Quantity = 3, CashAmount = 30m, TradeDayNumber = 1, DueDayNumber = 2, Status = SettlementStatus.Settled, CreatedInCycleId = cycle.Id, CreatedAt = createdAt.AddSeconds(3), SettledAt = createdAt.AddDays(1) });
+                await db.SaveChangesAsync();
+            }
+
+            var firstPage = await client.GetFromJsonAsync<PagedShareTransactionsDto>(
+                "/transactions/shares/paged?page=1&pageSize=2");
+            Assert.Equal(3, firstPage!.Total);
+            Assert.Equal(1, firstPage.Page);
+            Assert.Equal(2, firstPage.PageSize);
+            Assert.Equal([3, 2], firstPage.Items.Select(transaction => transaction.Quantity));
+            Assert.Equal("Settled", firstPage.Items[0].SettlementStatus);
+
+            var secondPage = await client.GetFromJsonAsync<PagedShareTransactionsDto>(
+                "/transactions/shares/paged?page=2&pageSize=2");
+            Assert.Single(secondPage!.Items);
+            Assert.Equal(1, secondPage.Items[0].Quantity);
+
+            var boundedPage = await client.GetFromJsonAsync<PagedShareTransactionsDto>(
+                "/transactions/shares/paged?page=0&pageSize=999");
+            Assert.Equal(1, boundedPage!.Page);
+            Assert.Equal(100, boundedPage.PageSize);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task PlayerAndParticipantContractsExposeAccountLevelMargin()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -2649,6 +2714,75 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         RequestedAt = DateTime.UtcNow,
     };
 
+    [Fact]
+    public async Task PlayerCanFundABigInvestmentThroughTheInvestEndpoint()
+    {
+        await WithClientAsync(async (client, configured) =>
+        {
+            await client.PostAsync("/market/seed", null);
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+
+            using var playerJson = await client.GetFromJsonAsync<JsonDocument>("/player");
+            var playerId = playerJson!.RootElement.GetProperty("id").GetInt32();
+
+            using var companies = await client.GetFromJsonAsync<JsonDocument>("/companies");
+            var companyId = companies!.RootElement.EnumerateArray().First().GetProperty("id").GetInt32();
+
+            using var detail = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}");
+            var marketCap = detail!.RootElement.GetProperty("marketCap").GetDecimal();
+            var price = detail.RootElement.GetProperty("currentPrice").GetDecimal();
+            var sharesBefore = detail.RootElement.GetProperty("issuedSharesCount").GetInt32();
+
+            // Fund the player generously so a 40%-of-cap deal is affordable.
+            using (var scope = configured.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var player = await db.Participants.SingleAsync(participant => participant.Id == playerId);
+                player.CurrentBalance = (marketCap * 3m) + 1_000_000m;
+                player.SettledCashBalance = player.CurrentBalance;
+                await db.SaveChangesAsync();
+            }
+
+            // Below the 40% floor is rejected.
+            using var tooSmall = await client.PostAsJsonAsync(
+                $"/companies/{companyId}/invest", new { participantId = playerId, amount = 1m });
+            Assert.Equal(HttpStatusCode.BadRequest, tooSmall.StatusCode);
+
+            // An unknown participant is rejected.
+            using var missing = await client.PostAsJsonAsync(
+                $"/companies/{companyId}/invest", new { participantId = 999999, amount = marketCap });
+            Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+
+            // A valid deal at or above the 40% floor mints new shares and returns the count.
+            var amount = Math.Ceiling(marketCap * 0.4m) + price;
+            using var ok = await client.PostAsJsonAsync(
+                $"/companies/{companyId}/invest", new { participantId = playerId, amount });
+            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+            using var okDoc = JsonDocument.Parse(await ok.Content.ReadAsStringAsync());
+            Assert.True(okDoc.RootElement.GetProperty("sharesMinted").GetInt32() > 0);
+
+            using var afterDetail = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}");
+            Assert.True(afterDetail!.RootElement.GetProperty("issuedSharesCount").GetInt32() > sharesBefore);
+
+            // The deal is recorded and surfaced by all three investment feeds.
+            using var companyInvestments = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}/investments");
+            var companyRow = companyInvestments!.RootElement.EnumerateArray().Single();
+            Assert.Equal(playerId, companyRow.GetProperty("investorParticipantId").GetInt32());
+            Assert.True(companyRow.GetProperty("sharesIssued").GetInt32() > 0);
+            Assert.True(companyRow.GetProperty("finalCapitalization").GetDecimal()
+                > companyRow.GetProperty("capitalizationBeforeDeal").GetDecimal());
+
+            using var participantInvestments = await client.GetFromJsonAsync<JsonDocument>($"/participants/{playerId}/investments");
+            Assert.Equal(companyId, participantInvestments!.RootElement.EnumerateArray().Single().GetProperty("companyId").GetInt32());
+
+            using var marketInvestments = await client.GetFromJsonAsync<JsonDocument>("/investments");
+            Assert.Contains(
+                marketInvestments!.RootElement.EnumerateArray(),
+                row => row.GetProperty("companyId").GetInt32() == companyId
+                    && row.GetProperty("investorParticipantId").GetInt32() == playerId);
+        });
+    }
+
     private async Task WithClientAsync(
         Func<HttpClient, WebApplicationFactory<Program>, Task> body,
         Action<IServiceCollection>? configure = null)
@@ -2697,6 +2831,10 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             // below; they are exercised directly against seeded rating rows instead.
             builder.UseSetting("Auditor:Enabled", "false");
 
+            // The automated big-investment roll would likewise add orders and trades on a random cycle and perturb
+            // the exact-count assertions; the manual invest endpoint it shares an executor with is unaffected.
+            builder.UseSetting("BigInvestment:Enabled", "false");
+
             // The AI coordinator is a hosted service that would otherwise poll and, for any configuration these
             // tests create, attempt a real provider call. It stays disabled so tests never touch the network.
             builder.UseSetting("AiTrading:Enabled", "false");
@@ -2705,8 +2843,9 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             // exact-count assertions.
             builder.UseSetting("MarketLoop:Enabled", "false");
 
-            // A manual tick decides then matches; the no-op engine removes generated trades so these
-            // tests settle only the order they place by hand and can assert exact counts.
+            // The no-op engine removes generated trades so these tests settle only the order they place by
+            // hand and can assert exact counts. Settlement goes through the manual advance (see RunCycleAsync),
+            // which crosses the book immediately; the live tick's one-cycle order hold is covered elsewhere.
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<IDecisionEngine>();
@@ -2715,12 +2854,15 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         });
     }
 
-    private static async Task<CycleTickResult> RunCycleAsync(WebApplicationFactory<Program> configuredFactory)
+    // Settles hand-placed orders through the manual advance, which crosses the book in the same cycle. The
+    // live tick (RunCycleTickAsync) holds orders created this cycle for one cycle before matching; that timing
+    // is covered by MarketLoopTests, so these projection tests keep a deterministic single-cycle settle.
+    private static async Task<AdvanceCycleResult> RunCycleAsync(WebApplicationFactory<Program> configuredFactory)
     {
         using var scope = configuredFactory.Services.CreateScope();
         var marketService = scope.ServiceProvider.GetRequiredService<MarketService>();
         await marketService.SetStatusAsync(MarketStatus.Running);
-        return await marketService.RunCycleTickAsync();
+        return await marketService.AdvanceCycleAsync();
     }
 
     private sealed record ParticipantDto(
@@ -2793,6 +2935,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         int? TradeDayNumber,
         int? DueDayNumber,
         string? SettlementStatus);
+
+    private sealed record PagedShareTransactionsDto(ShareTransactionDto[] Items, int Total, int Page, int PageSize);
 
     private sealed record SettlementDto(
         int Id,

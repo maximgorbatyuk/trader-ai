@@ -63,6 +63,12 @@ const CORPORATE_CASH_MOVEMENT_PRESENTATION = {
     sign: '+',
     tone: 'up',
   },
+  BigInvestment: {
+    label: 'Big investment',
+    direction: 'Credit',
+    sign: '+',
+    tone: 'up',
+  },
   DividendDeclared: {
     label: 'Dividend paid',
     direction: 'Debit',

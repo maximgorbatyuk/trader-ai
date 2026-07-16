@@ -9,6 +9,7 @@ import { RatingBadge } from './RatingBadge'
 import { NewsImpact } from './NewsImpact'
 import { NewsModal } from './NewsModal'
 import { OrderForm } from './OrderForm'
+import { InvestmentsTable } from './InvestmentsTable'
 import { TradeModal } from './TradeModal'
 import { Pager } from './TableControls'
 import { corporateCashMovementPresentation } from './cashMovements'
@@ -53,6 +54,7 @@ export function CompanyDetail({ companyId }) {
   const [prices, setPrices] = useState([])
   const [ratings, setRatings] = useState([])
   const [emissions, setEmissions] = useState([])
+  const [investments, setInvestments] = useState([])
   const [news, setNews] = useState([])
   const [corporateCashMovements, setCorporateCashMovements] = useState({ items: [], total: 0, page: 1, pageSize: 10 })
   const [corporateCashPage, setCorporateCashPage] = useState(1)
@@ -71,6 +73,7 @@ export function CompanyDetail({ companyId }) {
         priceData,
         ratingData,
         emissionData,
+        investmentData,
         newsData,
         corporateCashData,
         playerData,
@@ -83,6 +86,7 @@ export function CompanyDetail({ companyId }) {
           api.getPrices(companyId),
           api.getCompanyRatings(companyId),
           api.getCompanyEmissions(companyId),
+          api.getCompanyInvestments(companyId),
           api.getCompanyNews(companyId),
           api.getCompanyCorporateCashMovements(companyId, corporateCashPage, CORPORATE_CASH_PAGE_SIZE),
           api.getPlayer(),
@@ -95,6 +99,7 @@ export function CompanyDetail({ companyId }) {
       setPrices(priceData)
       setRatings(ratingData ?? [])
       setEmissions(emissionData ?? [])
+      setInvestments(investmentData ?? [])
       setNews(newsData ?? [])
       setCorporateCashMovements(corporateCashData ?? { items: [], total: 0, page: 1, pageSize: CORPORATE_CASH_PAGE_SIZE })
 
@@ -292,6 +297,16 @@ export function CompanyDetail({ companyId }) {
         />
       ) : null}
 
+      {player && !detail.isClosed ? (
+        <InvestmentPanel
+          companyId={companyId}
+          currentPrice={detail.currentPrice}
+          marketCap={detail.marketCap}
+          player={player}
+          onPlaced={loadAll}
+        />
+      ) : null}
+
       <div className="grid-detail">
         <OwnershipPanel detail={detail} />
         <ShareholdersPanel shareholders={shareholders} />
@@ -304,6 +319,14 @@ export function CompanyDetail({ companyId }) {
         <RatingHistoryPanel ratings={ratings} />
         <EmissionsPanel emissions={emissions} />
       </div>
+
+      <Panel title="Investments received" count={`${investments.length}`} className="panel-trades">
+        <InvestmentsTable
+          investments={investments}
+          showCompany={false}
+          emptyLabel="No capital-raise investments in this company yet."
+        />
+      </Panel>
 
       <RelatedNewsPanel news={news} onSelect={setSelectedNews} />
 
@@ -406,6 +429,121 @@ function TradePanel({ companyId, currentPrice, player, playerOwned, fundOwned, l
           fundMaxQuantity={fundOwned}
           onPlaced={onPlaced}
         />
+      ) : null}
+    </Panel>
+  )
+}
+
+// Mirrors the backend BigInvestmentFractionMin default; the server validation is authoritative if an operator
+// retunes it, so this only sizes the on-screen hint.
+const MIN_INVESTMENT_FRACTION = 0.4
+
+// Fund a company with a big investment as the player or the managed fund: the company mints new shares at the
+// current price and hands them over in one filled deal. A minimum of 40% of market cap is required, matching the
+// server rule; a successful deal refreshes the page so the new shares, cash, rating, and news show at once.
+function InvestmentPanel({ companyId, currentPrice, marketCap, player, onPlaced }) {
+  const [open, setOpen] = useState(false)
+  const [amount, setAmount] = useState('')
+  const [submittingActor, setSubmittingActor] = useState(null)
+  const [error, setError] = useState(null)
+  const [confirmation, setConfirmation] = useState(null)
+
+  const minAmount = typeof marketCap === 'number' ? marketCap * MIN_INVESTMENT_FRACTION : null
+  const actors = [{ key: 'player', label: 'Player', id: player.id, balance: player.availableBalance ?? 0 }]
+  if (player.fundParticipantId != null) {
+    actors.push({ key: 'fund', label: 'Managed fund', id: player.fundParticipantId, balance: player.fundAvailableBalance ?? 0 })
+  }
+
+  const value = Number(amount)
+  const shares = currentPrice > 0 && value > 0 ? Math.floor(value / currentPrice) : 0
+
+  function disabledFor(actor) {
+    if (submittingActor != null || !(value > 0) || shares < 1) return true
+    if (minAmount != null && value < minAmount) return true
+    if (value > actor.balance) return true
+    return false
+  }
+
+  async function submitFor(actor) {
+    setError(null)
+    setConfirmation(null)
+    setSubmittingActor(actor.key)
+    try {
+      const result = await api.investInCompany(companyId, { participantId: actor.id, amount: value })
+      const who = actors.length > 1 ? `${actor.label} ` : ''
+      setConfirmation(`${who}invested ${formatMoney(value)} for ${formatInt(result.sharesMinted)} new shares.`)
+      setAmount('')
+      if (onPlaced) await onPlaced()
+    } catch (submitError) {
+      setError(submitError.message)
+    } finally {
+      setSubmittingActor(null)
+    }
+  }
+
+  return (
+    <Panel title="Invest capital" className="panel-orders-list">
+      <div className="order-actions">
+        <button
+          type="button"
+          className="btn"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          Make investment
+        </button>
+      </div>
+      {open ? (
+        <form
+          className="modal-section player-section"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (!disabledFor(actors[0])) submitFor(actors[0])
+          }}
+        >
+          <span className="map-stat-label">Buy newly issued shares at {formatMoney(currentPrice)}</span>
+          <div className="field">
+            <span>Amount</span>
+            <input
+              className="select num"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="0.00"
+              aria-label="Investment amount"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+            />
+          </div>
+          <p className="note note-sm">
+            {minAmount != null ? `Minimum ${formatMoney(minAmount)} (40% of market cap).` : 'Minimum 40% of market cap.'}
+            {shares > 0 ? ` ≈ ${formatInt(shares)} new shares.` : ''}
+          </p>
+          <p className="note note-sm">{actors.map((actor) => `${actor.label}: ${formatMoney(actor.balance)} available`).join(' · ')}</p>
+          {error ? (
+            <p className="command-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+          {confirmation ? (
+            <p className="note note-sm" role="status">
+              {confirmation}
+            </p>
+          ) : null}
+          <div className="order-actions">
+            {actors.map((actor) => (
+              <button
+                key={actor.key}
+                type={actor.key === 'player' ? 'submit' : 'button'}
+                className="btn btn-primary"
+                disabled={disabledFor(actor)}
+                onClick={actor.key === 'player' ? undefined : () => submitFor(actor)}
+              >
+                {submittingActor === actor.key ? 'Investing…' : actors.length > 1 ? `Invest as ${actor.label.toLowerCase()}` : 'Invest'}
+              </button>
+            ))}
+          </div>
+        </form>
       ) : null}
     </Panel>
   )

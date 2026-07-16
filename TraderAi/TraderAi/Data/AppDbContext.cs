@@ -75,6 +75,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<ShareEmission> ShareEmissions => Set<ShareEmission>();
 
+    public DbSet<CompanyInvestment> CompanyInvestments => Set<CompanyInvestment>();
+
     public DbSet<PriceSnapshotArchive> PriceSnapshotArchives => Set<PriceSnapshotArchive>();
 
     public DbSet<MoneyTransactionArchive> MoneyTransactionArchives => Set<MoneyTransactionArchive>();

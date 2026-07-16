@@ -118,6 +118,14 @@ public sealed class CompanyLifecycleService(
             ? await FreshCompanyIdsAsync(liveCompanies, currentDayNumber)
             : [];
 
+        // A company that recently took a big investment is shielded from delisting until its protection day passes.
+        var dealProtectedCompanyIds = currentTradingDayNumber is int protectedDayNumber
+            ? liveCompanies
+                .Where(company => company.CloseProtectedUntilTradingDayNumber is int until && protectedDayNumber < until)
+                .Select(company => company.Id)
+                .ToHashSet()
+            : [];
+
         var capByCompany = await CapitalizationByCompanyAsync(liveCompanies);
         var riskStreakCompanyIds = await RiskStreakCompanyIdsAsync();
         var pendingCompanyIds = (await dbContext.SettlementInstructions
@@ -136,6 +144,7 @@ public sealed class CompanyLifecycleService(
 
         var qualifiers = liveCompanies
             .Where(company => !freshCompanyIds.Contains(company.Id)
+                && !dealProtectedCompanyIds.Contains(company.Id)
                 && !pendingCompanyIds.Contains(company.Id)
                 && (HasDeclineStreak(closesByCompany.GetValueOrDefault(company.Id))
                 || riskStreakCompanyIds.Contains(company.Id))
@@ -164,6 +173,7 @@ public sealed class CompanyLifecycleService(
             // removable, so a large-cap is never delisted just to make room; if all are protected, nothing happens.
             var removable = liveCompanies
                 .Where(company => !freshCompanyIds.Contains(company.Id)
+                    && !dealProtectedCompanyIds.Contains(company.Id)
                     && !IsProtected(company.Id)
                     && !pendingCompanyIds.Contains(company.Id))
                 .ToList();

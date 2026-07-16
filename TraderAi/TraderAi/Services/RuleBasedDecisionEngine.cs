@@ -128,7 +128,7 @@ public sealed class RuleBasedDecisionEngine(
         {
             if (BuildAllowedBuy(context, buyTarget) is { } passiveBuy)
             {
-                return Gate(passiveBuy, context);
+                return Resolve(passiveBuy, context, actionableBuyCandidates);
             }
 
             actionableBuyCandidates = actionableBuyCandidates
@@ -161,7 +161,7 @@ public sealed class RuleBasedDecisionEngine(
         {
             if (BuildBuy(context, buyTarget) is { } pulledBuy)
             {
-                return Gate(pulledBuy, context);
+                return Resolve(pulledBuy, context, actionableBuyCandidates);
             }
         }
         else if (sellTarget is not null && roll < buyPull + sellPull)
@@ -209,7 +209,66 @@ public sealed class RuleBasedDecisionEngine(
             _ => null,
         };
 
-        return intent is null ? [] : Gate(intent, context);
+        return intent is null ? [] : Resolve(intent, context, actionableBuyCandidates);
+    }
+
+    // A decided sell (or a crisis-suppressed buy) is returned unchanged; a surviving buy fans out into a random
+    // cluster of distinct buys so a buying cycle can add real upward pressure rather than a single order.
+    private IReadOnlyList<OrderIntent> Resolve(
+        OrderIntent intent,
+        DecisionContext context,
+        IReadOnlyList<CompanyQuote> buyCandidates)
+    {
+        var gated = Gate(intent, context);
+        return gated.Count != 0 && intent.Type == OrderType.Buy
+            ? FanOutBuys(context, intent, buyCandidates)
+            : gated;
+    }
+
+    // The count is drawn once in [BuyOrdersPerCycleMin, BuyOrdersPerCycleMax]; a min equal to max is deterministic
+    // and consumes no draw so the single-order default leaves existing decision sequences untouched. Extra buys
+    // target the next strongest eligible companies and reuse the ordinary build so their pricing and gating hold.
+    private IReadOnlyList<OrderIntent> FanOutBuys(
+        DecisionContext context,
+        OrderIntent firstBuy,
+        IReadOnlyList<CompanyQuote> buyCandidates)
+    {
+        var options = automatedTradingOptions.Value;
+        var minimum = Math.Max(0, options.BuyOrdersPerCycleMin);
+        var maximum = Math.Max(minimum, options.BuyOrdersPerCycleMax);
+        var count = minimum == maximum ? minimum : random.Next(minimum, maximum + 1);
+        if (count <= 0)
+        {
+            return [];
+        }
+
+        var buys = new List<OrderIntent>(count) { firstBuy };
+        if (count == 1)
+        {
+            return buys;
+        }
+
+        var used = new HashSet<int> { firstBuy.CompanyId };
+        foreach (var quote in buyCandidates.OrderByDescending(candidate =>
+            BuyPull(candidate, context.SharesOwnedByCompany.GetValueOrDefault(candidate.CompanyId) > 0)))
+        {
+            if (buys.Count >= count)
+            {
+                break;
+            }
+
+            if (!used.Add(quote.CompanyId))
+            {
+                continue;
+            }
+
+            if (BuildAllowedBuy(context, quote) is { } extraBuy)
+            {
+                buys.Add(extraBuy);
+            }
+        }
+
+        return buys;
     }
 
     // During a crisis, a conservative or low-risk trader's buy is dropped to nothing with the suppression

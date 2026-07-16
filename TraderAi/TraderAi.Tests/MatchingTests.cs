@@ -462,6 +462,34 @@ public sealed class MatchingTests : IDisposable
         Assert.Equal(OrderStatus.Open, restingBuy!.Status);
     }
 
+    [Fact]
+    public async Task HoldingNewOrdersDefersMatchingUntilALaterCycle()
+    {
+        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
+        var firstCycle = await context.MarketCycles.SingleAsync();
+
+        await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 5, 100m);
+        await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 5, 100m);
+
+        // Both orders belong to the cycle being matched, so holding new orders leaves them resting untouched.
+        var heldFills = await new MatchingEngine(context).RunAsync(firstCycle, holdOrdersCreatedThisCycle: true);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, heldFills);
+        Assert.Empty(await context.ShareTransactions.ToListAsync());
+
+        // A later cycle sees them as prior-cycle orders and crosses them, even with the hold still applied.
+        var nextCycle = new MarketCycle { CycleNumber = 2, Status = CycleStatus.Running, StartedAt = DateTime.UtcNow };
+        context.MarketCycles.Add(nextCycle);
+        await context.SaveChangesAsync();
+
+        var nextFills = await new MatchingEngine(context).RunAsync(nextCycle, holdOrdersCreatedThisCycle: true);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1, nextFills);
+        Assert.Single(await context.ShareTransactions.ToListAsync());
+    }
+
     private async Task<SeedResult> SeedAsync(decimal sellerCash, decimal buyerCash, int sellerShares, decimal sharePrice)
     {
         var now = DateTime.UtcNow;

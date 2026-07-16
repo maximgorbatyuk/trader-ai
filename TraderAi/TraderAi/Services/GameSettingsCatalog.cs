@@ -42,6 +42,7 @@ public static class GameSettingsCatalog
                 "MaximumIssuedSharesPerOrderPercent", "MaximumPassiveBidIssuedSharesPercent",
                 "MinimumMeaningfulQuantityPercent", "MaximumHighRiskMarginLiabilityPercent",
                 "PassiveBuyPremiumMinPercent", "PassiveBuyPremiumMaxPercent",
+                "BuyOrdersPerCycleMin", "BuyOrdersPerCycleMax",
             ],
             ["News"] = ["Enabled", "CyclesBetweenPosts"],
             ["Crisis"] = ["Enabled"],
@@ -57,6 +58,7 @@ public static class GameSettingsCatalog
             ["StockSplit"] = ["Enabled"],
             ["Auditor"] = ["Enabled"],
             ["ShareEmission"] = ["Enabled"],
+            ["BigInvestment"] = ["Enabled"],
             ["PrimaryIssuance"] = ["Enabled", "FloatScarcityThresholdPercent", "MaximumDailyIssuancePercent"],
             ["CompanyLifecycle"] = ["Enabled"],
             ["Loan"] = ["Enabled"],
@@ -120,6 +122,7 @@ public static class GameSettingsCatalog
         "EventTriggerChances:ScienceSentimentPush",
         "EventTriggerChances:OutsideBandOrder",
         "EventTriggerChances:NoSellOrderBuyChance",
+        "EventTriggerChances:BigInvestment",
         "ChanceModifiers:CrisisBankruptcyMultiplier",
         "ChanceModifiers:CrisisAuditorIssueMultiplier",
         "ChanceModifiers:GlobalCrisisExitMultiplier",
@@ -144,6 +147,8 @@ public static class GameSettingsCatalog
         "RandomMagnitudeBands:ScienceIndustryLiftMaxPercent",
         "RandomMagnitudeBands:GlobalCrisisIndustryShareMin",
         "RandomMagnitudeBands:GlobalCrisisIndustryShareMax",
+        "RandomMagnitudeBands:BigInvestmentFractionMin",
+        "RandomMagnitudeBands:BigInvestmentFractionMax",
     ];
 
     private static readonly HashSet<string> IntegerKeys =
@@ -173,6 +178,8 @@ public static class GameSettingsCatalog
         "AiTrading:RetryBaseDelaySeconds",
         "AiTrading:RetryMaxDelaySeconds",
         "AiTrading:AuthErrorRetrySeconds",
+        "AutomatedTrading:BuyOrdersPerCycleMin",
+        "AutomatedTrading:BuyOrdersPerCycleMax",
     ];
 
     private static readonly IReadOnlyDictionary<string, string> Descriptions =

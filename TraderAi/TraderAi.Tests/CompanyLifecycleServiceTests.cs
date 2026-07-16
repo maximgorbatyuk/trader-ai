@@ -320,6 +320,34 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task DealProtectedCompanyIsSkippedAndTheNextWorstClosesInstead()
+    {
+        var earlier = await AddCyclesAsync(20, firstNumber: 200);
+        var current = await AddCycleForTradingDayAsync(cycleNumber: 220, dayNumber: 200);
+        var cycles = new List<MarketCycle>(earlier) { current };
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(cycles[0]);
+        var protectedWorst = await AddCompanyAsync();
+        var milder = await AddCompanyAsync();
+        // Both decline every cycle so both qualify; 'protectedWorst' falls further, but its active deal protection
+        // shields it, so the milder decliner is delisted instead.
+        await AddDecliningSnapshotsAsync(protectedWorst.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+        await AddDecliningSnapshotsAsync(milder.Id, cycles, startPrice: 100m, decrementPerCycle: 0.5m);
+        protectedWorst.CloseProtectedUntilTradingDayNumber = 201;
+        await context.SaveChangesAsync();
+
+        // The close boosts the appearance chance to 0.25; the 0.99 roll misses it, isolating the delisting.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshedProtected = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == protectedWorst.Id);
+        var refreshedMilder = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == milder.Id);
+        Assert.Null(refreshedProtected.ClosedInCycleId);
+        Assert.Equal(current.Id, refreshedMilder.ClosedInCycleId);
+    }
+
+    [Fact]
     public async Task FullMarketWithNoQualifierForceClosesTheWorstPerformer()
     {
         var cycles = await AddCyclesAsync(2, firstNumber: 200);

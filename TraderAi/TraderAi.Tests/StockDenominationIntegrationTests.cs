@@ -46,6 +46,8 @@ public sealed class StockDenominationIntegrationTests : IDisposable
         Assert.Equal(315m, firstAcceptedOrder.Order!.LimitPrice);
         Assert.True(crossingSell.Success);
 
+        // Orders placed this cycle rest one cycle before matching: the first tick lists them, the second crosses them.
+        await market.RunCycleTickAsync();
         var tradingTick = await market.RunCycleTickAsync();
 
         Assert.Equal(1, tradingTick.FillCount);
@@ -83,6 +85,8 @@ public sealed class StockDenominationIntegrationTests : IDisposable
         Assert.Equal(16.8m, firstAcceptedOrder.Order!.LimitPrice);
         Assert.True(crossingSell.Success);
 
+        // Orders placed this cycle rest one cycle before matching: the first tick lists them, the second crosses them.
+        await market.RunCycleTickAsync();
         var tradingTick = await market.RunCycleTickAsync();
 
         Assert.Equal(1, tradingTick.FillCount);

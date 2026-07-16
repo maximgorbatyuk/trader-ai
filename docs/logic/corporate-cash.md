@@ -9,6 +9,7 @@ Each listed company has its own issuer cash balance and an append-only movement 
 - If issuer float is strictly below 10% of issued shares, deterministic demand-paced issuance can add a block at the current price. It triggers only for unmet executable Individual and AI Agent buy demand after compatible resting sell supply is shadow-matched with normal price-time priority and self-cross protection; Player and Collective Fund demand does not trigger it.
 - Issuance happens at most once per company per trading day. Its quantity is the smaller of unmet demand and 25% of issued shares rounded up, and it is deferred while the security is in Limit State, Trading Pause, or Reopening. The issuer order then uses ordinary matching and T+1 settlement.
 - A secondary-market trade transfers value between participants and does not change issuer cash.
+- A big investment credits the company immediately when a participant or fund buys a block of newly minted shares at the current price. See [Big investment](big-investment.md).
 - Operating income represents value earned from goods and services outside the accounts modeled by the simulation. It adds cash to the issuer without debiting a participant, bank, or customer account.
 
 ## Operating-income and dividend window
@@ -36,7 +37,7 @@ Each listed company has its own issuer cash balance and an append-only movement 
 
 Every primary-issuance credit, operating-income credit, funded dividend debit, and closure distribution is recorded as a positive amount with a movement type that determines its direction. From a company's creation, its balance reconciles as:
 
-`issuer cash = primary issuance + operating income − funded dividend declarations − closure distributions`
+`issuer cash = primary issuance + big investment + operating income − funded dividend declarations − closure distributions`
 
 Operating income increases the amount of cash in the simulated system. System-wide cash conservation therefore treats cumulative operating-income movements as a declared external source instead of hiding them as an unexplained balance mutation. A closure distribution is an internal issuer outflow, not an external source. Market capitalization remains a valuation and is never itself spendable cash.
 
@@ -45,7 +46,7 @@ This is intentionally a simplified company model. It does not model expenses, ta
 ## Where to see it
 
 - A company detail page shows **Issuer cash** in the headline statistics.
-- The **Corporate cash movements** panel lists each movement with its type, signed amount, direction, and cycle. Primary sales appear as **Primary issuance** credits, external earnings as **Operating income** credits, and funded payouts as **Dividend paid** debits.
+- The **Corporate cash movements** panel lists each movement with its type, signed amount, direction, and cycle. Primary sales appear as **Primary issuance** credits, big-investment deals as **Big investment** credits, external earnings as **Operating income** credits, and funded payouts as **Dividend paid** debits.
 - Reduced or skipped dividends appear as company-specific items in the **Newswire**.
 - Secondary trades remain visible in trade history but do not add rows to the corporate cash panel.
 
