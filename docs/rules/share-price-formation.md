@@ -54,7 +54,7 @@ This means the market does not calculate one global clearing price from total de
 
 ## Order Prices
 
-Rule-based Individuals form automated buys from their risk-specific exposure headroom. They cross the best residual in-band ask when one is available; otherwise they can place only a small bounded passive bid inside the executable band. Orders generated earlier in the same decision batch retain their price-time shadow, so a later buy cannot jump demand that has already been allocated.
+Rule-based Individuals form automated buys from their risk-specific exposure headroom. They cross the best residual in-band ask at that exact ask price. When a company has no remaining open sell interest, an eligible Individual can instead create a small passive bid above the current market price after a configurable chance succeeds; temperament selects progressively higher thirds of the configured premium range. The limit remains inside the executable band, and a sell that exists outside that band prevents the company from being treated as having no supply. Orders generated earlier in the same decision batch retain their price-time shadow, so a later buy cannot jump demand that has already been allocated.
 
 Configured AI Agents receive the same live exposure and execution envelope but choose their own exact side, company, price, quantity, and reason. When earlier demand has priority over lower-priced supply, the envelope can offer a passive bid at that priority ceiling instead of suggesting an unsafe crossing price. The backend either accepts the exact choice or rejects it; it does not clamp the model's order into compliance. Collective Funds and rule-based sell decisions retain their existing personality-, momentum-, and book-aware pricing.
 

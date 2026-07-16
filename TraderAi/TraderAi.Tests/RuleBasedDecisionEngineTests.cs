@@ -361,6 +361,169 @@ public sealed class RuleBasedDecisionEngineTests
     }
 
     [Fact]
+    public void IndividualWithoutASellerUsesTheConfiguredBuyChanceAsAnExclusiveGate()
+    {
+        var chanceRates = new RandomChanceRatesOptions();
+        chanceRates.EventTriggerChances.NoSellOrderBuyChance = 0.65;
+        var context = AutomatedContextFor(
+            riskProfile: RiskProfile.Medium,
+            netWorth: 100_000m,
+            holdingsValue: 0m,
+            availableBalance: 100_000m,
+            buyingPower: 100_000m,
+            bestAskPrice: null,
+            bestAskQuantity: 0,
+            issuedShares: 10_000);
+
+        var accepted = EngineWith([0.649d, 0d], [0], chanceRates: chanceRates).Decide(context);
+        var rejected = EngineWith([0.65d], [0], chanceRates: chanceRates).Decide(context);
+
+        Assert.Single(accepted);
+        Assert.Empty(rejected);
+    }
+
+    [Theory]
+    [InlineData(Temperament.Conservative, 103.33)]
+    [InlineData(Temperament.Balanced, 108.00)]
+    [InlineData(Temperament.Aggressive, 112.67)]
+    public void IndividualPassiveBuyPremiumIncreasesWithTemperament(
+        Temperament temperament,
+        decimal expectedLimitPrice)
+    {
+        var context = AutomatedContextFor(
+            riskProfile: RiskProfile.Medium,
+            netWorth: 100_000m,
+            holdingsValue: 0m,
+            availableBalance: 100_000m,
+            buyingPower: 100_000m,
+            bestAskPrice: null,
+            bestAskQuantity: 0,
+            issuedShares: 10_000,
+            temperament: temperament,
+            bounds: OrderPriceBounds.FromReference(100m, 15m, 20m, 25m, 25m));
+
+        var intent = Assert.Single(EngineWith([0.79d, 0.50d], [0]).Decide(context));
+
+        Assert.Equal(expectedLimitPrice, intent.LimitPrice);
+    }
+
+    [Fact]
+    public void IndividualDoesNotTreatANonExecutableOpenSellAsAbsentSupply()
+    {
+        var context = AutomatedContextFor(
+            riskProfile: RiskProfile.Medium,
+            netWorth: 100_000m,
+            holdingsValue: 0m,
+            availableBalance: 100_000m,
+            buyingPower: 100_000m,
+            bestAskPrice: null,
+            bestAskQuantity: 0,
+            issuedShares: 10_000,
+            priceChangePct: 0.10m,
+            openSellQuantity: 5);
+
+        var intents = EngineWith([0.05d, 0.50d, 0d], [0]).Decide(context);
+
+        Assert.Empty(intents);
+    }
+
+    [Fact]
+    public void IndividualDoesNotPlaceAPassiveBidWhenTheBandHasNoPriceAboveMarket()
+    {
+        var context = AutomatedContextFor(
+            riskProfile: RiskProfile.Medium,
+            netWorth: 100_000m,
+            holdingsValue: 0m,
+            availableBalance: 100_000m,
+            buyingPower: 100_000m,
+            bestAskPrice: null,
+            bestAskQuantity: 0,
+            issuedShares: 10_000,
+            bounds: new OrderPriceBounds(100m, 85m, 100m, 75m, 115m));
+
+        var intents = EngineWith([0.05d, 0.50d], [0]).Decide(context);
+
+        Assert.Empty(intents);
+    }
+
+    [Fact]
+    public void IndividualUniformFallbackAppliesThePassiveBuyChance()
+    {
+        var chanceRates = new RandomChanceRatesOptions();
+        chanceRates.EventTriggerChances.NoSellOrderBuyChance = 0d;
+        var participant = NewParticipant(60_000m, riskProfile: RiskProfile.Medium);
+        var context = new DecisionContext(
+            participant,
+            AvailableCash: 60_000m,
+            [
+                new CompanyQuote(
+                    1,
+                    Price: 100m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000,
+                    BestExecutableSellPrice: 101m,
+                    BestExecutableSellQuantity: 5,
+                    OpenSellQuantity: 5),
+                new CompanyQuote(
+                    2,
+                    Price: 100m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000),
+            ],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: 40_000m,
+            NetWorth: 100_000m,
+            AvailableBalance: 60_000m,
+            BuyingPower: 60_000m,
+            HasAutomatedTradingData: true);
+
+        var intents = EngineWith([0.90d, 0d], [1, 1], chanceRates: chanceRates).Decide(context);
+
+        Assert.Empty(intents);
+    }
+
+    [Fact]
+    public void RejectedPassiveSignalKeepsExecutableFallbackCandidates()
+    {
+        var chanceRates = new RandomChanceRatesOptions();
+        chanceRates.EventTriggerChances.NoSellOrderBuyChance = 0d;
+        var participant = NewParticipant(60_000m, riskProfile: RiskProfile.Medium);
+        var context = new DecisionContext(
+            participant,
+            AvailableCash: 60_000m,
+            [
+                new CompanyQuote(
+                    1,
+                    Price: 100m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000,
+                    BestExecutableSellPrice: 101m,
+                    BestExecutableSellQuantity: 5,
+                    OpenSellQuantity: 5),
+                new CompanyQuote(
+                    2,
+                    Price: 100m,
+                    PriceChangePct: 0.10m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000),
+            ],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: 40_000m,
+            NetWorth: 100_000m,
+            AvailableBalance: 60_000m,
+            BuyingPower: 60_000m,
+            HasAutomatedTradingData: true);
+
+        var intent = Assert.Single(
+            EngineWith([0d, 0.90d], [1, 0], chanceRates: chanceRates).Decide(context));
+
+        Assert.Equal(1, intent.CompanyId);
+        Assert.Equal(101m, intent.LimitPrice);
+    }
+
+    [Fact]
     public void IndividualBelowTargetEnforcesTheMeaningfulMinimumQuantity()
     {
         var engine = new RuleBasedDecisionEngine(
@@ -638,8 +801,16 @@ public sealed class RuleBasedDecisionEngineTests
         Assert.Equal(0, random.IntegerDrawCount);
     }
 
-    private static RuleBasedDecisionEngine EngineWith(double[] doubles, int[]? ints = null) =>
-        new(new MaxTradeSizer(), Options.Create(new RandomChanceRatesOptions()), new ScriptedRandom(doubles, ints ?? []));
+    private static RuleBasedDecisionEngine EngineWith(
+        double[] doubles,
+        int[]? ints = null,
+        AutomatedTradingOptions? automatedTradingOptions = null,
+        RandomChanceRatesOptions? chanceRates = null) =>
+        new(
+            new MaxTradeSizer(),
+            Options.Create(chanceRates ?? new RandomChanceRatesOptions()),
+            new ScriptedRandom(doubles, ints ?? []),
+            automatedTradingOptions: Options.Create(automatedTradingOptions ?? new AutomatedTradingOptions()));
 
     [Fact]
     public void WithNoSignalBothBuyingAndSellingStayReachable()
@@ -997,12 +1168,18 @@ public sealed class RuleBasedDecisionEngineTests
         int issuedShares,
         decimal priceChangePct = 0m,
         decimal marginLiability = 0m,
-        decimal reservedBuyNotional = 0m)
+        decimal reservedBuyNotional = 0m,
+        Temperament temperament = Temperament.Balanced,
+        OrderPriceBounds? bounds = null,
+        int? openSellQuantity = null)
     {
         const int companyId = 1;
         var price = 100m;
         var sharesOwned = holdingsValue > 0m ? (int)(holdingsValue / price) : 0;
-        var participant = NewParticipant(availableBalance + reservedBuyNotional, riskProfile: riskProfile);
+        var participant = NewParticipant(
+            availableBalance + reservedBuyNotional,
+            temperament,
+            riskProfile);
         participant.ReservedBalance = reservedBuyNotional;
 
         return new DecisionContext(
@@ -1012,10 +1189,11 @@ public sealed class RuleBasedDecisionEngineTests
                 companyId,
                 price,
                 PriceChangePct: priceChangePct,
-                Bounds: Bounds(price),
+                Bounds: bounds ?? Bounds(price),
                 IssuedShares: issuedShares,
                 BestExecutableSellPrice: bestAskPrice,
-                BestExecutableSellQuantity: bestAskQuantity)],
+                BestExecutableSellQuantity: bestAskQuantity,
+                OpenSellQuantity: openSellQuantity ?? (bestAskPrice is null ? 0 : bestAskQuantity))],
             sharesOwned > 0
                 ? new Dictionary<int, int> { [companyId] = sharesOwned }
                 : new Dictionary<int, int>(),

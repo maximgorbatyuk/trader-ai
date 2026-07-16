@@ -28,6 +28,8 @@ public sealed class AutomatedBuyOrderPolicyTests
         Assert.Equal(0.25m, options.MaximumPassiveBidIssuedSharesPercent);
         Assert.Equal(25m, options.MinimumMeaningfulQuantityPercent);
         Assert.Equal(10m, options.MaximumHighRiskMarginLiabilityPercent);
+        Assert.Equal(1m, options.PassiveBuyPremiumMinPercent);
+        Assert.Equal(15m, options.PassiveBuyPremiumMaxPercent);
     }
 
     [Fact]
@@ -49,6 +51,13 @@ public sealed class AutomatedBuyOrderPolicyTests
             new AutomatedTradingOptions { MaximumIssuedSharesPerOrderPercent = 0m },
             new AutomatedTradingOptions { MaximumPassiveBidIssuedSharesPercent = 3m },
             new AutomatedTradingOptions { MaximumHighRiskMarginLiabilityPercent = 101m },
+            new AutomatedTradingOptions { PassiveBuyPremiumMinPercent = -1m },
+            new AutomatedTradingOptions { PassiveBuyPremiumMaxPercent = 101m },
+            new AutomatedTradingOptions
+            {
+                PassiveBuyPremiumMinPercent = 16m,
+                PassiveBuyPremiumMaxPercent = 15m,
+            },
         };
 
         Assert.All(invalidOptions, candidate => Assert.False(candidate.IsValid()));

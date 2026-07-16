@@ -12,10 +12,13 @@ public sealed class RuleBasedDecisionEngine(
     ITradeSizer tradeSizer,
     IOptions<RandomChanceRatesOptions> chanceRates,
     Random random,
-    AutomatedBuyOrderPolicy? automatedBuyOrderPolicy = null) : IDecisionEngine
+    AutomatedBuyOrderPolicy? automatedBuyOrderPolicy = null,
+    IOptions<AutomatedTradingOptions>? automatedTradingOptions = null) : IDecisionEngine
 {
+    private readonly IOptions<AutomatedTradingOptions> automatedTradingOptions = automatedTradingOptions
+        ?? Options.Create(new AutomatedTradingOptions());
     private readonly AutomatedBuyOrderPolicy automatedBuyOrderPolicy = automatedBuyOrderPolicy
-        ?? new AutomatedBuyOrderPolicy(Options.Create(new AutomatedTradingOptions()));
+        ?? new AutomatedBuyOrderPolicy(automatedTradingOptions ?? Options.Create(new AutomatedTradingOptions()));
 
     // Recent (one-cycle) move maps to a buy/sell pull, ramping with the size of the move up to a cap; a
     // ~5% move alone reaches the cap.
@@ -77,11 +80,15 @@ public sealed class RuleBasedDecisionEngine(
         var automatedExposure = AutomatedExposure(context);
         var automatedBuyBlocked = automatedExposure is not null
             && automatedExposure.CurrentExposurePercent >= automatedExposure.Target.MaximumExposurePercent;
+        var usesAutomatedBuyPolicy = UsesAutomatedBuyPolicy(context);
         var buyCandidates = context.AvailableCash > 0m && !automatedBuyBlocked
             ? context.Companies
                 .Where(quote => quote.Bounds is not null
                     && !context.CompaniesWithOpenOrders.Contains(quote.CompanyId)
-                    && !(UsesAutomatedBuyPolicy(context) && quote.IndividualBuyBlockedForBatch))
+                    && !(usesAutomatedBuyPolicy && quote.IndividualBuyBlockedForBatch)
+                    && (!usesAutomatedBuyPolicy
+                        || HasExecutableAsk(quote)
+                        || quote.OpenSellQuantity == 0))
                 .ToList()
             : [];
         var actionableBuyCandidates = buyCandidates;
@@ -106,6 +113,33 @@ public sealed class RuleBasedDecisionEngine(
             // A signal fixes the target without another draw; only the no-signal fallback diversifies it.
             buyTarget ??= actionableBuyCandidates[random.Next(actionableBuyCandidates.Count)];
             buyPull = Math.Max(buyPull, BelowTargetBuyPull);
+        }
+
+        if (usesAutomatedBuyPolicy
+            && buyTarget is null
+            && actionableBuyCandidates.Count > 0
+            && actionableBuyCandidates.All(quote => !HasExecutableAsk(quote)))
+        {
+            buyTarget = actionableBuyCandidates[random.Next(actionableBuyCandidates.Count)];
+        }
+
+        if (buyTarget is not null && IsAutomatedPassiveBuy(context, buyTarget))
+        {
+            if (BuildAllowedBuy(context, buyTarget) is { } passiveBuy)
+            {
+                return Gate(passiveBuy, context);
+            }
+
+            actionableBuyCandidates = actionableBuyCandidates
+                .Where(HasExecutableAsk)
+                .ToList();
+            if (actionableBuyCandidates.Count == 0 && sellCandidates.Count == 0)
+            {
+                return [];
+            }
+
+            buyTarget = null;
+            buyPull = 0.0;
         }
 
         // Debt leans the trader toward selling to repay; the pull scales with how deep the debt runs against
@@ -168,7 +202,7 @@ public sealed class RuleBasedDecisionEngine(
         var intent = actions[random.Next(actions.Count)] switch
         {
             TradeAction.Sell => BuildSell(context, sellCandidates[random.Next(sellCandidates.Count)]),
-            TradeAction.Buy => BuildBuy(
+            TradeAction.Buy => BuildAllowedBuy(
                 context,
                 actionableBuyCandidates[random.Next(actionableBuyCandidates.Count)]),
             _ => null,
@@ -395,13 +429,29 @@ public sealed class RuleBasedDecisionEngine(
             : null;
     }
 
+    private OrderIntent? BuildAllowedBuy(DecisionContext context, CompanyQuote quote)
+    {
+        if (IsAutomatedPassiveBuy(context, quote)
+            && random.NextDouble() >= chanceRates.Value.EventTriggerChances.NoSellOrderBuyChance)
+        {
+            return null;
+        }
+
+        return BuildBuy(context, quote);
+    }
+
     private OrderIntent? BuildAutomatedIndividualBuy(DecisionContext context, CompanyQuote quote)
     {
         var bestAsk = quote.BestExecutableSellPrice.GetValueOrDefault();
         var hasExecutableAsk = HasExecutableAsk(quote);
         var buyLimit = hasExecutableAsk
             ? bestAsk
-            : PickInsideLimitPrice(quote, OrderType.Buy);
+            : PickAutomatedPassiveLimitPrice(context.Participant.Temperament, quote);
+        if (!hasExecutableAsk && buyLimit <= quote.Price)
+        {
+            return null;
+        }
+
         var envelope = automatedBuyOrderPolicy.BuildBuyEnvelope(new AutomatedBuyOrderInput(
             context.Participant.RiskProfile,
             context.NetWorth,
@@ -423,6 +473,28 @@ public sealed class RuleBasedDecisionEngine(
         return new OrderIntent(OrderType.Buy, quote.CompanyId, quantity, buyLimit);
     }
 
+    private decimal PickAutomatedPassiveLimitPrice(Temperament temperament, CompanyQuote quote)
+    {
+        var options = automatedTradingOptions.Value;
+        var totalRange = options.PassiveBuyPremiumMaxPercent - options.PassiveBuyPremiumMinPercent;
+        var third = totalRange / 3m;
+        var (minimum, maximum) = temperament switch
+        {
+            Temperament.Conservative => (
+                options.PassiveBuyPremiumMinPercent,
+                options.PassiveBuyPremiumMinPercent + third),
+            Temperament.Aggressive => (
+                options.PassiveBuyPremiumMaxPercent - third,
+                options.PassiveBuyPremiumMaxPercent),
+            _ => (
+                options.PassiveBuyPremiumMinPercent + third,
+                options.PassiveBuyPremiumMaxPercent - third),
+        };
+        var premiumPercent = minimum + ((decimal)random.NextDouble() * (maximum - minimum));
+        var proposed = Round(quote.Price * (1m + (premiumPercent / 100m)));
+        return Math.Min(proposed, quote.Bounds!.ActiveUpperPrice);
+    }
+
     private AutomatedExposureAssessment? AutomatedExposure(DecisionContext context) =>
         UsesAutomatedBuyPolicy(context)
             ? automatedBuyOrderPolicy.AssessExposure(
@@ -433,6 +505,11 @@ public sealed class RuleBasedDecisionEngine(
 
     private static bool UsesAutomatedBuyPolicy(DecisionContext context) =>
         context.Participant.Type == ParticipantType.Individual && context.HasAutomatedTradingData;
+
+    private static bool IsAutomatedPassiveBuy(DecisionContext context, CompanyQuote quote) =>
+        UsesAutomatedBuyPolicy(context)
+        && !HasExecutableAsk(quote)
+        && quote.OpenSellQuantity == 0;
 
     private static bool HasExecutableAsk(CompanyQuote quote) =>
         quote.BestExecutableSellPrice is decimal bestAsk

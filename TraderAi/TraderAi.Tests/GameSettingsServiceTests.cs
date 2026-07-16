@@ -16,6 +16,9 @@ public sealed class GameSettingsServiceTests
     {
         var configuration = Configuration(
             ("Margin:InitialMarginRate", "0.50"),
+            ("RandomChanceRates:EventTriggerChances:NoSellOrderBuyChance", "0.80"),
+            ("AutomatedTrading:PassiveBuyPremiumMinPercent", "1"),
+            ("AutomatedTrading:PassiveBuyPremiumMaxPercent", "15"),
             ("AiTrading:Providers:glm:DisplayName", "GLM"),
             ("AiTrading:Providers:glm:Endpoint", "https://api.example.com/chat"),
             ("AiTrading:Providers:glm:Models:0", "glm-4.6"));
@@ -26,6 +29,21 @@ public sealed class GameSettingsServiceTests
         Assert.Equal("Initial margin rate", margin.Name);
         Assert.NotEmpty(margin.Description);
         Assert.Equal(GameSettingValueType.Decimal, margin.ValueType);
+
+        var noSellOrderBuyChance = Assert.Single(
+            definitions,
+            definition => definition.Key == "RandomChanceRates:EventTriggerChances:NoSellOrderBuyChance");
+        Assert.Equal(GameSettingValueType.Decimal, noSellOrderBuyChance.ValueType);
+        Assert.Contains("sell", noSellOrderBuyChance.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            definitions,
+            definition => definition.Key == "AutomatedTrading:PassiveBuyPremiumMinPercent"
+                && definition.ValueType == GameSettingValueType.Decimal);
+        Assert.Contains(
+            definitions,
+            definition => definition.Key == "AutomatedTrading:PassiveBuyPremiumMaxPercent"
+                && definition.ValueType == GameSettingValueType.Decimal);
 
         var models = Assert.Single(definitions, definition => definition.Key == "AiTrading:Providers:glm:Models");
         Assert.Equal("GLM models", models.Name);
@@ -173,6 +191,34 @@ public sealed class GameSettingsServiceTests
         IOptions<MarginOptions> options = new GameSettingsOptions<MarginOptions>(service, MarginOptions.SectionName);
 
         Assert.Equal(0.50m, options.Value.InitialMarginRate);
+    }
+
+    [Fact]
+    public async Task AutomatedPassiveBuyChanceChangesOnlyThroughDatabaseBackedSettingsUpdate()
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        IDbContextFactory<AppDbContext> factory = new TestDbContextFactory(dbOptions);
+        await using (var context = await factory.CreateDbContextAsync())
+        {
+            await context.Database.EnsureCreatedAsync();
+        }
+
+        var service = new GameSettingsService(factory, Configuration(
+            ("RandomChanceRates:EventTriggerChances:NoSellOrderBuyChance", "0.80")));
+        await service.InitializeAsync();
+        IOptions<RandomChanceRatesOptions> options = new GameSettingsOptions<RandomChanceRatesOptions>(
+            service,
+            RandomChanceRatesOptions.SectionName);
+
+        using var updatedChance = JsonDocument.Parse("0.65");
+        await service.UpdateAsync(new Dictionary<string, JsonElement>
+        {
+            ["RandomChanceRates:EventTriggerChances:NoSellOrderBuyChance"] = updatedChance.RootElement.Clone(),
+        });
+
+        Assert.Equal(0.65, options.Value.EventTriggerChances.NoSellOrderBuyChance);
     }
 
     [Fact]

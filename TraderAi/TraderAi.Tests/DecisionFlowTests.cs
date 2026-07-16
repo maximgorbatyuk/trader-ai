@@ -123,7 +123,9 @@ public sealed class DecisionFlowTests : IDisposable
 
         await service.GenerateDecisionsAsync();
 
-        var bounds = Assert.Single(decisionEngine.LastQuotes!).Bounds;
+        var quote = Assert.Single(decisionEngine.LastQuotes!);
+        Assert.Equal(0, quote.OpenSellQuantity);
+        var bounds = quote.Bounds;
         Assert.NotNull(bounds);
         Assert.Equal(85m, bounds!.ActiveLowerPrice);
         Assert.Equal(115m, bounds.ActiveUpperPrice);
@@ -224,6 +226,7 @@ public sealed class DecisionFlowTests : IDisposable
         Assert.Equal(10, quote.IssuedShares);
         Assert.Equal(104m, quote.BestExecutableSellPrice);
         Assert.Equal(5, quote.BestExecutableSellQuantity);
+        Assert.Equal(114, quote.OpenSellQuantity);
         Assert.Equal(1_000m, sellerContext.HoldingsValue);
         Assert.Equal(1_560m, sellerContext.NetWorth);
         Assert.Equal(-200m, sellerContext.AvailableBalance);

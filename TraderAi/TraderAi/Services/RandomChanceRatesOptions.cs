@@ -101,6 +101,9 @@ public sealed class EventTriggerChances
     // Chance an automated discretionary order is priced in a waiting outer segment rather than the active band.
     public double OutsideBandOrder { get; set; } = 0.10;
 
+    // Chance an eligible rule-based Individual bids for a company with no remaining sell interest.
+    public double NoSellOrderBuyChance { get; set; } = 0.80;
+
     // Chance a science investigation also pushes the affected industry's sentiment upward.
     public double ScienceSentimentPush { get; set; } = 0.50;
 }

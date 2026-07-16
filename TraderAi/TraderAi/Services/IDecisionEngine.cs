@@ -19,7 +19,8 @@ public sealed record CompanyQuote(
     int IssuedShares = 0,
     decimal? BestExecutableSellPrice = null,
     int BestExecutableSellQuantity = 0,
-    bool IndividualBuyBlockedForBatch = false);
+    bool IndividualBuyBlockedForBatch = false,
+    int OpenSellQuantity = 0);
 
 // Everything a decision engine needs for one participant, supplied by the caller so the engine
 // stays a pure function with no database access. CrisisActive is set while a market crisis window is open,

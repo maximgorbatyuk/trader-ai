@@ -19,6 +19,8 @@ public sealed class AutomatedTradingOptions
     public decimal MaximumPassiveBidIssuedSharesPercent { get; set; } = 0.25m;
     public decimal MinimumMeaningfulQuantityPercent { get; set; } = 25m;
     public decimal MaximumHighRiskMarginLiabilityPercent { get; set; } = 10m;
+    public decimal PassiveBuyPremiumMinPercent { get; set; } = 1m;
+    public decimal PassiveBuyPremiumMaxPercent { get; set; } = 15m;
 
     public bool IsValid() =>
         IsExposureRangeValid(LowMinimumExposurePercent, LowMaximumExposurePercent)
@@ -31,7 +33,10 @@ public sealed class AutomatedTradingOptions
         && IsPositivePercentage(MaximumPassiveBidIssuedSharesPercent)
         && MaximumPassiveBidIssuedSharesPercent <= MaximumIssuedSharesPerOrderPercent
         && IsPositivePercentage(MinimumMeaningfulQuantityPercent)
-        && IsPositivePercentage(MaximumHighRiskMarginLiabilityPercent);
+        && IsPositivePercentage(MaximumHighRiskMarginLiabilityPercent)
+        && IsPercentage(PassiveBuyPremiumMinPercent)
+        && IsPercentage(PassiveBuyPremiumMaxPercent)
+        && PassiveBuyPremiumMinPercent <= PassiveBuyPremiumMaxPercent;
 
     public AutomatedTradingTarget GetTarget(RiskProfile riskProfile) => riskProfile switch
     {
@@ -54,6 +59,8 @@ public sealed class AutomatedTradingOptions
         minimum >= 0m && maximum <= 100m && minimum <= maximum;
 
     private static bool IsPositivePercentage(decimal value) => value is > 0m and <= 100m;
+
+    private static bool IsPercentage(decimal value) => value is >= 0m and <= 100m;
 }
 
 public sealed record AutomatedTradingTarget(

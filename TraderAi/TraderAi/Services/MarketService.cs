@@ -2529,6 +2529,15 @@ public sealed class MarketService(
                         level.Key,
                         level.Sum(order => (long)order.RemainingQuantity)))
                     .ToList());
+        var openSellQuantityByCompany = openSellRows
+            .Where(order => order.RemainingQuantity > 0)
+            .GroupBy(order => order.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => (int)Math.Clamp(
+                    group.Sum(order => (long)order.RemainingQuantity),
+                    0L,
+                    int.MaxValue));
         var openBuyRows = await dbContext.Orders.AsNoTracking()
             .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
                 && order.Type == OrderType.Buy
@@ -2588,6 +2597,7 @@ public sealed class MarketService(
                     BestExecutableSellQuantity = bestAsk is not null
                         ? (int)Math.Clamp(bestAsk.RemainingQuantity, 0L, int.MaxValue)
                         : 0,
+                    OpenSellQuantity = openSellQuantityByCompany.GetValueOrDefault(quote.CompanyId),
                 };
             })
             .ToList();
