@@ -1,4 +1,5 @@
-﻿using System.Globalization;
+﻿using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
@@ -209,6 +210,24 @@ using (var scope = app.Services.CreateScope())
         market.Status = MarketStatus.Paused;
         market.UpdatedAt = DateTime.UtcNow;
         await dbContext.SaveChangesAsync();
+    }
+
+    // Pre-compile the cycle's query plans so the first tick after Start does not pay one-time EF compilation on a
+    // cold start. Best-effort: a warm-up failure must never keep the app from booting.
+    if (builder.Configuration.GetValue("WarmUp:Enabled", true))
+    {
+        try
+        {
+            var warmUpStopwatch = Stopwatch.StartNew();
+            await scope.ServiceProvider.GetRequiredService<MarketService>().WarmUpAsync();
+            app.Logger.LogInformation(
+                "Cycle query warm-up completed in {ElapsedSeconds:0.00}s.",
+                warmUpStopwatch.Elapsed.TotalSeconds);
+        }
+        catch (Exception exception)
+        {
+            app.Logger.LogWarning(exception, "Cycle query warm-up failed; the first cycle may be slower.");
+        }
     }
 }
 

@@ -2382,6 +2382,117 @@ public sealed class MarketService(
     private static decimal TransferableCash(Participant participant) =>
         Math.Max(0m, Math.Min(participant.AvailableBalance, participant.SettledCashBalance));
 
+    // Runs the decision pass's read queries once at startup so EF compiles and caches their plans (shared across
+    // every context from the factory) before the first real cycle, which otherwise pays that one-time cost on a
+    // cold start. Read-only and best-effort. The queries below intentionally mirror the read half of
+    // GenerateDecisionsCoreAsync; if a plan there changes shape, mirror it here or warm-up simply stops covering it.
+    public async Task WarmUpAsync()
+    {
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+
+        _ = await dbContext.Orders
+            .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                && order.ParticipantId != null)
+            .Select(order => new { order.CompanyId, order.Type, Remaining = order.Quantity - order.FilledQuantity })
+            .ToListAsync();
+
+        _ = await dbContext.MarketCycles.ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+
+        var closedCompanyIds = (await dbContext.Companies
+                .Where(company => company.ClosedInCycleId != null)
+                .Select(company => company.Id)
+                .ToListAsync())
+            .ToHashSet();
+
+        var haltedCompanyIds = (await dbContext.PriceBandStates
+                .Where(state => state.State != LuldState.Normal)
+                .Select(state => state.CompanyId)
+                .ToListAsync())
+            .ToHashSet();
+
+        var snapshots = await dbContext.PriceSnapshots.AsNoTracking().ToListAsync();
+        var valuationPriceByCompany = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
+
+        var quoteCompanyIds = snapshots
+            .Select(snapshot => snapshot.CompanyId)
+            .Where(companyId => !closedCompanyIds.Contains(companyId) && !haltedCompanyIds.Contains(companyId))
+            .ToHashSet();
+
+        _ = await dbContext.Companies.AsNoTracking()
+            .Where(company => quoteCompanyIds.Contains(company.Id))
+            .Join(
+                dbContext.Industries.AsNoTracking(),
+                company => company.IndustryId,
+                industry => industry.Id,
+                (company, industry) => new { company.Id, industry.SentimentValue })
+            .ToDictionaryAsync(pair => pair.Id, pair => pair.SentimentValue);
+
+        _ = await dbContext.Companies.AsNoTracking()
+            .Where(company => quoteCompanyIds.Contains(company.Id))
+            .ToDictionaryAsync(company => company.Id, company => company.IssuedSharesCount);
+
+        _ = await dbContext.Participants
+            .Where(participant => participant.IsActive
+                && (participant.Type == ParticipantType.Individual
+                    || participant.Type == ParticipantType.CollectiveFund))
+            .OrderBy(participant => participant.Id)
+            .ToListAsync();
+
+        _ = await dbContext.Holdings
+            .Where(holding => holding.Quantity > 0)
+            .Select(holding => new { holding.ParticipantId, holding.CompanyId, holding.Quantity })
+            .ToListAsync();
+
+        _ = await dbContext.Orders
+            .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                && order.ParticipantId != null)
+            .Select(order => new { ParticipantId = order.ParticipantId!.Value, order.CompanyId })
+            .ToListAsync();
+
+        var priceByCompany = valuationPriceByCompany
+            .Where(pair => !closedCompanyIds.Contains(pair.Key))
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
+        _ = await ResolveOrderPriceBoundsByCompanyAsync(priceByCompany);
+
+        _ = await dbContext.Orders.AsNoTracking()
+            .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                && order.Type == OrderType.Sell
+                && quoteCompanyIds.Contains(order.CompanyId))
+            .Select(order => new
+            {
+                order.CompanyId,
+                order.LimitPrice,
+                RemainingQuantity = order.Quantity - order.FilledQuantity,
+            })
+            .ToListAsync();
+
+        _ = await dbContext.Orders.AsNoTracking()
+            .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                && order.Type == OrderType.Buy
+                && quoteCompanyIds.Contains(order.CompanyId))
+            .Select(order => new
+            {
+                order.Id,
+                order.CompanyId,
+                order.LimitPrice,
+                order.CreatedAt,
+                RemainingQuantity = order.Quantity - order.FilledQuantity,
+            })
+            .ToListAsync();
+
+        _ = await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext);
+        _ = await MarginService.LiabilityByParticipantAsync(dbContext);
+        _ = await dbContext.CollectiveFunds.ToDictionaryAsync(fund => fund.ParticipantId, fund => fund.Status);
+        _ = await dbContext.CollectiveFunds
+            .Where(fund => fund.IsPlayerManaged)
+            .Select(fund => fund.ParticipantId)
+            .ToListAsync();
+        _ = await dbContext.CollectiveFundParticipants
+            .Select(member => member.ParticipantId)
+            .ToListAsync();
+        _ = await PreLeaveBufferFundParticipantIdsAsync(market?.CurrentTradingDayId);
+    }
+
     private async Task<RunDecisionsResult> GenerateDecisionsCoreAsync()
     {
         var market = await dbContext.Markets.FirstOrDefaultAsync();

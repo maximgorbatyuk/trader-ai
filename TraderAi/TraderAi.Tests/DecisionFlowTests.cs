@@ -50,6 +50,23 @@ public sealed class DecisionFlowTests : IDisposable
     }
 
     [Fact]
+    public async Task WarmUpRunsReadOnlyAndLeavesStateUnchanged()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var ordersBefore = await context.Orders.CountAsync();
+        var participantsBefore = await context.Participants.CountAsync();
+        var holdingsBefore = await context.Holdings.CountAsync();
+        var snapshotsBefore = await context.PriceSnapshots.CountAsync();
+
+        await marketService.WarmUpAsync();
+
+        Assert.Equal(ordersBefore, await context.Orders.CountAsync());
+        Assert.Equal(participantsBefore, await context.Participants.CountAsync());
+        Assert.Equal(holdingsBefore, await context.Holdings.CountAsync());
+        Assert.Equal(snapshotsBefore, await context.PriceSnapshots.CountAsync());
+    }
+
+    [Fact]
     public async Task DecisionsAreSkippedForCompaniesThatAlreadyHaveOpenOrders()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
