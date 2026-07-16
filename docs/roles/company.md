@@ -6,8 +6,9 @@ A Company is the listed asset in the game. It issues shares, belongs to an indus
 
 - A Company starts with an issued share supply and an initial market price.
 - Unsold issued shares are available through the company's float. When those shares sell, the buyer receives shares, no participant seller receives cash, and the primary proceeds enter the company's issuer cash on T+1 settlement.
-- When unsold float is strictly below 10% of issued shares, the Company can issue a deterministic, demand-paced block at the current price. Issuance requires executable unmet buy demand from active, non-bankrupt Individuals or AI Agents after compatible resting sell supply has been subtracted; Player and Collective Fund demand does not trigger it.
-- A Company can issue at most once per trading day. The block is the smaller of unmet demand and 25% of issued shares rounded up, and it enters the ordinary order book. Issuance is deferred while the security is in Limit State, Trading Pause, or Reopening.
+- When unsold float is strictly below 10% of issued shares, the Company can create a deterministic, demand-paced replenishment offer at the current price. The offer requires executable unmet buy demand from active, non-bankrupt Individuals or AI Agents after compatible resting sell supply has been subtracted; Player and Collective Fund demand does not trigger it.
+- A stale replenishment offer outside the active price band is cancelled without changing the initial float offer. The next demand-paced offer uses already issued but unlisted float before issuing additional shares.
+- A Company can create at most one replenishment offer per trading day. Newly issued quantity is capped at the smaller of residual unmet demand and 25% of issued shares rounded up, and the offer enters the ordinary order book. Replenishment is deferred while the security is in Limit State, Trading Pause, or Reopening.
 - A Company does not make automated trading decisions, join funds, or go bankrupt. It can be delisted, but through its own lifecycle rules rather than the trader-churn that removes traders (see Lifecycle).
 - Shareholders can be Individuals, AI Agents, the Player, or Collective Funds.
 - Company price changes through matched trades and market events.

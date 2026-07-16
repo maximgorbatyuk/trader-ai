@@ -447,6 +447,46 @@ public sealed class RuleBasedDecisionEngineTests
     }
 
     [Fact]
+    public void IndividualPlacesNoPassiveBidWhenTheCompanyIsFalling()
+    {
+        var context = AutomatedContextFor(
+            riskProfile: RiskProfile.High,
+            netWorth: 100_000m,
+            holdingsValue: 0m,
+            availableBalance: 100_000m,
+            buyingPower: 100_000m,
+            bestAskPrice: null,
+            bestAskQuantity: 0,
+            issuedShares: 10_000,
+            longRangeChangePct: -0.10m);
+
+        var intents = EngineWith([0.5d], [0]).Decide(context);
+
+        Assert.Empty(intents);
+    }
+
+    [Fact]
+    public void IndividualPlacesAnAboveMarketPassiveBidWhenARisingCompanyHasNoSeller()
+    {
+        var context = AutomatedContextFor(
+            riskProfile: RiskProfile.High,
+            netWorth: 100_000m,
+            holdingsValue: 0m,
+            availableBalance: 100_000m,
+            buyingPower: 100_000m,
+            bestAskPrice: null,
+            bestAskQuantity: 0,
+            issuedShares: 10_000,
+            longRangeChangePct: 0.20m);
+
+        var intent = Assert.Single(EngineWith([0.05d, 0d], [0]).Decide(context));
+
+        Assert.Equal(OrderType.Buy, intent.Type);
+        Assert.True(intent.LimitPrice > 100m);
+        Assert.True(Bounds(100m).IsWithinActiveBand(intent.LimitPrice));
+    }
+
+    [Fact]
     public void IndividualUniformFallbackAppliesThePassiveBuyChance()
     {
         var chanceRates = new RandomChanceRatesOptions();
@@ -710,16 +750,27 @@ public sealed class RuleBasedDecisionEngineTests
         });
     }
 
+    // Rule-based sells spread symmetrically around the reference instead of undercutting it: a mid draw rests
+    // exactly at the market and the upper half of the draw range places the ask above it.
     [Fact]
-    public void InsideBandSellSitsOneToFivePercentBelowMarketWhenTheOutsideRollDoesNotPass()
+    public void InsideBandSellSpreadsSymmetricallyAroundTheReference()
     {
-        var sell = EngineWith([0.05d, 0.50d, 0d])
+        var atReference = EngineWith([0.05d, 0.50d, 0.50d])
             .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, priceChangePct: -0.10m));
 
-        Assert.Collection(sell, intent =>
+        Assert.Collection(atReference, intent =>
         {
             Assert.Equal(OrderType.Sell, intent.Type);
-            Assert.Equal(99m, intent.LimitPrice);
+            Assert.Equal(100m, intent.LimitPrice);
+        });
+
+        var aboveReference = EngineWith([0.05d, 0.50d, 0.90d])
+            .Decide(ContextFor(availableCash: 0m, sharesOwned: 10, companyPrice: 100m, priceChangePct: -0.10m));
+
+        Assert.Collection(aboveReference, intent =>
+        {
+            Assert.Equal(OrderType.Sell, intent.Type);
+            Assert.Equal(104m, intent.LimitPrice);
         });
     }
 
@@ -1167,6 +1218,7 @@ public sealed class RuleBasedDecisionEngineTests
         int bestAskQuantity,
         int issuedShares,
         decimal priceChangePct = 0m,
+        decimal longRangeChangePct = 0m,
         decimal marginLiability = 0m,
         decimal reservedBuyNotional = 0m,
         Temperament temperament = Temperament.Balanced,
@@ -1189,6 +1241,7 @@ public sealed class RuleBasedDecisionEngineTests
                 companyId,
                 price,
                 PriceChangePct: priceChangePct,
+                LongRangeChangePct: longRangeChangePct,
                 Bounds: bounds ?? Bounds(price),
                 IssuedShares: issuedShares,
                 BestExecutableSellPrice: bestAskPrice,

@@ -369,6 +369,111 @@ public sealed class PrimaryIssuanceServiceTests : IDisposable
         Assert.Single(await context.Orders.AsNoTracking().Where(order => order.ParticipantId == null).ToListAsync());
     }
 
+    [Theory]
+    [InlineData(80)]
+    [InlineData(120)]
+    public async Task StaleFloatReplenishmentIsCancelledWhileInitialSupplyRemainsOpen(decimal stalePrice)
+    {
+        var previousCycle = await AddCycleAsync(dayNumber: 1, cycleNumber: 1);
+        var currentCycle = await AddCycleAsync(dayNumber: 2, cycleNumber: 2);
+        var company = await AddScarceCompanyAsync(
+            issuedShares: 1_000,
+            price: 100m,
+            previousCycle.Id,
+            heldShares: 950);
+        var staleReplenishment = AddSell(
+            company,
+            quantity: 40,
+            limitPrice: stalePrice,
+            previousCycle.Id,
+            isFloatReplenishment: true);
+        var initialSupply = AddSell(
+            company,
+            quantity: 10,
+            limitPrice: stalePrice,
+            previousCycle.Id);
+        await context.SaveChangesAsync();
+        var now = DateTime.UtcNow.AddMinutes(1);
+
+        await Service(enabled: true).ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, now);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(OrderStatus.Cancelled, staleReplenishment.Status);
+        Assert.Equal(now, staleReplenishment.UpdatedAt);
+        Assert.Equal(OrderStatus.Open, initialSupply.Status);
+        Assert.Equal(1_000, company.IssuedSharesCount);
+        Assert.Equal(2, await context.Orders.CountAsync());
+    }
+
+    [Fact]
+    public async Task ConfirmedDemandRelistsCancelledFloatWithoutIncreasingIssuedShares()
+    {
+        var previousCycle = await AddCycleAsync(dayNumber: 1, cycleNumber: 1);
+        var currentCycle = await AddCycleAsync(dayNumber: 2, cycleNumber: 2);
+        var company = await AddScarceCompanyAsync(
+            issuedShares: 1_000,
+            price: 100m,
+            previousCycle.Id,
+            heldShares: 950);
+        var staleReplenishment = AddSell(
+            company,
+            quantity: 50,
+            limitPrice: 80m,
+            previousCycle.Id,
+            isFloatReplenishment: true);
+        var buyer = await AddParticipantAsync(ParticipantType.Individual);
+        AddBuy(buyer, company, quantity: 30, limitPrice: 100m, currentCycle.Id);
+        await context.SaveChangesAsync();
+        var now = DateTime.UtcNow.AddMinutes(1);
+
+        await Service(enabled: true).ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, now);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(OrderStatus.Cancelled, staleReplenishment.Status);
+        Assert.Equal(1_000, company.IssuedSharesCount);
+        var replacement = await context.Orders
+            .SingleAsync(order => order.IsFloatReplenishment && order.Id != staleReplenishment.Id);
+        Assert.Equal(OrderStatus.Open, replacement.Status);
+        Assert.Equal(30, replacement.Quantity);
+        Assert.Equal(100m, replacement.LimitPrice);
+        Assert.Equal(currentCycle.Id, replacement.CreatedInCycleId);
+        Assert.Equal(now, replacement.CreatedAt);
+    }
+
+    [Fact]
+    public async Task RelistedFloatIsConsumedBeforeAdditionalSharesAreIssued()
+    {
+        var previousCycle = await AddCycleAsync(dayNumber: 1, cycleNumber: 1);
+        var currentCycle = await AddCycleAsync(dayNumber: 2, cycleNumber: 2);
+        var company = await AddScarceCompanyAsync(
+            issuedShares: 1_000,
+            price: 100m,
+            previousCycle.Id,
+            heldShares: 950);
+        var staleReplenishment = AddSell(
+            company,
+            quantity: 50,
+            limitPrice: 80m,
+            previousCycle.Id,
+            isFloatReplenishment: true);
+        var buyer = await AddParticipantAsync(ParticipantType.Individual);
+        AddBuy(buyer, company, quantity: 80, limitPrice: 100m, currentCycle.Id);
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true).ProcessForCycleAsync(
+            currentCycle.Id,
+            currentCycle.CycleNumber,
+            DateTime.UtcNow.AddMinutes(1));
+        await context.SaveChangesAsync();
+
+        Assert.Equal(OrderStatus.Cancelled, staleReplenishment.Status);
+        Assert.Equal(1_030, company.IssuedSharesCount);
+        var replacement = await context.Orders
+            .SingleAsync(order => order.IsFloatReplenishment && order.Id != staleReplenishment.Id);
+        Assert.Equal(80, replacement.Quantity);
+        Assert.Equal(100m, replacement.LimitPrice);
+    }
+
     [Fact]
     public async Task DisabledServiceDoesNotIssue()
     {
@@ -580,7 +685,8 @@ public sealed class PrimaryIssuanceServiceTests : IDisposable
         int cycleId,
         Participant? participant = null,
         DateTime? createdAt = null,
-        int? relatedLoanId = null)
+        int? relatedLoanId = null,
+        bool isFloatReplenishment = false)
     {
         var timestamp = createdAt ?? DateTime.UtcNow;
         var order = new Order
@@ -591,6 +697,7 @@ public sealed class PrimaryIssuanceServiceTests : IDisposable
             Status = OrderStatus.Open,
             Quantity = quantity,
             LimitPrice = limitPrice,
+            IsFloatReplenishment = isFloatReplenishment,
             RelatedLoanId = relatedLoanId,
             CreatedInCycleId = cycleId,
             CreatedAt = timestamp,

@@ -6,8 +6,9 @@ namespace TraderAi.Services;
 // Baseline trader: each tick it makes one global choice — buy, sell, or do nothing. Recent price moves
 // and order-book demand bias that choice toward buying risers or selling fallers, with stronger
 // reactions at extreme long-range moves, and otherwise the choice is a uniform pick among the open
-// actions. Legacy orders keep their randomized pricing; enriched Individuals cross the best available ask or
-// place a bounded in-band passive bid, and an LLM-backed engine can implement the same pure interface.
+// actions. Legacy orders keep their randomized pricing; enriched Individuals cross the best available ask, or
+// place a bounded above-market passive bid only on a rising-or-stable company with no resting seller. Rule-based
+// sells spread symmetrically around the reference, and an LLM-backed engine can implement the same pure interface.
 public sealed class RuleBasedDecisionEngine(
     ITradeSizer tradeSizer,
     IOptions<RandomChanceRatesOptions> chanceRates,
@@ -88,7 +89,7 @@ public sealed class RuleBasedDecisionEngine(
                     && !(usesAutomatedBuyPolicy && quote.IndividualBuyBlockedForBatch)
                     && (!usesAutomatedBuyPolicy
                         || HasExecutableAsk(quote)
-                        || quote.OpenSellQuantity == 0))
+                        || (quote.OpenSellQuantity == 0 && IsRisingOrStable(quote))))
                 .ToList()
             : [];
         var actionableBuyCandidates = buyCandidates;
@@ -509,7 +510,12 @@ public sealed class RuleBasedDecisionEngine(
     private static bool IsAutomatedPassiveBuy(DecisionContext context, CompanyQuote quote) =>
         UsesAutomatedBuyPolicy(context)
         && !HasExecutableAsk(quote)
-        && quote.OpenSellQuantity == 0;
+        && quote.OpenSellQuantity == 0
+        && IsRisingOrStable(quote);
+
+    // A company counts as rising or stable when its price is not below the level from roughly ten cycles ago,
+    // so automated above-market bids lift healthy names instead of propping up decliners.
+    private static bool IsRisingOrStable(CompanyQuote quote) => quote.LongRangeChangePct >= 0m;
 
     private static bool HasExecutableAsk(CompanyQuote quote) =>
         quote.BestExecutableSellPrice is decimal bestAsk
@@ -536,7 +542,7 @@ public sealed class RuleBasedDecisionEngine(
         var pricingReference = Math.Max(quote.Price, bounds.ReferencePrice);
         var inside = type == OrderType.Buy
             ? Round(pricingReference * (1m + RandomOffset()))
-            : Round(pricingReference * (1m - RandomOffset()));
+            : Round(pricingReference * (1m + SymmetricOffset()));
         return Math.Clamp(inside, bounds.ActiveLowerPrice, bounds.ActiveUpperPrice);
     }
 
@@ -562,6 +568,11 @@ public sealed class RuleBasedDecisionEngine(
 
     private decimal RandomOffset() =>
         MinPriceOffset + ((decimal)random.NextDouble() * (MaxPriceOffset - MinPriceOffset));
+
+    // Rule-based sells no longer systematically undercut: one draw spreads the ask symmetrically around the
+    // reference, so its expected price is the reference and the book stops drifting down on its own.
+    private decimal SymmetricOffset() =>
+        (((decimal)random.NextDouble() * 2m) - 1m) * MaxPriceOffset;
 
     private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 }

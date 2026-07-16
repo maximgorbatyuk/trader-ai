@@ -40,10 +40,11 @@ public sealed class MarketLoopService(
                     if (result.Ran)
                     {
                         logger.LogInformation(
-                            "Auto cycle {Cycle} completed in {ElapsedSeconds:0.00}s with {Orders} orders placed and {Fills} fills.",
+                            "Cycle {Cycle} ({ElapsedSeconds:0.00}s): {SellOrders} sell-orders and {BuyOrders} buy-orders placed, {Fills} fills",
                             result.CompletedCycleNumber,
                             stopwatch.Elapsed.TotalSeconds,
-                            result.OrdersPlaced,
+                            result.SellOrdersPlaced,
+                            result.BuyOrdersPlaced,
                             result.FillCount);
                     }
                 }

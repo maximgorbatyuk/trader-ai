@@ -20,19 +20,35 @@ public sealed record AdvanceCycleResult(bool Success, int? CompletedCycleNumber,
     public static AdvanceCycleResult Fail(string error) => new(false, null, 0, error);
 }
 
-public sealed record RunDecisionsResult(bool Success, int OrdersPlaced, string? Error)
+public sealed record RunDecisionsResult(
+    bool Success,
+    int OrdersPlaced,
+    int BuyOrdersPlaced,
+    int SellOrdersPlaced,
+    string? Error)
 {
-    public static RunDecisionsResult Ok(int ordersPlaced) => new(true, ordersPlaced, null);
+    public static RunDecisionsResult Ok(int buyOrdersPlaced, int sellOrdersPlaced) =>
+        new(true, buyOrdersPlaced + sellOrdersPlaced, buyOrdersPlaced, sellOrdersPlaced, null);
 
-    public static RunDecisionsResult Fail(string error) => new(false, 0, error);
+    public static RunDecisionsResult Fail(string error) => new(false, 0, 0, 0, error);
 }
 
-public sealed record CycleTickResult(bool Ran, int OrdersPlaced, int FillCount, int? CompletedCycleNumber)
+public sealed record CycleTickResult(
+    bool Ran,
+    int OrdersPlaced,
+    int BuyOrdersPlaced,
+    int SellOrdersPlaced,
+    int FillCount,
+    int? CompletedCycleNumber)
 {
-    public static CycleTickResult Skipped() => new(false, 0, 0, null);
+    public static CycleTickResult Skipped() => new(false, 0, 0, 0, 0, null);
 
-    public static CycleTickResult Executed(int ordersPlaced, int fillCount, int? completedCycleNumber) =>
-        new(true, ordersPlaced, fillCount, completedCycleNumber);
+    public static CycleTickResult Executed(
+        int buyOrdersPlaced,
+        int sellOrdersPlaced,
+        int fillCount,
+        int? completedCycleNumber) =>
+        new(true, buyOrdersPlaced + sellOrdersPlaced, buyOrdersPlaced, sellOrdersPlaced, fillCount, completedCycleNumber);
 }
 
 public sealed record CreatePlayerResult(bool Success, Participant? Player, string? Error)
@@ -649,7 +665,7 @@ public sealed class MarketService(
                 .FirstOrDefaultAsync()
             : null;
         await tradingClockService!.AdvanceBreakAsync(market, DateTime.UtcNow);
-        return CycleTickResult.Executed(0, 0, completedCycleNumber);
+        return CycleTickResult.Executed(0, 0, 0, completedCycleNumber);
     }
 
     private async Task<AdvanceCycleResult> AdvanceCycleEntryCoreAsync()
@@ -682,7 +698,11 @@ public sealed class MarketService(
             var decisions = await GenerateDecisionsCoreAsync();
             var advance = await AdvanceCycleCoreAsync();
 
-            return CycleTickResult.Executed(decisions.OrdersPlaced, advance.FillCount, advance.CompletedCycleNumber);
+            return CycleTickResult.Executed(
+                decisions.BuyOrdersPlaced,
+                decisions.SellOrdersPlaced,
+                advance.FillCount,
+                advance.CompletedCycleNumber);
         });
     }
 
@@ -2465,7 +2485,7 @@ public sealed class MarketService(
 
         if (quotes.Count == 0)
         {
-            return RunDecisionsResult.Ok(0);
+            return RunDecisionsResult.Ok(0, 0);
         }
 
         // Configured AI Agents are owned only by the hosted coordinator, so they never reach the rule-based
@@ -2620,7 +2640,8 @@ public sealed class MarketService(
             .ToHashSet();
         var preLeaveBufferFundParticipantIds = await PreLeaveBufferFundParticipantIdsAsync(market.CurrentTradingDayId);
 
-        var ordersPlaced = 0;
+        var buyOrdersPlaced = 0;
+        var sellOrdersPlaced = 0;
 
         foreach (var trader in traders)
         {
@@ -2709,7 +2730,15 @@ public sealed class MarketService(
 
                 if (result.Success)
                 {
-                    ordersPlaced++;
+                    if (intent.Type == OrderType.Buy)
+                    {
+                        buyOrdersPlaced++;
+                    }
+                    else
+                    {
+                        sellOrdersPlaced++;
+                    }
+
                     if ((trader.Type == ParticipantType.Individual
                             || trader.Type == ParticipantType.CollectiveFund)
                         && intent.Type == OrderType.Buy
@@ -2734,7 +2763,7 @@ public sealed class MarketService(
         }
 
         await dbContext.SaveChangesAsync();
-        return RunDecisionsResult.Ok(ordersPlaced);
+        return RunDecisionsResult.Ok(buyOrdersPlaced, sellOrdersPlaced);
     }
 
     private static void UpdatePriorBuyPriorityLimit(

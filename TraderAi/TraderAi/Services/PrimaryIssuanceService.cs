@@ -70,6 +70,15 @@ public sealed class PrimaryIssuanceService(
             .Where(company => company.ClosedInCycleId == null)
             .OrderBy(company => company.Id)
             .ToListAsync();
+        var cancelledReplenishmentCompanyIds = (await dbContext.Orders.AsNoTracking()
+                .Where(order => order.ParticipantId == null
+                    && order.Type == OrderType.Sell
+                    && order.IsFloatReplenishment
+                    && order.Status == OrderStatus.Cancelled)
+                .Select(order => order.CompanyId)
+                .Distinct()
+                .ToListAsync())
+            .ToHashSet();
         var eligibleBuys = await dbContext.Orders.AsNoTracking()
             .Where(order => order.ParticipantId != null
                 && order.Type == OrderType.Buy
@@ -93,20 +102,38 @@ public sealed class PrimaryIssuanceService(
                     order.CreatedAt,
                 })
             .ToListAsync();
-        var existingSells = await dbContext.Orders.AsNoTracking()
+        var existingSells = await dbContext.Orders
             .Where(order => order.Type == OrderType.Sell
                 && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
                 && order.Quantity > order.FilledQuantity)
-            .Select(order => new
-            {
-                order.Id,
-                order.ParticipantId,
-                order.CompanyId,
-                order.LimitPrice,
-                RemainingQuantity = order.Quantity - order.FilledQuantity,
-                order.CreatedAt,
-            })
             .ToListAsync();
+
+        foreach (var order in existingSells.Where(order => order.ParticipantId == null && order.IsFloatReplenishment))
+        {
+            if (!latestPriceByCompany.TryGetValue(order.CompanyId, out var latestPrice)
+                || latestPrice <= 0m)
+            {
+                continue;
+            }
+
+            var priceBand = priceBandByCompany.GetValueOrDefault(order.CompanyId);
+            if (priceBand is not null && priceBand.State != LuldState.Normal)
+            {
+                continue;
+            }
+
+            var bounds = ResolveBounds(priceBand, latestPrice, volatilityHaltOptions.Value);
+            if (bounds is null
+                || !bounds.IsWithinActiveBand(latestPrice)
+                || bounds.IsWithinActiveBand(order.LimitPrice))
+            {
+                continue;
+            }
+
+            order.Status = OrderStatus.Cancelled;
+            order.UpdatedAt = now;
+            cancelledReplenishmentCompanyIds.Add(order.CompanyId);
+        }
 
         foreach (var company in companies)
         {
@@ -135,10 +162,6 @@ public sealed class PrimaryIssuanceService(
 
             var issuerFloat = (long)company.IssuedSharesCount - heldByCompany.GetValueOrDefault(company.Id);
             var scarcityThreshold = company.IssuedSharesCount * settings.FloatScarcityThresholdPercent / 100m;
-            if (issuerFloat >= scarcityThreshold)
-            {
-                continue;
-            }
 
             var buys = eligibleBuys
                 .Where(order => order.CompanyId == company.Id
@@ -161,6 +184,8 @@ public sealed class PrimaryIssuanceService(
 
             var sells = existingSells
                 .Where(order => order.CompanyId == company.Id
+                    && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                    && order.Quantity > order.FilledQuantity
                     && bounds.IsWithinActiveBand(order.LimitPrice))
                 .OrderBy(order => order.LimitPrice)
                 .ThenBy(order => order.CreatedAt)
@@ -169,27 +194,59 @@ public sealed class PrimaryIssuanceService(
                     order.Id,
                     order.ParticipantId,
                     order.LimitPrice,
-                    order.RemainingQuantity,
+                    order.Quantity - order.FilledQuantity,
                     order.CreatedAt))
                 .ToList();
             var unmetDemand = CalculateUnmetDemand(buys, sells);
-            if (unmetDemand <= 0
-                || !TryCalculateDailyCap(company.IssuedSharesCount, settings.MaximumDailyIssuancePercent, out var dailyCap))
+            if (unmetDemand <= 0)
             {
                 continue;
             }
 
-            var availableIssuedShareCapacity = int.MaxValue - company.IssuedSharesCount;
-            var quantity = (int)Math.Min(
-                Math.Min(unmetDemand, dailyCap),
-                availableIssuedShareCapacity);
+            var listedIssuerFloat = existingSells
+                .Where(order => order.CompanyId == company.Id
+                    && order.ParticipantId == null
+                    && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
+                    && order.Quantity > order.FilledQuantity)
+                .Aggregate(0L, (listed, order) => AddWithoutOverflow(
+                    listed,
+                    order.Quantity - order.FilledQuantity));
+            // A cancelled replenishment proves that unlisted issuer float came from a superseded offer; without
+            // that history, a missing issuer order must not silently turn unrelated free shares into a new listing.
+            var relistableFloat = cancelledReplenishmentCompanyIds.Contains(company.Id)
+                ? Math.Max(0L, issuerFloat - listedIssuerFloat)
+                : 0L;
+            var relistedQuantity = Math.Min(
+                unmetDemand,
+                Math.Min(relistableFloat, int.MaxValue));
+            var remainingDemand = unmetDemand - relistedQuantity;
+            var remainingOrderCapacity = int.MaxValue - relistedQuantity;
+            var newlyIssuedQuantity = 0L;
+            if (remainingDemand > 0
+                && remainingOrderCapacity > 0
+                && issuerFloat < scarcityThreshold
+                && TryCalculateDailyCap(
+                    company.IssuedSharesCount,
+                    settings.MaximumDailyIssuancePercent,
+                    out var dailyCap))
+            {
+                var availableIssuedShareCapacity = int.MaxValue - company.IssuedSharesCount;
+                newlyIssuedQuantity = Math.Min(
+                    Math.Min(remainingDemand, dailyCap),
+                    Math.Min(availableIssuedShareCapacity, remainingOrderCapacity));
+            }
+
+            var quantity = (int)(relistedQuantity + newlyIssuedQuantity);
             if (quantity <= 0)
             {
                 continue;
             }
 
-            company.IssuedSharesCount += quantity;
-            company.UpdatedAt = now;
+            if (newlyIssuedQuantity > 0)
+            {
+                company.IssuedSharesCount += (int)newlyIssuedQuantity;
+                company.UpdatedAt = now;
+            }
             dbContext.Orders.Add(new Order
             {
                 ParticipantId = null,
