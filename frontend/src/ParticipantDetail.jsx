@@ -36,9 +36,9 @@ function fundStatusClass(status) {
   return 'tag'
 }
 
-// The trader detail block: identity, a total-worth chart, editable profile, bank statement, holdings, orders,
-// cash movements, and trades. Owns its own polling keyed on participantId so it can sit under the Traders
-// table and swap as the selected trader changes.
+// The trader detail block: a compact identity bar above tabbed sections (worth chart, holdings, orders, trades,
+// cash, investments, loans, margin, profile, and the conditional automation/members/favorites tabs). Owns its
+// own polling keyed on participantId and is shared by the Trader, Player-stats, and Fund-stats pages.
 export function ParticipantDetail({ participantId, showFavoriteCompanies = false }) {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
@@ -51,6 +51,9 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
   const [settlements, setSettlements] = useState([])
   const [loanStatus, setLoanStatus] = useState('active')
   const [modalCompanyId, setModalCompanyId] = useState(null)
+  const [fundHistoryTotal, setFundHistoryTotal] = useState(0)
+  const [activeTab, setActiveTab] = useState('worth')
+  const tabRefs = useRef({})
 
   // The profile selects are editable, so polling must not overwrite an unsaved edit.
   const [form, setForm] = useState({ temperament: '', riskProfile: '' })
@@ -64,7 +67,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, orderData, tradeData, companyData, worthData, loanData, settlementData] = await Promise.all([
+      const [detailData, orderData, tradeData, companyData, worthData, loanData, settlementData, fundHistoryData] = await Promise.all([
         api.getParticipant(participantId),
         api.getParticipantOrders(participantId, 100),
         api.getParticipantShareTransactions(participantId),
@@ -72,6 +75,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
         api.getParticipantWorthHistory(participantId),
         api.getParticipantLoans(participantId, { status: loanStatus }),
         api.getParticipantSettlements(participantId),
+        api.getFundMembershipHistory(participantId, 1, 1),
       ])
 
       setDetail(detailData)
@@ -81,6 +85,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
       setWorthHistory(worthData ?? [])
       setLoans(loanData ?? [])
       setSettlements(settlementData?.items ?? [])
+      setFundHistoryTotal(fundHistoryData?.total ?? 0)
       setLoadError(null)
 
       if (!dirtyRef.current && detailData) {
@@ -146,6 +151,48 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
     )
   }
 
+  const isFund = detail.type === 'CollectiveFund'
+  const isAutomatable = detail.type === 'Individual' || detail.type === 'AIAgent'
+  const tabs = [
+    { key: 'worth', label: 'Total worth' },
+    { key: 'holdings', label: 'Shares by company' },
+    { key: 'industries', label: 'Portfolio by industry' },
+    { key: 'orders', label: 'Recent orders' },
+    { key: 'trades', label: 'Recent trades' },
+    { key: 'cash', label: 'Cash movements' },
+    { key: 'settlements', label: 'Pending settlements' },
+    { key: 'investments', label: 'Investments' },
+    { key: 'loans', label: 'Loans' },
+    { key: 'margin', label: 'Margin' },
+    { key: 'profile', label: 'Profile & bank' },
+    ...(isAutomatable ? [{ key: 'ai', label: 'Automation' }] : []),
+    ...(isFund
+      ? [
+          { key: 'members', label: 'Fund members' },
+          { key: 'membership', label: 'Fund membership history' },
+        ]
+      : fundHistoryTotal > 0
+        ? [{ key: 'fundhistory', label: 'Fund history' }]
+        : []),
+    ...(showFavoriteCompanies ? [{ key: 'favorites', label: 'Favorites' }] : []),
+  ]
+  const safeActive = tabs.some((tab) => tab.key === activeTab) ? activeTab : 'worth'
+
+  function focusTab(key) {
+    setActiveTab(key)
+    tabRefs.current[key]?.focus()
+  }
+
+  function onTabKeyDown(event) {
+    if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    if (event.key === 'Home') return focusTab(tabs[0].key)
+    if (event.key === 'End') return focusTab(tabs[tabs.length - 1].key)
+    const index = tabs.findIndex((tab) => tab.key === safeActive)
+    const delta = event.key === 'ArrowRight' ? 1 : -1
+    focusTab(tabs[(index + delta + tabs.length) % tabs.length].key)
+  }
+
   return (
     <section className="detail-stack" aria-label={`${detail.name} details`}>
       {loadError ? (
@@ -155,7 +202,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
         </div>
       ) : null}
 
-      <section className="command" aria-label="Trader identity">
+      <section className="command command-compact" aria-label="Trader identity">
         <div className="command-id">
           <span className="command-label">{TYPE_LABEL[detail.type] ?? detail.type}</span>
           <h2 className="command-name">{detail.name}</h2>
@@ -203,10 +250,6 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
               <dd className="num tone-down">−{formatMoney(detail.loanLiability)}</dd>
             </div>
           ) : null}
-          <div className="stat"><dt>Account equity</dt><dd className="num">{formatMoney(detail.margin?.accountEquity ?? 0)}</dd></div>
-          <div className="stat"><dt>Margin debit</dt><dd className="num">{formatMoney(detail.margin?.debitBalance ?? 0)}</dd></div>
-          <div className="stat"><dt>Margin interest</dt><dd className="num">{formatMoney(detail.margin?.accruedInterest ?? 0)}</dd></div>
-          <div className="stat"><dt>Buying power</dt><dd className="num">{formatMoney(detail.margin?.buyingPower ?? detail.availableBalance)}</dd></div>
           <div className="stat">
             <dt>Unrealized P/L</dt>
             <dd className={`num tone-${toneOf(holdingsPnl)}`}>{formatSigned(holdingsPnl)}</dd>
@@ -214,66 +257,106 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
         </dl>
       </section>
 
-      <WorthChartPanel worthHistory={worthHistory} />
-
-      {detail.collectiveFundStatus ? (
-        <MembersPanel participantId={participantId} />
-      ) : null}
-
-      <div className="grid-detail">
-        <ProfilePanel
-          form={form}
-          dirty={dirty}
-          saving={saving}
-          saveError={saveError}
-          onChange={(field, value) => {
-            setForm((current) => ({ ...current, [field]: value }))
-            setDirty(true)
-          }}
-          onSave={handleSave}
-        />
-        <BankPanel detail={detail} marketValue={marketValue} costBasis={costBasis} holdingsPnl={holdingsPnl} />
-      </div>
-
-      {detail.type === 'Individual' || detail.type === 'AIAgent' ? (
-        <>
-          <AiTraderAutomationPanel key={`automation-${participantId}`} participantId={participantId} detail={detail} onChanged={loadAll} />
-          <AiTraderCallsPanel key={`ai-calls-${participantId}`} participantId={participantId} isAiTrader={detail.type === 'AIAgent'} />
-        </>
-      ) : null}
-
-      <HoldingsPanel participantId={participantId} totalShares={detail.sharesOwned} onSelectCompany={setModalCompanyId} />
-
-      {showFavoriteCompanies ? (
-        <Panel
-          title="Favorite companies"
-          count={`${formatInt(favoriteCompanies(companies).length)}`}
-          className="panel-holdings"
+      <div className="detail-tabs">
+        <div className="tabbar">
+          <div className="tabs" role="tablist" aria-label="Trader detail sections" onKeyDown={onTabKeyDown}>
+            {tabs.map((tab) => {
+              const selected = tab.key === safeActive
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  id={`tradertab-${tab.key}`}
+                  aria-selected={selected}
+                  aria-controls={`traderpanel-${tab.key}`}
+                  tabIndex={selected ? 0 : -1}
+                  ref={(element) => {
+                    tabRefs.current[tab.key] = element
+                  }}
+                  className={`tab${selected ? ' is-active' : ''}`}
+                  onClick={() => setActiveTab(tab.key)}
+                >
+                  {tab.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+        <div
+          className="tabpanel"
+          role="tabpanel"
+          id={`traderpanel-${safeActive}`}
+          aria-labelledby={`tradertab-${safeActive}`}
         >
-          <FavoriteCompaniesTable companies={companies} />
-        </Panel>
-      ) : null}
-
-      <MarginPanel margin={detail.margin} />
-
-      <Panel title="Pending settlements" count={`${formatInt(settlements.length)}`} className="panel-holdings">
-        <SettlementsTable settlements={settlements} onSelectCompany={setModalCompanyId} />
-      </Panel>
-
-      <IndustryHoldingsPanel participantId={participantId} />
-
-      <div className="grid-detail">
-        <OrdersPanel orders={orders} companyName={companyName} onSelectCompany={setModalCompanyId} />
-        <CashPanel key={participantId} participantId={participantId} />
+          {safeActive === 'worth' ? <WorthChartPanel worthHistory={worthHistory} /> : null}
+          {safeActive === 'holdings' ? (
+            <HoldingsPanel participantId={participantId} totalShares={detail.sharesOwned} onSelectCompany={setModalCompanyId} />
+          ) : null}
+          {safeActive === 'industries' ? (
+            <IndustryHoldingsPanel participantId={participantId} />
+          ) : null}
+          {safeActive === 'orders' ? (
+            <OrdersPanel orders={orders} companyName={companyName} onSelectCompany={setModalCompanyId} />
+          ) : null}
+          {safeActive === 'trades' ? (
+            <TradesPanel trades={trades} participantId={participantId} companyName={companyName} onSelectCompany={setModalCompanyId} />
+          ) : null}
+          {safeActive === 'cash' ? (
+            <CashPanel key={participantId} participantId={participantId} />
+          ) : null}
+          {safeActive === 'settlements' ? (
+            <Panel title="Pending settlements" count={`${formatInt(settlements.length)}`} className="panel-holdings">
+              <SettlementsTable settlements={settlements} onSelectCompany={setModalCompanyId} />
+            </Panel>
+          ) : null}
+          {safeActive === 'investments' ? <InvestmentsPanel participantId={participantId} /> : null}
+          {safeActive === 'loans' ? (
+            <LoansPanel loans={loans} status={loanStatus} onStatusChange={setLoanStatus} />
+          ) : null}
+          {safeActive === 'margin' ? <MarginPanel margin={detail.margin} /> : null}
+          {safeActive === 'profile' ? (
+            <div className="grid-detail">
+              <ProfilePanel
+                form={form}
+                dirty={dirty}
+                saving={saving}
+                saveError={saveError}
+                onChange={(field, value) => {
+                  setForm((current) => ({ ...current, [field]: value }))
+                  setDirty(true)
+                }}
+                onSave={handleSave}
+              />
+              <BankPanel detail={detail} marketValue={marketValue} costBasis={costBasis} holdingsPnl={holdingsPnl} />
+            </div>
+          ) : null}
+          {safeActive === 'ai' ? (
+            <div className="detail-tab-stack">
+              <AiTraderAutomationPanel key={`automation-${participantId}`} participantId={participantId} detail={detail} onChanged={loadAll} />
+              <AiTraderCallsPanel key={`ai-calls-${participantId}`} participantId={participantId} isAiTrader={detail.type === 'AIAgent'} />
+            </div>
+          ) : null}
+          {safeActive === 'members' ? (
+            <MembersPanel participantId={participantId} />
+          ) : null}
+          {safeActive === 'membership' ? (
+            <FundMembershipHistoryPanel participantId={participantId} isFund />
+          ) : null}
+          {safeActive === 'fundhistory' ? (
+            <FundMembershipHistoryPanel participantId={participantId} isFund={false} />
+          ) : null}
+          {safeActive === 'favorites' ? (
+            <Panel
+              title="Favorite companies"
+              count={`${formatInt(favoriteCompanies(companies).length)}`}
+              className="panel-holdings"
+            >
+              <FavoriteCompaniesTable companies={companies} />
+            </Panel>
+          ) : null}
+        </div>
       </div>
-
-      <LoansPanel loans={loans} status={loanStatus} onStatusChange={setLoanStatus} />
-
-      <FundMembershipHistoryPanel participantId={participantId} isFund={detail.type === 'CollectiveFund'} />
-
-      <TradesPanel trades={trades} participantId={participantId} companyName={companyName} onSelectCompany={setModalCompanyId} />
-
-      <InvestmentsPanel participantId={participantId} />
 
       {modalCompany ? (
         <CompanyModal
@@ -400,6 +483,8 @@ function MarginPanel({ margin }) {
       <dl className="kv">
         <div className="kv-row"><dt>Account equity</dt><dd className="num">{formatMoney(margin?.accountEquity ?? 0)}</dd></div>
         <div className="kv-row"><dt>Buying power</dt><dd className="num">{formatMoney(margin?.buyingPower ?? 0)}</dd></div>
+        <div className="kv-row"><dt>Margin debit</dt><dd className="num">{formatMoney(margin?.debitBalance ?? 0)}</dd></div>
+        <div className="kv-row"><dt>Margin interest</dt><dd className="num">{formatMoney(margin?.accruedInterest ?? 0)}</dd></div>
         <div className="kv-row"><dt>Initial requirement</dt><dd className="num">{formatMoney(margin?.initialRequirement ?? 0)}</dd></div>
         <div className="kv-row"><dt>Maintenance requirement</dt><dd className="num">{formatMoney(margin?.maintenanceRequirement ?? 0)}</dd></div>
         <div className="kv-row"><dt>Maintenance excess</dt><dd className="num">{formatMoney(standing.excess)}</dd></div>

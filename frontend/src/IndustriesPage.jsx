@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, toneOf } from './format'
 import { MultiLineChart } from './MultiLineChart'
-import { Panel } from './Panel'
 import { SortHeader, Pager } from './TableControls'
 import { Treemap } from './Treemap'
 import { TONE_WORD } from './treemapLayout'
@@ -12,6 +11,11 @@ import { useClientTable } from './useClientTable'
 
 const POLL_INTERVAL_MS = 2500
 const CHANGE_GLYPH = { up: '▲', down: '▼', flat: '–' }
+const TABS = [
+  { key: 'map', label: 'Map' },
+  { key: 'sentiment', label: 'Sentiment' },
+  { key: 'table', label: 'Industries' },
+]
 
 function formatSentiment(value) {
   if (typeof value !== 'number') return '—'
@@ -35,6 +39,8 @@ function IndustriesPage() {
   const [industries, setIndustries] = useState([])
   const [companies, setCompanies] = useState([])
   const [history, setHistory] = useState([])
+  const [active, setActive] = useState('map')
+  const tabRefs = useRef({})
   const navigate = useNavigate()
 
   const loadAll = useCallback(async () => {
@@ -63,6 +69,26 @@ function IndustriesPage() {
       clearInterval(intervalId)
     }
   }, [loadAll])
+
+  function focusTab(key) {
+    setActive(key)
+    tabRefs.current[key]?.focus()
+  }
+
+  function onTabKeyDown(event) {
+    const index = TABS.findIndex((tab) => tab.key === active)
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      event.preventDefault()
+      const step = event.key === 'ArrowRight' ? 1 : -1
+      focusTab(TABS[(index + step + TABS.length) % TABS.length].key)
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      focusTab(TABS[0].key)
+    } else if (event.key === 'End') {
+      event.preventDefault()
+      focusTab(TABS[TABS.length - 1].key)
+    }
+  }
 
   const rows = useMemo(() => {
     const worthByIndustry = new Map()
@@ -115,95 +141,139 @@ function IndustriesPage() {
             </div>
           ) : null}
 
-          <Panel
-            title="Industry map"
-            count={treemapItems.length ? `${treemapItems.length} industries · ${formatCompactMoney(totalWorth)}` : undefined}
-            className="panel-map"
-          >
-            {treemapItems.length === 0 ? (
-              <p className="note">Seed the market to see industries.</p>
-            ) : (
-              <div className="map-layout">
-                <Treemap
-                  items={treemapItems}
-                  onSelect={(industryId) => navigate(`/industries/${industryId}`)}
-                  formatValue={formatCompactMoney}
-                  formatChange={formatSentimentChange}
-                  ariaLabel="Industries by total worth"
-                />
+          <article className="panel">
+            <div className="tabbar">
+              <div className="tabs" role="tablist" aria-label="Industry sections" onKeyDown={onTabKeyDown}>
+                {TABS.map((tab) => {
+                  const selected = tab.key === active
+                  return (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      role="tab"
+                      id={`industriestab-${tab.key}`}
+                      aria-selected={selected}
+                      aria-controls={`industriespanel-${tab.key}`}
+                      tabIndex={selected ? 0 : -1}
+                      ref={(element) => {
+                        tabRefs.current[tab.key] = element
+                      }}
+                      className={`tab${selected ? ' is-active' : ''}`}
+                      onClick={() => setActive(tab.key)}
+                    >
+                      {tab.label}
+                    </button>
+                  )
+                })}
               </div>
-            )}
-          </Panel>
+            </div>
 
-          <Panel title="All industry sentiment" count={`${formatInt(sentimentSeries.length)} series`} className="panel-holdings">
-            {sentimentSeries.length === 0 ? (
-              <p className="note">No sentiment history has been recorded yet.</p>
-            ) : (
-              <MultiLineChart series={sentimentSeries} formatValue={formatSentiment} label="Sentiment history for all industries" />
-            )}
-          </Panel>
+            <div
+              className="tabpanel"
+              role="tabpanel"
+              id={`industriespanel-${active}`}
+              aria-labelledby={`industriestab-${active}`}
+            >
+              {active === 'map' ? (
+                treemapItems.length === 0 ? (
+                  <p className="note">Seed the market to see industries.</p>
+                ) : (
+                  <>
+                    <p className="tabpanel-meta">
+                      {treemapItems.length} industries · {formatCompactMoney(totalWorth)}
+                    </p>
+                    <div className="map-layout">
+                      <Treemap
+                        items={treemapItems}
+                        onSelect={(industryId) => navigate(`/industries/${industryId}`)}
+                        formatValue={formatCompactMoney}
+                        formatChange={formatSentimentChange}
+                        ariaLabel="Industries by total worth"
+                      />
+                    </div>
+                  </>
+                )
+              ) : null}
 
-          <Panel title="Industries" count={`${formatInt(rows.length)}`} className="panel-holdings">
-            {rows.length === 0 ? (
-              <p className="note">No industries yet.</p>
-            ) : (
-              <>
-                <div className="tbl-wrap">
-                  <table className="tbl">
-                    <thead>
-                      <tr>
-                        <th scope="col">Name</th>
-                        <th scope="col" className="ta-r">
-                          Companies
-                        </th>
-                        <SortHeader label="Total worth" columnKey="totalWorth" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                        <SortHeader label="Sentiment" columnKey="sentimentValue" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                        <SortHeader label="Volatility" columnKey="sentimentVolatility" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                        <SortHeader label="Beta" columnKey="sectorBeta" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                        <SortHeader
-                          label="Last cycle"
-                          columnKey="lastCycleSentimentChange"
-                          sortKey={sortKey}
-                          sortDir={sortDir}
-                          onToggle={toggleSort}
-                          title="Change in sentiment since the preceding cycle"
-                        />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pageRows.map((industry) => {
-                        const tone = toneOf(industry.lastCycleSentimentChange)
-                        return (
-                          <tr key={industry.id}>
-                            <th scope="row" className="cell-ellipsis">
-                              <button
-                                type="button"
-                                className="cell-name-btn"
-                                onClick={() => navigate(`/industries/${industry.id}`)}
-                                title={`Open ${industry.name} industry details`}
-                              >
-                                {industry.name}
-                              </button>
+              {active === 'sentiment' ? (
+                sentimentSeries.length === 0 ? (
+                  <p className="note">No sentiment history has been recorded yet.</p>
+                ) : (
+                  <>
+                    <p className="tabpanel-meta">{formatInt(sentimentSeries.length)} series</p>
+                    <MultiLineChart
+                      series={sentimentSeries}
+                      formatValue={formatSentiment}
+                      label="Sentiment history for all industries"
+                    />
+                  </>
+                )
+              ) : null}
+
+              {active === 'table' ? (
+                rows.length === 0 ? (
+                  <p className="note">No industries yet.</p>
+                ) : (
+                  <>
+                    <p className="tabpanel-meta">{formatInt(rows.length)} industries</p>
+                    <div className="tbl-wrap">
+                      <table className="tbl">
+                        <thead>
+                          <tr>
+                            <th scope="col">Name</th>
+                            <th scope="col" className="ta-r">
+                              Companies
                             </th>
-                            <td className="num ta-r">{formatInt(industry.companyCount)}</td>
-                            <td className="num ta-r">{formatMoney(industry.totalWorth)}</td>
-                            <td className="num ta-r">{formatSentiment(industry.sentimentValue)}</td>
-                            <td className="num ta-r">{formatDecimal(industry.sentimentVolatility)}</td>
-                            <td className="num ta-r">{formatDecimal(industry.sectorBeta)}</td>
-                            <td className={`num ta-r tone-${tone}`}>
-                              <span aria-hidden="true">{CHANGE_GLYPH[tone]} </span>
-                              {formatSentimentChange(industry.lastCycleSentimentChange)}
-                            </td>
+                            <SortHeader label="Total worth" columnKey="totalWorth" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                            <SortHeader label="Sentiment" columnKey="sentimentValue" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                            <SortHeader label="Volatility" columnKey="sentimentVolatility" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                            <SortHeader label="Beta" columnKey="sectorBeta" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                            <SortHeader
+                              label="Last cycle"
+                              columnKey="lastCycleSentimentChange"
+                              sortKey={sortKey}
+                              sortDir={sortDir}
+                              onToggle={toggleSort}
+                              title="Change in sentiment since the preceding cycle"
+                            />
                           </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <Pager page={page} pageCount={pageCount} onPage={setPage} />
-              </>
-            )}
-          </Panel>
+                        </thead>
+                        <tbody>
+                          {pageRows.map((industry) => {
+                            const tone = toneOf(industry.lastCycleSentimentChange)
+                            return (
+                              <tr key={industry.id}>
+                                <th scope="row" className="cell-ellipsis">
+                                  <button
+                                    type="button"
+                                    className="cell-name-btn"
+                                    onClick={() => navigate(`/industries/${industry.id}`)}
+                                    title={`Open ${industry.name} industry details`}
+                                  >
+                                    {industry.name}
+                                  </button>
+                                </th>
+                                <td className="num ta-r">{formatInt(industry.companyCount)}</td>
+                                <td className="num ta-r">{formatMoney(industry.totalWorth)}</td>
+                                <td className="num ta-r">{formatSentiment(industry.sentimentValue)}</td>
+                                <td className="num ta-r">{formatDecimal(industry.sentimentVolatility)}</td>
+                                <td className="num ta-r">{formatDecimal(industry.sectorBeta)}</td>
+                                <td className={`num ta-r tone-${tone}`}>
+                                  <span aria-hidden="true">{CHANGE_GLYPH[tone]} </span>
+                                  {formatSentimentChange(industry.lastCycleSentimentChange)}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <Pager page={page} pageCount={pageCount} onPage={setPage} />
+                  </>
+                )
+              ) : null}
+            </div>
+          </article>
         </>
       )}
     </main>

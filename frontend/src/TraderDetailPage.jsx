@@ -9,7 +9,7 @@ function TraderDetailPage() {
   const participantId = Number(id)
 
   return (
-    <main className="main">
+    <main className="main main-fill">
       <ParticipantDetail key={participantId} participantId={participantId} />
     </main>
   )

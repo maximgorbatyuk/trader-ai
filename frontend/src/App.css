@@ -3167,9 +3167,17 @@
   margin-top: var(--s-3);
 }
 
-/* Shrink the company-page tab labels so the whole detail card fits the viewport height without scrolling. */
+/* Shrink the detail-page tab labels so the whole detail card fits the viewport height without scrolling. */
 .detail-tabs .tab {
   font-size: var(--t-xs);
+}
+
+/* Multi-panel detail tabs (e.g. the trader Automation tab) stack their panels; side-by-side pairs use
+   .grid-detail instead. */
+.detail-tab-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
 }
 
 /* On the company page the routed <main> owns the full column so the tabbed card stretches to the bottom of

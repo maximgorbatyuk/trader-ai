@@ -53,7 +53,7 @@ function FundStatsPage() {
   }
 
   return (
-    <main className="main">
+    <main className="main main-fill">
       <ParticipantDetail key={player.fundParticipantId} participantId={player.fundParticipantId} showFavoriteCompanies />
     </main>
   )
