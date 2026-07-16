@@ -74,6 +74,7 @@ Several structural controls prevent unstable prices or concentrations:
 - A concentration control reduces a company that grows beyond the configured share of the market.
 - Stock splits and reverse merges keep share denominations within useful bounds.
 - Demand-paced primary issuance adds priced supply when issuer float is scarce, while free-share emission separately adds limited free supply to unusually large companies.
+- A big investment lets a participant or fund fund a company by buying newly minted shares at the current price, expanding issued supply and crediting corporate cash, and briefly shields the company from delisting.
 - Dividend ceilings and the issuer's available cash limit corporate payouts.
 
 These mechanisms are distinct from news and crisis impacts. A direct market impact records a new price; a supply change alters quantities and lets later trading discover the price.

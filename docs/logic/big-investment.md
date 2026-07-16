@@ -1,0 +1,49 @@
+# Big investment
+
+A big investment lets a participant or fund fund a company directly: the investor buys a large block of freshly
+minted shares at the current price, and the company hands them over in a single completed deal rather than through
+the order book.
+
+## Rules
+
+- Any active Individual, AI Agent, or Collective Fund can be an automated investor; the human player invests only
+  through the manual action, never through the automated roll.
+- Each cycle has a single chance that one deal happens. When it fires, one eligible investor and company are chosen.
+- The invested cash must be at least 40% of the target company's capitalisation, and the investor must be able to
+  fund it from settled, unreserved cash.
+- The deal executes at the company's current price. The invested cash mints that many new shares, expanding the
+  company's issued share count.
+- The investor receives the new shares immediately as a settled holding and pays the cash immediately; the company
+  receives the cash as corporate cash.
+- Capitalisation is re-recorded at the deal price against the enlarged share count.
+- An auditor publishes a raised-expectations rating for the company, lifting its price.
+- The company's industry sentiment ticks up by a small amount.
+- The company is shielded from delisting for the next few trading days.
+- Each deal is announced on the Newswire without a separate price impact of its own.
+
+## Manual action
+
+The player and the player-managed fund can start a deal from the company detail page. The same minimum (40% of
+capitalisation) and cash checks apply, and the deal runs through the same executor as the automated roll.
+
+## Recorded facts
+
+Each deal is stored as its own record: the investor, deal value, shares issued, shares and capitalisation before
+the deal, the capitalisation after it (deal price × the enlarged share count), the investor's resulting stake, and
+the trading day and cycle it happened in. The record survives a departed investor or a closed company.
+
+## Where to see it
+
+- A dedicated **Investments** block lists these deals on three surfaces: **investments received** on a company's
+  detail page, **investments made** on a participant's or fund's page, and a market-wide **recent investments**
+  block on the Trade Market page.
+- The company detail page also records the deal as a filled buy order, a settled trade, and a **Big investment**
+  credit in the **Corporate cash movements** panel, and shows the raised-expectations rating and the enlarged share
+  count.
+- The deal appears on the **Newswire** as an **Investment** item naming the investor, company, share count, and size.
+
+The deal logic lives in `BigInvestmentService`; the manual action is served by `MarketService.InvestInCompanyAsync`;
+the deal facts are stored as `CompanyInvestment` records.
+
+See [Corporate cash](corporate-cash.md) for the issuer cash credit and [Company](../roles/company.md) for the
+delisting-protection window.

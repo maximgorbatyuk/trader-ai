@@ -61,6 +61,7 @@ No authentication is required between the frontend and backend for local develop
 | [Corporate cash](docs/logic/corporate-cash.md) | How primary proceeds and simulated operating income fund issuer cash and dividends. |
 | [Sector sentiment](docs/logic/sector-sentiment.md) | How sector confidence shapes shocks and automated trading demand. |
 | [Free-share emission](docs/logic/free-share-emission.md) | How large companies issue free shares to dilute price. |
+| [Big investment](docs/logic/big-investment.md) | How a participant or fund funds a company by buying newly minted shares. |
 | [Bank loans](docs/logic/bank-loans.md) | How explicit fixed-term loans are originated, serviced, and reconciled separately from margin. |
 | [Fund advertising](docs/logic/fund-advertising.md) | How the player-managed fund pays to raise its Popularity Index and attract joiners. |
 | [Behavioural audit](docs/logic/behavioral-audit.md) | How the thirty-cycle audit scores trading activity and reclassifies the player and their fund. |

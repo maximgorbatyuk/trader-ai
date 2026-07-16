@@ -58,6 +58,7 @@ public static class GameSettingsCatalog
             ["StockSplit"] = ["Enabled"],
             ["Auditor"] = ["Enabled"],
             ["ShareEmission"] = ["Enabled"],
+            ["BigInvestment"] = ["Enabled"],
             ["PrimaryIssuance"] = ["Enabled", "FloatScarcityThresholdPercent", "MaximumDailyIssuancePercent"],
             ["CompanyLifecycle"] = ["Enabled"],
             ["Loan"] = ["Enabled"],
@@ -121,6 +122,7 @@ public static class GameSettingsCatalog
         "EventTriggerChances:ScienceSentimentPush",
         "EventTriggerChances:OutsideBandOrder",
         "EventTriggerChances:NoSellOrderBuyChance",
+        "EventTriggerChances:BigInvestment",
         "ChanceModifiers:CrisisBankruptcyMultiplier",
         "ChanceModifiers:CrisisAuditorIssueMultiplier",
         "ChanceModifiers:GlobalCrisisExitMultiplier",
@@ -145,6 +147,8 @@ public static class GameSettingsCatalog
         "RandomMagnitudeBands:ScienceIndustryLiftMaxPercent",
         "RandomMagnitudeBands:GlobalCrisisIndustryShareMin",
         "RandomMagnitudeBands:GlobalCrisisIndustryShareMax",
+        "RandomMagnitudeBands:BigInvestmentFractionMin",
+        "RandomMagnitudeBands:BigInvestmentFractionMax",
     ];
 
     private static readonly HashSet<string> IntegerKeys =

@@ -2714,6 +2714,75 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         RequestedAt = DateTime.UtcNow,
     };
 
+    [Fact]
+    public async Task PlayerCanFundABigInvestmentThroughTheInvestEndpoint()
+    {
+        await WithClientAsync(async (client, configured) =>
+        {
+            await client.PostAsync("/market/seed", null);
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+
+            using var playerJson = await client.GetFromJsonAsync<JsonDocument>("/player");
+            var playerId = playerJson!.RootElement.GetProperty("id").GetInt32();
+
+            using var companies = await client.GetFromJsonAsync<JsonDocument>("/companies");
+            var companyId = companies!.RootElement.EnumerateArray().First().GetProperty("id").GetInt32();
+
+            using var detail = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}");
+            var marketCap = detail!.RootElement.GetProperty("marketCap").GetDecimal();
+            var price = detail.RootElement.GetProperty("currentPrice").GetDecimal();
+            var sharesBefore = detail.RootElement.GetProperty("issuedSharesCount").GetInt32();
+
+            // Fund the player generously so a 40%-of-cap deal is affordable.
+            using (var scope = configured.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var player = await db.Participants.SingleAsync(participant => participant.Id == playerId);
+                player.CurrentBalance = (marketCap * 3m) + 1_000_000m;
+                player.SettledCashBalance = player.CurrentBalance;
+                await db.SaveChangesAsync();
+            }
+
+            // Below the 40% floor is rejected.
+            using var tooSmall = await client.PostAsJsonAsync(
+                $"/companies/{companyId}/invest", new { participantId = playerId, amount = 1m });
+            Assert.Equal(HttpStatusCode.BadRequest, tooSmall.StatusCode);
+
+            // An unknown participant is rejected.
+            using var missing = await client.PostAsJsonAsync(
+                $"/companies/{companyId}/invest", new { participantId = 999999, amount = marketCap });
+            Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+
+            // A valid deal at or above the 40% floor mints new shares and returns the count.
+            var amount = Math.Ceiling(marketCap * 0.4m) + price;
+            using var ok = await client.PostAsJsonAsync(
+                $"/companies/{companyId}/invest", new { participantId = playerId, amount });
+            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+            using var okDoc = JsonDocument.Parse(await ok.Content.ReadAsStringAsync());
+            Assert.True(okDoc.RootElement.GetProperty("sharesMinted").GetInt32() > 0);
+
+            using var afterDetail = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}");
+            Assert.True(afterDetail!.RootElement.GetProperty("issuedSharesCount").GetInt32() > sharesBefore);
+
+            // The deal is recorded and surfaced by all three investment feeds.
+            using var companyInvestments = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}/investments");
+            var companyRow = companyInvestments!.RootElement.EnumerateArray().Single();
+            Assert.Equal(playerId, companyRow.GetProperty("investorParticipantId").GetInt32());
+            Assert.True(companyRow.GetProperty("sharesIssued").GetInt32() > 0);
+            Assert.True(companyRow.GetProperty("finalCapitalization").GetDecimal()
+                > companyRow.GetProperty("capitalizationBeforeDeal").GetDecimal());
+
+            using var participantInvestments = await client.GetFromJsonAsync<JsonDocument>($"/participants/{playerId}/investments");
+            Assert.Equal(companyId, participantInvestments!.RootElement.EnumerateArray().Single().GetProperty("companyId").GetInt32());
+
+            using var marketInvestments = await client.GetFromJsonAsync<JsonDocument>("/investments");
+            Assert.Contains(
+                marketInvestments!.RootElement.EnumerateArray(),
+                row => row.GetProperty("companyId").GetInt32() == companyId
+                    && row.GetProperty("investorParticipantId").GetInt32() == playerId);
+        });
+    }
+
     private async Task WithClientAsync(
         Func<HttpClient, WebApplicationFactory<Program>, Task> body,
         Action<IServiceCollection>? configure = null)
@@ -2761,6 +2830,10 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             // Auditors fire every cycle under the shared Random and would perturb the exact-count assertions
             // below; they are exercised directly against seeded rating rows instead.
             builder.UseSetting("Auditor:Enabled", "false");
+
+            // The automated big-investment roll would likewise add orders and trades on a random cycle and perturb
+            // the exact-count assertions; the manual invest endpoint it shares an executor with is unaffected.
+            builder.UseSetting("BigInvestment:Enabled", "false");
 
             // The AI coordinator is a hosted service that would otherwise poll and, for any configuration these
             // tests create, attempt a real provider call. It stays disabled so tests never touch the network.

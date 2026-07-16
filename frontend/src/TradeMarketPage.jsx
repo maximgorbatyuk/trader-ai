@@ -7,6 +7,7 @@ import { MarketMapPanel } from './MarketMapPanel'
 import { OrdersActivity } from './OrdersActivity'
 import { LatestNews } from './LatestNews'
 import { FilledOrdersTable } from './FilledOrdersTable'
+import { InvestmentsTable } from './InvestmentsTable'
 import { holdingCompanyIdSet } from './actor'
 import { formatInt } from './format'
 
@@ -29,18 +30,20 @@ function TradeMarketPage() {
   const [news, setNews] = useState([])
   const [filledOrders, setFilledOrders] = useState({ items: [], total: 0, page: 1, pageSize: FILLED_ORDERS_PAGE_SIZE })
   const [filledOrdersPage, setFilledOrdersPage] = useState(1)
+  const [investments, setInvestments] = useState([])
   const [playerHoldingCompanyIds, setPlayerHoldingCompanyIds] = useState(() => new Set())
   const [active, setActive] = useState('map')
   const tabRefs = useRef({})
 
   const loadAll = useCallback(async () => {
     try {
-      const [companyData, participantData, activityData, newsData, filledOrderData, playerData] = await Promise.all([
+      const [companyData, participantData, activityData, newsData, filledOrderData, investmentData, playerData] = await Promise.all([
         api.getCompanies(),
         api.getParticipants(),
         api.getCycleActivity(),
         api.getNews(10),
         api.getShareTransactionsPaged(filledOrdersPage, FILLED_ORDERS_PAGE_SIZE),
+        api.getInvestments(20),
         api.getPlayer(),
       ])
       setCompanies(companyData)
@@ -48,6 +51,7 @@ function TradeMarketPage() {
       setActivity(activityData)
       setNews(newsData)
       setFilledOrders(filledOrderData)
+      setInvestments(investmentData ?? [])
 
       const pageCount = Math.max(1, Math.ceil(filledOrderData.total / FILLED_ORDERS_PAGE_SIZE))
       if (filledOrdersPage > pageCount) {
@@ -180,6 +184,12 @@ function TradeMarketPage() {
             onPage={setFilledOrdersPage}
             onSelectCompany={onSelectCompany}
           />
+        </Panel>
+      </div>
+
+      <div className="dashboard">
+        <Panel title="Recent investments" count={`${investments.length}`} className="panel-trades">
+          <InvestmentsTable investments={investments} emptyLabel="No capital-raise investments yet." />
         </Panel>
       </div>
     </main>

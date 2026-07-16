@@ -10,6 +10,7 @@ import { MoneyTransactionModal } from './MoneyTransactionModal'
 import { IndustryHoldingsTable } from './IndustryHoldingsTable'
 import { groupHoldingsByIndustry } from './industryHoldings'
 import { TradeModal } from './TradeModal'
+import { InvestmentsTable } from './InvestmentsTable'
 import { AiTraderAutomationPanel } from './AiTraderAutomationPanel'
 import { AiTraderCallsPanel } from './AiTraderCallsPanel'
 import { useClientTable } from './useClientTable'
@@ -45,6 +46,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
   const [holdings, setHoldings] = useState([])
   const [orders, setOrders] = useState([])
   const [trades, setTrades] = useState([])
+  const [investments, setInvestments] = useState([])
   const [companies, setCompanies] = useState([])
   const [worthHistory, setWorthHistory] = useState([])
   const [loans, setLoans] = useState([])
@@ -64,11 +66,12 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, holdingsData, orderData, tradeData, companyData, worthData, loanData, settlementData] = await Promise.all([
+      const [detailData, holdingsData, orderData, tradeData, investmentData, companyData, worthData, loanData, settlementData] = await Promise.all([
         api.getParticipant(participantId),
         api.getHoldings(participantId),
         api.getParticipantOrders(participantId, 100),
         api.getParticipantShareTransactions(participantId),
+        api.getParticipantInvestments(participantId),
         api.getCompanies(),
         api.getParticipantWorthHistory(participantId),
         api.getParticipantLoans(participantId, { status: loanStatus }),
@@ -79,6 +82,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
       setHoldings(holdingsData)
       setOrders(orderData)
       setTrades(tradeData)
+      setInvestments(investmentData ?? [])
       setCompanies(companyData)
       setWorthHistory(worthData ?? [])
       setLoans(loanData ?? [])
@@ -274,6 +278,14 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
       <FundMembershipHistoryPanel participantId={participantId} isFund={detail.type === 'CollectiveFund'} />
 
       <TradesPanel trades={trades} participantId={participantId} companyName={companyName} onSelectCompany={setModalCompanyId} />
+
+      <Panel title="Investments made" count={`${investments.length}`} className="panel-trades">
+        <InvestmentsTable
+          investments={investments}
+          showInvestor={false}
+          emptyLabel="This trader has funded no capital-raise investments yet."
+        />
+      </Panel>
 
       {modalCompany ? (
         <CompanyModal

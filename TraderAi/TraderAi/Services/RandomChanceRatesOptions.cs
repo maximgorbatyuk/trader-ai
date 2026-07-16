@@ -106,6 +106,9 @@ public sealed class EventTriggerChances
 
     // Chance a science investigation also pushes the affected industry's sentiment upward.
     public double ScienceSentimentPush { get; set; } = 0.50;
+
+    // Per-cycle chance that one eligible investor funds a big-investment deal, minting new shares in a company.
+    public double BigInvestment { get; set; } = 0.15;
 }
 
 // Values that scale or shift a base chance rather than gating a roll on their own.
@@ -179,6 +182,12 @@ public sealed class RandomMagnitudeBands
 
     // Upper bound of the per-industry science price lift.
     public decimal ScienceIndustryLiftMaxPercent { get; set; } = 5m;
+
+    // Fraction of the target company's capitalisation a big-investment deal spends, drawn between these bounds.
+    // The lower bound is also the eligibility floor: an investor must be able to fund at least this share.
+    public double BigInvestmentFractionMin { get; set; } = 0.40;
+
+    public double BigInvestmentFractionMax { get; set; } = 0.90;
 
     // Lower bound of the fraction of sectors a global crisis hits.
     public double GlobalCrisisIndustryShareMin { get; set; } = 0.30;

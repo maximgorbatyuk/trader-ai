@@ -34,6 +34,11 @@ public sealed class Company
     // still resolve. Null while the company is live.
     public int? ClosedInCycleId { get; set; }
 
+    // Trading-day number through which a recent big-investment deal shields the company from delisting; the
+    // lifecycle service skips closing a company while the current trading day is below this. Null when no deal
+    // protects it.
+    public int? CloseProtectedUntilTradingDayNumber { get; set; }
+
     public DateTime? ClosedAt { get; set; }
 
     public DateTime CreatedAt { get; set; }

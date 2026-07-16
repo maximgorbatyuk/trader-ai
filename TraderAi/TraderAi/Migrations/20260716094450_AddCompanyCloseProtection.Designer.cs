@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using TraderAi.Data;
 
@@ -10,9 +11,11 @@ using TraderAi.Data;
 namespace TraderAi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260716094450_AddCompanyCloseProtection")]
+    partial class AddCompanyCloseProtection
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
@@ -420,54 +423,6 @@ namespace TraderAi.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Companies");
-                });
-
-            modelBuilder.Entity("TraderAi.Models.CompanyInvestment", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<decimal>("CapitalizationBeforeDeal")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("CompanyId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("CreatedInCycleId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<decimal>("DealValue")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("TEXT");
-
-                    b.Property<decimal>("FinalCapitalization")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("InvestorParticipantId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<decimal>("InvestorSharePercent")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("SharesBeforeDeal")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("SharesIssued")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int?>("TradingDayNumber")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("CompanyInvestments");
                 });
 
             modelBuilder.Entity("TraderAi.Models.CompanyRating", b =>

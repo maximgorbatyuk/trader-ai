@@ -51,6 +51,7 @@ builder.Services.AddScoped<StockSplitService>();
 builder.Services.AddScoped<AuditorService>();
 builder.Services.AddScoped<ShareEmissionService>();
 builder.Services.AddScoped<PrimaryIssuanceService>();
+builder.Services.AddScoped<BigInvestmentService>();
 builder.Services.AddScoped<CompanyLifecycleService>();
 builder.Services.AddScoped<LoanService>();
 builder.Services.AddScoped<VolatilityHaltService>();
@@ -79,6 +80,7 @@ builder.Services.Configure<MarketExitOptions>(builder.Configuration.GetSection(M
 builder.Services.Configure<StockSplitOptions>(builder.Configuration.GetSection(StockSplitOptions.SectionName));
 builder.Services.Configure<AuditorOptions>(builder.Configuration.GetSection(AuditorOptions.SectionName));
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
+builder.Services.Configure<BigInvestmentOptions>(builder.Configuration.GetSection(BigInvestmentOptions.SectionName));
 builder.Services.AddOptions<PrimaryIssuanceOptions>()
     .Bind(builder.Configuration.GetSection(PrimaryIssuanceOptions.SectionName))
     .Validate(options => !options.Enabled
@@ -141,6 +143,7 @@ AddGameSettingsOptions<MarketExitOptions>(builder.Services, MarketExitOptions.Se
 AddGameSettingsOptions<StockSplitOptions>(builder.Services, StockSplitOptions.SectionName);
 AddGameSettingsOptions<AuditorOptions>(builder.Services, AuditorOptions.SectionName);
 AddGameSettingsOptions<ShareEmissionOptions>(builder.Services, ShareEmissionOptions.SectionName);
+AddGameSettingsOptions<BigInvestmentOptions>(builder.Services, BigInvestmentOptions.SectionName);
 AddGameSettingsOptions<PrimaryIssuanceOptions>(builder.Services, PrimaryIssuanceOptions.SectionName);
 AddGameSettingsOptions<CompanyLifecycleOptions>(builder.Services, CompanyLifecycleOptions.SectionName);
 AddGameSettingsOptions<LoanOptions>(builder.Services, LoanOptions.SectionName);

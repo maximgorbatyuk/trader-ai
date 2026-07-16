@@ -92,6 +92,7 @@ public enum CorporateCashTransactionType
     OperatingIncome,
     DividendDeclared,
     ClosureDistribution,
+    BigInvestment,
 }
 
 public enum StockDenominationActionType
@@ -169,6 +170,7 @@ public enum NewsCategory
     StockMerge,
     FundPerformance,
     FundAdvertisement,
+    CapitalRaise,
 }
 
 public enum CrisisScope
