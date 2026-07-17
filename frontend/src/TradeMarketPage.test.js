@@ -35,5 +35,6 @@ test('exposes filled orders and investments as tabs without the live order book'
   assert.ok(markup.indexOf('Filled orders / settlements') >= 0)
   assert.ok(markup.indexOf('Recent investments') >= 0)
   // The map is the default tab, so its empty state stands in for the active panel body.
-  assert.match(markup, /Seed the market to see company prices\./)
+  assert.match(markup, /class="market-map-empty"/)
+  assert.match(markup, />Trader AI</)
 })

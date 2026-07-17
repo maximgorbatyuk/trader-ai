@@ -154,7 +154,9 @@ export function MarketMapPanel({
   const body = (
     <>
       {mappedCompanies.length === 0 ? (
-        <p className="note">Seed the market to see company prices.</p>
+        <div className="market-map-empty">
+          <span>Trader AI</span>
+        </div>
       ) : (
         <>
         <div className="map-filters">

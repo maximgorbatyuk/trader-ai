@@ -60,3 +60,30 @@ test('marks favorite companies with a star badge on the map', async (t) => {
   assert.match(markup, /class="map-favorite"/)
   assert.match(markup, /Acme,[^"]*· Favorite\. Open details\./)
 })
+
+test('shows the Trader AI identity when the market has no companies', async (t) => {
+  const server = await createServer({
+    root: new URL('..', import.meta.url).pathname,
+    logLevel: 'silent',
+    server: { middlewareMode: true },
+  })
+  t.after(() => server.close())
+
+  const { MarketMapPanel } = await server.ssrLoadModule('/src/MarketMapPanel.jsx')
+  const markup = renderToStaticMarkup(createElement(MarketMapPanel, {
+    embedded: true,
+    companies: [],
+    participants: [],
+    playerHoldingCompanyIds: new Set(),
+    lastDividendTotal: 0,
+    currentCycleNumber: null,
+    news: [],
+    crises: [],
+    scienceInvestigations: [],
+    onSelectCompany() {},
+  }))
+
+  assert.match(markup, /class="market-map-empty"/)
+  assert.match(markup, />Trader AI</)
+  assert.doesNotMatch(markup, /Seed the market/)
+})

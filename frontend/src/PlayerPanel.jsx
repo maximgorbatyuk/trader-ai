@@ -152,7 +152,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, 
       {loading ? (
         <p className="note">Loading the player…</p>
       ) : player === null ? (
-        <JoinPanel onJoined={refresh} />
+        <div className="player-onboarding-map">{marketMap}</div>
       ) : !onFund ? (
         <ActorView
           key="player"
@@ -203,53 +203,6 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, 
         />
       )}
     </div>
-  )
-}
-
-function JoinPanel({ onJoined }) {
-  const [name, setName] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState(null)
-
-  async function handleSubmit(event) {
-    event.preventDefault()
-    setError(null)
-    setSubmitting(true)
-    try {
-      await api.createPlayer({ name: name.trim() || null })
-      await onJoined()
-    } catch (submitError) {
-      setError(submitError.message)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <form className="modal-section player-section" onSubmit={handleSubmit}>
-      <p className="note">
-        Join the market as a human trader. You start with a random balance and place buy and sell orders through
-        the same order book as everyone else. The market never touches your orders, so you cancel them yourself.
-      </p>
-      <label className="field">
-        <span>Name</span>
-        <input
-          className="select"
-          type="text"
-          placeholder="Player"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-      </label>
-      {error ? (
-        <p className="command-error" role="alert">
-          {error}
-        </p>
-      ) : null}
-      <button type="submit" className="btn btn-primary" disabled={submitting}>
-        {submitting ? 'Joining…' : 'Join the market'}
-      </button>
-    </form>
   )
 }
 
