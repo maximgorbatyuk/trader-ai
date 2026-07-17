@@ -1586,6 +1586,112 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task PagedParticipantsLabelFundMembersAndFilterByStatus()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int individualId;
+            int fundParticipantId;
+            int memberId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 4, Status = CycleStatus.Completed, StartedAt = now };
+                dbContext.MarketCycles.Add(cycle);
+                await dbContext.SaveChangesAsync();
+
+                var individual = new Participant
+                {
+                    Name = "Solo Trader",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    InitialBalance = 100_000m,
+                    CurrentBalance = 100_000m,
+                    IsActive = true,
+                };
+                var fundParticipant = new Participant
+                {
+                    Name = "Growth Fund",
+                    Type = ParticipantType.CollectiveFund,
+                    Temperament = Temperament.Aggressive,
+                    RiskProfile = RiskProfile.High,
+                    CurrentBalance = 500_000m,
+                    IsActive = true,
+                };
+                var member = new Participant
+                {
+                    Name = "Pooled Trader",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    InitialBalance = 100_000m,
+                    CurrentBalance = 10_000m,
+                    IsActive = true,
+                };
+                dbContext.Participants.AddRange(individual, fundParticipant, member);
+                await dbContext.SaveChangesAsync();
+                individualId = individual.Id;
+                fundParticipantId = fundParticipant.Id;
+                memberId = member.Id;
+
+                var fund = new CollectiveFund
+                {
+                    ParticipantId = fundParticipant.Id,
+                    FoundedByParticipantId = individual.Id,
+                    Status = CollectiveFundStatus.Active,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = now,
+                };
+                dbContext.CollectiveFunds.Add(fund);
+                await dbContext.SaveChangesAsync();
+
+                dbContext.CollectiveFundParticipants.Add(new CollectiveFundParticipant
+                {
+                    CollectiveFundId = fund.Id,
+                    ParticipantId = member.Id,
+                    JoinedAt = now,
+                    JoinedInCycleId = cycle.Id,
+                    DepositAmount = 90_000m,
+                });
+                await dbContext.SaveChangesAsync();
+            }
+
+            // The default roster keeps the member, labeled with the fund it trades through.
+            var all = await client.GetFromJsonAsync<PagedParticipantsDto>("/participants/paged?pageSize=100");
+            var labelledMember = Assert.Single(all!.Items, item => item.Id == memberId);
+            Assert.Equal(fundParticipantId, labelledMember.MemberOfCollectiveFundId);
+            Assert.Equal("Growth Fund", labelledMember.MemberOfCollectiveFundName);
+            var soloRow = Assert.Single(all.Items, item => item.Id == individualId);
+            Assert.Null(soloRow.MemberOfCollectiveFundId);
+
+            var activeOnly = await client.GetFromJsonAsync<PagedParticipantsDto>("/participants/paged?pageSize=100&status=active");
+            Assert.DoesNotContain(activeOnly!.Items, item => item.Id == memberId);
+            Assert.Contains(activeOnly.Items, item => item.Id == individualId);
+
+            var inFundOnly = await client.GetFromJsonAsync<PagedParticipantsDto>("/participants/paged?pageSize=100&status=in-fund");
+            var onlyMember = Assert.Single(inFundOnly!.Items);
+            Assert.Equal(memberId, onlyMember.Id);
+
+            // The unpaged array still drops members so dashboard aggregates do not double-count pooled cash.
+            var unpaged = await client.GetFromJsonAsync<ParticipantDto[]>("/participants");
+            Assert.DoesNotContain(unpaged!, item => item.Id == memberId);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task BankruptciesResolveDepartedTraderNameViaFallback()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -3151,6 +3257,15 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal UnsettledCashBalance,
         decimal ReservedBalance,
         int SharesOwned);
+
+    private sealed record PagedParticipantsDto(ParticipantRosterDto[] Items, int Total, int Page, int PageSize);
+
+    private sealed record ParticipantRosterDto(
+        int Id,
+        string Name,
+        string Type,
+        int? MemberOfCollectiveFundId,
+        string? MemberOfCollectiveFundName);
 
     private sealed record PlayerDto(int Id, int? FundParticipantId, decimal? FundCurrentBalance, int? FundPopularityIndex);
 

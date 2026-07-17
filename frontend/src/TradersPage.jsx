@@ -11,6 +11,9 @@ import { useFitPageSize } from './useFitPageSize'
 
 const POLL_INTERVAL_MS = 2500
 
+// Views served by the paged roster table; the remaining views delegate to their own sibling pages.
+const ROSTER_VIEWS = ['all', 'active', 'in-fund']
+
 const TYPE_OPTIONS = [
   { value: 'all', label: 'All types' },
   { value: 'AIAgent', label: 'AI' },
@@ -25,7 +28,11 @@ function TradersPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedView = searchParams.get('view')
-  const view = requestedView === 'departed' || requestedView === 'closed-funds' ? requestedView : 'active'
+  const view =
+    requestedView === 'departed' || requestedView === 'closed-funds' || ROSTER_VIEWS.includes(requestedView)
+      ? requestedView
+      : 'all'
+  const rosterStatus = view === 'active' ? 'active' : view === 'in-fund' ? 'in-fund' : undefined
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [data, setData] = useState(null)
@@ -45,6 +52,7 @@ function TradersPage() {
         sort: sortKey,
         sortDir,
         type: typeFilter === 'all' ? undefined : typeFilter,
+        status: rosterStatus,
       })
       // A resize can shrink the page size (or a live refresh the total) below the current page; snap back.
       const resultPageCount = Math.max(1, Math.ceil((result?.total ?? 0) / pageSize))
@@ -59,10 +67,10 @@ function TradersPage() {
     } finally {
       setReady(true)
     }
-  }, [page, pageSize, search, typeFilter, sortKey, sortDir])
+  }, [page, pageSize, search, typeFilter, sortKey, sortDir, rosterStatus])
 
   useEffect(() => {
-    if (view !== 'active') return undefined
+    if (!ROSTER_VIEWS.includes(view)) return undefined
 
     const initialId = setTimeout(loadAll, 0)
     const intervalId = setInterval(loadAll, POLL_INTERVAL_MS)
@@ -96,7 +104,9 @@ function TradersPage() {
       value={view}
       onChange={(event) => setSearchParams({ view: event.target.value })}
     >
+      <option value="all">All traders</option>
       <option value="active">Active traders</option>
+      <option value="in-fund">Joined to a fund</option>
       <option value="departed">Departed traders</option>
       <option value="closed-funds">Closed funds</option>
     </select>

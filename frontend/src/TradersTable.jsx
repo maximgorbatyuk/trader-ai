@@ -35,6 +35,7 @@ export function TradersTable({ participants, sortKey, sortDir, onToggleSort, onS
           <tr>
             <th scope="col">Name</th>
             <th scope="col">Type</th>
+            <th scope="col">Status</th>
             {sortableHeader('shares', 'Shares')}
             {sortableHeader('balance', 'Current balance')}
             {sortableHeader('holdings', 'Holdings (est.)', 'Estimated market value of shares held')}
@@ -74,6 +75,17 @@ export function TradersTable({ participants, sortKey, sortDir, onToggleSort, onS
                       ? `AI · ${participant.aiProviderLabel}`
                       : (TRADER_TYPE_LABEL[participant.type] ?? participant.type)}
                   </span>
+                </td>
+                <td>
+                  {participant.memberOfCollectiveFundId != null ? (
+                    <span className="tag tag-collective">
+                      {participant.memberOfCollectiveFundName
+                        ? `In fund: ${participant.memberOfCollectiveFundName}`
+                        : 'In fund'}
+                    </span>
+                  ) : (
+                    <span className="tag">Active</span>
+                  )}
                 </td>
                 <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>
                 <td className="num ta-r">{formatMoney(participant.currentBalance)}</td>

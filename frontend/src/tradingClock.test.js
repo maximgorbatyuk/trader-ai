@@ -90,20 +90,24 @@ test('returns no clock until the server supplies the complete trading-clock cont
   assert.equal(formatTradingClock?.(null), null)
 })
 
-test('keeps the running countdown within a phase but re-syncs across phase boundaries', async () => {
+test('keeps the running countdown within a cycle but re-syncs when the server advances', async () => {
   const { createTradingClock, shouldKeepTradingClock } = await loadClock()
   const previous = createTradingClock?.(tradingMarket, 1_000)
 
-  // Same running phase, later cycle and lower remaining seconds: keep interpolating the existing snapshot.
-  const laterInSamePhase = createTradingClock?.(
-    { ...tradingMarket, tradingCycleNumber: 90, remainingTradingCycles: 120, remainingPhaseSeconds: 240 },
-    5_000,
-  )
-  assert.equal(shouldKeepTradingClock?.(previous, laterInSamePhase), true)
+  // Same running cycle, only the server's step countdown moved: keep interpolating the existing snapshot.
+  const laterInSameCycle = createTradingClock?.({ ...tradingMarket, remainingPhaseSeconds: 250 }, 3_000)
+  assert.equal(shouldKeepTradingClock?.(previous, laterInSameCycle), true)
 
-  // A new trading day, the Trading/Break switch, or a market state change each force a re-sync.
+  // A newer cycle, a new trading day, the Trading/Break switch, or a market state change each force a re-sync.
+  assert.equal(
+    shouldKeepTradingClock?.(
+      previous,
+      createTradingClock?.({ ...tradingMarket, tradingCycleNumber: 85, remainingTradingCycles: 125, remainingPhaseSeconds: 250 }, 5_000),
+    ),
+    false,
+  )
   assert.equal(shouldKeepTradingClock?.(previous, createTradingClock?.({ ...tradingMarket, tradingDayNumber: 8 }, 5_000)), false)
   assert.equal(shouldKeepTradingClock?.(previous, createTradingClock?.({ ...tradingMarket, tradingSessionState: 'Break' }, 5_000)), false)
   assert.equal(shouldKeepTradingClock?.(previous, createTradingClock?.({ ...tradingMarket, status: 'Paused' }, 5_000)), false)
-  assert.equal(shouldKeepTradingClock?.(null, laterInSamePhase), false)
+  assert.equal(shouldKeepTradingClock?.(null, laterInSameCycle), false)
 })

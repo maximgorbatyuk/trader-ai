@@ -392,7 +392,7 @@ public static class MarketEndpoints
         // Server-paged traders for the roster page: name search, type filter, and sortable numeric columns.
         // The array endpoint above still feeds the dashboard, which sums trader cash across the whole set.
         app.MapGet("/participants/paged", async (
-            int? page, int? pageSize, string? search, string? sort, string? sortDir, string? type,
+            int? page, int? pageSize, string? search, string? sort, string? sortDir, string? type, string? status,
             AppDbContext dbContext,
             MarginService marginService,
             AiProviderCatalog catalog,
@@ -402,7 +402,9 @@ public static class MarketEndpoints
             var pageIndex = Math.Max(page ?? 1, 1);
             var descending = !string.Equals(sortDir, "asc", StringComparison.OrdinalIgnoreCase);
 
-            IEnumerable<ParticipantResponse> participants = await BuildParticipantResponsesAsync(dbContext, marginService, catalog, aiRuntime);
+            // The roster shows fund members alongside active traders, each labeled with its status.
+            IEnumerable<ParticipantResponse> participants =
+                await BuildParticipantResponsesAsync(dbContext, marginService, catalog, aiRuntime, includeFundMembers: true);
             if (!string.IsNullOrWhiteSpace(search))
             {
                 var term = search.Trim().ToLowerInvariant();
@@ -411,6 +413,14 @@ public static class MarketEndpoints
             if (!string.IsNullOrWhiteSpace(type) && !string.Equals(type, "all", StringComparison.OrdinalIgnoreCase))
             {
                 participants = participants.Where(participant => participant.Type == type);
+            }
+            if (string.Equals(status, "active", StringComparison.OrdinalIgnoreCase))
+            {
+                participants = participants.Where(participant => participant.MemberOfCollectiveFundId is null);
+            }
+            else if (string.Equals(status, "in-fund", StringComparison.OrdinalIgnoreCase))
+            {
+                participants = participants.Where(participant => participant.MemberOfCollectiveFundId is not null);
             }
 
             var filtered = participants.ToList();
@@ -2162,7 +2172,8 @@ public static class MarketEndpoints
         AppDbContext dbContext,
         MarginService marginService,
         AiProviderCatalog catalog,
-        AiTraderRuntimeState runtimeState)
+        AiTraderRuntimeState runtimeState,
+        bool includeFundMembers = false)
     {
         var participants = await dbContext.Participants.OrderBy(participant => participant.Id).ToListAsync();
 
@@ -2170,15 +2181,25 @@ public static class MarketEndpoints
         var configurationsByParticipant = await dbContext.AiTraderConfigurations
             .ToDictionaryAsync(configuration => configuration.ParticipantId);
 
-        // A trader that has pooled into a fund hands its trading to that fund, so it is dropped from the
-        // traders list while the membership lasts; it returns once it leaves or the fund closes.
-        var memberParticipantIds = (await dbContext.CollectiveFundParticipants
-                .Select(member => member.ParticipantId)
+        // Resolve each membership to the fund's own participant row so a member can be labeled with its fund.
+        var participantNameById = participants.ToDictionary(participant => participant.Id, participant => participant.Name);
+        var fundByMemberId = (await dbContext.CollectiveFundParticipants
+                .Join(
+                    dbContext.CollectiveFunds,
+                    member => member.CollectiveFundId,
+                    fund => fund.Id,
+                    (member, fund) => new { member.ParticipantId, FundParticipantId = fund.ParticipantId })
                 .ToListAsync())
-            .ToHashSet();
+            .ToDictionary(
+                membership => membership.ParticipantId,
+                membership => (
+                    FundParticipantId: membership.FundParticipantId,
+                    FundName: participantNameById.GetValueOrDefault(membership.FundParticipantId)));
 
         var eligibleParticipants = participants
-            .Where(participant => !memberParticipantIds.Contains(participant.Id))
+            // A trader that pooled into a fund hands its trading to that fund. The paged roster keeps it, labeled
+            // with its fund, while the dashboard's unpaged read drops it so pooled cash is not double-counted.
+            .Where(participant => includeFundMembers || !fundByMemberId.ContainsKey(participant.Id))
             // Closed fund participants remain as inactive history rows and belong only on the Closed Funds page.
             .Where(participant => participant.Type != ParticipantType.CollectiveFund || participant.IsActive)
             .ToList();
@@ -2191,6 +2212,9 @@ public static class MarketEndpoints
                 var valuation = valuationByParticipant[participant.Id];
                 var ai = ResolveAiFields(
                     configurationsByParticipant.GetValueOrDefault(participant.Id), catalog, runtimeState, participant.Id);
+                var hasFund = fundByMemberId.TryGetValue(participant.Id, out var membership);
+                int? memberOfFundId = hasFund ? membership.FundParticipantId : null;
+                string? memberOfFundName = hasFund ? membership.FundName : null;
                 return new ParticipantResponse(
                     participant.Id,
                     participant.Name,
@@ -2219,7 +2243,9 @@ public static class MarketEndpoints
                     ai.Status,
                     ai.Message,
                     ai.CallId,
-                    ai.MaxDecisions);
+                    ai.MaxDecisions,
+                    memberOfFundId,
+                    memberOfFundName);
             })
             .ToList();
     }
@@ -3440,7 +3466,9 @@ public sealed record ParticipantResponse(
     string? AiStatus,
     string? AiStatusMessage,
     long? AiCurrentCallId,
-    int? AiMaxDecisionsPerDay);
+    int? AiMaxDecisionsPerDay,
+    int? MemberOfCollectiveFundId,
+    string? MemberOfCollectiveFundName);
 
 public sealed record ParticipantDetailResponse(
     int Id,
