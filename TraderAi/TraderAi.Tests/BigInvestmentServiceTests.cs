@@ -7,9 +7,8 @@ using TraderAi.Services;
 
 namespace TraderAi.Tests;
 
-// Drives the big-investment deal with a scripted Random. Disabled draws nothing; enabled draws one NextDouble to
-// roll the per-cycle trigger, and only when it fires and an eligible investor/company pair exists it draws one
-// Next to pick the pair and one more NextDouble for the deal size. The deal executor itself draws nothing.
+// Scripted draws keep both investment paths reproducible: generic cycles roll before choosing a pair, while the
+// cycle after an Extra raise chooses an eligible target pair before rolling its cash-scaled chance.
 public sealed class BigInvestmentServiceTests : IDisposable
 {
     private readonly SqliteConnection connection;
@@ -29,14 +28,23 @@ public sealed class BigInvestmentServiceTests : IDisposable
         context.Database.EnsureCreated();
     }
 
-    private BigInvestmentService Service(bool enabled, Random random, bool sentimentEnabled = true) =>
-        new(
+    private BigInvestmentService Service(
+        bool enabled,
+        Random random,
+        bool sentimentEnabled = true,
+        double bigInvestmentMax = 0.50)
+    {
+        var randomChanceRates = new RandomChanceRatesOptions();
+        randomChanceRates.EventTriggerChances.BigInvestmentMax = bigInvestmentMax;
+
+        return new(
             context,
             Options.Create(new BigInvestmentOptions { Enabled = enabled }),
-            Options.Create(new RandomChanceRatesOptions()),
+            Options.Create(randomChanceRates),
             new MarketImpactService(context),
             random,
             Options.Create(new IndustrySentimentOptions { Enabled = sentimentEnabled, SentimentValueLimit = 1000 }));
+    }
 
     [Fact]
     public async Task DisabledDoesNothing()
@@ -109,6 +117,137 @@ public sealed class BigInvestmentServiceTests : IDisposable
         await context.SaveChangesAsync();
 
         Assert.Equal(0, await context.OrderFills.CountAsync());
+    }
+
+    [Fact]
+    public async Task PreviousCycleExtraRaisedExpectationsTargetsThatCompany()
+    {
+        var previousCycle = await AddCycleAsync(dayNumber: 9, cycleNumber: 99);
+        var currentCycle = await AddCycleAsync(dayNumber: 10, cycleNumber: 100);
+        await SetupMarketAsync(currentCycle);
+        var ordinaryCompany = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(ordinaryCompany.Id, price: 1000m, currentCycle);
+        var raisedCompany = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(raisedCompany.Id, price: 1000m, currentCycle);
+        await AddTraderAsync(balance: 400_000m);
+        var auditor = await AddAuditorAsync();
+        await AddRatingAsync(
+            raisedCompany.Id,
+            auditor.Id,
+            CompanyRiskRating.ExtraRaisedExpectations,
+            previousCycle.Id);
+
+        // The targeted path chooses from the Extra-raised company only. The legacy uniform pair selection would
+        // choose the ordinary company at index zero, proving the rating drives the target.
+        await Service(enabled: true, new ScriptedRandom([0.14d, 0.0d], [0]))
+            .ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var investment = await context.CompanyInvestments.AsNoTracking().SingleAsync();
+        Assert.Equal(raisedCompany.Id, investment.CompanyId);
+    }
+
+    [Fact]
+    public async Task ExtraRaiseInvestmentChanceIncreasesWithSpendableCash()
+    {
+        var previousCycle = await AddCycleAsync(dayNumber: 9, cycleNumber: 99);
+        var currentCycle = await AddCycleAsync(dayNumber: 10, cycleNumber: 100);
+        await SetupMarketAsync(currentCycle);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 1000m, currentCycle); // 400,000 minimum investment
+        await AddTraderAsync(balance: 800_000m);
+        var auditor = await AddAuditorAsync();
+        await AddRatingAsync(
+            company.Id,
+            auditor.Id,
+            CompanyRiskRating.ExtraRaisedExpectations,
+            previousCycle.Id);
+
+        // Twice the minimum spendable cash doubles the 0.15 base chance to 0.30, so 0.25 succeeds.
+        await Service(enabled: true, new ScriptedRandom([0.25d, 0.0d], [0]))
+            .ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1, await context.CompanyInvestments.CountAsync());
+    }
+
+    [Fact]
+    public async Task ExtraRaiseInvestmentChanceNeverExceedsFiftyPercent()
+    {
+        var previousCycle = await AddCycleAsync(dayNumber: 9, cycleNumber: 99);
+        var currentCycle = await AddCycleAsync(dayNumber: 10, cycleNumber: 100);
+        await SetupMarketAsync(currentCycle);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 1000m, currentCycle); // 400,000 minimum investment
+        await AddTraderAsync(balance: 2_000_000m);
+        var auditor = await AddAuditorAsync();
+        await AddRatingAsync(
+            company.Id,
+            auditor.Id,
+            CompanyRiskRating.ExtraRaisedExpectations,
+            previousCycle.Id);
+
+        // Cash scaling alone would produce a 0.75 chance. The 0.50 ceiling makes this boundary roll fail.
+        await Service(
+                enabled: true,
+                new ScriptedRandom([0.50d, 0.0d], [0]),
+                bigInvestmentMax: 0.90)
+            .ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, await context.CompanyInvestments.CountAsync());
+    }
+
+    [Fact]
+    public async Task ExtraRaiseInvestmentChanceUsesUnreservedSpendableCash()
+    {
+        var previousCycle = await AddCycleAsync(dayNumber: 9, cycleNumber: 99);
+        var currentCycle = await AddCycleAsync(dayNumber: 10, cycleNumber: 100);
+        await SetupMarketAsync(currentCycle);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 1000m, currentCycle); // 400,000 minimum investment
+        var investor = await AddTraderAsync(balance: 800_000m);
+        investor.ReservedBalance = 400_000m;
+        await context.SaveChangesAsync();
+        var auditor = await AddAuditorAsync();
+        await AddRatingAsync(
+            company.Id,
+            auditor.Id,
+            CompanyRiskRating.ExtraRaisedExpectations,
+            previousCycle.Id);
+
+        // Only 400,000 is free, so the chance remains 0.15 and a 0.25 roll fails.
+        await Service(enabled: true, new ScriptedRandom([0.25d, 0.0d], [0]))
+            .ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, await context.CompanyInvestments.CountAsync());
+    }
+
+    [Fact]
+    public async Task OlderExtraRaisedExpectationsDoesNotReplaceGenericTargeting()
+    {
+        var olderCycle = await AddCycleAsync(dayNumber: 9, cycleNumber: 98);
+        var currentCycle = await AddCycleAsync(dayNumber: 10, cycleNumber: 100);
+        await SetupMarketAsync(currentCycle);
+        var ordinaryCompany = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(ordinaryCompany.Id, price: 1000m, currentCycle);
+        var formerlyRaisedCompany = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(formerlyRaisedCompany.Id, price: 1000m, currentCycle);
+        await AddTraderAsync(balance: 400_000m);
+        var auditor = await AddAuditorAsync();
+        await AddRatingAsync(
+            formerlyRaisedCompany.Id,
+            auditor.Id,
+            CompanyRiskRating.ExtraRaisedExpectations,
+            olderCycle.Id);
+
+        await Service(enabled: true, new ScriptedRandom([0.0d, 0.0d], [0]))
+            .ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var investment = await context.CompanyInvestments.AsNoTracking().SingleAsync();
+        Assert.Equal(ordinaryCompany.Id, investment.CompanyId);
     }
 
     [Fact]
@@ -212,7 +351,7 @@ public sealed class BigInvestmentServiceTests : IDisposable
         Assert.Equal(500, (await context.Industries.AsNoTracking().SingleAsync()).SentimentValue);
     }
 
-    private async Task<TestCycle> AddCycleAsync(int dayNumber)
+    private async Task<TestCycle> AddCycleAsync(int dayNumber, int? cycleNumber = null)
     {
         var day = new TradingDay { DayNumber = dayNumber, State = TradingSessionState.Trading, OpenedInCycleId = 0 };
         context.TradingDays.Add(day);
@@ -220,7 +359,7 @@ public sealed class BigInvestmentServiceTests : IDisposable
 
         var cycle = new MarketCycle
         {
-            CycleNumber = dayNumber * 10,
+            CycleNumber = cycleNumber ?? dayNumber * 10,
             TradingDayId = day.Id,
             TradingCycleNumber = 1,
             Status = CycleStatus.Running,
@@ -298,6 +437,23 @@ public sealed class BigInvestmentServiceTests : IDisposable
         context.Participants.Add(trader);
         await context.SaveChangesAsync();
         return trader;
+    }
+
+    private async Task AddRatingAsync(
+        int companyId,
+        int auditorId,
+        CompanyRiskRating rating,
+        int cycleId)
+    {
+        context.CompanyRatings.Add(new CompanyRating
+        {
+            CompanyId = companyId,
+            AuditorId = auditorId,
+            Rating = rating,
+            CreatedInCycleId = cycleId,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
     }
 
     private async Task<Auditor> AddAuditorAsync()

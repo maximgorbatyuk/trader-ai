@@ -371,9 +371,10 @@ public sealed class GameSettingsService(
             || stableChance > 0.5d
             || bigMoveChance > 0.5d
             || stableChance * crisisMultiplier > 0.5d
-            || bigMoveChance * crisisMultiplier > 0.5d)
+            || bigMoveChance * crisisMultiplier > 0.5d
+            || random.EventTriggerChances.BigInvestmentMax > EventTriggerChances.BigInvestmentHardMax)
         {
-            errors["RandomChanceRates"] = ["Event probabilities must remain between 0 and 1, modifiers must be non-negative, and adjusted auditor outcomes cannot exceed 50%."];
+            errors["RandomChanceRates"] = ["Event probabilities must remain between 0 and 1, modifiers must be non-negative, and adjusted auditor outcomes and Extra-raised investment chances cannot exceed 50%."];
         }
 
         var bands = random.RandomMagnitudeBands;

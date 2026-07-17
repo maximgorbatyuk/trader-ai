@@ -13,6 +13,7 @@ import { InvestmentsTable } from './InvestmentsTable'
 import { TradeModal } from './TradeModal'
 import { Pager, SortHeader } from './TableControls'
 import { useClientTable } from './useClientTable'
+import { useFitPageSize } from './useFitPageSize'
 import { corporateCashMovementPresentation } from './cashMovements'
 import { luldPresentation } from './marketAccounting'
 import { FavoriteCompanyToggle } from './FavoriteCompanyToggle'
@@ -20,7 +21,6 @@ import { FavoriteCompanyToggle } from './FavoriteCompanyToggle'
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
 const CORPORATE_CASH_PAGE_SIZE = 10
-const TAB_PAGE_SIZE = 10
 
 // The tabbed detail sections, in display order. Each key selects one existing panel below the tab strip.
 const DETAIL_TABS = [
@@ -74,6 +74,7 @@ export function CompanyDetail({ companyId }) {
   const [news, setNews] = useState([])
   const [corporateCashMovements, setCorporateCashMovements] = useState({ items: [], total: 0, page: 1, pageSize: 10 })
   const [corporateCashPage, setCorporateCashPage] = useState(1)
+  const [corporateCashPageSize, corporateCashTableRef] = useFitPageSize()
   const [selectedNews, setSelectedNews] = useState(null)
   const [activeTab, setActiveTab] = useState('capitalization')
   const [action, setAction] = useState(null)
@@ -106,7 +107,7 @@ export function CompanyDetail({ companyId }) {
           api.getCompanyEmissions(companyId),
           api.getCompanyInvestments(companyId),
           api.getCompanyNews(companyId),
-          api.getCompanyCorporateCashMovements(companyId, corporateCashPage, CORPORATE_CASH_PAGE_SIZE),
+          api.getCompanyCorporateCashMovements(companyId, corporateCashPage, corporateCashPageSize),
           api.getPlayer(),
         ])
 
@@ -119,7 +120,7 @@ export function CompanyDetail({ companyId }) {
       setEmissions(emissionData ?? [])
       setInvestments(investmentData ?? [])
       setNews(newsData ?? [])
-      setCorporateCashMovements(corporateCashData ?? { items: [], total: 0, page: 1, pageSize: CORPORATE_CASH_PAGE_SIZE })
+      setCorporateCashMovements(corporateCashData ?? { items: [], total: 0, page: 1, pageSize: corporateCashPageSize })
 
       setPlayer(playerData)
       if (playerData) {
@@ -143,7 +144,7 @@ export function CompanyDetail({ companyId }) {
     } finally {
       setReady(true)
     }
-  }, [companyId, corporateCashPage])
+  }, [companyId, corporateCashPage, corporateCashPageSize])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)
@@ -280,6 +281,7 @@ export function CompanyDetail({ companyId }) {
         corporateCashMovements={corporateCashMovements}
         corporateCashPage={corporateCashPage}
         onCorporateCashPage={setCorporateCashPage}
+        corporateCashTableRef={corporateCashTableRef}
         shareholders={shareholders}
         orders={orders}
         trades={trades}
@@ -532,6 +534,7 @@ function CompanyDetailTabs({
   corporateCashMovements,
   corporateCashPage,
   onCorporateCashPage,
+  corporateCashTableRef,
   shareholders,
   orders,
   trades,
@@ -602,6 +605,7 @@ function CompanyDetailTabs({
             movements={corporateCashMovements}
             page={corporateCashPage}
             onPage={onCorporateCashPage}
+            tableRef={corporateCashTableRef}
           />
         ) : null}
         {activeTab === 'shareholders' ? <ShareholdersPanel shareholders={shareholders} detail={detail} /> : null}
@@ -618,7 +622,7 @@ function CompanyDetailTabs({
   )
 }
 
-function CorporateCashMovementsPanel({ movements, page, onPage }) {
+function CorporateCashMovementsPanel({ movements, page, onPage, tableRef }) {
   const items = movements.items ?? []
   const pageCount = Math.max(1, Math.ceil((movements.total ?? 0) / (movements.pageSize || CORPORATE_CASH_PAGE_SIZE)))
 
@@ -628,7 +632,7 @@ function CorporateCashMovementsPanel({ movements, page, onPage }) {
         <p className="note">No issuer cash movements yet.</p>
       ) : (
         <>
-          <div className="tbl-wrap">
+          <div className="tbl-wrap" ref={tableRef}>
             <table className="tbl">
               <thead>
                 <tr>
@@ -776,7 +780,8 @@ function InvestmentsReceivedPanel({ investments }) {
 }
 
 function RelatedNewsPanel({ news, onSelect }) {
-  const { pageRows, page, pageCount, setPage } = useClientTable(news, { pageSize: TAB_PAGE_SIZE })
+  const [pageSize, tableRef] = useFitPageSize()
+  const { pageRows, page, pageCount, setPage } = useClientTable(news, { pageSize })
 
   return (
     <Panel title="Related news" count={`${news.length}`} className="panel-orders-list">
@@ -784,7 +789,7 @@ function RelatedNewsPanel({ news, onSelect }) {
         <p className="note">No news for this company or its industry yet.</p>
       ) : (
         <>
-          <div className="tbl-wrap">
+          <div className="tbl-wrap" ref={tableRef}>
             <table className="tbl">
               <thead>
                 <tr>
@@ -823,7 +828,8 @@ function RelatedNewsPanel({ news, onSelect }) {
 }
 
 function RatingHistoryPanel({ ratings }) {
-  const { pageRows, page, pageCount, setPage } = useClientTable(ratings, { pageSize: TAB_PAGE_SIZE })
+  const [pageSize, tableRef] = useFitPageSize()
+  const { pageRows, page, pageCount, setPage } = useClientTable(ratings, { pageSize })
 
   return (
     <Panel title="Risk ratings" count={`${ratings.length}`} className="panel-orders-list">
@@ -831,7 +837,7 @@ function RatingHistoryPanel({ ratings }) {
         <p className="note">No auditor has reviewed this company yet.</p>
       ) : (
         <>
-          <div className="tbl-wrap">
+          <div className="tbl-wrap" ref={tableRef}>
             <table className="tbl">
               <thead>
                 <tr>
@@ -972,8 +978,9 @@ function OwnershipSummary({ detail }) {
 }
 
 export function ShareholdersPanel({ shareholders, detail }) {
+  const [pageSize, tableRef] = useFitPageSize()
   const { pageRows, sortKey, sortDir, toggleSort, page, pageCount, setPage } = useClientTable(shareholders, {
-    pageSize: TAB_PAGE_SIZE,
+    pageSize,
     initialSortKey: 'shares',
     initialSortDir: 'desc',
   })
@@ -985,7 +992,7 @@ export function ShareholdersPanel({ shareholders, detail }) {
         <p className="note">No participant owns shares yet.</p>
       ) : (
         <>
-          <div className="tbl-wrap">
+          <div className="tbl-wrap" ref={tableRef}>
             <table className="tbl">
               <thead>
                 <tr>

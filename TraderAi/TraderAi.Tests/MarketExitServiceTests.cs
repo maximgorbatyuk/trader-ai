@@ -8,8 +8,9 @@ using TraderAi.Services;
 namespace TraderAi.Tests;
 
 // Drives the market-exit rolls with a scripted Random. At most one NextDouble() is drawn per exit candidate in
-// id order (fund-loss holders before starvation); a confirmed departure then draws its replacement's fixed run
-// of ints — balance, type, temperament, risk, name. The max-worth ratchet draws nothing.
+// id order (fund-loss holders before starvation), and a departure draws nothing further. After the exit rolls,
+// while the roster is below the cap one NextDouble decides the appearance; only a clearing roll draws the new
+// trader's whale NextDouble then its balance, temperament, risk, and name ints. The max-worth ratchet draws nothing.
 public sealed class MarketExitServiceTests : IDisposable
 {
     private readonly SqliteConnection connection;
@@ -46,7 +47,7 @@ public sealed class MarketExitServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task StarvedTraderDepartsAndIsReplaced()
+    public async Task StarvedTraderDepartsWithoutAutoReplacement()
     {
         var now = DateTime.UtcNow;
         var (_, cycle, company) = await SeedAsync(price: 100m);
@@ -60,13 +61,14 @@ public sealed class MarketExitServiceTests : IDisposable
         await AddHistoricalOrderAsync(trader.Id, company.Id, cycle.Id);
         var openBuy = await AddOpenBuyOrderAsync(trader.Id, company.Id, quantity: 1, price: 100m, reserved: 5_000m, cycle.Id);
 
-        // Roll 0.10 clears the 0.25 starvation chance; the replacement then draws balance, Individual, Balanced,
-        // Medium, and name combo 0 ("Olivia Marsh").
-        await Service(enabled: true, new ScriptedRandom([0.10d], [55_000, 0, 1, 1, 0]))
+        // Roll 0.10 clears the 0.25 starvation chance and the trader departs; the trailing 0.99 misses the 0.10
+        // appearance chance, so no new trader takes its place — exit and appearance are decoupled.
+        await Service(enabled: true, new ScriptedRandom([0.10d, 0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, now);
         await context.SaveChangesAsync();
 
         Assert.False(await context.Participants.AnyAsync(participant => participant.Id == trader.Id));
+        Assert.Equal(0, await context.Participants.CountAsync());
 
         var exit = await context.MarketExits.AsNoTracking().SingleAsync();
         Assert.Equal(trader.Id, exit.ParticipantId);
@@ -86,18 +88,87 @@ public sealed class MarketExitServiceTests : IDisposable
             transaction.ParticipantId == trader.Id
             && transaction.Type == MoneyTransactionType.Release
             && transaction.Amount == 5_000m));
+    }
 
-        var replacement = await context.Participants.AsNoTracking().SingleAsync();
-        Assert.NotEqual(ParticipantType.Player, replacement.Type);
-        Assert.Equal(ParticipantType.Individual, replacement.Type);
-        Assert.Equal(Temperament.Balanced, replacement.Temperament);
-        Assert.Equal(RiskProfile.Medium, replacement.RiskProfile);
-        Assert.Equal("Olivia Marsh", replacement.Name);
-        Assert.Equal(55_000m, replacement.InitialBalance);
-        Assert.Equal(55_000m, replacement.CurrentBalance);
-        Assert.Equal(55_000m, replacement.MaxTotalWorth);
-        Assert.Equal(cycle.Id, replacement.JoinedInCycleId);
-        Assert.True(replacement.IsActive);
+    [Fact]
+    public async Task NewTraderAppearsBelowCapWithSeedStats()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        // No drought, so the incumbent is not a starvation candidate and draws nothing; the roster of one sits
+        // below the cap, so the appearance pass rolls.
+        await AddTraderAsync(currentBalance: 60_000m, cannotBuyCycles: 0, name: "Incumbent");
+
+        // Appearance roll 0.05 clears the 0.10 chance; the whale roll 0.99 misses the 0.15 whale share, so the new
+        // trader draws a regular balance, then Balanced, Medium, and name combo 0 ("Olivia Marsh").
+        await Service(enabled: true, new ScriptedRandom([0.05d, 0.99d], [55_000, 1, 1, 0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, await context.MarketExits.CountAsync());
+        Assert.Equal(2, await context.Participants.CountAsync());
+
+        var appeared = await context.Participants.AsNoTracking().SingleAsync(participant => participant.Name == "Olivia Marsh");
+        Assert.Equal(ParticipantType.Individual, appeared.Type);
+        Assert.Equal(Temperament.Balanced, appeared.Temperament);
+        Assert.Equal(RiskProfile.Medium, appeared.RiskProfile);
+        Assert.Equal(55_000m, appeared.InitialBalance);
+        Assert.Equal(55_000m, appeared.CurrentBalance);
+        Assert.Equal(55_000m, appeared.SettledCashBalance);
+        Assert.Equal(55_000m, appeared.MaxTotalWorth);
+        Assert.Equal(cycle.Id, appeared.JoinedInCycleId);
+        Assert.True(appeared.IsActive);
+    }
+
+    [Fact]
+    public async Task NewTraderCanAppearAsWhale()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var incumbent = await AddTraderAsync(currentBalance: 60_000m, cannotBuyCycles: 0, name: "Incumbent");
+
+        // Appearance fires on 0.05; the whale roll 0.10 clears the 0.15 whale share, so the balance is drawn from
+        // the deep whale band that only seeded whales otherwise reach.
+        await Service(enabled: true, new ScriptedRandom([0.05d, 0.10d], [1_500_000_000, 0, 0, 0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var appeared = await context.Participants.AsNoTracking().SingleAsync(participant => participant.Id != incumbent.Id);
+        Assert.Equal(ParticipantType.Individual, appeared.Type);
+        Assert.Equal(1_500_000_000m, appeared.InitialBalance);
+        Assert.Equal(1_500_000_000m, appeared.CurrentBalance);
+    }
+
+    [Fact]
+    public async Task NoTraderAppearsWhenRosterIsAtTheCap()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        await AddFillerTradersAsync(300);
+
+        // The roster already holds the cap of 300 traders, so the appearance pass draws nothing — an empty script
+        // must never be dequeued.
+        await Service(enabled: true, new ScriptedRandom([], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, await context.MarketExits.CountAsync());
+        Assert.Equal(300, await context.Participants.CountAsync());
+    }
+
+    [Fact]
+    public async Task DepartureFreesASlotForASameCycleAppearance()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        await AddFillerTradersAsync(299);
+        var starved = await AddTraderAsync(currentBalance: 10_000m, cannotBuyCycles: 20, name: "Starved");
+
+        // The roster is at the cap of 300. The starved trader departs on 0.10, dropping the in-memory count to 299,
+        // so the appearance roll fires on 0.05 (whale miss 0.99) and one new trader fills the freed slot.
+        await Service(enabled: true, new ScriptedRandom([0.10d, 0.05d, 0.99d], [55_000, 0, 0, 0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.False(await context.Participants.AnyAsync(participant => participant.Id == starved.Id));
+        Assert.Equal(1, await context.MarketExits.CountAsync());
+        Assert.Equal(300, await context.Participants.CountAsync());
     }
 
     [Fact]
@@ -106,8 +177,9 @@ public sealed class MarketExitServiceTests : IDisposable
         var (_, cycle, _) = await SeedAsync(price: 100m);
         var trader = await AddTraderAsync(currentBalance: 10_000m, cannotBuyCycles: 20);
 
-        // At a 20-cycle drought the chance is exactly 0.25; the comparison is strict, so a 0.25 roll stays.
-        await Service(enabled: true, new ScriptedRandom([0.25d], []))
+        // At a 20-cycle drought the chance is exactly 0.25; the comparison is strict, so a 0.25 roll stays. The
+        // trailing 0.99 misses the appearance chance.
+        await Service(enabled: true, new ScriptedRandom([0.25d, 0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -122,8 +194,8 @@ public sealed class MarketExitServiceTests : IDisposable
         var trader = await AddTraderAsync(currentBalance: 10_000m, cannotBuyCycles: 45);
 
         // At a 45-cycle drought the chance has ramped to 0.50, so a 0.49 roll — which would miss the 0.25 base —
-        // now departs.
-        await Service(enabled: true, new ScriptedRandom([0.49d], [20_000, 0, 0, 0, 0]))
+        // now departs. The trailing 0.99 misses the appearance chance, so no replacement follows.
+        await Service(enabled: true, new ScriptedRandom([0.49d, 0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -137,16 +209,14 @@ public sealed class MarketExitServiceTests : IDisposable
         var (_, cycle, _) = await SeedAsync(price: 100m);
         await AddTraderAsync(currentBalance: 10_000m, cannotBuyCycles: 1_000);
 
-        // A very long drought would push the raw chance far past 1.0; capped at 1.0 it still departs on 0.99.
-        await Service(enabled: true, new ScriptedRandom([0.99d], [20_000, 1, 2, 2, 0]))
+        // A very long drought would push the raw chance far past 1.0; capped at 1.0 it still departs on 0.99. The
+        // trailing 0.99 misses the appearance chance, so the departed trader leaves no one behind.
+        await Service(enabled: true, new ScriptedRandom([0.99d, 0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         Assert.Equal(1, await context.MarketExits.CountAsync());
-        var replacement = await context.Participants.AsNoTracking().SingleAsync();
-        // A market-exit replacement is always a rule-based Individual; the type draw is retained as a discarded
-        // placeholder so the fixed exit draw sequence stays intact.
-        Assert.Equal(ParticipantType.Individual, replacement.Type);
+        Assert.Equal(0, await context.Participants.CountAsync());
     }
 
     [Fact]
@@ -164,8 +234,9 @@ public sealed class MarketExitServiceTests : IDisposable
         await MakeFundMemberAsync(member, cycle.Id);
         var player = await AddTraderAsync(currentBalance: 10_000m, cannotBuyCycles: 25, type: ParticipantType.Player);
 
-        // Every seeded trader fails at least one starvation gate, so an empty script must never be drawn from.
-        await Service(enabled: true, new ScriptedRandom([], []))
+        // Every seeded trader fails at least one starvation gate, so the only draw is the trailing appearance roll,
+        // which misses on 0.99.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -184,8 +255,9 @@ public sealed class MarketExitServiceTests : IDisposable
         var climbing = await AddTraderAsync(currentBalance: 40_000m, maxTotalWorth: 0m);
         await AddSharesAsync(climbing.Id, company.Id, count: 100, price: 100m);
 
-        // Neither trader is a starvation candidate (no drought), so nothing is drawn while worth is ratcheted.
-        await Service(enabled: true, new ScriptedRandom([], []))
+        // Neither trader is a starvation candidate (no drought), so the max-worth ratchet draws nothing; only the
+        // trailing appearance roll is drawn, and it misses on 0.99.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -203,8 +275,9 @@ public sealed class MarketExitServiceTests : IDisposable
         var flagged = await AddTraderAsync(currentBalance: 10_000m, pendingFundLossExitRoll: true);
         await AddSharesAsync(flagged.Id, company.Id, count: 5, price: 100m);
 
-        // Holding shares, the flag is kept and no roll is drawn.
-        await Service(enabled: true, new ScriptedRandom([], []))
+        // Holding shares, the flag is kept and no exit roll is drawn; only the trailing appearance roll is drawn
+        // and it misses on 0.99.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -222,7 +295,8 @@ public sealed class MarketExitServiceTests : IDisposable
         var flagged = await AddTraderAsync(currentBalance: 10_000m, pendingFundLossExitRoll: true);
         await MakeFundMemberAsync(flagged, cycle.Id);
 
-        await Service(enabled: true, new ScriptedRandom([], []))
+        // The flag is kept and no exit roll is drawn; only the trailing appearance roll is drawn and it misses.
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -240,7 +314,9 @@ public sealed class MarketExitServiceTests : IDisposable
         // does not fall through to a second starvation roll.
         var flagged = await AddTraderAsync(currentBalance: 10_000m, cannotBuyCycles: 20, pendingFundLossExitRoll: true);
 
-        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+        // The first 0.99 fails the fund-loss branch and clears the flag without a starvation fall-through; the
+        // second 0.99 misses the trailing appearance roll.
+        await Service(enabled: true, new ScriptedRandom([0.99d, 0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -255,8 +331,9 @@ public sealed class MarketExitServiceTests : IDisposable
         var (_, cycle, _) = await SeedAsync(price: 100m);
         var flagged = await AddTraderAsync(currentBalance: 8_000m, pendingFundLossExitRoll: true, name: "Wiped Out");
 
-        // Shareless and solvent, a 0.10 roll clears the 0.25 fund-loss chance and the trader departs.
-        await Service(enabled: true, new ScriptedRandom([0.10d], [30_000, 0, 0, 0, 0]))
+        // Shareless and solvent, a 0.10 roll clears the 0.25 fund-loss chance and the trader departs; the trailing
+        // 0.99 misses the appearance chance, so no replacement follows.
+        await Service(enabled: true, new ScriptedRandom([0.10d, 0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -264,24 +341,25 @@ public sealed class MarketExitServiceTests : IDisposable
         Assert.Equal(MarketExitReason.FundLoss, exit.Reason);
         Assert.Equal("Wiped Out", exit.Name);
         Assert.False(await context.Participants.AnyAsync(participant => participant.Id == flagged.Id));
-        Assert.Equal(1, await context.Participants.CountAsync());
+        Assert.Equal(0, await context.Participants.CountAsync());
     }
 
     [Fact]
-    public async Task ReplacementNameProbesPastTakenCombos()
+    public async Task AppearingTraderNameProbesPastTakenCombos()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);
-        // The departing trader owns the first name combo, so the name draw of 0 lands on a taken slot and the
-        // deterministic probe steps to the next combo.
+        // The departing trader owns the first name combo and its name stays reserved for this cycle, so the
+        // appearing trader's name draw of 0 lands on a taken slot and the deterministic probe steps to the next.
         var trader = await AddTraderAsync(currentBalance: 10_000m, cannotBuyCycles: 20, name: "Olivia Marsh");
 
-        await Service(enabled: true, new ScriptedRandom([0.10d], [20_000, 0, 0, 0, 0]))
+        // Departs on 0.10; appearance fires on 0.05 with a whale miss on 0.99, then draws its balance and combos.
+        await Service(enabled: true, new ScriptedRandom([0.10d, 0.05d, 0.99d], [20_000, 0, 0, 0]))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         Assert.False(await context.Participants.AnyAsync(participant => participant.Id == trader.Id));
-        var replacement = await context.Participants.AsNoTracking().SingleAsync();
-        Assert.Equal("Olivia Okonkwo", replacement.Name);
+        var appeared = await context.Participants.AsNoTracking().SingleAsync();
+        Assert.Equal("Olivia Okonkwo", appeared.Name);
     }
 
     [Fact]
@@ -292,8 +370,8 @@ public sealed class MarketExitServiceTests : IDisposable
         var crisis = await AddCrisisAsync(cycle, CrisisScope.Local);
 
         // Without a crisis a 0.40 roll misses the 0.25 fund-loss chance; a local crisis doubles it to 0.50, so it
-        // now departs — and the exit leaves no crisis-timeline entry.
-        await Service(enabled: true, new ScriptedRandom([0.40d], [30_000, 0, 0, 0, 0]))
+        // now departs — and the exit leaves no crisis-timeline entry. The trailing 0.99 misses the appearance roll.
+        await Service(enabled: true, new ScriptedRandom([0.40d, 0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
         await context.SaveChangesAsync();
 
@@ -310,8 +388,8 @@ public sealed class MarketExitServiceTests : IDisposable
         var crisis = await AddCrisisAsync(cycle, CrisisScope.Global);
 
         // A 0.60 roll would still miss a local crisis's 0.50 chance; a global crisis quintuples the 0.25 base past
-        // 1.0 (clamped), so it departs — proving the global 5x, not the local 2x.
-        await Service(enabled: true, new ScriptedRandom([0.60d], [30_000, 0, 0, 0, 0]))
+        // 1.0 (clamped), so it departs — proving the global 5x, not the local 2x. The trailing 0.99 misses appearance.
+        await Service(enabled: true, new ScriptedRandom([0.60d, 0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
         await context.SaveChangesAsync();
 
@@ -327,8 +405,8 @@ public sealed class MarketExitServiceTests : IDisposable
         var crisis = await AddCrisisAsync(cycle, CrisisScope.Local);
 
         // At a 20-cycle drought the base starvation chance is 0.25; a local crisis doubles it to 0.50, so a 0.40
-        // roll that would otherwise miss now departs the starved trader.
-        await Service(enabled: true, new ScriptedRandom([0.40d], [20_000, 0, 0, 0, 0]))
+        // roll that would otherwise miss now departs the starved trader. The trailing 0.99 misses appearance.
+        await Service(enabled: true, new ScriptedRandom([0.40d, 0.99d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
         await context.SaveChangesAsync();
 
@@ -422,6 +500,28 @@ public sealed class MarketExitServiceTests : IDisposable
         context.Participants.Add(trader);
         await context.SaveChangesAsync();
         return trader;
+    }
+
+    // Adds a batch of solvent, drought-free individuals that fail every exit gate, used only to fill the roster
+    // toward the population cap in one save.
+    private async Task AddFillerTradersAsync(int count)
+    {
+        for (var index = 0; index < count; index++)
+        {
+            context.Participants.Add(new Participant
+            {
+                Name = $"Filler {index}",
+                Type = ParticipantType.Individual,
+                Temperament = Temperament.Balanced,
+                RiskProfile = RiskProfile.Medium,
+                InitialBalance = 60_000m,
+                CurrentBalance = 60_000m,
+                ReservedBalance = 0m,
+                IsActive = true,
+            });
+        }
+
+        await context.SaveChangesAsync();
     }
 
     private async Task AddSharesAsync(int ownerId, int companyId, int count, decimal price)

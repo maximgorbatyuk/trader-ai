@@ -8,9 +8,18 @@ the order book.
 
 - Any active Individual, AI Agent, or Collective Fund can be an automated investor; the human player invests only
   through the manual action, never through the automated roll.
-- Each cycle has a single chance that one deal happens. When it fires, one eligible investor and company are chosen.
+- On an ordinary cycle, the market has a single base chance that one deal happens. When it fires, one eligible
+  investor and company are chosen.
+- An Extra raised-expectations rating gives that company one targeted investment opportunity on the following
+  cycle. The targeted opportunity replaces the ordinary roll for that cycle and does not repeat while the rating
+  remains current.
+- One eligible investor-company pair is chosen for the targeted opportunity. Its chance starts at the ordinary
+  base chance when the investor can fund exactly the minimum deal and rises in proportion to additional spendable
+  cash, but it can never exceed 50%.
 - The invested cash must be at least 40% of the target company's capitalisation, and the investor must be able to
-  fund it from settled, unreserved cash.
+  fund it from settled, unreserved cash. The same spendable-cash amount controls the targeted opportunity's chance.
+- At most one automated big investment can happen in a cycle. If the targeted opportunity has no eligible pair or
+  its roll misses, no automated deal happens that cycle.
 - The deal executes at the company's current price. The invested cash mints that many new shares, expanding the
   company's issued share count.
 - The investor receives the new shares immediately as a settled holding and pays the cash immediately; the company

@@ -265,6 +265,36 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task SettingsUpdateRejectsBigInvestmentMaximumAboveHalf()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var configuredClient = configuredFactory.CreateClient();
+
+            using var response = await configuredClient.PutAsJsonAsync("/settings", new
+            {
+                values = new Dictionary<string, object>
+                {
+                    ["RandomChanceRates:EventTriggerChances:BigInvestmentMax"] = 0.75,
+                },
+            });
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.True(body.GetProperty("errors").TryGetProperty("RandomChanceRates", out _));
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task SettingsUpdateRejectsAnIncompatibleMarketLoopCadence()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");

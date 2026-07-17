@@ -5,12 +5,14 @@ using TraderAi.Models;
 
 namespace TraderAi.Services;
 
-// Gives the market natural churn. Once per cycle, after fund processing has settled, a trader stuck with no cash
-// and no shares for a long stretch gets a rising chance to leave for good, and a devastated ex-fund-member gets a
-// one-shot chance to quit on its first shareless cycle. A departing trader's row is deleted, its history archived
-// to a MarketExit row, and a fresh replacement is spawned in its place so the population holds steady. Called
-// from inside order maintenance after its final save — so a fund that closed this cycle has already persisted its
-// payouts and loss flags — and stages its own changes for a trailing save.
+// Gives the market natural churn, symmetric with company listings. Once per cycle, after fund processing has
+// settled, a trader stuck with no cash and no shares for a long stretch gets a rising chance to leave for good,
+// and a devastated ex-fund-member gets a one-shot chance to quit on its first shareless cycle. A departing
+// trader's row is deleted and its history archived to a MarketExit row. Separately, while the active-trader
+// roster — individuals, AI agents, and collective funds — sits below the population cap, one new rule-based
+// Individual can appear each cycle on a base chance, seeded with the same balance, temperament, and risk
+// distribution the demo market uses. Called from inside order maintenance after its final save — so a fund that
+// closed this cycle has already persisted its payouts and loss flags — and stages its own changes for a trailing save.
 public sealed class MarketExitService(
     AppDbContext dbContext,
     IOptions<MarketExitOptions> options,
@@ -25,9 +27,17 @@ public sealed class MarketExitService(
     // Starvation odds open at the drought threshold and climb one step per further can't-buy cycle up to 1.0.
     private const double StarvationStepPerCycle = 0.01;
 
-    // A replacement trader starts with a whole-dollar balance drawn uniformly from this range (the player range).
-    private const int ReplacementMinBalance = 10_000;
-    private const int ReplacementMaxBalance = 200_000;
+    // The active-trader roster — individuals, AI agents, and collective funds combined — never exceeds this; a new
+    // trader appears only while the roster is below it.
+    private const int MaxActiveTraders = 300;
+
+    // A newly appearing trader draws a whole-dollar balance from the same whale/regular split the demo seed uses,
+    // so its starting stats match a seeded trader: a small share start as deep-pocketed whales, the rest regular.
+    private const double WhaleShare = 0.15;
+    private const int WhaleMinBalance = 100_000;
+    private const int WhaleMaxBalance = 2_000_000_000;
+    private const int RegularMinBalance = 10_000;
+    private const int RegularMaxBalance = 200_000;
 
     private static readonly Temperament[] Temperaments =
         [Temperament.Aggressive, Temperament.Balanced, Temperament.Conservative];
@@ -40,11 +50,14 @@ public sealed class MarketExitService(
     private HashSet<int> fundMemberIds = null!;
     private HashSet<int> pendingSettlementParticipantIds = null!;
     private HashSet<string> takenNames = null!;
+    private int activeTraderCount;
 
     // Draw discipline for a scripted Random in tests: no draws in the max-worth ratchet; at most one NextDouble()
-    // per exit candidate in id order (fund-loss holders before starvation); and only a confirmed departure burns
-    // its replacement's fixed run of draws — balance, type, temperament, risk, then name. An active crisis only
-    // scales the exit threshold, it takes no extra draw, so calm-market sequences are unchanged.
+    // per exit candidate in id order (fund-loss holders before starvation), and a confirmed departure now draws
+    // nothing further. After the exit rolls, while the roster is below the cap one NextDouble decides the
+    // appearance; only a clearing roll goes on to draw the new trader's fixed run — a whale NextDouble, then
+    // balance, temperament, risk, and name. An active crisis only scales the exit threshold, it takes no extra
+    // draw, so calm-market sequences are unchanged.
     public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
     {
         if (!options.Value.Enabled)
@@ -63,6 +76,11 @@ public sealed class MarketExitService(
 
         // Stable id order keeps the per-trader random draws reproducible for a scripted Random in tests.
         var participants = await dbContext.Participants.OrderBy(participant => participant.Id).ToListAsync();
+
+        // Carried in memory and decremented per departure so the appearance pass sees the post-exit roster without
+        // re-querying a database that still holds this cycle's staged deletes.
+        activeTraderCount = participants.Count(participant =>
+            participant.Type is ParticipantType.Individual or ParticipantType.AIAgent or ParticipantType.CollectiveFund);
 
         // Pass 1: ratchet each trader's high-water worth up only. No random draws.
         foreach (var participant in participants)
@@ -120,6 +138,10 @@ public sealed class MarketExitService(
                 await DepartAsync(participant, MarketExitReason.Starvation, currentCycleId, now);
             }
         }
+
+        // Pass 3: appearance. Mirrors the company listing pass — the exits above have freed any slots, so a roster
+        // below the cap may gain one new trader this cycle.
+        MaybeSpawnTrader(currentCycleId, now);
     }
 
     private bool IsStarvationCandidate(Participant participant, List<OwnedHolding> owned) =>
@@ -167,29 +189,43 @@ public sealed class MarketExitService(
         // ids in history tables that every read path already tolerates (numeric-id fallbacks / id-keyed lookups).
         // Both exit gates exclude current fund members, so no live CollectiveFundParticipant is ever orphaned.
         dbContext.Participants.Remove(participant);
-
-        SpawnReplacement(currentCycleId, now);
+        activeTraderCount--;
     }
 
-    private void SpawnReplacement(int currentCycleId, DateTime now)
+    // One appearance roll per cycle: while the roster is below the cap, a base chance decides whether a new trader
+    // joins, using the roster count carried in memory so a departure frees a slot the same cycle.
+    private void MaybeSpawnTrader(int currentCycleId, DateTime now)
     {
-        var balance = random.Next(ReplacementMinBalance, ReplacementMaxBalance + 1);
-        // The type draw is retained as a discarded placeholder so the fixed exit draw sequence (balance, type,
-        // temperament, risk, name) is unchanged; a replacement is always a rule-based Individual because AI traders
-        // exist only through explicit operator configuration.
-        _ = random.Next(2);
-        var type = ParticipantType.Individual;
+        if (activeTraderCount >= MaxActiveTraders)
+        {
+            return;
+        }
+
+        if (random.NextDouble() >= chanceRates.Value.EventTriggerChances.TraderAppearanceBase)
+        {
+            return;
+        }
+
+        SpawnTrader(currentCycleId, now);
+    }
+
+    private void SpawnTrader(int currentCycleId, DateTime now)
+    {
+        // The same whale/regular balance split the demo seed uses, so an appearing trader's starting stats match a
+        // seeded one; a new trader is always a rule-based Individual because AI traders exist only through explicit
+        // operator configuration.
+        var balance = random.NextDouble() < WhaleShare
+            ? random.Next(WhaleMinBalance, WhaleMaxBalance + 1)
+            : random.Next(RegularMinBalance, RegularMaxBalance + 1);
         var temperament = Temperaments[random.Next(Temperaments.Length)];
         var riskProfile = RiskProfiles[random.Next(RiskProfiles.Length)];
         var name = DemoMarketNames.PickOnePerson(random, takenNames);
-
-        // Keep the freed name reserved for the rest of this pass so a second departure this cycle picks another.
         takenNames.Add(name);
 
         dbContext.Participants.Add(new Participant
         {
             Name = name,
-            Type = type,
+            Type = ParticipantType.Individual,
             Temperament = temperament,
             RiskProfile = riskProfile,
             InitialBalance = balance,
