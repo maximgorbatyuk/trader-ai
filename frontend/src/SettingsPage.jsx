@@ -27,6 +27,8 @@ const SETTINGS_LINK_GROUPS = [
     links: [
       { label: 'MiniMax', href: 'https://platform.minimax.io/console/usage' },
       { label: 'GLM', href: 'https://z.ai/manage-apikey/coding-plan/personal/usage' },
+      { label: 'Freedom AI', href: 'https://maas.cloud-native.kz' },
+      { label: 'DeepSeek', href: 'https://platform.deepseek.com/usage' },
       { label: 'OpenAI', href: 'https://platform.openai.com/usage' },
       { label: 'Claude', href: 'https://platform.claude.com/usage' },
     ],
