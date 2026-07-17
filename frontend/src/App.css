@@ -336,7 +336,7 @@
   flex: 1;
   width: min(1880px, 93%);
   margin: 0 auto;
-  padding: var(--s-5) 0 var(--s-10);
+  padding: var(--s-5) 0;
 }
 
 /* ---- Settings ---- */
@@ -1041,7 +1041,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
-  margin-bottom: var(--s-3);
 }
 
 /* Master list on the left, click-to-reveal detail on the right (detail pages). */
@@ -1670,6 +1669,14 @@
   background: oklch(0.23 0.014 255);
 }
 
+/* On the dashboard the map shares the viewport with the fund header, tab strip, filters, and news, so cap it to
+   the space left below that fixed chrome; the aspect-ratio height wins on normal screens and this only engages
+   on short or ultrawide viewports where the map would otherwise force a page scroll. The tiles are percentage
+   positioned, so a shorter box just rescales them. */
+.map-embedded .market-map {
+  max-height: calc(100dvh - 468px);
+}
+
 .map-stats {
   display: flex;
   flex: 0 0 15%;
@@ -1837,9 +1844,10 @@
   overflow: auto;
 }
 
-/* The order book gets a taller scroll area so more resting orders show at once; overflow still scrolls inside. */
+/* Cap the order book to the space left below the dashboard chrome (fund header, tabs, filter, legend ≈ 396px)
+   so the panel fits the viewport instead of forcing a page scroll; overflow still scrolls inside the table. */
 .order-book .tbl-scroll {
-  max-height: min(60vh, 44rem);
+  max-height: calc(100dvh - 396px);
 }
 
 .tbl-scroll .tbl thead th {

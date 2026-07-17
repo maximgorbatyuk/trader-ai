@@ -9,6 +9,7 @@ import { AppShell } from './AppShell.jsx'
 import { SettingsPage } from './SettingsPage.jsx'
 import { AboutPage } from './AboutPage.jsx'
 import AuditorsPage from './AuditorsPage.jsx'
+import AuditorDetailPage from './AuditorDetailPage.jsx'
 import NewsPage from './NewsPage.jsx'
 import TraderDetailPage from './TraderDetailPage.jsx'
 import CompanyDetailPage from './CompanyDetailPage.jsx'
@@ -42,6 +43,7 @@ createRoot(document.getElementById('root')).render(
           <Route path="/crises" element={<CrisesPage />} />
           <Route path="/crises/:id" element={<CrisisDetailPage />} />
           <Route path="/auditors" element={<AuditorsPage />} />
+          <Route path="/auditors/:id" element={<AuditorDetailPage />} />
           <Route path="/banks" element={<BanksPage />} />
           <Route path="/loans" element={<BankLoansPage />} />
           <Route path="/settings" element={<SettingsPage />} />

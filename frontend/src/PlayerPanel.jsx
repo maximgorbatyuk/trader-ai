@@ -1,23 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from './api'
-import { formatCompactMoney, formatInt, formatMoney, formatSigned, formatSignedInt, toneOf } from './format'
+import { formatInt, formatMoney, formatSigned, formatSignedInt, toneOf } from './format'
 import { Pager, SortHeader } from './TableControls'
 import { useClientTable } from './useClientTable'
-import { LineChart } from './LineChart'
 import { CASH_LABEL, CASH_TONE } from './cashMovements'
 import { Modal } from './Modal'
 import { MoneyTransactionModal } from './MoneyTransactionModal'
-import { IndustryHoldingsTable } from './IndustryHoldingsTable'
-import { groupHoldingsByIndustry } from './industryHoldings'
-import { maintenanceStanding } from './marginModel'
 import { SettlementsTable } from './SettlementsTable'
-import { cashSettlement, quantitySettlement } from './marketAccounting'
+import { cashSettlement } from './marketAccounting'
 import { FavoriteCompaniesTable } from './FavoriteCompaniesTable'
 import { favoriteCompanies } from './favoriteCompanies'
 
 const POLL_INTERVAL_MS = 1000
-const WORTH_HISTORY_POINTS = 64
+const CASH_MOVEMENT_PAGE_SIZE = 10
+const SETTLEMENTS_PAGE_SIZE = 10
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
 const CHANGE_GLYPH = { up: '▲', down: '▼', flat: '◆' }
 const MEMBER_TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund', Player: 'Player' }
@@ -38,8 +35,8 @@ function ChangeAmount({ value }) {
 }
 
 // The player subject reads straight off the player response; the fund subject is derived client-side from the
-// fund's participant detail, holdings, and worth history so the Fund tab shows the same balances and performance
-// figures as the Player tab without a dedicated endpoint.
+// fund's participant detail and worth history so the Fund tab shows the same balances and performance figures as
+// the Player tab without a dedicated endpoint.
 function fundSubjectOf(fundDetail, worthHistory) {
   const totalWorth = fundDetail.totalWorth
   let lastCycleMoneyChange = null
@@ -75,7 +72,6 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, 
   const [loading, setLoading] = useState(true)
   const [player, setPlayer] = useState(null)
   const [fundDetail, setFundDetail] = useState(null)
-  const [holdings, setHoldings] = useState([])
   const [orders, setOrders] = useState([])
   const [attention, setAttention] = useState([])
   const [loans, setLoans] = useState([])
@@ -97,8 +93,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, 
         : null
 
       if (activeId != null) {
-        const [holdingsData, orderData, attentionData, loanData, worthData, cashData, settlementData, fundData] = await Promise.all([
-          api.getHoldings(activeId),
+        const [orderData, attentionData, loanData, worthData, cashData, settlementData, fundData] = await Promise.all([
           api.getParticipantOrders(activeId, 20),
           api.getCompaniesAttention(activeId),
           api.getParticipantLoans(activeId, { status: loanStatus }),
@@ -108,7 +103,6 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, 
           actorKind === 'fund' ? api.getParticipant(activeId) : Promise.resolve(null),
         ])
         if (!mountedRef.current) return
-        setHoldings(holdingsData)
         setOrders(orderData)
         setAttention(attentionData)
         setLoans(loanData ?? [])
@@ -117,7 +111,6 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, 
         setSettlements(settlementData?.items ?? [])
         setFundDetail(fundData)
       } else {
-        setHoldings([])
         setOrders([])
         setAttention([])
         setLoans([])
@@ -169,13 +162,11 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, 
           marketMap={marketMap}
           orderBook={orderBook}
           canCancelOrders
-          holdings={holdings}
           orders={orders}
           attention={attention}
           loans={loans}
           loanStatus={loanStatus}
           onLoanStatusChange={setLoanStatus}
-          worthHistory={worthHistory}
           cashMoves={cashMoves}
           settlements={settlements}
           companies={companies}
@@ -198,13 +189,11 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, 
           isFund
           canCancelOrders
           members={fundDetail.collectiveFundMembers ?? []}
-          holdings={holdings}
           orders={orders}
           attention={attention}
           loans={loans}
           loanStatus={loanStatus}
           onLoanStatusChange={setLoanStatus}
-          worthHistory={worthHistory}
           cashMoves={cashMoves}
           settlements={settlements}
           companies={companies}
@@ -564,13 +553,11 @@ function ActorView({
   marketMap,
   canCancelOrders,
   members,
-  holdings,
   orders,
   attention,
   loans,
   loanStatus,
   onLoanStatusChange,
-  worthHistory,
   cashMoves,
   settlements,
   companies,
@@ -615,14 +602,11 @@ function ActorView({
         orderBook={orderBook}
         marketMap={marketMap}
         members={members}
-        holdings={holdings}
         attention={attention}
         openOrders={openOrders}
         loans={loans}
-        margin={subject.margin}
         loanStatus={loanStatus}
         onLoanStatusChange={onLoanStatusChange}
-        worthHistory={worthHistory}
         cashMoves={cashMoves}
         settlements={settlements}
         companies={companies}
@@ -742,15 +726,11 @@ function BalancesModal({ subject, cash, onClose }) {
 const BASE_TABS = [
   { key: 'map', label: 'Market map', hasCount: false },
   { key: 'orderbook', label: 'Order book', hasCount: false },
-  { key: 'assets', label: 'Active assets', hasCount: true },
-  { key: 'industries', label: 'By industry', hasCount: true },
-  { key: 'attention', label: 'Companies needing attention', hasCount: true },
+  { key: 'attention', label: 'Needs attention', hasCount: true },
   { key: 'orders', label: 'Open orders', hasCount: true },
-  { key: 'worth', label: 'Total worth chart', hasCount: false },
   { key: 'cash', label: 'Cash movements', hasCount: false },
   { key: 'settlements', label: 'Settlements', hasCount: true },
   { key: 'loans', label: 'Term loans', hasCount: true },
-  { key: 'margin', label: 'Margin', hasCount: false },
 ]
 const MEMBERS_TAB = { key: 'members', label: 'Members', hasCount: true }
 const FAVORITES_TAB = { key: 'favorites', label: 'Favorite companies', hasCount: true }
@@ -758,16 +738,13 @@ const FAVORITES_TAB = { key: 'favorites', label: 'Favorite companies', hasCount:
 // The actor's detail views behind one tab strip so the panel stays compact: the roster tabs carry a live count,
 // and arrow keys move focus between tabs (roving tabindex) to match the order-book tablist. The fund variant
 // appends a Members tab.
-function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, members, holdings, attention, openOrders, loans, margin, loanStatus, onLoanStatusChange, worthHistory, cashMoves, settlements, companies, showFavoriteCompanies, onSelectCompany, onRefresh }) {
+function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, members, attention, openOrders, loans, loanStatus, onLoanStatusChange, cashMoves, settlements, companies, showFavoriteCompanies, onSelectCompany, onRefresh }) {
   const playerTabs = showFavoriteCompanies ? [...BASE_TABS, FAVORITES_TAB] : BASE_TABS
   const tabs = members ? [...playerTabs, MEMBERS_TAB] : playerTabs
   const [activeKey, setActiveKey] = useState('map')
   const tabRefs = useRef({})
 
-  const industryRows = groupHoldingsByIndustry(holdings, companies)
   const counts = {
-    assets: holdings.length,
-    industries: industryRows.length,
     attention: attention.length,
     orders: openOrders.length,
     loans: loans.length,
@@ -823,27 +800,17 @@ function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, membe
       >
         {activeKey === 'map' ? marketMap : null}
         {activeKey === 'orderbook' ? orderBook : null}
-        {activeKey === 'assets' ? <HoldingsSection holdings={holdings} onSelectCompany={onSelectCompany} /> : null}
-        {activeKey === 'industries' ? (
-          <div className="modal-section player-section">
-            <IndustryHoldingsTable holdings={holdings} companies={companies} />
-          </div>
-        ) : null}
         {activeKey === 'attention' ? <AttentionSection attention={attention} onSelectCompany={onSelectCompany} /> : null}
         {activeKey === 'orders' ? (
           <OpenOrdersSection orders={openOrders} companies={companies} canCancel={canCancelOrders} onCancelled={onRefresh} />
         ) : null}
-        {activeKey === 'worth' ? <WorthChartTab worthHistory={worthHistory} /> : null}
         {activeKey === 'cash' ? <CashMovesTab moves={cashMoves} participantId={participantId} /> : null}
         {activeKey === 'settlements' ? (
-          <div className="modal-section player-section">
-            <SettlementsTable settlements={settlements} onSelectCompany={onSelectCompany} />
-          </div>
+          <SettlementsSection settlements={settlements} onSelectCompany={onSelectCompany} />
         ) : null}
         {activeKey === 'loans' ? (
           <LoansSection loans={loans} status={loanStatus} onStatusChange={onLoanStatusChange} onRepaid={onRefresh} />
         ) : null}
-        {activeKey === 'margin' ? <MarginSection margin={margin} /> : null}
         {activeKey === 'favorites' ? (
           <div className="modal-section player-section">
             <FavoriteCompaniesTable companies={companies} onSelectCompany={onSelectCompany} />
@@ -855,86 +822,70 @@ function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, membe
   )
 }
 
-function MarginSection({ margin }) {
-  const standing = maintenanceStanding(margin?.maintenanceExcess ?? 0)
-  const callOpen = margin?.callStatus === 'Open'
-  return (
-    <div className="modal-section player-section">
-      <dl className="kv">
-        <div className="kv-row"><dt>Initial margin rate</dt><dd className="num">{((margin?.initialMarginRate ?? 0) * 100).toFixed(0)}%</dd></div>
-        <div className="kv-row"><dt>Maintenance rate</dt><dd className="num">{((margin?.maintenanceMarginRate ?? 0) * 100).toFixed(0)}%</dd></div>
-        <div className="kv-row"><dt>Initial requirement</dt><dd className="num">{formatMoney(margin?.initialRequirement ?? 0)}</dd></div>
-        <div className="kv-row"><dt>Maintenance requirement</dt><dd className="num">{formatMoney(margin?.maintenanceRequirement ?? 0)}</dd></div>
-        <div className="kv-row"><dt>Excess</dt><dd className="num">{formatMoney(standing.excess)}</dd></div>
-        <div className="kv-row"><dt>Deficiency</dt><dd className="num tone-down">{formatMoney(standing.deficiency)}</dd></div>
-        <div className="kv-row"><dt>Call status</dt><dd><span className={callOpen ? 'tag tag-flag' : 'tag'}>{callOpen ? '! Open' : '✓ Clear'}</span></dd></div>
-      </dl>
-    </div>
-  )
-}
-
-function WorthChartTab({ worthHistory }) {
-  const values = worthHistory.map((point) => point.totalWorth)
-  const change = values.length >= 2 ? values.at(-1) - values.at(0) : 0
+// The settlements queue is paginated client-side over the fetched array so the tab never grows past the height
+// of one page; the rows already arrive newest-first, so no sort is applied.
+function SettlementsSection({ settlements, onSelectCompany }) {
+  const { pageRows, page, pageCount, setPage } = useClientTable(settlements, { pageSize: SETTLEMENTS_PAGE_SIZE })
 
   return (
     <div className="modal-section player-section">
-      {values.length < 2 ? (
-        <p className="note note-sm">Not enough history yet. Total worth is recorded once per completed cycle.</p>
-      ) : (
-        <LineChart values={values.slice(-WORTH_HISTORY_POINTS)} tone={toneOf(change)} formatValue={formatCompactMoney} label="Total worth over time" />
-      )}
+      <SettlementsTable settlements={pageRows} onSelectCompany={onSelectCompany} />
+      <Pager page={page} pageCount={pageCount} onPage={setPage} />
     </div>
   )
 }
 
 function CashMovesTab({ moves, participantId }) {
   const [selectedMove, setSelectedMove] = useState(null)
+  const { pageRows, page, pageCount, setPage } = useClientTable(moves, { pageSize: CASH_MOVEMENT_PAGE_SIZE })
 
   return (
     <div className="modal-section player-section">
       {moves.length === 0 ? (
         <p className="note note-sm">No cash movements yet.</p>
       ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">Type</th>
-                <th scope="col" className="ta-r">
-                  Amount
-                </th>
-                <th scope="col" className="ta-r">
-                  Cycle
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {moves.map((move) => (
-                <tr
-                  key={move.id}
-                  className="tbl-row-click"
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Open details for ${CASH_LABEL[move.type] ?? move.type} of ${formatMoney(move.amount)}`}
-                  onClick={() => setSelectedMove(move)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      setSelectedMove(move)
-                    }
-                  }}
-                >
-                  <td>
-                    <span className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</span>
-                  </td>
-                  <td className="num ta-r">{formatMoney(move.amount)}</td>
-                  <td className="num ta-r">#{move.createdInCycleId}</td>
+        <>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Type</th>
+                  <th scope="col" className="ta-r">
+                    Amount
+                  </th>
+                  <th scope="col" className="ta-r">
+                    Cycle
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {pageRows.map((move) => (
+                  <tr
+                    key={move.id}
+                    className="tbl-row-click"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open details for ${CASH_LABEL[move.type] ?? move.type} of ${formatMoney(move.amount)}`}
+                    onClick={() => setSelectedMove(move)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        setSelectedMove(move)
+                      }
+                    }}
+                  >
+                    <td>
+                      <span className={`tone-${CASH_TONE[move.type] ?? 'flat'}`}>{CASH_LABEL[move.type] ?? move.type}</span>
+                    </td>
+                    <td className="num ta-r">{formatMoney(move.amount)}</td>
+                    <td className="num ta-r">#{move.createdInCycleId}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+        </>
       )}
       {selectedMove ? (
         <MoneyTransactionModal
@@ -943,68 +894,6 @@ function CashMovesTab({ moves, participantId }) {
           onClose={() => setSelectedMove(null)}
         />
       ) : null}
-    </div>
-  )
-}
-
-function HoldingsSection({ holdings, onSelectCompany }) {
-  const rows = holdings.map((holding) => ({ ...holding, pnl: holding.marketValue - holding.costBasis }))
-  const { pageRows, sortKey, sortDir, toggleSort, page, pageCount, setPage } = useClientTable(rows, {
-    initialSortKey: 'marketValue',
-    pageSize: 15,
-  })
-
-  return (
-    <div className="modal-section player-section">
-      {rows.length === 0 ? (
-        <p className="note note-sm">No shares held yet.</p>
-      ) : (
-        <>
-          <div className="tbl-wrap">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th scope="col">Company</th>
-                  <SortHeader label="Quantity" columnKey="shares" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                  <SortHeader label="Settled" columnKey="settledShares" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                  <SortHeader label="Pending" columnKey="pendingShares" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                  <SortHeader label="Cost paid" columnKey="costBasis" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                  <SortHeader label="Value" columnKey="marketValue" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                  <SortHeader label="P/L" columnKey="pnl" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                </tr>
-              </thead>
-              <tbody>
-                {pageRows.map((holding) => {
-                  const quantity = quantitySettlement(holding.shares, holding.settledShares)
-                  return <tr key={holding.companyId}>
-                    <th scope="row">
-                      {onSelectCompany ? (
-                        <button
-                          type="button"
-                          className="cell-name-btn cell-ellipsis"
-                          onClick={() => onSelectCompany(holding.companyId)}
-                          title={`Open ${holding.companyName} details`}
-                        >
-                          {holding.companyName}
-                        </button>
-                      ) : (
-                        <span className="cell-ellipsis">{holding.companyName}</span>
-                      )}
-                    </th>
-                    <td className="num ta-r">{formatInt(quantity.economic)}</td>
-                    <td className="num ta-r">{formatInt(quantity.settled)}</td>
-                    <td className="num ta-r">{formatSignedInt(quantity.pending)}</td>
-                    <td className="num ta-r">{formatMoney(holding.costBasis)}</td>
-                    <td className="num ta-r">{formatMoney(holding.marketValue)}</td>
-                    <td className={`num ta-r tone-${toneOf(holding.pnl)}`}>{formatSigned(holding.pnl)}</td>
-                  </tr>
-                })}
-              </tbody>
-            </table>
-          </div>
-          <Pager page={page} pageCount={pageCount} onPage={setPage} />
-        </>
-      )}
     </div>
   )
 }

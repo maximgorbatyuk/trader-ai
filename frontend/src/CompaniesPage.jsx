@@ -6,9 +6,9 @@ import { formatInt } from './format'
 import { Panel } from './Panel'
 import { CompaniesTable } from './CompaniesTable'
 import ClosedCompaniesView from './ClosedCompaniesPage'
+import { useFitPageSize } from './useFitPageSize'
 
 const POLL_INTERVAL_MS = 2500
-const PAGE_SIZE = 20
 
 // Roster of companies. Search, industry filter, sort, and paging are held here and sent to the server;
 // clicking a company opens its own detail page.
@@ -25,6 +25,7 @@ function CompaniesPage() {
   const [industryFilter, setIndustryFilter] = useState('')
   const [sortKey, setSortKey] = useState('cost')
   const [sortDir, setSortDir] = useState('desc')
+  const [pageSize, tableRef] = useFitPageSize()
 
   // Industries seldom change, so they are fetched once to populate the filter rather than on every poll.
   useEffect(() => {
@@ -48,12 +49,18 @@ function CompaniesPage() {
     try {
       const result = await api.getCompaniesPaged({
         page,
-        pageSize: PAGE_SIZE,
+        pageSize,
         search,
         sort: sortKey,
         sortDir,
         industryId: industryFilter || undefined,
       })
+      // A resize can shrink the page size (or a live refresh the total) below the current page; snap back.
+      const resultPageCount = Math.max(1, Math.ceil((result?.total ?? 0) / pageSize))
+      if (page > resultPageCount) {
+        setPage(resultPageCount)
+        return
+      }
       setData(result)
       setLoadError(null)
     } catch (error) {
@@ -61,7 +68,7 @@ function CompaniesPage() {
     } finally {
       setReady(true)
     }
-  }, [page, search, industryFilter, sortKey, sortDir])
+  }, [page, pageSize, search, industryFilter, sortKey, sortDir])
 
   useEffect(() => {
     if (view !== 'active') return undefined
@@ -90,7 +97,7 @@ function CompaniesPage() {
 
   const total = data?.total ?? 0
   const items = data?.items ?? []
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const statusControl = (
     <select
       className="select select-sm"
@@ -153,13 +160,15 @@ function CompaniesPage() {
               </select>
             </div>
 
-            <CompaniesTable
-              companies={items}
-              sortKey={sortKey}
-              sortDir={sortDir}
-              onToggleSort={toggleSort}
-              onSelectCompany={selectCompany}
-            />
+            <div ref={tableRef}>
+              <CompaniesTable
+                companies={items}
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onToggleSort={toggleSort}
+                onSelectCompany={selectCompany}
+              />
+            </div>
 
             {pageCount > 1 ? (
               <div className="pager">

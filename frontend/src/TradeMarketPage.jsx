@@ -10,17 +10,21 @@ import { FilledOrdersTable } from './FilledOrdersTable'
 import { InvestmentsTable } from './InvestmentsTable'
 import { holdingCompanyIdSet } from './actor'
 import { formatInt } from './format'
+import { useFitPageSize } from './useFitPageSize'
 
 const POLL_INTERVAL_MS = 1500
-const FILLED_ORDERS_PAGE_SIZE = 20
 const TABS = [
   { key: 'map', label: 'Market map' },
   { key: 'activity', label: 'Orders activity' },
+  { key: 'fills', label: 'Filled orders / settlements' },
+  { key: 'investments', label: 'Recent investments' },
 ]
 
-// A market-wide view that reuses the dashboard market map alongside the orders-per-cycle activity chart in a
-// tab pair, with the two latest news below. Market state comes from the app shell; this page owns the rest of
-// its polling. Clicking a company opens its detail route rather than a modal.
+// A market-wide view that gathers the market map, the orders-per-cycle activity chart, the settlement feed, and
+// recent investments into a single tab strip so only one lives on screen at a time. The filled-orders and
+// investments tables size their fetch to the viewport so the active tab fills the browser height without a page
+// scroll. Market state comes from the app shell; this page owns the rest of its polling. Clicking a company
+// opens its detail route rather than a modal.
 function TradeMarketPage() {
   const { market } = useOutletContext()
   const navigate = useNavigate()
@@ -28,12 +32,14 @@ function TradeMarketPage() {
   const [participants, setParticipants] = useState([])
   const [activity, setActivity] = useState([])
   const [news, setNews] = useState([])
-  const [filledOrders, setFilledOrders] = useState({ items: [], total: 0, page: 1, pageSize: FILLED_ORDERS_PAGE_SIZE })
+  const [filledOrders, setFilledOrders] = useState({ items: [], total: 0 })
   const [filledOrdersPage, setFilledOrdersPage] = useState(1)
   const [investments, setInvestments] = useState([])
   const [playerHoldingCompanyIds, setPlayerHoldingCompanyIds] = useState(() => new Set())
   const [active, setActive] = useState('map')
   const tabRefs = useRef({})
+  const [filledPageSize, fillsTableRef] = useFitPageSize()
+  const [investmentsCount, investmentsTableRef] = useFitPageSize()
 
   const loadAll = useCallback(async () => {
     try {
@@ -42,8 +48,8 @@ function TradeMarketPage() {
         api.getParticipants(),
         api.getCycleActivity(),
         api.getNews(10),
-        api.getShareTransactionsPaged(filledOrdersPage, FILLED_ORDERS_PAGE_SIZE),
-        api.getInvestments(20),
+        api.getShareTransactionsPaged(filledOrdersPage, filledPageSize),
+        api.getInvestments(investmentsCount),
         api.getPlayer(),
       ])
       setCompanies(companyData)
@@ -53,7 +59,7 @@ function TradeMarketPage() {
       setFilledOrders(filledOrderData)
       setInvestments(investmentData ?? [])
 
-      const pageCount = Math.max(1, Math.ceil(filledOrderData.total / FILLED_ORDERS_PAGE_SIZE))
+      const pageCount = Math.max(1, Math.ceil(filledOrderData.total / filledPageSize))
       if (filledOrdersPage > pageCount) {
         setFilledOrdersPage(pageCount)
       }
@@ -67,7 +73,7 @@ function TradeMarketPage() {
     } catch {
       // Keep the last known state when a refresh fails; the shell surfaces the offline status.
     }
-  }, [filledOrdersPage])
+  }, [filledOrdersPage, filledPageSize, investmentsCount])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)
@@ -152,7 +158,7 @@ function TradeMarketPage() {
             news={news}
             onSelectCompany={onSelectCompany}
           />
-        ) : (
+        ) : active === 'activity' ? (
           <Panel title="Orders activity" className="panel-activity">
             <OrdersActivity activity={activity} cyclesPerDay={tradingCyclesPerDay} />
             {/* The map tab already carries the news strip; show it here so news stays visible on this tab too. */}
@@ -165,32 +171,32 @@ function TradeMarketPage() {
               />
             </div>
           </Panel>
+        ) : active === 'fills' ? (
+          <Panel
+            title="Filled orders / settlements"
+            count={`${formatInt(filledOrders.total)} fill${filledOrders.total === 1 ? '' : 's'}`}
+            className="panel-trades"
+          >
+            <div ref={fillsTableRef}>
+              <FilledOrdersTable
+                transactions={filledOrders.items}
+                total={filledOrders.total}
+                page={filledOrdersPage}
+                pageSize={filledPageSize}
+                participantNameById={participantNameById}
+                companyNameById={companyNameById}
+                onPage={setFilledOrdersPage}
+                onSelectCompany={onSelectCompany}
+              />
+            </div>
+          </Panel>
+        ) : (
+          <Panel title="Recent investments" count={`${investments.length}`} className="panel-trades">
+            <div ref={investmentsTableRef}>
+              <InvestmentsTable investments={investments} emptyLabel="No capital-raise investments yet." />
+            </div>
+          </Panel>
         )}
-      </div>
-
-      <div className="dashboard">
-        <Panel
-          title="Filled orders / settlements"
-          count={`${formatInt(filledOrders.total)} fill${filledOrders.total === 1 ? '' : 's'}`}
-          className="panel-trades"
-        >
-          <FilledOrdersTable
-            transactions={filledOrders.items}
-            total={filledOrders.total}
-            page={filledOrdersPage}
-            pageSize={FILLED_ORDERS_PAGE_SIZE}
-            participantNameById={participantNameById}
-            companyNameById={companyNameById}
-            onPage={setFilledOrdersPage}
-            onSelectCompany={onSelectCompany}
-          />
-        </Panel>
-      </div>
-
-      <div className="dashboard">
-        <Panel title="Recent investments" count={`${investments.length}`} className="panel-trades">
-          <InvestmentsTable investments={investments} emptyLabel="No capital-raise investments yet." />
-        </Panel>
       </div>
     </main>
   )

@@ -5,25 +5,27 @@ import { api } from './api'
 import { formatInt } from './format'
 import { Panel } from './Panel'
 import { RatingBadge } from './RatingBadge'
+import { useFitPageSize } from './useFitPageSize'
 
 const POLL_INTERVAL_MS = 2500
-const PAGE_SIZE = 20
 
-// The single-auditor block: identity plus a paginated table of the companies it has audited, newest first. Owns
-// its own polling keyed on auditorId and page, and remounts (resetting the page) when the selected auditor
-// changes because the parent keys it on the id.
+// The single-auditor detail: identity plus a paginated table of the companies it has audited, newest first. Owns
+// its own polling keyed on auditorId and page, and remounts (resetting the page) when the route id changes
+// because the page keys it on the id. The audits table is sized to the viewport so the page never grows a
+// vertical scrollbar, and that page size drives server-side paging.
 export function AuditorDetail({ auditorId }) {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [auditor, setAuditor] = useState(null)
   const [audits, setAudits] = useState(null)
   const [page, setPage] = useState(1)
+  const [pageSize, tableRef] = useFitPageSize()
 
   const loadAll = useCallback(async () => {
     try {
       const [auditorData, auditData] = await Promise.all([
         api.getAuditor(auditorId),
-        api.getAuditorAudits(auditorId, page, PAGE_SIZE),
+        api.getAuditorAudits(auditorId, page, pageSize),
       ])
       setAuditor(auditorData)
       setAudits(auditData)
@@ -33,7 +35,7 @@ export function AuditorDetail({ auditorId }) {
     } finally {
       setReady(true)
     }
-  }, [auditorId, page])
+  }, [auditorId, page, pageSize])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)
@@ -43,6 +45,16 @@ export function AuditorDetail({ auditorId }) {
       clearInterval(intervalId)
     }
   }, [loadAll])
+
+  const total = audits?.total ?? 0
+  const items = audits?.items ?? []
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
+
+  // A resize can enlarge the page size below the stored page; adjust during render (React's supported pattern
+  // for deriving state from changed inputs) so the table never lands on an empty page with no way back.
+  if (page > pageCount) {
+    setPage(pageCount)
+  }
 
   if (!ready) {
     return (
@@ -61,10 +73,6 @@ export function AuditorDetail({ auditorId }) {
       </div>
     )
   }
-
-  const total = audits?.total ?? 0
-  const items = audits?.items ?? []
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
     <section className="detail-stack" aria-label={`${auditor.name} details`}>
@@ -88,7 +96,7 @@ export function AuditorDetail({ auditorId }) {
           <p className="note">This auditor hasn&apos;t reviewed any company yet.</p>
         ) : (
           <>
-            <div className="tbl-wrap">
+            <div className="tbl-wrap" ref={tableRef}>
               <table className="tbl">
                 <thead>
                   <tr>

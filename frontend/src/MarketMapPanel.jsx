@@ -51,7 +51,6 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
   // Anchored to the cycle number, not the poll: the move is measured against the previous cycle's caps and the
   // colour holds through every poll of the current cycle, only re-computing when a new cycle advances.
   const [capChange, setCapChange] = useState({ cycle: null, capById: new Map(), changeById: new Map() })
-  const [industrySel, setIndustrySel] = useState(() => new Set())
   const [capBucket, setCapBucket] = useState('all')
   const [playerSel, setPlayerSel] = useState('all')
   const [favoriteSel, setFavoriteSel] = useState('all')
@@ -81,9 +80,8 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
     .filter((company) => company.capitalization > 0)
     .sort((a, b) => b.capitalization - a.capitalization)
 
-  // Industry options and cap bands are derived from the whole priced market, so a band means "richest in the
-  // market" and the industry list stays stable regardless of the other active filters.
-  const industryOptions = [...new Set(mappedCompanies.map((company) => company.industryName).filter(Boolean))].sort()
+  // Cap bands are derived from the whole priced market, so a band means "richest in the market" regardless of
+  // the other active filters.
   const { p25, p75 } = quartileBounds(mappedCompanies.map((company) => company.capitalization))
 
   function matchesCap(cap) {
@@ -100,7 +98,6 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
   }
 
   const visibleCompanies = mappedCompanies.filter((company) => {
-    if (industrySel.size > 0 && !industrySel.has(company.industryName)) return false
     if (!matchesCap(company.capitalization)) return false
     if (playerSel === 'owned' && !heldIds.has(company.id)) return false
     if (playerSel === 'not' && heldIds.has(company.id)) return false
@@ -118,15 +115,6 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
     0,
   )
 
-  function toggleIndustry(name) {
-    setIndustrySel((current) => {
-      const next = new Set(current)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
-      return next
-    })
-  }
-
   const mapItems = visibleCompanies.map((company) => {
     const tone = toneOf(company.capChangePct)
     const luld = luldPresentation(company.luldState)
@@ -142,7 +130,6 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
     }
   })
 
-  const industryLabel = industrySel.size === 0 ? 'All industries' : `${industrySel.size} selected`
   const countText = mappedCompanies.length
     ? `${visibleCompanies.length} companies · ${formatInt(totalShares)} shares`
     : undefined
@@ -154,24 +141,6 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
       ) : (
         <>
         <div className="map-filters">
-          <details className="filter-multi">
-            <summary>
-              Industry<span className="filter-multi-value">{industryLabel}</span>
-            </summary>
-            <div className="filter-multi-menu">
-              {industrySel.size > 0 ? (
-                <button type="button" className="btn select-sm filter-multi-clear" onClick={() => setIndustrySel(new Set())}>
-                  Clear ({industrySel.size})
-                </button>
-              ) : null}
-              {industryOptions.map((name) => (
-                <label key={name} className="industry-check">
-                  <input type="checkbox" checked={industrySel.has(name)} onChange={() => toggleIndustry(name)} />
-                  <span>{name}</span>
-                </label>
-              ))}
-            </div>
-          </details>
           <label className="filter-field">
             <span className="filter-label">Capitalization</span>
             <select className="select select-sm" value={capBucket} onChange={(event) => setCapBucket(event.target.value)}>

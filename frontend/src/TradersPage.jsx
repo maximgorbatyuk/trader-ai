@@ -7,9 +7,9 @@ import { Panel } from './Panel'
 import { TradersTable } from './TradersTable'
 import ClosedFundsView from './ClosedFundsPage'
 import DepartedTradersView from './DepartedTradersPage'
+import { useFitPageSize } from './useFitPageSize'
 
 const POLL_INTERVAL_MS = 2500
-const PAGE_SIZE = 20
 
 const TYPE_OPTIONS = [
   { value: 'all', label: 'All types' },
@@ -34,17 +34,24 @@ function TradersPage() {
   const [typeFilter, setTypeFilter] = useState('all')
   const [sortKey, setSortKey] = useState('total')
   const [sortDir, setSortDir] = useState('desc')
+  const [pageSize, tableRef] = useFitPageSize()
 
   const loadAll = useCallback(async () => {
     try {
       const result = await api.getParticipantsPaged({
         page,
-        pageSize: PAGE_SIZE,
+        pageSize,
         search,
         sort: sortKey,
         sortDir,
         type: typeFilter === 'all' ? undefined : typeFilter,
       })
+      // A resize can shrink the page size (or a live refresh the total) below the current page; snap back.
+      const resultPageCount = Math.max(1, Math.ceil((result?.total ?? 0) / pageSize))
+      if (page > resultPageCount) {
+        setPage(resultPageCount)
+        return
+      }
       setData(result)
       setLoadError(null)
     } catch (error) {
@@ -52,7 +59,7 @@ function TradersPage() {
     } finally {
       setReady(true)
     }
-  }, [page, search, typeFilter, sortKey, sortDir])
+  }, [page, pageSize, search, typeFilter, sortKey, sortDir])
 
   useEffect(() => {
     if (view !== 'active') return undefined
@@ -81,7 +88,7 @@ function TradersPage() {
 
   const total = data?.total ?? 0
   const items = data?.items ?? []
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const statusControl = (
     <select
       className="select select-sm"
@@ -146,13 +153,15 @@ function TradersPage() {
               </select>
             </div>
 
-            <TradersTable
-              participants={items}
-              sortKey={sortKey}
-              sortDir={sortDir}
-              onToggleSort={toggleSort}
-              onSelectTrader={selectTrader}
-            />
+            <div ref={tableRef}>
+              <TradersTable
+                participants={items}
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onToggleSort={toggleSort}
+                onSelectTrader={selectTrader}
+              />
+            </div>
 
             {pageCount > 1 ? (
               <div className="pager">
