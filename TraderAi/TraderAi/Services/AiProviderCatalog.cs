@@ -60,4 +60,20 @@ public sealed class AiProviderCatalog
         var byId = Build();
         return byId.TryGetValue(providerId, out var descriptor) ? descriptor : null;
     }
+
+    // Resolves the provider's configured API key from the live settings snapshot. It is deliberately kept off
+    // AiProviderDescriptor so the provider catalog exposed to clients can never carry a credential.
+    public string? FindApiKey(string providerId)
+    {
+        var id = providerId.Trim().ToLowerInvariant();
+        foreach (var (key, provider) in options.Value.Providers)
+        {
+            if (string.Equals(key.Trim().ToLowerInvariant(), id, StringComparison.Ordinal))
+            {
+                return provider.ApiKey;
+            }
+        }
+
+        return null;
+    }
 }

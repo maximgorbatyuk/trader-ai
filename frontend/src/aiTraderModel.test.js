@@ -13,77 +13,40 @@ test('formatProviderLabel prefixes the backend label', async () => {
   assert.equal(formatProviderLabel(''), 'AI')
 })
 
-test('first conversion requires provider, model, and key', async () => {
+test('conversion requires a provider and a model', async () => {
   const { validateAutomation } = await loadModule()
-  assert.equal(
-    validateAutomation({ type: 'AIAgent', providerId: '', model: '', apiKey: '', originalProviderId: null }).valid,
-    false,
-  )
-  assert.equal(
-    validateAutomation({ type: 'AIAgent', providerId: 'glm', model: 'glm-4.6', apiKey: '', originalProviderId: null }).valid,
-    false,
-  )
-  assert.equal(
-    validateAutomation({ type: 'AIAgent', providerId: 'glm', model: 'glm-4.6', apiKey: 'k', originalProviderId: null }).valid,
-    true,
-  )
+  assert.equal(validateAutomation({ type: 'AIAgent', providerId: '', model: '' }).valid, false)
+  assert.equal(validateAutomation({ type: 'AIAgent', providerId: 'glm', model: '' }).valid, false)
+  assert.equal(validateAutomation({ type: 'AIAgent', providerId: 'glm', model: 'glm-4.6' }).valid, true)
 })
 
-test('an empty key is allowed when the provider is unchanged', async () => {
-  const { validateAutomation } = await loadModule()
-  assert.equal(
-    validateAutomation({ type: 'AIAgent', providerId: 'glm', model: 'glm-4.5', apiKey: '', originalProviderId: 'glm' }).valid,
-    true,
-  )
-})
-
-test('a new key is required when the provider changes', async () => {
-  const { validateAutomation } = await loadModule()
-  assert.equal(
-    validateAutomation({ type: 'AIAgent', providerId: 'minimax', model: 'MiniMax-M2', apiKey: '', originalProviderId: 'glm' }).valid,
-    false,
-  )
-})
-
-test('individual payload omits provider, model, and key', async () => {
+test('individual payload omits provider and model', async () => {
   const { automationPayload } = await loadModule()
   assert.deepEqual(
-    automationPayload({ type: 'Individual', providerId: 'glm', model: 'glm-4.6', apiKey: 'x', originalProviderId: 'glm' }),
+    automationPayload({ type: 'Individual', providerId: 'glm', model: 'glm-4.6' }),
     { type: 'Individual' },
   )
 })
 
-test('ai payload carries provider, model, and a supplied key', async () => {
+test('ai payload carries provider and model but never a key', async () => {
   const { automationPayload } = await loadModule()
   assert.deepEqual(
-    automationPayload({ type: 'AIAgent', providerId: 'glm', model: 'glm-4.6', apiKey: 'secret', originalProviderId: null }),
-    { type: 'AIAgent', providerId: 'glm', model: 'glm-4.6', apiKey: 'secret' },
+    automationPayload({ type: 'AIAgent', providerId: 'glm', model: 'glm-4.6' }),
+    { type: 'AIAgent', providerId: 'glm', model: 'glm-4.6' },
   )
 })
 
-test('ai payload omits the key when blank so the stored key is retained', async () => {
-  const { automationPayload } = await loadModule()
-  assert.deepEqual(
-    automationPayload({ type: 'AIAgent', providerId: 'glm', model: 'glm-4.5', apiKey: '', originalProviderId: 'glm' }),
-    { type: 'AIAgent', providerId: 'glm', model: 'glm-4.5' },
-  )
-})
-
-test('test-request payload is built from provider, model, and key', async () => {
+test('test-request payload is built from provider and model', async () => {
   const { testRequestPayload } = await loadModule()
   assert.deepEqual(
-    testRequestPayload({ providerId: 'glm', model: 'glm-4.6', apiKey: 'k' }),
-    { providerId: 'glm', model: 'glm-4.6', apiKey: 'k' },
-  )
-  assert.deepEqual(
-    testRequestPayload({ providerId: 'glm', model: 'glm-4.6', apiKey: '' }),
+    testRequestPayload({ providerId: 'glm', model: 'glm-4.6' }),
     { providerId: 'glm', model: 'glm-4.6' },
   )
 })
 
 test('max decisions per day must be a whole number of at least one', async () => {
   const { validateAutomation } = await loadModule()
-  const base = { type: 'AIAgent', providerId: 'glm', model: 'glm-4.6', apiKey: 'k', originalProviderId: null }
+  const base = { type: 'AIAgent', providerId: 'glm', model: 'glm-4.6' }
   assert.equal(validateAutomation({ ...base, maxDecisions: '3' }).valid, true)
   assert.equal(validateAutomation({ ...base, maxDecisions: '1' }).valid, true)
   assert.equal(validateAutomation({ ...base, maxDecisions: '0' }).valid, false)
@@ -96,19 +59,17 @@ test('max decisions per day must be a whole number of at least one', async () =>
 
 test('ai payload carries max decisions per day when set and omits it otherwise', async () => {
   const { automationPayload } = await loadModule()
-  const base = { type: 'AIAgent', providerId: 'glm', model: 'glm-4.6', apiKey: 'secret', originalProviderId: null }
+  const base = { type: 'AIAgent', providerId: 'glm', model: 'glm-4.6' }
   assert.deepEqual(automationPayload({ ...base, maxDecisions: '5' }), {
     type: 'AIAgent',
     providerId: 'glm',
     model: 'glm-4.6',
-    apiKey: 'secret',
     maxDecisionsPerDay: 5,
   })
   assert.deepEqual(automationPayload({ ...base, maxDecisions: '' }), {
     type: 'AIAgent',
     providerId: 'glm',
     model: 'glm-4.6',
-    apiKey: 'secret',
   })
 })
 
@@ -176,6 +137,51 @@ test('AI call presentation exposes decision rows', async () => {
   }])
 })
 
+test('AI call presentation exposes a Big Investment decision', async () => {
+  const { parseAiCallPresentation } = await loadModule()
+  const decisionJson = JSON.stringify({
+    summary: 'Fund a company directly.',
+    bigInvestment: {
+      companyId: 117,
+      amount: 50000,
+      reason: 'Durable growth opportunity.',
+    },
+    orders: [],
+  })
+
+  assert.deepEqual(parseAiCallPresentation(null, decisionJson).bigInvestment, {
+    companyId: 117,
+    amount: 50000,
+    reason: 'Durable growth opportunity.',
+  })
+})
+
+test('AI call presentation exposes a Big Investment application outcome', async () => {
+  const { parseAiCallPresentation } = await loadModule()
+  const applicationResultJson = JSON.stringify({
+    bigInvestment: {
+      companyId: 117,
+      amount: 50000,
+      reason: 'Durable growth opportunity.',
+      applied: false,
+      sharesMinted: 0,
+      rejectionReason: 'The opportunity is no longer available.',
+    },
+  })
+
+  assert.deepEqual(
+    parseAiCallPresentation(null, null, applicationResultJson).bigInvestmentApplication,
+    {
+      companyId: 117,
+      amount: 50000,
+      reason: 'Durable growth opportunity.',
+      applied: false,
+      sharesMinted: 0,
+      rejectionReason: 'The opportunity is no longer available.',
+    },
+  )
+})
+
 test('AI call presentation safely handles malformed stored payloads', async () => {
   const { parseAiCallPresentation } = await loadModule()
 
@@ -183,6 +189,8 @@ test('AI call presentation safely handles malformed stored payloads', async () =
     thinking: '',
     summary: '',
     orders: [],
+    bigInvestment: null,
+    bigInvestmentApplication: null,
   })
 })
 

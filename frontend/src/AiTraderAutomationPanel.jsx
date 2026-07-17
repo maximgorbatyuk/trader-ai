@@ -11,21 +11,19 @@ const AUTOMATION_TYPES = [
 ]
 
 // Detail-page control for converting a trader between rule-based Individual and a provider-backed AI agent. The
-// key input is write-only and never seeded from server data. The form keeps its own local edit state and the
-// parent remounts it per participant (via key), so the detail page's polling never clobbers an in-progress edit.
+// provider connection key is a per-provider setting, so the trader only picks a provider and model here. The form
+// keeps its own local edit state and the parent remounts it per participant (via key), so the detail page's
+// polling never clobbers an in-progress edit.
 export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
   const [providers, setProviders] = useState([])
   const [type, setType] = useState(detail.type === 'AIAgent' ? 'AIAgent' : 'Individual')
   const [providerId, setProviderId] = useState(detail.aiProviderId ?? '')
   const [model, setModel] = useState(detail.aiModel ?? '')
-  const [apiKey, setApiKey] = useState('')
   const [maxDecisions, setMaxDecisions] = useState(String(detail.aiMaxDecisionsPerDay ?? 3))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   const [test, setTest] = useState({ status: 'idle', message: '', responseBody: null, statusCode: null })
   const [showRawResponse, setShowRawResponse] = useState(false)
-
-  const originalProviderId = detail.aiProviderId ?? null
 
   useEffect(() => {
     let active = true
@@ -52,7 +50,7 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
   )
   const models = selectedProvider?.models ?? []
 
-  const formState = { type, providerId, model, apiKey, maxDecisions, originalProviderId }
+  const formState = { type, providerId, model, maxDecisions }
   const validation = validateAutomation(formState)
   const runtimeStatus = detail.type === 'AIAgent' ? detail.aiStatus : null
 
@@ -68,7 +66,6 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
     setError(null)
     try {
       await api.updateParticipantAutomation(participantId, automationPayload(formState))
-      setApiKey('')
       onChanged?.()
     } catch (saveError) {
       setError(saveError.message)
@@ -149,21 +146,6 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
                 </datalist>
               ) : null}
             </label>
-
-            <label className="field">
-              <span>API key</span>
-              <input
-                className="select"
-                type="password"
-                autoComplete="off"
-                value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
-                placeholder={detail.hasAiApiKey ? 'Enter a new key only to replace it' : 'Enter the provider API key'}
-              />
-            </label>
-            {detail.hasAiApiKey ? (
-              <p className="note">API key configured. Enter a new key only to replace it.</p>
-            ) : null}
 
             <label className="field">
               <span>Max decisions per day</span>

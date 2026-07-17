@@ -476,6 +476,66 @@ public static class MarketEndpoints
                 : Results.Ok(await BuildParticipantDetailAsync(dbContext, marginService, fundOptions.Value, catalog, aiRuntime, participantId));
         });
 
+        app.MapPut("/participants/{participantId:int}/name", async (
+            int participantId,
+            RenameParticipantRequest request,
+            MarketService marketService,
+            AppDbContext dbContext,
+            MarginService marginService,
+            IOptions<CollectiveFundOptions> fundOptions,
+            AiProviderCatalog catalog,
+            AiTraderRuntimeState aiRuntime) =>
+        {
+            var name = request.Name?.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return Results.BadRequest(new { error = "A participant name is required." });
+            }
+
+            var updated = await marketService.RenameParticipantAsync(participantId, name);
+            return updated is null
+                ? Results.NotFound(new { error = "Participant not found." })
+                : Results.Ok(await BuildParticipantDetailAsync(
+                    dbContext, marginService, fundOptions.Value, catalog, aiRuntime, participantId));
+        });
+
+        app.MapPost("/participants/{participantId:int}/cash-adjustments", async (
+            int participantId,
+            AdjustParticipantCashRequest request,
+            MarketService marketService,
+            AppDbContext dbContext,
+            MarginService marginService,
+            IOptions<CollectiveFundOptions> fundOptions,
+            AiProviderCatalog catalog,
+            AiTraderRuntimeState aiRuntime) =>
+        {
+            var result = await marketService.AdjustParticipantCashAsync(participantId, request.Amount);
+            if (result.ParticipantNotFound)
+            {
+                return Results.NotFound(new { error = result.Error });
+            }
+
+            return result.Success
+                ? Results.Ok(await BuildParticipantDetailAsync(
+                    dbContext, marginService, fundOptions.Value, catalog, aiRuntime, participantId))
+                : Results.BadRequest(new { error = result.Error });
+        });
+
+        app.MapPost("/participants/{participantId:int}/fund-membership/force-leave", async (
+            int participantId,
+            MarketService marketService) =>
+        {
+            var result = await marketService.ForceParticipantToLeaveFundAsync(participantId);
+            if (result.ParticipantNotFound)
+            {
+                return Results.NotFound(new { error = result.Error });
+            }
+
+            return result.Success
+                ? Results.Ok(new { status = result.Status!.Value.ToString() })
+                : Results.BadRequest(new { error = result.Error });
+        });
+
         app.MapGet("/ai/providers", (AiProviderCatalog catalog) =>
             Results.Ok(catalog.All
                 .Select(descriptor => new AiProviderInfo(descriptor.Id, descriptor.Label, descriptor.Models.ToArray()))
@@ -530,15 +590,10 @@ public static class MarketEndpoints
                 return Results.BadRequest(new { error = "A model name is required." });
             }
 
-            var apiKey = !string.IsNullOrWhiteSpace(request.ApiKey)
-                ? request.ApiKey.Trim()
-                : await dbContext.AiTraderConfigurations
-                    .Where(configuration => configuration.ParticipantId == participantId)
-                    .Select(configuration => configuration.ApiKey)
-                    .FirstOrDefaultAsync(cancellationToken);
+            var apiKey = catalog.FindApiKey(providerId);
             if (string.IsNullOrWhiteSpace(apiKey))
             {
-                return Results.BadRequest(new { error = "An API key is required." });
+                return Results.BadRequest(new { error = "No API key is configured for this provider. Add it in Settings." });
             }
 
             var provider = catalog.Find(providerId)!;
@@ -2155,17 +2210,17 @@ public static class MarketEndpoints
 
     // Resolves the AI-automation view for a participant. Provider label comes from the backend catalog and the
     // live status from in-memory runtime state; the stored key is never read here, only its presence.
-    private static (string? ProviderId, string? ProviderLabel, string? Model, bool HasKey, string? Status, string? Message, long? CallId, int? MaxDecisions)
+    private static (string? ProviderId, string? ProviderLabel, string? Model, string? Status, string? Message, long? CallId, int? MaxDecisions)
         ResolveAiFields(AiTraderConfiguration? configuration, AiProviderCatalog catalog, AiTraderRuntimeState runtimeState, int participantId)
     {
         if (configuration is null)
         {
-            return (null, null, null, false, null, null, null, null);
+            return (null, null, null, null, null, null, null);
         }
 
         var label = catalog.Find(configuration.ProviderId)?.Label ?? configuration.ProviderId;
         var runtime = runtimeState.Get(participantId);
-        return (configuration.ProviderId, label, configuration.Model, true, runtime.Status.ToString(), runtime.Message, runtime.CurrentCallId, configuration.MaxDecisionsPerDay);
+        return (configuration.ProviderId, label, configuration.Model, runtime.Status.ToString(), runtime.Message, runtime.CurrentCallId, configuration.MaxDecisionsPerDay);
     }
 
     private static async Task<List<ParticipantResponse>> BuildParticipantResponsesAsync(
@@ -2239,7 +2294,6 @@ public static class MarketEndpoints
                     ai.ProviderId,
                     ai.ProviderLabel,
                     ai.Model,
-                    ai.HasKey,
                     ai.Status,
                     ai.Message,
                     ai.CallId,
@@ -2699,7 +2753,6 @@ public static class MarketEndpoints
             ai.ProviderId,
             ai.ProviderLabel,
             ai.Model,
-            ai.HasKey,
             ai.Status,
             ai.Message,
             ai.CallId,
@@ -3462,7 +3515,6 @@ public sealed record ParticipantResponse(
     string? AiProviderId,
     string? AiProviderLabel,
     string? AiModel,
-    bool HasAiApiKey,
     string? AiStatus,
     string? AiStatusMessage,
     long? AiCurrentCallId,
@@ -3498,7 +3550,6 @@ public sealed record ParticipantDetailResponse(
     string? AiProviderId,
     string? AiProviderLabel,
     string? AiModel,
-    bool HasAiApiKey,
     string? AiStatus,
     string? AiStatusMessage,
     long? AiCurrentCallId,
@@ -3520,10 +3571,14 @@ public sealed record CollectiveFundMemberResponse(
 
 public sealed record UpdateParticipantProfileRequest(Temperament Temperament, RiskProfile RiskProfile);
 
+public sealed record RenameParticipantRequest(string? Name);
+
+public sealed record AdjustParticipantCashRequest(decimal Amount);
+
 // Distinct from the provider HTTP-client result AiProviderResponse in the Services layer.
 public sealed record AiProviderInfo(string Id, string Label, string[] Models);
 
-public sealed record TestParticipantAutomationRequest(string ProviderId, string Model, string? ApiKey);
+public sealed record TestParticipantAutomationRequest(string ProviderId, string Model);
 
 public sealed record AiProviderTestResponse(
     bool Success,

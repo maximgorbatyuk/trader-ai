@@ -28,9 +28,12 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
           setCall(data)
           setError(null)
 
-          const companyIds = [...new Set(
-            parseAiCallPresentation(null, data?.decisionJson).orders.map((order) => order.companyId),
-          )]
+          const parsedDecision = parseAiCallPresentation(null, data?.decisionJson, data?.applicationResultJson)
+          const investment = parsedDecision.bigInvestment ?? parsedDecision.bigInvestmentApplication
+          const companyIds = [...new Set([
+            ...parsedDecision.orders.map((order) => order.companyId),
+            ...(investment ? [investment.companyId] : []),
+          ])]
           Promise.all(companyIds.map(async (companyId) => {
             try {
               const company = await api.getCompany(companyId)
@@ -108,7 +111,12 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
   }
 
   const titleId = `ai-call-modal-title-${callId}`
-  const presentation = parseAiCallPresentation(call?.responseBody, call?.decisionJson)
+  const presentation = parseAiCallPresentation(
+    call?.responseBody,
+    call?.decisionJson,
+    call?.applicationResultJson,
+  )
+  const investment = presentation.bigInvestment ?? presentation.bigInvestmentApplication
   const summary = presentation.summary || call?.summary || ''
 
   return (
@@ -194,6 +202,53 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
                 <h3 className="map-stat-label ai-call-section-title" id={`ai-call-decision-${callId}`}>
                   Parsed decision
                 </h3>
+                {investment ? (
+                  <dl className="modal-stats ai-big-investment">
+                    <div>
+                      <dt>Big Investment company</dt>
+                      <dd>
+                        <Link
+                          className="cell-link"
+                          to={`/companies/${investment.companyId}`}
+                          onClick={onClose}
+                        >
+                          {companyNames.get(investment.companyId)
+                            ?? `Company #${investment.companyId}`}
+                        </Link>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Amount</dt>
+                      <dd className="num">{formatMoney(investment.amount)}</dd>
+                    </div>
+                    <div>
+                      <dt>Reason</dt>
+                      <dd>{investment.reason ?? '—'}</dd>
+                    </div>
+                    <div>
+                      <dt>Outcome</dt>
+                      <dd>
+                        {presentation.bigInvestmentApplication
+                          ? (presentation.bigInvestmentApplication.applied ? 'Applied' : 'Rejected')
+                          : 'Not applied yet'}
+                      </dd>
+                    </div>
+                    {presentation.bigInvestmentApplication?.applied ? (
+                      <div>
+                        <dt>Shares minted</dt>
+                        <dd className="num">{formatInt(presentation.bigInvestmentApplication.sharesMinted)}</dd>
+                      </div>
+                    ) : null}
+                    {presentation.bigInvestmentApplication?.rejectionReason ? (
+                      <div>
+                        <dt>Rejection reason</dt>
+                        <dd>{presentation.bigInvestmentApplication.rejectionReason}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                ) : (
+                  <p className="note note-sm">No Big Investment requested.</p>
+                )}
                 {presentation.orders.length > 0 ? (
                   <div className="tbl-wrap">
                     <table className="tbl ai-decision-table" aria-labelledby={`ai-call-decision-${callId}`}>

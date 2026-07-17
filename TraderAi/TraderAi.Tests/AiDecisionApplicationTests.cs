@@ -19,14 +19,28 @@ public sealed class AiDecisionApplicationTests : IDisposable
         connection.Open();
         context = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options);
         context.Database.EnsureCreated();
-        marketService = new MarketService(
+        marketService = CreateMarketService(bigInvestmentEnabled: true);
+    }
+
+    private MarketService CreateMarketService(bool bigInvestmentEnabled)
+    {
+        var chanceRates = Options.Create(new RandomChanceRatesOptions());
+        var bigInvestmentService = new BigInvestmentService(
+            context,
+            Options.Create(new BigInvestmentOptions { Enabled = bigInvestmentEnabled }),
+            chanceRates,
+            new MarketImpactService(context),
+            new Random(2));
+        return new MarketService(
             context,
             new MatchingEngine(context),
             new NoOpDecisionEngine(),
             new MarketCycleLock(),
             new Random(1),
+            chanceRates: chanceRates,
             marginService: new MarginService(context, Options.Create(new MarginOptions { Enabled = true })),
-            automatedBuyOrderPolicy: new AutomatedBuyOrderPolicy(Options.Create(new AutomatedTradingOptions())));
+            automatedBuyOrderPolicy: new AutomatedBuyOrderPolicy(Options.Create(new AutomatedTradingOptions())),
+            bigInvestmentService: bigInvestmentService);
     }
 
     [Fact]
@@ -47,6 +61,128 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var buy = await context.Orders.SingleAsync(order => order.Type == OrderType.Buy);
         Assert.Equal(2, buy.Quantity);
         Assert.Equal(100m, buy.LimitPrice);
+    }
+
+    [Fact]
+    public async Task ValidBigInvestmentIsAppliedFromAiDecision()
+    {
+        var seed = await SeedAsync();
+        var participant = await context.Participants.SingleAsync(candidate => candidate.Id == seed.ParticipantId);
+        participant.CurrentBalance = 100_000m;
+        participant.SettledCashBalance = 100_000m;
+        await context.SaveChangesAsync();
+        var decision = new AiTradeDecision(
+            "fund company directly",
+            [],
+            bigInvestment: new AiBigInvestmentDecision(seed.CompanyBId, 50_000m, "long-term growth"));
+
+        var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
+
+        Assert.True(result.BigInvestment!.Applied);
+        Assert.Equal(500, result.BigInvestment.SharesMinted);
+        Assert.Equal(50_000m, participant.CurrentBalance);
+        Assert.Equal(50_000m, participant.SettledCashBalance);
+        Assert.Equal(1, await context.CompanyInvestments.CountAsync());
+    }
+
+    [Fact]
+    public async Task BigInvestmentOnlyDecisionPersistsTheCompleteDealAndRaisedPrice()
+    {
+        var seed = await SeedAsync();
+        var participant = await context.Participants.SingleAsync(candidate => candidate.Id == seed.ParticipantId);
+        participant.CurrentBalance = 100_000m;
+        participant.SettledCashBalance = 100_000m;
+        context.Auditors.Add(new Auditor
+        {
+            Name = "Ratings",
+            Description = "Test auditor",
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+        var decision = new AiTradeDecision(
+            "fund company directly",
+            [],
+            bigInvestment: new AiBigInvestmentDecision(seed.CompanyBId, 50_000m, "long-term growth"));
+
+        var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
+        context.ChangeTracker.Clear();
+
+        Assert.True(result.BigInvestment!.Applied);
+        Assert.Equal(1, await context.ShareTransactions.CountAsync());
+        Assert.Equal(1, await context.OrderFills.CountAsync());
+        Assert.Equal(1, await context.MoneyTransactions.CountAsync());
+        Assert.Equal(1, await context.CompanyRatings.CountAsync());
+        Assert.Equal(1, await context.NewsPosts.CountAsync());
+        Assert.Equal(
+            108m,
+            await context.PriceSnapshots
+                .Where(snapshot => snapshot.CompanyId == seed.CompanyBId)
+                .OrderByDescending(snapshot => snapshot.Id)
+                .Select(snapshot => snapshot.Price)
+                .FirstAsync());
+    }
+
+    [Fact]
+    public async Task DisabledBigInvestmentRejectsAnAiRequest()
+    {
+        var seed = await SeedAsync();
+        var participant = await context.Participants.SingleAsync(candidate => candidate.Id == seed.ParticipantId);
+        participant.CurrentBalance = 100_000m;
+        participant.SettledCashBalance = 100_000m;
+        await context.SaveChangesAsync();
+        var decision = new AiTradeDecision(
+            "fund company directly",
+            [],
+            bigInvestment: new AiBigInvestmentDecision(seed.CompanyBId, 50_000m, "long-term growth"));
+
+        var result = await CreateMarketService(bigInvestmentEnabled: false)
+            .ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
+
+        Assert.False(result.BigInvestment!.Applied);
+        Assert.Contains("disabled", result.BigInvestment.RejectionReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, await context.CompanyInvestments.CountAsync());
+    }
+
+    [Fact]
+    public async Task BigInvestmentRebuildsExposureBeforeApplyingOrders()
+    {
+        var seed = await SeedAsync();
+        var participant = await context.Participants.SingleAsync(candidate => candidate.Id == seed.ParticipantId);
+        participant.CurrentBalance = 100_000m;
+        participant.SettledCashBalance = 100_000m;
+        await AddSellAsync(seed.CompanyBId, quantity: 10, limitPrice: 100m);
+        await context.SaveChangesAsync();
+        var decision = new AiTradeDecision(
+            "invest before considering another order",
+            [new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "only if exposure permits")],
+            bigInvestment: new AiBigInvestmentDecision(seed.CompanyBId, 90_000m, "large direct position"));
+
+        var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
+
+        Assert.True(result.BigInvestment!.Applied);
+        Assert.False(result.Orders[0].Applied);
+        Assert.Contains("exposure", result.Orders[0].RejectionReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task BigInvestmentRejectsAnAmountThatWouldBeSilentlyRoundedDown()
+    {
+        var seed = await SeedAsync();
+        var participant = await context.Participants.SingleAsync(candidate => candidate.Id == seed.ParticipantId);
+        participant.CurrentBalance = 100_000m;
+        participant.SettledCashBalance = 100_000m;
+        await context.SaveChangesAsync();
+        var decision = new AiTradeDecision(
+            "use an exact amount",
+            [],
+            bigInvestment: new AiBigInvestmentDecision(seed.CompanyBId, 50_050m, "avoid silent adjustment"));
+
+        var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
+
+        Assert.False(result.BigInvestment!.Applied);
+        Assert.Contains("whole shares", result.BigInvestment.RejectionReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(100_000m, participant.CurrentBalance);
+        Assert.Equal(0, await context.CompanyInvestments.CountAsync());
     }
 
     [Fact]
@@ -755,7 +891,6 @@ public sealed class AiDecisionApplicationTests : IDisposable
                 ParticipantId = participant.Id,
                 ProviderId = "glm",
                 Model = "glm-4.6",
-                ApiKey = "secret-key",
                 Revision = 1,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
@@ -913,6 +1048,8 @@ public sealed class AiDecisionApplicationTests : IDisposable
         Options.Create(new SettlementOptions { SettlementLagTradingDays = 1 }),
         Options.Create(new MarginOptions { Enabled = true }),
         Options.Create(new VolatilityHaltOptions()),
+        Options.Create(new BigInvestmentOptions { Enabled = true }),
+        Options.Create(new RandomChanceRatesOptions()),
         new AutomatedBuyOrderPolicy(Options.Create(new AutomatedTradingOptions())));
 
     private static AiTradeDecision Decision(params AiTradeOrderDecision[] orders)

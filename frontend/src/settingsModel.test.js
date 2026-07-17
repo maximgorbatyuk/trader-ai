@@ -51,3 +51,18 @@ test('serializes dirty drafts using each setting value type', () => {
     },
   })
 })
+
+test('secret drafts are submitted only when a replacement is typed', () => {
+  const settings = [
+    { key: 'AiTrading:Providers:glm:ApiKey', valueType: 'Secret' },
+    { key: 'AiTrading:Providers:minimax:ApiKey', valueType: 'Secret' },
+  ]
+  const drafts = {
+    'AiTrading:Providers:glm:ApiKey': ' new-key ',
+    'AiTrading:Providers:minimax:ApiKey': '   ',
+  }
+
+  assert.deepEqual(buildSettingsUpdate(settings, drafts, new Set(settings.map((setting) => setting.key))), {
+    values: { 'AiTrading:Providers:glm:ApiKey': 'new-key' },
+  })
+})

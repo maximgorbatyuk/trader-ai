@@ -120,6 +120,24 @@ public sealed class BigInvestmentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AiAgentIsExcludedFromTheAutomatedRoll()
+    {
+        var cycle = await AddCycleAsync(dayNumber: 10);
+        await SetupMarketAsync(cycle);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 1000m, cycle);
+        await AddTraderAsync(balance: 500_000m, type: ParticipantType.AIAgent);
+        await AddAuditorAsync();
+
+        await Service(enabled: true, new ScriptedRandom([0.0d, 0.0d], [0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, await context.OrderFills.CountAsync());
+        Assert.Equal(0, await context.CompanyInvestments.CountAsync());
+    }
+
+    [Fact]
     public async Task PreviousCycleExtraRaisedExpectationsTargetsThatCompany()
     {
         var previousCycle = await AddCycleAsync(dayNumber: 9, cycleNumber: 99);

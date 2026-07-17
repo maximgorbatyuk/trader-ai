@@ -5,14 +5,13 @@ using TraderAi.Models;
 
 namespace TraderAi.Services;
 
-// Conversion contract shared by the configuration service and the API layer. Model is chosen per trader; the
-// key is write-only and may be blank when an existing provider's key should be retained. MaxDecisionsPerDay is
+// Conversion contract shared by the configuration service and the API layer. Provider and model are chosen per
+// trader; the connection key is a per-provider setting and is not part of this request. MaxDecisionsPerDay is
 // null when the caller does not change the cadence.
 public sealed record UpdateParticipantAutomationRequest(
     ParticipantType Type,
     string? ProviderId,
     string? Model,
-    string? ApiKey,
     int? MaxDecisionsPerDay = null);
 
 public sealed record UpdateAutomationResult(bool Success, string? Error, bool ParticipantNotFound)
@@ -97,22 +96,6 @@ public sealed class AiTraderConfigurationService(
             return UpdateAutomationResult.Fail("A model name is required.");
         }
 
-        var providerChanged = existing is null || existing.ProviderId != providerId;
-        string apiKey;
-        if (!string.IsNullOrWhiteSpace(request.ApiKey))
-        {
-            apiKey = request.ApiKey.Trim();
-        }
-        else if (existing is not null && !providerChanged)
-        {
-            // Retaining the same provider with a blank key keeps the stored key.
-            apiKey = existing.ApiKey;
-        }
-        else
-        {
-            return UpdateAutomationResult.Fail("An API key is required.");
-        }
-
         var maxDecisionsPerDay = request.MaxDecisionsPerDay ?? existing?.MaxDecisionsPerDay ?? DefaultMaxDecisionsPerDay;
         var maxAllowed = clockOptions.Value.TradingCyclesPerDay;
         if (maxDecisionsPerDay < 1 || maxDecisionsPerDay > maxAllowed)
@@ -128,7 +111,6 @@ public sealed class AiTraderConfigurationService(
                 ParticipantId = participant.Id,
                 ProviderId = providerId,
                 Model = model,
-                ApiKey = apiKey,
                 MaxDecisionsPerDay = maxDecisionsPerDay,
                 Revision = 1,
                 CreatedAt = now,
@@ -137,11 +119,10 @@ public sealed class AiTraderConfigurationService(
         }
         else
         {
-            if (existing.ProviderId != providerId || existing.Model != model || existing.ApiKey != apiKey)
+            if (existing.ProviderId != providerId || existing.Model != model)
             {
                 existing.ProviderId = providerId;
                 existing.Model = model;
-                existing.ApiKey = apiKey;
                 existing.Revision += 1;
                 existing.UpdatedAt = now;
             }

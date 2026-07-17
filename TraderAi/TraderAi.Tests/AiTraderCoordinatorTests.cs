@@ -15,7 +15,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     private static readonly DateTimeOffset Now = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
 
     private static readonly string ValidDecision =
-        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"limitPrice\":100,\"reason\":\"r\"}]}";
+        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"limitPrice\":100,\"reason\":\"r\"}]}";
 
     private readonly string databasePath;
     private readonly ServiceProvider provider;
@@ -47,6 +47,8 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         services.AddScoped<MarginService>();
         services.AddScoped<AutomatedBuyOrderPolicy>();
         services.AddScoped<TradingClockService>();
+        services.AddScoped<MarketImpactService>();
+        services.AddScoped<BigInvestmentService>();
         services.AddScoped<MarketService>();
         services.AddScoped<AiMarketSnapshotBuilder>();
         services.AddScoped<AiTradingPromptBuilder>();
@@ -66,6 +68,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
             {
                 DisplayName = "GLM",
                 Endpoint = "https://glm.test/v1",
+                ApiKey = "secret-key",
                 Models = { "glm-4.6" },
             };
         });
@@ -74,6 +77,8 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         services.Configure<MarginOptions>(options => options.Enabled = false);
         services.Configure<AutomatedTradingOptions>(_ => { });
         services.Configure<VolatilityHaltOptions>(_ => { });
+        services.Configure<RandomChanceRatesOptions>(_ => { });
+        services.Configure<BigInvestmentOptions>(options => options.Enabled = true);
         services.Configure<TradingClockOptions>(options =>
         {
             options.TradingCyclesPerDay = 210;
@@ -434,6 +439,36 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task FinalDecisionDefersBigInvestmentAndAppliesItAtTheNextOpen()
+    {
+        var seed = await SeedMarketAsync(tradingCycleNumber: 200);
+        await using (var db = Db())
+        {
+            var participant = await db.Participants.SingleAsync(candidate => candidate.Id == seed.ParticipantId);
+            participant.CurrentBalance = 100_000m;
+            participant.SettledCashBalance = 100_000m;
+            await db.SaveChangesAsync();
+        }
+        var decision =
+            $"{{\"summary\":\"Fund Acme.\",\"cancelOrderIds\":[],\"bigInvestment\":{{\"companyId\":{seed.CompanyId},\"amount\":50000,\"reason\":\"growth\"}},\"orders\":[]}}";
+        fakeClient.OnSend = _ => Task.FromResult(Success(decision));
+        var coordinator = Coordinator();
+
+        var status = await coordinator.ProcessParticipantAsync(
+            seed.ParticipantId, seed.CycleNumber, CancellationToken.None, isFinalDecisionOfDay: true);
+
+        Assert.Equal(AiTraderCallStatus.Completed, status);
+        Assert.Contains("big investment", Runtime().Get(seed.ParticipantId).Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, await Db().CompanyInvestments.CountAsync());
+
+        await coordinator.ApplyPendingNextDayPlanAsync(
+            seed.ParticipantId, seed.CycleNumber + 1, currentDayNumber: 2, CancellationToken.None);
+
+        Assert.Equal(1, await Db().CompanyInvestments.CountAsync());
+        Assert.Equal(AiTraderCallStatus.Completed, (await Db().AiTraderCalls.SingleAsync()).Status);
+    }
+
+    [Fact]
     public async Task DayOpenAppliesADuePendingPlan()
     {
         var seed = await SeedMarketAsync(tradingCycleNumber: 1);
@@ -531,7 +566,6 @@ public sealed class AiTraderCoordinatorTests : IDisposable
                 ParticipantId = trader.Id,
                 ProviderId = "glm",
                 Model = "glm-4.6",
-                ApiKey = "secret-key",
                 Revision = 1,
                 CreatedAt = Now.UtcDateTime,
                 UpdatedAt = Now.UtcDateTime,
@@ -581,7 +615,6 @@ public sealed class AiTraderCoordinatorTests : IDisposable
                 ParticipantId = trader.Id,
                 ProviderId = "glm",
                 Model = "glm-4.6",
-                ApiKey = "secret-key",
                 Revision = 1,
                 CreatedAt = Now.UtcDateTime,
                 UpdatedAt = Now.UtcDateTime,

@@ -136,6 +136,9 @@ export const api = {
   getFundMembershipHistory: (participantId, page = 1, pageSize = 10) =>
     get(`/participants/${participantId}/fund-membership-history?page=${page}&pageSize=${pageSize}`),
   updateParticipantProfile: (participantId, profile) => put(`/participants/${participantId}/profile`, profile),
+  renameParticipant: (participantId, name) => put(`/participants/${participantId}/name`, { name }),
+  adjustParticipantCash: (participantId, amount) => post(`/participants/${participantId}/cash-adjustments`, { amount }),
+  forceParticipantLeaveFund: (participantId) => post(`/participants/${participantId}/fund-membership/force-leave`),
   getAiProviders: () => get('/ai/providers'),
   updateParticipantAutomation: (participantId, payload) => put(`/participants/${participantId}/automation`, payload),
   testParticipantAutomation: (participantId, payload) => post(`/participants/${participantId}/automation/test`, payload),

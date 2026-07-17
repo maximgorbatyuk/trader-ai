@@ -5,6 +5,14 @@ using TraderAi.Models;
 
 namespace TraderAi.Services;
 
+public sealed record BigInvestmentOpportunity(
+    int CompanyId,
+    string CompanyName,
+    decimal CurrentPrice,
+    decimal Capitalization,
+    decimal MinimumAmount,
+    decimal MaximumAmount);
+
 // Executes both automated and manual direct funding deals by minting shares at the current price and settling the
 // resulting cash, holding, rating, sentiment, protection, and history changes together. It runs after primary
 // issuance and before closure so a fresh deal's delisting protection is honoured in the same cycle.
@@ -29,6 +37,8 @@ public sealed class BigInvestmentService(
 
     private readonly IndustrySentimentOptions industrySentimentOptionValues =
         industrySentimentOptions?.Value ?? new IndustrySentimentOptions();
+
+    public bool IsEnabled => options.Value.Enabled;
 
     public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now)
     {
@@ -70,7 +80,6 @@ public sealed class BigInvestmentService(
             .Where(participant => participant.IsActive
                 && !participant.IsBankrupt
                 && (participant.Type == ParticipantType.Individual
-                    || participant.Type == ParticipantType.AIAgent
                     || participant.Type == ParticipantType.CollectiveFund))
             .OrderBy(participant => participant.Id)
             .ToListAsync();
@@ -336,6 +345,35 @@ public sealed class BigInvestmentService(
     // cash so an immediately-settled deal never strands a reservation or oversells settled cash.
     public static decimal Spendable(Participant participant) =>
         Math.Max(0m, Math.Min(participant.AvailableBalance, participant.SettledCashBalance));
+
+    public static BigInvestmentOpportunity? BuildOpportunity(
+        Participant investor,
+        int companyId,
+        string companyName,
+        decimal price,
+        int issuedShares,
+        RandomMagnitudeBands bands)
+    {
+        if (price <= 0m || issuedShares <= 0)
+        {
+            return null;
+        }
+
+        var capitalization = price * issuedShares;
+        var minimumAmount = (decimal)bands.BigInvestmentFractionMin * capitalization;
+        var maximumAmount = Math.Min(
+            (decimal)bands.BigInvestmentFractionMax * capitalization,
+            Spendable(investor));
+        return minimumAmount > 0m && maximumAmount >= minimumAmount
+            ? new BigInvestmentOpportunity(
+                companyId,
+                companyName,
+                price,
+                capitalization,
+                minimumAmount,
+                maximumAmount)
+            : null;
+    }
 
     private async Task<int?> TradingDayNumberForCycleAsync(int cycleId) =>
         await (from cycle in dbContext.MarketCycles

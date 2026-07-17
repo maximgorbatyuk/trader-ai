@@ -59,7 +59,6 @@ public sealed class GameSettingsServiceTests
             ("Archive:Enabled", "true"),
             ("AiTrading:DocumentationRoot", "../../docs"),
             ("AiTrading:ApiKey", "secret"),
-            ("AiTrading:Providers:glm:ApiKey", "provider-secret"),
             ("Margin:ConnectionString", "Data Source=secret.db"));
 
         var keys = GameSettingsCatalog.Create(configuration).Select(definition => definition.Key).ToHashSet();
@@ -69,8 +68,23 @@ public sealed class GameSettingsServiceTests
         Assert.DoesNotContain("Archive:Enabled", keys);
         Assert.DoesNotContain("AiTrading:DocumentationRoot", keys);
         Assert.DoesNotContain("AiTrading:ApiKey", keys);
-        Assert.DoesNotContain("AiTrading:Providers:glm:ApiKey", keys);
         Assert.DoesNotContain("Margin:ConnectionString", keys);
+    }
+
+    [Fact]
+    public void CatalogSurfacesProviderApiKeyAsSecret()
+    {
+        var configuration = Configuration(
+            ("AiTrading:Providers:glm:DisplayName", "GLM"),
+            ("AiTrading:Providers:glm:Endpoint", "https://api.example.com/chat"),
+            ("AiTrading:Providers:glm:ApiKey", ""),
+            ("AiTrading:Providers:glm:Models:0", "glm-4.6"));
+
+        var apiKey = Assert.Single(
+            GameSettingsCatalog.Create(configuration),
+            definition => definition.Key == "AiTrading:Providers:glm:ApiKey");
+        Assert.Equal(GameSettingValueType.Secret, apiKey.ValueType);
+        Assert.Equal("Providers", apiKey.Subsection);
     }
 
     [Fact]

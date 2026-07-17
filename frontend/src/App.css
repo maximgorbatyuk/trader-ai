@@ -1091,6 +1091,22 @@
   cursor: not-allowed;
 }
 
+.actions-menu-danger {
+  color: var(--down-text);
+}
+
+.participant-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.participant-action-status {
+  margin: var(--s-1) 0 0;
+  color: var(--muted);
+  font-size: var(--t-xs);
+}
+
 /* The action dialogs hold compact forms, so they run narrower than the shared modal width. */
 .modal-action {
   width: min(560px, 100%);
@@ -1203,6 +1219,17 @@
 .btn-primary:hover:not(:disabled) {
   background: var(--ink-hover);
   border-color: var(--ink-hover);
+}
+
+.btn-danger {
+  border-color: var(--down-text);
+  background: var(--down-soft);
+  color: var(--down-text);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--down-soft) 70%, var(--surface));
+  border-color: var(--down-text);
 }
 
 .btn-reset {
@@ -3053,6 +3080,13 @@
   color: var(--ink);
   font-size: var(--t-md);
   font-weight: 700;
+}
+
+.ai-big-investment {
+  padding: var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
 }
 
 .modal-section {

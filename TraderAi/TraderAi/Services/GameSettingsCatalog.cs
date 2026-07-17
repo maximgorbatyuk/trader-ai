@@ -12,6 +12,7 @@ public enum GameSettingValueType
     Url,
     StringList,
     MultilineText,
+    Secret,
 }
 
 public sealed record GameSettingDefinition(
@@ -88,7 +89,7 @@ public static class GameSettingsCatalog
 
     private static readonly HashSet<string> AllowedProviderLeafNames =
     [
-        "DisplayName", "Endpoint", "Models",
+        "DisplayName", "Endpoint", "ApiKey", "Models",
     ];
 
     private static readonly HashSet<string> AllowedRandomChanceRateKeys =
@@ -352,6 +353,11 @@ public static class GameSettingsCatalog
             return GameSettingValueType.Url;
         }
 
+        if (key.EndsWith(":ApiKey", StringComparison.Ordinal))
+        {
+            return GameSettingValueType.Secret;
+        }
+
         if (MultilineTextKeys.Contains(key))
         {
             return GameSettingValueType.MultilineText;
@@ -386,6 +392,7 @@ public static class GameSettingsCatalog
             {
                 "DisplayName" => "Sets the provider name shown when configuring an AI trader.",
                 "Endpoint" => "Sets the HTTPS chat-completions endpoint used for this AI provider.",
+                "ApiKey" => "Sets the API key sent as the bearer token for this provider; it is never displayed once saved.",
                 "Models" => "Lists the models offered as suggestions when configuring an AI trader.",
                 _ => $"Configures {name.ToLowerInvariant()} for this AI provider.",
             };

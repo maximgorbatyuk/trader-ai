@@ -1038,6 +1038,179 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task RenameParticipantTrimsAndPersistsName()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+            var target = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!.First();
+
+            using var response = await client.PutAsJsonAsync(
+                $"/participants/{target.Id}/name",
+                new { name = "  Renamed Trader  " });
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var updated = await response.Content.ReadFromJsonAsync<ParticipantDetailDto>();
+            Assert.Equal("Renamed Trader", updated!.Name);
+
+            var reloaded = await client.GetFromJsonAsync<ParticipantDetailDto>($"/participants/{target.Id}");
+            Assert.Equal("Renamed Trader", reloaded!.Name);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AdjustParticipantCashCreditsImmediatelySettledCashAndPreservesUnsettledCash()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            await client.PostAsync("/market/seed", null);
+            var target = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!.First();
+            decimal originalCurrent;
+            decimal originalSettled;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var participant = await dbContext.Participants.FirstAsync(candidate => candidate.Id == target.Id);
+                participant.SettledCashBalance = participant.CurrentBalance - 2_000m;
+                originalCurrent = participant.CurrentBalance;
+                originalSettled = participant.SettledCashBalance;
+                await dbContext.SaveChangesAsync();
+            }
+
+            using var response = await client.PostAsJsonAsync(
+                $"/participants/{target.Id}/cash-adjustments",
+                new { amount = 1_250m });
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var updated = await response.Content.ReadFromJsonAsync<ParticipantDetailDto>();
+            Assert.Equal(originalCurrent + 1_250m, updated!.CurrentBalance);
+            Assert.Equal(originalSettled + 1_250m, updated.SettledCashBalance);
+            Assert.Equal(2_000m, updated.UnsettledCashBalance);
+
+            using var verificationScope = configuredFactory.Services.CreateScope();
+            var verificationDb = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var transaction = await verificationDb.MoneyTransactions.AsNoTracking().SingleAsync(candidate =>
+                candidate.ParticipantId == target.Id
+                && candidate.Description == "Manual cash adjustment");
+            Assert.Equal(MoneyTransactionType.Credit, transaction.Type);
+            Assert.Equal(1_250m, transaction.Amount);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ForceParticipantToLeaveFundReturnsDepositImmediatelyWhenFundHasCash()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int memberId;
+            int fundParticipantId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await dbContext.Markets.SingleAsync();
+                var currentCycleId = market.CurrentCycleId!.Value;
+                var now = DateTime.UtcNow;
+                var members = Enumerable.Range(1, 3).Select(index => new Participant
+                {
+                    Name = $"Member {index}",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    InitialBalance = 10m,
+                    CurrentBalance = 10m,
+                    SettledCashBalance = 10m,
+                    IsActive = true,
+                }).ToArray();
+                var fundParticipant = new Participant
+                {
+                    Name = "Action Fund",
+                    Type = ParticipantType.CollectiveFund,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    CurrentBalance = 300m,
+                    SettledCashBalance = 300m,
+                    IsActive = true,
+                };
+                dbContext.Participants.AddRange(members);
+                dbContext.Participants.Add(fundParticipant);
+                await dbContext.SaveChangesAsync();
+
+                var fund = new CollectiveFund
+                {
+                    ParticipantId = fundParticipant.Id,
+                    FoundedByParticipantId = members[0].Id,
+                    Status = CollectiveFundStatus.Active,
+                    CreatedInCycleId = currentCycleId,
+                    CreatedAt = now,
+                };
+                dbContext.CollectiveFunds.Add(fund);
+                await dbContext.SaveChangesAsync();
+                dbContext.CollectiveFundParticipants.AddRange(members.Select(member => new CollectiveFundParticipant
+                {
+                    CollectiveFundId = fund.Id,
+                    ParticipantId = member.Id,
+                    DepositAmount = 100m,
+                    JoinedInCycleId = currentCycleId,
+                    JoinedAt = now,
+                }));
+                await dbContext.SaveChangesAsync();
+                memberId = members[1].Id;
+                fundParticipantId = fundParticipant.Id;
+            }
+
+            using var response = await client.PostAsync(
+                $"/participants/{memberId}/fund-membership/force-leave",
+                null);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.Equal("Left", body.RootElement.GetProperty("status").GetString());
+
+            using var verificationScope = configuredFactory.Services.CreateScope();
+            var verificationDb = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            Assert.False(await verificationDb.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == memberId));
+            Assert.Equal(110m, (await verificationDb.Participants.AsNoTracking()
+                .SingleAsync(participant => participant.Id == memberId)).CurrentBalance);
+            Assert.Equal(200m, (await verificationDb.Participants.AsNoTracking()
+                .SingleAsync(participant => participant.Id == fundParticipantId)).CurrentBalance);
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task UpdateMissingParticipantReturnsNotFound()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -2893,7 +3066,6 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                     ParticipantId = participant.Id,
                     ProviderId = "glm",
                     Model = "glm-4.6",
-                    ApiKey = "secret-key",
                     Revision = 1,
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow,
@@ -2955,7 +3127,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
-    public async Task AutomationConvertsIndividualToAiAndBackWithoutExposingKey()
+    public async Task AutomationConvertsIndividualToAiAndBack()
     {
         await WithClientAsync(async (client, factoryInstance) =>
         {
@@ -2964,26 +3136,68 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
             using var put = await client.PutAsJsonAsync(
                 $"/participants/{participantId}/automation",
-                new { type = "AIAgent", providerId = "glm", model = "glm-4.6", apiKey = "secret-key" });
+                new { type = "AIAgent", providerId = "glm", model = "glm-4.6" });
             Assert.Equal(HttpStatusCode.OK, put.StatusCode);
-            var putBody = await put.Content.ReadAsStringAsync();
-            Assert.DoesNotContain("secret-key", putBody);
-            using (var detail = JsonDocument.Parse(putBody))
+            using (var detail = JsonDocument.Parse(await put.Content.ReadAsStringAsync()))
             {
                 Assert.Equal("glm", detail.RootElement.GetProperty("aiProviderId").GetString());
                 Assert.Equal("GLM", detail.RootElement.GetProperty("aiProviderLabel").GetString());
                 Assert.Equal("glm-4.6", detail.RootElement.GetProperty("aiModel").GetString());
-                Assert.True(detail.RootElement.GetProperty("hasAiApiKey").GetBoolean());
             }
-
-            Assert.DoesNotContain("secret-key", await client.GetStringAsync("/participants"));
 
             using var back = await client.PutAsJsonAsync(
                 $"/participants/{participantId}/automation",
-                new { type = "Individual", providerId = (string?)null, model = (string?)null, apiKey = (string?)null });
+                new { type = "Individual", providerId = (string?)null, model = (string?)null });
             Assert.Equal(HttpStatusCode.OK, back.StatusCode);
             using var backDetail = JsonDocument.Parse(await back.Content.ReadAsStringAsync());
-            Assert.False(backDetail.RootElement.GetProperty("hasAiApiKey").GetBoolean());
+            Assert.Equal("Individual", backDetail.RootElement.GetProperty("type").GetString());
+            Assert.True(backDetail.RootElement.GetProperty("aiProviderId").ValueKind == JsonValueKind.Null);
+        });
+    }
+
+    [Fact]
+    public async Task SettingsMasksProviderApiKeyAndKeepsItOnBlankSubmit()
+    {
+        await WithClientAsync(async (client, _) =>
+        {
+            using (var set = await client.PutAsJsonAsync("/settings", new
+            {
+                values = new Dictionary<string, object>
+                {
+                    ["AiTrading:Providers:glm:ApiKey"] = "super-secret-key",
+                },
+            }))
+            {
+                set.EnsureSuccessStatusCode();
+            }
+
+            var settingsBody = await client.GetStringAsync("/settings");
+            Assert.DoesNotContain("super-secret-key", settingsBody);
+            using (var doc = JsonDocument.Parse(settingsBody))
+            {
+                var apiKeySetting = doc.RootElement.EnumerateArray()
+                    .Single(entry => entry.GetProperty("key").GetString() == "AiTrading:Providers:glm:ApiKey");
+                Assert.Equal("Secret", apiKeySetting.GetProperty("valueType").GetString());
+                Assert.Equal(string.Empty, apiKeySetting.GetProperty("value").GetString());
+                Assert.True(apiKeySetting.GetProperty("hasValue").GetBoolean());
+            }
+
+            // A blank secret means "keep the stored key" rather than clearing it.
+            using (var blank = await client.PutAsJsonAsync("/settings", new
+            {
+                values = new Dictionary<string, object>
+                {
+                    ["AiTrading:Providers:glm:ApiKey"] = "   ",
+                },
+            }))
+            {
+                blank.EnsureSuccessStatusCode();
+            }
+
+            using var afterBlank = JsonDocument.Parse(await client.GetStringAsync("/settings"));
+            var stillSet = afterBlank.RootElement.EnumerateArray()
+                .Single(entry => entry.GetProperty("key").GetString() == "AiTrading:Providers:glm:ApiKey");
+            Assert.True(stillSet.GetProperty("hasValue").GetBoolean());
         });
     }
 
@@ -2997,12 +3211,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
             using var bad = await client.PutAsJsonAsync(
                 $"/participants/{participantId}/automation",
-                new { type = "AIAgent", providerId = "unknown", model = "x", apiKey = "k" });
+                new { type = "AIAgent", providerId = "unknown", model = "x" });
             Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
 
             using var missing = await client.PutAsJsonAsync(
                 "/participants/999999/automation",
-                new { type = "AIAgent", providerId = "glm", model = "glm-4.6", apiKey = "k" });
+                new { type = "AIAgent", providerId = "glm", model = "glm-4.6" });
             Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         });
     }
@@ -3015,10 +3229,20 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             {
                 await client.PostAsync("/market/seed", null);
                 var participantId = await FirstIndividualIdAsync(factoryInstance);
+                using (var keyResponse = await client.PutAsJsonAsync("/settings", new
+                {
+                    values = new Dictionary<string, object>
+                    {
+                        ["AiTrading:Providers:glm:ApiKey"] = "secret-key",
+                    },
+                }))
+                {
+                    keyResponse.EnsureSuccessStatusCode();
+                }
 
                 using var response = await client.PostAsJsonAsync(
                     $"/participants/{participantId}/automation/test",
-                    new { providerId = "glm", model = "glm-4.6", apiKey = "secret-key" });
+                    new { providerId = "glm", model = "glm-4.6" });
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);
                 using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
                 Assert.True(doc.RootElement.GetProperty("success").GetBoolean());

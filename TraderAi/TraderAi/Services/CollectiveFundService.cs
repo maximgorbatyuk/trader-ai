@@ -5,6 +5,26 @@ using TraderAi.Models;
 
 namespace TraderAi.Services;
 
+public enum ForceFundLeaveStatus
+{
+    Left,
+    Pending,
+    FundClosing,
+}
+
+public sealed record ForceFundLeaveResult(
+    bool Success,
+    bool ParticipantNotFound,
+    ForceFundLeaveStatus? Status,
+    string? Error)
+{
+    public static ForceFundLeaveResult Ok(ForceFundLeaveStatus status) => new(true, false, status, null);
+
+    public static ForceFundLeaveResult NotFound() => new(false, true, null, "Participant not found.");
+
+    public static ForceFundLeaveResult Fail(string error) => new(false, false, null, error);
+}
+
 // Drives the collective-fund lifecycle once per cycle, before matching runs. Eligible cash-strapped traders
 // roll to pool into a fund (handing over 90% of their cash and going quiet); a fund trades the pool, returns a
 // member's deposit when they leave, and when only a pair is left and one leaves it sells everything and splits
@@ -227,7 +247,7 @@ public sealed class CollectiveFundService(
         }
 
         var joinOrOpenCandidates = participantsById.Values
-            .Where(participant => participant.Type is ParticipantType.Individual or ParticipantType.AIAgent)
+            .Where(participant => participant.Type == ParticipantType.Individual)
             .OrderBy(participant => participant.Id)
             .ToList();
 
@@ -235,6 +255,58 @@ public sealed class CollectiveFundService(
         {
             await MaybeJoinOrOpenAsync(participant, currentCycleId, currentCycleNumber, now);
         }
+    }
+
+    public async Task<ForceFundLeaveResult> ForceLeaveAsync(
+        int participantId,
+        int currentCycleId,
+        int currentCycleNumber,
+        DateTime now)
+    {
+        if (!options.Value.Enabled)
+        {
+            return ForceFundLeaveResult.Fail("Collective funds are not enabled.");
+        }
+
+        this.activeCrisis = await dbContext.Crises
+            .Where(candidate => currentCycleNumber > candidate.TriggeredInCycleNumber
+                && currentCycleNumber <= candidate.TriggeredInCycleNumber + candidate.DurationCycles)
+            .OrderByDescending(candidate => candidate.TriggeredInCycleNumber)
+            .FirstOrDefaultAsync();
+        crisisCycleNumber = currentCycleNumber;
+        independentExitsThisCycle = [];
+        await LoadStateAsync(currentCycleId);
+
+        if (!participantsById.TryGetValue(participantId, out var participant))
+        {
+            return ForceFundLeaveResult.NotFound();
+        }
+
+        if (!membershipByParticipantId.TryGetValue(participantId, out var membership))
+        {
+            return ForceFundLeaveResult.Fail("Participant is not a fund member.");
+        }
+
+        var fund = funds.FirstOrDefault(candidate => candidate.Id == membership.CollectiveFundId);
+        if (fund is null)
+        {
+            return ForceFundLeaveResult.Fail("Collective fund not found.");
+        }
+
+        participant.PendingFundSwitch = false;
+        membership.IsIndependentExit = false;
+        membership.IsLeaving = true;
+        await AdvanceLeave(fund, membership, participant, currentCycleId, now);
+        await dbContext.SaveChangesAsync();
+
+        if (fund.Status != CollectiveFundStatus.Active)
+        {
+            return ForceFundLeaveResult.Ok(ForceFundLeaveStatus.FundClosing);
+        }
+
+        return membershipsByFundId[fund.Id].Contains(membership)
+            ? ForceFundLeaveResult.Ok(ForceFundLeaveStatus.Pending)
+            : ForceFundLeaveResult.Ok(ForceFundLeaveStatus.Left);
     }
 
     // Hands a fund's dividend receipt partly through to its members, split by deposit and recorded under its own
@@ -640,8 +712,9 @@ public sealed class CollectiveFundService(
             return;
         }
 
-        // Founders do not switch funds; everyone else may chase a better fund after its independent-exit roll misses.
-        if (member.Id == fund.FoundedByParticipantId)
+        // AI agents no longer enter funds automatically, so a switch must not strand them with a rejoin intent
+        // that the join pass will deliberately never execute.
+        if (member.Type == ParticipantType.AIAgent || member.Id == fund.FoundedByParticipantId)
         {
             return;
         }

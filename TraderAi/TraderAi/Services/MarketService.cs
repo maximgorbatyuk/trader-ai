@@ -79,6 +79,15 @@ public sealed record InvestInCompanyResult(bool Success, int SharesMinted, strin
     public static InvestInCompanyResult Fail(string error) => new(false, 0, error);
 }
 
+public sealed record AdjustParticipantCashResult(bool Success, bool ParticipantNotFound, string? Error)
+{
+    public static AdjustParticipantCashResult Ok() => new(true, false, null);
+
+    public static AdjustParticipantCashResult NotFound() => new(false, true, "Participant not found.");
+
+    public static AdjustParticipantCashResult Fail(string error) => new(false, false, error);
+}
+
 // What a single advertisement would cost the fund right now: the price (a fraction of fund worth), the fraction
 // itself, the 20-cycle net-worth growth that set it (as a percent), the fund worth it is charged against, and
 // the fund's current popularity.
@@ -242,29 +251,7 @@ public sealed class MarketService(
             return new AiDecisionApplicationResult(false, [], []);
         }
 
-        var priceByCompany = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
-        var boundsByCompany = await ResolveOrderPriceBoundsByCompanyAsync(priceByCompany);
-        var holdings = await dbContext.Holdings
-            .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
-            .Select(holding => new { holding.CompanyId, holding.Quantity })
-            .ToListAsync();
-        var holdingsValue = holdings.Sum(holding =>
-            holding.Quantity * priceByCompany.GetValueOrDefault(holding.CompanyId));
-        var loanLiability = (await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext))
-            .GetValueOrDefault(participantId);
-        var marginLiability = (await MarginService.LiabilityByParticipantAsync(dbContext))
-            .GetValueOrDefault(participantId);
-        var context = new OrderBookContext
-        {
-            Market = market!,
-            CurrentCycleId = market!.CurrentCycleId!.Value,
-            Participant = participant!,
-            PriceByCompany = priceByCompany,
-            BoundsByCompany = boundsByCompany,
-            HoldingsValue = holdingsValue,
-            LoanLiability = loanLiability,
-            MarginLiability = marginLiability,
-        };
+        var context = await BuildAiOrderBookContextAsync(market!, participant!);
 
         var cancellationResults = new AiCancellationApplicationResult?[decision.CancelOrderIds.Length];
         var uniqueIds = new List<int>(Math.Min(decision.CancelOrderIds.Length, maxAiCancellationIds));
@@ -340,6 +327,88 @@ public sealed class MarketService(
             await dbContext.SaveChangesAsync();
         }
 
+        AiBigInvestmentApplicationResult? bigInvestmentResult = null;
+        if (decision.BigInvestment is { } investment)
+        {
+            string? rejectionReason = null;
+            var sharesMinted = 0;
+            var company = await dbContext.Companies
+                .FirstOrDefaultAsync(candidate => candidate.Id == investment.CompanyId);
+            if (bigInvestmentService is null || !bigInvestmentService.IsEnabled)
+            {
+                rejectionReason = "Big investments are disabled.";
+            }
+            else if (await dbContext.CollectiveFundParticipants
+                         .AnyAsync(member => member.ParticipantId == participantId))
+            {
+                rejectionReason = "A fund member cannot make an independent big investment.";
+            }
+            else if (company is null || company.ClosedInCycleId is not null)
+            {
+                rejectionReason = "Company is not available for investment.";
+            }
+            else if (!context.PriceByCompany.TryGetValue(company.Id, out var price) || price <= 0m)
+            {
+                rejectionReason = "Company has no current price.";
+            }
+            else
+            {
+                var opportunity = BigInvestmentService.BuildOpportunity(
+                    participant!,
+                    company.Id,
+                    company.Name,
+                    price,
+                    company.IssuedSharesCount,
+                    chanceRateValues.RandomMagnitudeBands);
+                if (opportunity is null)
+                {
+                    rejectionReason = "The big investment opportunity is no longer available.";
+                }
+                else if (investment.Amount < opportunity.MinimumAmount
+                         || investment.Amount > opportunity.MaximumAmount)
+                {
+                    rejectionReason = $"Investment amount must be between {opportunity.MinimumAmount:N2} and {opportunity.MaximumAmount:N2}.";
+                }
+                else if (Math.Floor(investment.Amount / price) * price != investment.Amount)
+                {
+                    rejectionReason = "Investment amount must buy exact whole shares at the current price.";
+                }
+                else
+                {
+                    sharesMinted = await bigInvestmentService.ExecuteDealAsync(
+                        participant!,
+                        company,
+                        price,
+                        investment.Amount,
+                        context.CurrentCycleId,
+                        DateTime.UtcNow);
+                    if (sharesMinted <= 0)
+                    {
+                        rejectionReason = "Investment amount cannot mint a whole share.";
+                    }
+                    else
+                    {
+                        // The executor deliberately leaves its ledger, audit, and price-impact facts staged so its
+                        // caller can commit them together before any later decision reads the updated market.
+                        await dbContext.SaveChangesAsync();
+                    }
+                }
+            }
+
+            bigInvestmentResult = new AiBigInvestmentApplicationResult(
+                investment.CompanyId,
+                investment.Amount,
+                investment.Reason,
+                rejectionReason is null,
+                sharesMinted,
+                rejectionReason);
+
+            if (bigInvestmentResult.Applied)
+            {
+                context = await BuildAiOrderBookContextAsync(market!, participant!);
+            }
+        }
+
         var (executableAskLevelsByCompany, priorBuyPriorityLimitByCompany) =
             await BuildAiExecutableAskContextAsync(context);
         var results = new List<AiOrderApplicationResult>(decision.Orders.Length);
@@ -396,7 +465,35 @@ public sealed class MarketService(
         return new AiDecisionApplicationResult(
             true,
             cancellationResults.Select(result => result!).ToArray(),
-            results.ToArray());
+            results.ToArray(),
+            bigInvestmentResult);
+    }
+
+    private async Task<OrderBookContext> BuildAiOrderBookContextAsync(Market market, Participant participant)
+    {
+        var priceByCompany = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
+        var boundsByCompany = await ResolveOrderPriceBoundsByCompanyAsync(priceByCompany);
+        var holdings = await dbContext.Holdings
+            .Where(holding => holding.ParticipantId == participant.Id && holding.Quantity > 0)
+            .Select(holding => new { holding.CompanyId, holding.Quantity })
+            .ToListAsync();
+        var holdingsValue = holdings.Sum(holding =>
+            holding.Quantity * priceByCompany.GetValueOrDefault(holding.CompanyId));
+        var loanLiability = (await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext))
+            .GetValueOrDefault(participant.Id);
+        var marginLiability = (await MarginService.LiabilityByParticipantAsync(dbContext))
+            .GetValueOrDefault(participant.Id);
+        return new OrderBookContext
+        {
+            Market = market,
+            CurrentCycleId = market.CurrentCycleId!.Value,
+            Participant = participant,
+            PriceByCompany = priceByCompany,
+            BoundsByCompany = boundsByCompany,
+            HoldingsValue = holdingsValue,
+            LoanLiability = loanLiability,
+            MarginLiability = marginLiability,
+        };
     }
 
     private async Task<string?> ValidateAiBuyOrderAsync(
@@ -715,6 +812,94 @@ public sealed class MarketService(
             participant.RiskProfile = riskProfile;
             await dbContext.SaveChangesAsync();
             return participant;
+        });
+
+    public Task<Participant?> RenameParticipantAsync(int participantId, string name) =>
+        WithLockAsync(async () =>
+        {
+            var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
+            if (participant is null)
+            {
+                return null;
+            }
+
+            participant.Name = name;
+            await dbContext.SaveChangesAsync();
+            return participant;
+        });
+
+    public Task<AdjustParticipantCashResult> AdjustParticipantCashAsync(int participantId, decimal amount) =>
+        WithLockAsync(async () =>
+        {
+            if (amount == 0m)
+            {
+                return AdjustParticipantCashResult.Fail("Cash adjustment amount must not be zero.");
+            }
+
+            var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
+            if (participant is null)
+            {
+                return AdjustParticipantCashResult.NotFound();
+            }
+
+            var currentCycleId = await dbContext.Markets
+                .Where(market => market.CurrentCycleId != null)
+                .Select(market => market.CurrentCycleId)
+                .FirstOrDefaultAsync();
+            if (currentCycleId is null)
+            {
+                return AdjustParticipantCashResult.Fail("No current market cycle exists.");
+            }
+
+            if (amount < 0m)
+            {
+                var transferableCash = Math.Max(
+                    0m,
+                    Math.Min(participant.AvailableBalance, participant.SettledCashBalance));
+                if (-amount > transferableCash)
+                {
+                    return AdjustParticipantCashResult.Fail("Cash adjustment exceeds transferable settled cash.");
+                }
+            }
+
+            participant.CurrentBalance += amount;
+            participant.SettledCashBalance += amount;
+            dbContext.MoneyTransactions.Add(new MoneyTransaction
+            {
+                ParticipantId = participant.Id,
+                Type = amount > 0m ? MoneyTransactionType.Credit : MoneyTransactionType.Debit,
+                Amount = Math.Abs(amount),
+                Description = "Manual cash adjustment",
+                CreatedInCycleId = currentCycleId.Value,
+                CreatedAt = DateTime.UtcNow,
+            });
+            await dbContext.SaveChangesAsync();
+            return AdjustParticipantCashResult.Ok();
+        });
+
+    public Task<ForceFundLeaveResult> ForceParticipantToLeaveFundAsync(int participantId) =>
+        WithLockAsync(async () =>
+        {
+            if (collectiveFundService is null)
+            {
+                return ForceFundLeaveResult.Fail("Collective funds are not enabled.");
+            }
+
+            var market = await dbContext.Markets.FirstOrDefaultAsync();
+            if (market?.CurrentCycleId is not int currentCycleId)
+            {
+                return ForceFundLeaveResult.Fail("No current market cycle exists.");
+            }
+
+            var currentCycleNumber = await dbContext.MarketCycles
+                .Where(cycle => cycle.Id == currentCycleId)
+                .Select(cycle => cycle.CycleNumber)
+                .FirstOrDefaultAsync();
+            return await collectiveFundService.ForceLeaveAsync(
+                participantId,
+                currentCycleId,
+                currentCycleNumber,
+                DateTime.UtcNow);
         });
 
     private async Task<CycleTickResult> RunCycleTickCoreAsync()

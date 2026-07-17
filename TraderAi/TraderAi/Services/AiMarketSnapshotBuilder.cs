@@ -17,7 +17,8 @@ public sealed record AiMarketSnapshot(
     AiOrderBookSnapshot OrderBook,
     IReadOnlyList<AiCapitalizationHistoryPoint> CapitalizationHistory,
     IReadOnlyList<AiSentimentHistoryPoint> SentimentHistory,
-    IReadOnlyList<AiApplicationFeedback> RecentApplicationFeedback);
+    IReadOnlyList<AiApplicationFeedback> RecentApplicationFeedback,
+    IReadOnlyList<BigInvestmentOpportunity> BigInvestmentOpportunities);
 
 public sealed record AiMarketState(
     int CycleNumber,
@@ -138,6 +139,8 @@ public sealed class AiMarketSnapshotBuilder(
     IOptions<SettlementOptions> settlementOptions,
     IOptions<MarginOptions> marginOptions,
     IOptions<VolatilityHaltOptions> volatilityHaltOptions,
+    IOptions<BigInvestmentOptions> bigInvestmentOptions,
+    IOptions<RandomChanceRatesOptions> chanceRates,
     AutomatedBuyOrderPolicy automatedBuyOrderPolicy)
 {
     private sealed class ShadowAskLevel(decimal price, long remainingQuantity)
@@ -187,6 +190,19 @@ public sealed class AiMarketSnapshotBuilder(
         var capitalizationHistory = await BuildCapitalizationHistoryAsync(historyCycleIds, cycleNumbersById);
         var sentimentHistory = await BuildSentimentHistoryAsync(historyCycleIds, cycleNumbersById);
         var feedback = await BuildRecentApplicationFeedbackAsync(participantId);
+        IReadOnlyList<BigInvestmentOpportunity> bigInvestmentOpportunities =
+            isFundMember || !bigInvestmentOptions.Value.Enabled
+            ? []
+            : companies
+                .Select(company => BigInvestmentService.BuildOpportunity(
+                    participant,
+                    company.CompanyId,
+                    company.Name,
+                    company.CurrentPrice,
+                    company.IssuedShares,
+                    chanceRates.Value.RandomMagnitudeBands))
+                .OfType<BigInvestmentOpportunity>()
+                .ToList();
 
         return new AiMarketSnapshot(
             participantId,
@@ -199,7 +215,8 @@ public sealed class AiMarketSnapshotBuilder(
             orderBook,
             capitalizationHistory,
             sentimentHistory,
-            feedback);
+            feedback,
+            bigInvestmentOpportunities);
     }
 
     private async Task<AiMarketState> BuildMarketStateAsync(
@@ -594,6 +611,16 @@ public sealed class AiMarketSnapshotBuilder(
                         reasons.Add(text);
                     }
                 }
+            }
+
+            if (document.RootElement.TryGetProperty("bigInvestment", out var investment)
+                && investment.ValueKind == JsonValueKind.Object
+                && investment.TryGetProperty("applied", out var investmentApplied)
+                && !investmentApplied.GetBoolean()
+                && investment.TryGetProperty("rejectionReason", out var investmentReason)
+                && investmentReason.GetString() is { Length: > 0 } investmentText)
+            {
+                reasons.Add(investmentText);
             }
         }
         catch (JsonException)

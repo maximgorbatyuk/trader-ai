@@ -265,6 +265,13 @@ public sealed class AiTraderCoordinator(
             return AiTraderCallStatus.Abandoned;
         }
 
+        var apiKey = catalog.FindApiKey(configuration.ProviderId);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            SetError(participantId, "No API key is configured for this provider. Add it in Settings.", null);
+            return AiTraderCallStatus.Abandoned;
+        }
+
         var snapshot = await services.GetRequiredService<AiMarketSnapshotBuilder>()
             .BuildAsync(participantId, isFinalDecisionOfDay);
         if (snapshot is null)
@@ -290,7 +297,6 @@ public sealed class AiTraderCoordinator(
             prepared.RequestJson);
 
         var callService = services.GetRequiredService<AiTraderCallService>();
-        var apiKey = configuration.ApiKey;
 
         runtimeState.Set(participantId, new AiTraderRuntimeSnapshot(
             AiTraderRuntimeStatus.Thinking, "Thinking", null, snapshot.Market.CycleNumber,
@@ -335,15 +341,18 @@ public sealed class AiTraderCoordinator(
                 var targetDayNumber = snapshot.Market.TradingDayNumber + 1;
                 await callService.MarkPendingNextDayAsync(execution.CallId, targetDayNumber);
                 schedules[participantId] = new ParticipantSchedule { LastCycleNumber = cycleNumber };
+                var investmentPlan = execution.Decision.BigInvestment is null
+                    ? "no big investment"
+                    : "a big investment";
                 runtimeState.Set(participantId, new AiTraderRuntimeSnapshot(
                     AiTraderRuntimeStatus.Waiting,
-                    $"Planned {execution.Decision.Orders.Length} order(s) for the next trading day open.",
+                    $"Planned {investmentPlan} and {execution.Decision.Orders.Length} order(s) for the next trading day open.",
                     execution.CallId, snapshot.Market.CycleNumber, null, timeProvider.GetUtcNow().UtcDateTime, null));
                 return execution.Status;
             }
 
             runtimeState.Set(participantId, new AiTraderRuntimeSnapshot(
-                AiTraderRuntimeStatus.Applying, "Applying orders", execution.CallId, snapshot.Market.CycleNumber,
+                AiTraderRuntimeStatus.Applying, "Applying decision", execution.CallId, snapshot.Market.CycleNumber,
                 timeProvider.GetUtcNow().UtcDateTime, null, null));
 
             // Apply in a fresh scope so the revision/eligibility guard and cycle tag read committed database
@@ -362,8 +371,9 @@ public sealed class AiTraderCoordinator(
                 execution.CallId, callService.SerializeApplicationResult(application), applied, rejected);
 
             schedules[participantId] = new ParticipantSchedule { LastCycleNumber = cycleNumber };
+            var investmentOutcome = InvestmentOutcome(application.BigInvestment);
             runtimeState.Set(participantId, new AiTraderRuntimeSnapshot(
-                AiTraderRuntimeStatus.Waiting, $"Applied {applied} order(s), rejected {rejected}.",
+                AiTraderRuntimeStatus.Waiting, $"{investmentOutcome} Applied {applied} order(s), rejected {rejected}.",
                 execution.CallId, snapshot.Market.CycleNumber, null, timeProvider.GetUtcNow().UtcDateTime, null));
             return execution.Status;
         }
@@ -420,13 +430,22 @@ public sealed class AiTraderCoordinator(
             var rejected = application.Orders.Length - applied;
             await callService.RecordApplicationAsync(
                 plan.Id, callService.SerializeApplicationResult(application), applied, rejected);
+            var investmentOutcome = InvestmentOutcome(application.BigInvestment);
             runtimeState.Set(participantId, new AiTraderRuntimeSnapshot(
-                AiTraderRuntimeStatus.Waiting, $"Applied {applied} next-day order(s), rejected {rejected}.",
+                AiTraderRuntimeStatus.Waiting,
+                $"{investmentOutcome} Applied {applied} next-day order(s), rejected {rejected}.",
                 plan.Id, cycleNumber, null, timeProvider.GetUtcNow().UtcDateTime, null));
         }
 
         schedules[participantId] = new ParticipantSchedule { LastCycleNumber = cycleNumber };
     }
+
+    private static string InvestmentOutcome(AiBigInvestmentApplicationResult? investment) => investment switch
+    {
+        null => "No big investment requested.",
+        { Applied: true } => "Big investment applied.",
+        _ => "Big investment rejected.",
+    };
 
     private void HandleFailure(int participantId, int cycleNumber, AiTraderCallExecution execution, AiProviderResponse? response)
     {

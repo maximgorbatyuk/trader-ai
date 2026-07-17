@@ -45,6 +45,13 @@ public static class AiDecisionJson
                 error = "A cancelOrderIds array is required.";
                 return false;
             }
+
+            if (!document.RootElement.TryGetProperty("bigInvestment", out var bigInvestment)
+                || bigInvestment.ValueKind is not (JsonValueKind.Null or JsonValueKind.Object))
+            {
+                error = "A bigInvestment object or null is required.";
+                return false;
+            }
         }
 
         if (parsed is null)
@@ -87,6 +94,27 @@ public static class AiDecisionJson
         {
             error = "Each cancelOrderIds value must be positive.";
             return false;
+        }
+
+        if (parsed.BigInvestment is { } investment)
+        {
+            if (investment.CompanyId <= 0)
+            {
+                error = "The bigInvestment companyId must be positive.";
+                return false;
+            }
+
+            if (investment.Amount <= 0m)
+            {
+                error = "The bigInvestment amount must be positive.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(investment.Reason))
+            {
+                error = "The bigInvestment requires a non-empty reason.";
+                return false;
+            }
         }
 
         foreach (var order in parsed.Orders)
