@@ -11,6 +11,8 @@ import { SettlementsTable } from './SettlementsTable'
 import { cashSettlement } from './marketAccounting'
 import { FavoriteCompaniesTable } from './FavoriteCompaniesTable'
 import { favoriteCompanies } from './favoriteCompanies'
+import { FavoriteTradersTable } from './FavoriteTradersTable'
+import { favoriteTraders } from './favoriteTraders'
 
 const POLL_INTERVAL_MS = 1000
 const CASH_MOVEMENT_PAGE_SIZE = 10
@@ -68,7 +70,7 @@ function fundSubjectOf(fundDetail, worthHistory) {
 // The player's live control surface. Which actor it shows follows the shared actor selection (`actorKind`)
 // owned by the app shell, whose sidebar carries the Player/Managed-fund switch. It polls only the active
 // actor's dataset and renders the passed-in market map and order book inside its detail tabs.
-export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, marketMap }) {
+export function PlayerPanel({ companies, participants, onSelectCompany, actorKind, orderBook, marketMap }) {
   const [loading, setLoading] = useState(true)
   const [player, setPlayer] = useState(null)
   const [fundDetail, setFundDetail] = useState(null)
@@ -170,6 +172,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, 
           cashMoves={cashMoves}
           settlements={settlements}
           companies={companies}
+          participants={participants}
           showFavoriteCompanies
           onSelectCompany={onSelectCompany}
           onRefresh={refresh}
@@ -197,6 +200,7 @@ export function PlayerPanel({ companies, onSelectCompany, actorKind, orderBook, 
           cashMoves={cashMoves}
           settlements={settlements}
           companies={companies}
+          participants={participants}
           showFavoriteCompanies
           onSelectCompany={onSelectCompany}
           onRefresh={refresh}
@@ -514,6 +518,7 @@ function ActorView({
   cashMoves,
   settlements,
   companies,
+  participants,
   showFavoriteCompanies,
   onSelectCompany,
   onRefresh,
@@ -563,6 +568,7 @@ function ActorView({
         cashMoves={cashMoves}
         settlements={settlements}
         companies={companies}
+        participants={participants}
         showFavoriteCompanies={showFavoriteCompanies}
         onSelectCompany={onSelectCompany}
         onRefresh={onRefresh}
@@ -687,12 +693,13 @@ const BASE_TABS = [
 ]
 const MEMBERS_TAB = { key: 'members', label: 'Members', hasCount: true }
 const FAVORITES_TAB = { key: 'favorites', label: 'Favorite companies', hasCount: true }
+const FAVORITE_TRADERS_TAB = { key: 'favoriteTraders', label: 'Favorite traders', hasCount: true }
 
 // The actor's detail views behind one tab strip so the panel stays compact: the roster tabs carry a live count,
 // and arrow keys move focus between tabs (roving tabindex) to match the order-book tablist. The fund variant
 // appends a Members tab.
-function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, members, attention, openOrders, loans, loanStatus, onLoanStatusChange, cashMoves, settlements, companies, showFavoriteCompanies, onSelectCompany, onRefresh }) {
-  const playerTabs = showFavoriteCompanies ? [...BASE_TABS, FAVORITES_TAB] : BASE_TABS
+function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, members, attention, openOrders, loans, loanStatus, onLoanStatusChange, cashMoves, settlements, companies, participants, showFavoriteCompanies, onSelectCompany, onRefresh }) {
+  const playerTabs = showFavoriteCompanies ? [...BASE_TABS, FAVORITES_TAB, FAVORITE_TRADERS_TAB] : BASE_TABS
   const tabs = members ? [...playerTabs, MEMBERS_TAB] : playerTabs
   const [activeKey, setActiveKey] = useState('map')
   const tabRefs = useRef({})
@@ -704,6 +711,7 @@ function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, membe
     settlements: settlements.length,
     members: members?.length ?? 0,
     favorites: favoriteCompanies(companies).length,
+    favoriteTraders: favoriteTraders(participants ?? []).length,
   }
 
   function focusTab(key) {
@@ -767,6 +775,11 @@ function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, membe
         {activeKey === 'favorites' ? (
           <div className="modal-section player-section">
             <FavoriteCompaniesTable companies={companies} onSelectCompany={onSelectCompany} />
+          </div>
+        ) : null}
+        {activeKey === 'favoriteTraders' ? (
+          <div className="modal-section player-section">
+            <FavoriteTradersTable participants={participants ?? []} />
           </div>
         ) : null}
         {activeKey === 'members' ? <MembersSection members={members ?? []} /> : null}

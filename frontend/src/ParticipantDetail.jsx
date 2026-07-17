@@ -23,6 +23,7 @@ import { FavoriteCompaniesTable } from './FavoriteCompaniesTable'
 import { favoriteCompanies } from './favoriteCompanies'
 import { CompanyModal } from './CompanyModal'
 import { ParticipantActions } from './ParticipantActions'
+import { FavoriteTraderToggle } from './FavoriteTraderToggle'
 
 const POLL_INTERVAL_MS = 2500
 const WORTH_HISTORY_POINTS = 64
@@ -228,7 +229,15 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
             </p>
           ) : null}
           {showOperatorActions ? (
-            <ParticipantActions participant={detail} onChanged={loadAll} />
+            <div className="command-buttons">
+              <FavoriteTraderToggle
+                participantId={detail.id}
+                participantName={detail.name}
+                isFavorite={detail.isFavorite}
+                onChanged={(isFavorite) => setDetail((current) => ({ ...current, isFavorite }))}
+              />
+              <ParticipantActions participant={detail} onChanged={loadAll} />
+            </div>
           ) : null}
         </div>
         <dl className="statbar">

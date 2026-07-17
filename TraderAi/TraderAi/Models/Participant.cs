@@ -22,6 +22,9 @@ public sealed class Participant
 
     public RiskProfile RiskProfile { get; set; }
 
+    // Operator-marked favourite, surfaced on the dashboard's Favorite traders tab. Independent of any trading rule.
+    public bool IsFavorite { get; set; }
+
     public bool IsActive { get; set; }
 
     // Consecutive cycles the trader wanted to buy but could not afford a single share anywhere; once it

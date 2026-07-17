@@ -19,6 +19,12 @@ public static partial class MarketEndpoints
         app.MapDelete("/player/favorite-companies/{companyId:int}", async (int companyId, AppDbContext dbContext) =>
             await SetFavoriteCompanyAsync(dbContext, companyId, false));
 
+        app.MapPut("/player/favorite-traders/{participantId:int}", async (int participantId, AppDbContext dbContext) =>
+            await SetFavoriteTraderAsync(dbContext, participantId, true));
+
+        app.MapDelete("/player/favorite-traders/{participantId:int}", async (int participantId, AppDbContext dbContext) =>
+            await SetFavoriteTraderAsync(dbContext, participantId, false));
+
         app.MapPost("/player", async (CreatePlayerRequest? request, MarketService marketService, AppDbContext dbContext, MarginService marginService) =>
         {
             var result = await marketService.CreatePlayerAsync(request?.Name);

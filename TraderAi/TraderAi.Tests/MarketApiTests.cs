@@ -61,6 +61,76 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task PlayerCanMarkAndUnmarkAFavoriteTrader()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+
+            using var initialParticipants = await client.GetFromJsonAsync<JsonDocument>("/participants");
+            var trader = initialParticipants!.RootElement.EnumerateArray()
+                .First(participant => participant.GetProperty("type").GetString() != "Player");
+            var participantId = trader.GetProperty("id").GetInt32();
+            Assert.False(trader.GetProperty("isFavorite").GetBoolean());
+
+            using var marked = await client.PutAsync($"/player/favorite-traders/{participantId}", null);
+            Assert.Equal(HttpStatusCode.NoContent, marked.StatusCode);
+
+            using var favoriteParticipants = await client.GetFromJsonAsync<JsonDocument>("/participants");
+            var favoriteTrader = favoriteParticipants!.RootElement.EnumerateArray()
+                .Single(participant => participant.GetProperty("id").GetInt32() == participantId);
+            Assert.True(favoriteTrader.GetProperty("isFavorite").GetBoolean());
+
+            using var favoriteDetail = await client.GetFromJsonAsync<JsonDocument>($"/participants/{participantId}");
+            Assert.True(favoriteDetail!.RootElement.GetProperty("isFavorite").GetBoolean());
+
+            using var unmarked = await client.DeleteAsync($"/player/favorite-traders/{participantId}");
+            Assert.Equal(HttpStatusCode.NoContent, unmarked.StatusCode);
+
+            using var ordinaryDetail = await client.GetFromJsonAsync<JsonDocument>($"/participants/{participantId}");
+            Assert.False(ordinaryDetail!.RootElement.GetProperty("isFavorite").GetBoolean());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task FavoriteTraderMutationRequiresAPlayerAndKnownTrader()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            using var participants = await client.GetFromJsonAsync<JsonDocument>("/participants");
+            var participantId = participants!.RootElement.EnumerateArray().First().GetProperty("id").GetInt32();
+
+            using var withoutPlayer = await client.PutAsync($"/player/favorite-traders/{participantId}", null);
+            Assert.Equal(HttpStatusCode.NotFound, withoutPlayer.StatusCode);
+            Assert.Contains("No player exists.", await withoutPlayer.Content.ReadAsStringAsync());
+
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+            using var missingTrader = await client.PutAsync("/player/favorite-traders/999999", null);
+            Assert.Equal(HttpStatusCode.NotFound, missingTrader.StatusCode);
+            Assert.Contains("Trader not found.", await missingTrader.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task FavoriteCompanyMutationRequiresAPlayerAndKnownCompany()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");

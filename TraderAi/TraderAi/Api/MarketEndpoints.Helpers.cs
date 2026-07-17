@@ -179,6 +179,27 @@ public static partial class MarketEndpoints
         return Results.NoContent();
     }
 
+    private static async Task<IResult> SetFavoriteTraderAsync(
+        AppDbContext dbContext,
+        int participantId,
+        bool isFavorite)
+    {
+        if (!await dbContext.Participants.AnyAsync(participant => participant.Type == ParticipantType.Player))
+        {
+            return Results.NotFound(new { error = "No player exists." });
+        }
+
+        var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
+        if (participant is null)
+        {
+            return Results.NotFound(new { error = "Trader not found." });
+        }
+
+        participant.IsFavorite = isFavorite;
+        await dbContext.SaveChangesAsync();
+        return Results.NoContent();
+    }
+
     // Resolves the AI-automation view for a participant. Provider label comes from the backend catalog and the
     // live status from in-memory runtime state; the stored key is never read here, only its presence.
     private static (string? ProviderId, string? ProviderLabel, string? Model, string? Status, string? Message, long? CallId, int? MaxDecisions)
@@ -262,6 +283,7 @@ public static partial class MarketEndpoints
                     valuation.NextSettlementDueDayNumber,
                     participant.IsActive,
                     participant.IsBankrupt,
+                    participant.IsFavorite,
                     ai.ProviderId,
                     ai.ProviderLabel,
                     ai.Model,
@@ -717,6 +739,7 @@ public static partial class MarketEndpoints
             valuation.PendingSettlementCount,
             valuation.NextSettlementDueDayNumber,
             participant.IsActive,
+            participant.IsFavorite,
             fundStatus,
             fundMembers,
             memberOfFundId,

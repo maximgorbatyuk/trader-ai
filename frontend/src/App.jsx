@@ -120,6 +120,7 @@ function App() {
                 <div className="dashboard">
                   <PlayerPanel
                     companies={companies}
+                    participants={participants}
                     onSelectCompany={setMapModalCompanyId}
                     actorKind={actorKind}
                     marketMap={
