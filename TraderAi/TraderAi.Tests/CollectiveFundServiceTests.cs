@@ -8,11 +8,11 @@ using TraderAi.Services;
 namespace TraderAi.Tests;
 
 // Drives the collective-fund roll with a scripted Random so joining, opening, and leaving are forced
-// deterministically. One NextDouble() is drawn per active-fund member sitting at or above the leave line, then
-// one per eligible independent trader for the join/open band; closing and deposit returns draw nothing.
+// deterministically. A tenure-eligible member draws for an independent exit and, after a miss, may draw again
+// for a switch; eligible independent traders draw once for the join/open band.
 public sealed class CollectiveFundServiceTests : IDisposable
 {
-    private const decimal LeaveThreshold = 100_000_000m;
+    private const decimal ReferenceLargeBalance = 100_000_000m;
 
     private readonly SqliteConnection connection;
     private readonly AppDbContext context;
@@ -109,6 +109,25 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task NewFundSnapshotsItsQuotaBeforeSameCycleJoinersArrive()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);
+        await AddTraderAsync(currentBalance: 100_000m);
+        await AddTraderAsync(currentBalance: 100_000m);
+
+        // The first trader opens the fund and the second joins it later in the same join/open pass.
+        await Service(enabled: true, new ScriptedRandom([0.0d, 0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var fund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(2, await context.CollectiveFundParticipants.CountAsync(member => member.CollectiveFundId == fund.Id));
+        Assert.Equal(20, fund.LastVoluntaryLeaveTradingDayNumber);
+        Assert.Equal(1, fund.VoluntaryLeaveQuota);
+        Assert.Equal(0, fund.VoluntaryLeavesUsed);
+    }
+
+    [Fact]
     public async Task NewFundInheritsFounderCharacteristics()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);
@@ -149,7 +168,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
 
         var joiner = await AddTraderAsync(currentBalance: 100_000m);
 
-        // The pre-existing member sits below the leave line (no draw); the joiner's 0.0 lands in the 5% join band.
+        // The pre-existing member is below the tenure gate; the joiner's 0.0 lands in the 5% join band.
         await Service(enabled: true, new ScriptedRandom([0.0d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -221,7 +240,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         Participant? newest = null;
         for (var index = 1; index <= 3; index++)
         {
-            // Each member sits above the join ceiling but below the leave line, so none rolls in either pass.
+            // Each member is below the tenure gate and above the join ceiling, so none rolls in either pass.
             var member = await AddTraderAsync(currentBalance: 600_000m);
             await AddMembershipAsync(fund, member, deposit: 10_000m, joinedCycleId: index);
             newest = member;
@@ -324,7 +343,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task MemberAtThresholdLeavesAndDepositIsReturned()
+    public async Task MemberWithLargeBalanceLeavesAndDepositIsReturned()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);
         var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 13, cycleNumber: 100);
@@ -337,7 +356,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
             await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
         }
 
-        // Only the above-the-line member draws; at ramp 1 the 20% chance fires on 0.0.
+        // Only the tenure-eligible member draws; at ramp 1 the 20% chance fires on 0.0.
         await Service(enabled: true, new ScriptedRandom([0.0d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -353,27 +372,50 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task OnlyOneMemberLeavesPerTradingDayAndTheNextWaitsForTheFollowingDay()
+    public async Task MemberBelowFormerCashThresholdLeavesWithoutRejoiningInTheSameCycle()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 13, cycleNumber: 100);
+        var (fund, _) = await AddFundAsync(balance: 200_000m);
+        var leaver = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, leaver, deposit: 90_000m, joinedCycle.Id);
+        foreach (var _ in Enumerable.Range(0, 2))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
+        }
+
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == leaver.Id));
+        var refreshedLeaver = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == leaver.Id);
+        Assert.False(refreshedLeaver.PendingFundSwitch);
+        Assert.Equal(100_000m, refreshedLeaver.CurrentBalance);
+    }
+
+    [Fact]
+    public async Task SmallFundAllowsOneVoluntaryDepartureAndResetsTheQuotaNextTradingDay()
     {
         var (_, dayTwentyCycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);
         var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 13, cycleNumber: 100);
         var (fund, _) = await AddFundAsync(balance: 200_000m);
 
-        // Two members both sit above the leave line and cleared the tenure gate, so both want out the same day.
-        var firstLeaver = await AddTraderAsync(currentBalance: LeaveThreshold);
+        // Two members cleared the tenure gate and both want out on the same day.
+        var firstLeaver = await AddTraderAsync(currentBalance: ReferenceLargeBalance);
         await AddMembershipAsync(fund, firstLeaver, deposit: 90_000m, joinedCycle.Id);
-        var secondLeaver = await AddTraderAsync(currentBalance: LeaveThreshold);
+        var secondLeaver = await AddTraderAsync(currentBalance: ReferenceLargeBalance);
         await AddMembershipAsync(fund, secondLeaver, deposit: 90_000m, joinedCycle.Id);
 
-        // Two below-the-line members keep the fund above the pair-close floor so a departure does not unwind it.
+        // Two short-tenure members keep the fund above the pair-close floor so a departure does not unwind it.
         foreach (var _ in Enumerable.Range(0, 2))
         {
             var member = await AddTraderAsync(currentBalance: 10_000m);
             await AddMembershipAsync(fund, member, deposit: 10_000m, dayTwentyCycle.Id);
         }
 
-        // Day 20: only the lowest-id leaver draws and departs; the throttle skips everyone else, so the single
-        // 0.0 fires the first member's ramp-1 roll and no further draw is taken this day.
+        // Four members produce a quota of one, so only the lowest-id leaver draws and departs on day 20.
         await Service(enabled: true, new ScriptedRandom([0.0d], []))
             .ProcessForCycleAsync(dayTwentyCycle.Id, dayTwentyCycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -382,16 +424,172 @@ public sealed class CollectiveFundServiceTests : IDisposable
         var held = await context.CollectiveFundParticipants.AsNoTracking()
             .SingleAsync(member => member.ParticipantId == secondLeaver.Id);
         Assert.False(held.IsLeaving);
-        Assert.Equal(20, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).LastVoluntaryLeaveTradingDayNumber);
+        var dayTwentyFund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(20, dayTwentyFund.LastVoluntaryLeaveTradingDayNumber);
+        Assert.Equal(1, dayTwentyFund.VoluntaryLeaveQuota);
+        Assert.Equal(1, dayTwentyFund.VoluntaryLeavesUsed);
 
-        // Day 21: the slot has reset with the new trading day, so the second leaver now departs on its own roll.
+        // Day 21 snapshots a fresh quota of one from the three remaining members.
         var dayTwentyOneCycle = await AddCycleForTradingDayAsync(dayNumber: 21, cycleNumber: 601);
         await Service(enabled: true, new ScriptedRandom([0.0d], []))
             .ProcessForCycleAsync(dayTwentyOneCycle.Id, dayTwentyOneCycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == secondLeaver.Id));
-        Assert.Equal(21, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).LastVoluntaryLeaveTradingDayNumber);
+        var dayTwentyOneFund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
+        Assert.Equal(21, dayTwentyOneFund.LastVoluntaryLeaveTradingDayNumber);
+        Assert.Equal(1, dayTwentyOneFund.VoluntaryLeaveQuota);
+        Assert.Equal(1, dayTwentyOneFund.VoluntaryLeavesUsed);
+    }
+
+    [Fact]
+    public async Task TenMemberFundAllowsTwoVoluntaryDeparturesPerTradingDay()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);
+        var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 13, cycleNumber: 100);
+        var (fund, _) = await AddFundAsync(balance: 200_000m);
+        var eligibleLeavers = new List<Participant>();
+        foreach (var _ in Enumerable.Range(0, 3))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, joinedCycle.Id);
+            eligibleLeavers.Add(member);
+        }
+
+        foreach (var _ in Enumerable.Range(0, 7))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
+        }
+
+        await Service(enabled: true, new ScriptedRandom([0.0d, 0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == eligibleLeavers[0].Id));
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == eligibleLeavers[1].Id));
+        Assert.True(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == eligibleLeavers[2].Id));
+        Assert.Equal(8, await context.CollectiveFundParticipants.CountAsync(member => member.CollectiveFundId == fund.Id));
+
+        var quotaState = await context.CollectiveFunds.AsNoTracking().SingleAsync(candidate => candidate.Id == fund.Id);
+        Assert.Equal(2, quotaState.VoluntaryLeaveQuota);
+        Assert.Equal(2, quotaState.VoluntaryLeavesUsed);
+
+        // A later pass on the same trading day cannot release the third eligible member. The two independent
+        // leavers miss their ordinary join rolls during this synthetic second invocation of the same cycle.
+        await Service(enabled: true, new ScriptedRandom([1.0d, 1.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.True(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == eligibleLeavers[2].Id));
+    }
+
+    [Fact]
+    public async Task DailyQuotaUsesMembershipBeforeAdministrativeCapacityEviction()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);
+        var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 13, cycleNumber: 100);
+        var newestCycle = await AddCycleForTradingDayAsync(dayNumber: 21, cycleNumber: 601);
+        var (fund, _) = await AddFundAsync(balance: 200_000m);
+        var eligibleLeavers = new List<Participant>();
+        foreach (var _ in Enumerable.Range(0, 3))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, joinedCycle.Id);
+            eligibleLeavers.Add(member);
+        }
+
+        foreach (var _ in Enumerable.Range(0, 3))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
+        }
+
+        var capacityEvictee = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, capacityEvictee, deposit: 10_000m, newestCycle.Id);
+
+        // Two exit rolls fire; the administratively evicted member then misses its ordinary join roll.
+        await Service(enabled: true, new ScriptedRandom([0.0d, 0.0d, 1.0d], []), softCloseMembers: 6)
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == capacityEvictee.Id));
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == eligibleLeavers[0].Id));
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == eligibleLeavers[1].Id));
+        Assert.True(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == eligibleLeavers[2].Id));
+        var quotaState = await context.CollectiveFunds.AsNoTracking().SingleAsync(candidate => candidate.Id == fund.Id);
+        Assert.Equal(2, quotaState.VoluntaryLeaveQuota);
+        Assert.Equal(2, quotaState.VoluntaryLeavesUsed);
+    }
+
+    [Fact]
+    public async Task LegacySameDayLeaveMarkerSeedsOneUsedQuotaSlot()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);
+        var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 13, cycleNumber: 100);
+        var (fund, _) = await AddFundAsync(balance: 200_000m);
+        fund.LastVoluntaryLeaveTradingDayNumber = 20;
+        var eligibleLeavers = new List<Participant>();
+        foreach (var _ in Enumerable.Range(0, 3))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, joinedCycle.Id);
+            eligibleLeavers.Add(member);
+        }
+
+        foreach (var _ in Enumerable.Range(0, 7))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
+        }
+
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == eligibleLeavers[0].Id));
+        Assert.True(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == eligibleLeavers[1].Id));
+        Assert.True(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == eligibleLeavers[2].Id));
+        var quotaState = await context.CollectiveFunds.AsNoTracking().SingleAsync(candidate => candidate.Id == fund.Id);
+        Assert.Equal(2, quotaState.VoluntaryLeaveQuota);
+        Assert.Equal(2, quotaState.VoluntaryLeavesUsed);
+    }
+
+    [Fact]
+    public async Task CompletedFundSwitchesConsumeTheDailyDepartureQuota()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);
+        var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 13, cycleNumber: 100);
+        var (fund, _) = await AddFundAsync(balance: 200_000m);
+        var eligibleSwitchers = new List<Participant>();
+        foreach (var _ in Enumerable.Range(0, 3))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, joinedCycle.Id);
+            eligibleSwitchers.Add(member);
+        }
+
+        foreach (var _ in Enumerable.Range(0, 7))
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 10_000m, cycle.Id);
+        }
+
+        // The first two members miss independent exit and fire their switch rolls; the quota then skips the third.
+        await Service(enabled: true, new ScriptedRandom([1.0d, 0.0d, 1.0d, 0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var quotaState = await context.CollectiveFunds.AsNoTracking().SingleAsync(candidate => candidate.Id == fund.Id);
+        Assert.Equal(2, quotaState.VoluntaryLeaveQuota);
+        Assert.Equal(2, quotaState.VoluntaryLeavesUsed);
+        Assert.Equal(2, await context.CollectiveFundMembershipEvents.CountAsync(membershipEvent =>
+            membershipEvent.CollectiveFundId == fund.Id && membershipEvent.Type == CollectiveFundMembershipEventType.Left));
+        var heldSwitcher = await context.CollectiveFundParticipants.AsNoTracking()
+            .SingleAsync(member => member.ParticipantId == eligibleSwitchers[2].Id);
+        Assert.False(heldSwitcher.IsLeaving);
     }
 
     [Fact]
@@ -400,7 +598,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         var (_, cycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);
         var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 14, cycleNumber: 100);
         var (fund, _) = await AddFundAsync(balance: 200_000m);
-        var protectedMember = await AddTraderAsync(currentBalance: LeaveThreshold);
+        var protectedMember = await AddTraderAsync(currentBalance: ReferenceLargeBalance);
         await AddMembershipAsync(fund, protectedMember, deposit: 90_000m, joinedCycle.Id);
         foreach (var _ in Enumerable.Range(0, 2))
         {
@@ -425,7 +623,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         var (_, cycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);
         var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 13, cycleNumber: 100);
         var (fund, _) = await AddFundAsync(balance: 200_000m);
-        var eligibleMember = await AddTraderAsync(currentBalance: LeaveThreshold);
+        var eligibleMember = await AddTraderAsync(currentBalance: ReferenceLargeBalance);
         await AddMembershipAsync(fund, eligibleMember, deposit: 90_000m, joinedCycle.Id);
         foreach (var _ in Enumerable.Range(0, 2))
         {
@@ -747,6 +945,39 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task IndependentLeaverDoesNotRejoinWhenDelayedPairCloseFinishes()
+    {
+        var (_, cycle, company) = await SeedAsync(price: 100m, tradingDayNumber: 20);
+        var joinedCycle = await AddCycleForTradingDayAsync(dayNumber: 13, cycleNumber: 100);
+        var (fund, fundParticipant) = await AddFundAsync(balance: 100_000m);
+        await AddSharesAsync(fundParticipant.Id, company.Id, count: 10, price: 100m);
+        var leaver = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, leaver, deposit: 90_000m, joinedCycle.Id);
+        var partner = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, partner, deposit: 10_000m, cycle.Id);
+
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(CollectiveFundStatus.GoingToBeClosed, (await context.CollectiveFunds.AsNoTracking().SingleAsync()).Status);
+        var holding = await context.Holdings.SingleAsync(candidate => candidate.ParticipantId == fundParticipant.Id);
+        holding.Quantity = 0;
+        holding.SettledQuantity = 0;
+        var sell = await context.Orders.SingleAsync(order => order.ParticipantId == fundParticipant.Id && order.Type == OrderType.Sell);
+        sell.Status = OrderStatus.Filled;
+        sell.FilledQuantity = sell.Quantity;
+        await context.SaveChangesAsync();
+
+        var nextCycle = await AddCycleToTradingDayAsync(cycle.TradingDayId, cycleNumber: 601, tradingCycleNumber: 2);
+        await Service(enabled: true, new ScriptedRandom([0.0d, 1.0d], []))
+            .ProcessForCycleAsync(nextCycle.Id, nextCycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == leaver.Id));
+    }
+
+    [Fact]
     public async Task ClosingFundAllocatesResidualCentWithoutCreatingCash()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);
@@ -773,6 +1004,24 @@ public sealed class CollectiveFundServiceTests : IDisposable
             .ToListAsync();
         Assert.Equal([0.01m, 0m], payouts);
         Assert.Equal(0.01m, payouts.Sum());
+    }
+
+    [Fact]
+    public async Task AdministrativelyClosedMatureMemberStillRunsTheJoinOpenPass()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, _) = await AddFundAsync(status: CollectiveFundStatus.GoingToBeClosed, balance: 100_000m);
+        var member = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, member, deposit: 90_000m, cycle.Id, leaveRamp: 1);
+
+        // The administrative close releases the member, whose 0.0 roll then opens a new fund.
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var newMembership = await context.CollectiveFundParticipants.AsNoTracking()
+            .SingleAsync(candidate => candidate.ParticipantId == member.Id);
+        Assert.NotEqual(fund.Id, newMembership.CollectiveFundId);
     }
 
     [Fact]
@@ -957,7 +1206,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         await AddMembershipAsync(fund, memberOne, deposit: 1_000m, cycle.Id);
         await AddMembershipAsync(fund, memberTwo, deposit: 1_000m, cycle.Id);
 
-        // Members sit below the leave line (no draw) and stay members (no join draw); the idle check draws nothing.
+        // Members are below the tenure gate and stay members; the idle check draws nothing.
         await Service(enabled: true, new ScriptedRandom([], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -1219,8 +1468,8 @@ public sealed class CollectiveFundServiceTests : IDisposable
             await AddMembershipAsync(fund, member, deposit: 90_000m, cycle.Id);
         }
 
-        // 0.18 sits above a normal member's 15% base but under the 20% an aggressive member rolls at, so the switch fires.
-        await Service(enabled: true, new ScriptedRandom([0.18d], []), loansEnabled: false)
+        // The independent-exit roll misses, then 0.18 fires the aggressive member's 20% switch chance.
+        await Service(enabled: true, new ScriptedRandom([1.0d, 0.18d], []), loansEnabled: false)
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -1244,8 +1493,8 @@ public sealed class CollectiveFundServiceTests : IDisposable
             await AddMembershipAsync(fund, member, deposit: 90_000m, cycle.Id);
         }
 
-        // 0.12 is above a conservative member's lowered 10% chance (a normal member's 15% base would have fired); it stays put.
-        await Service(enabled: true, new ScriptedRandom([0.12d], []))
+        // The independent-exit roll misses, then 0.12 misses the conservative member's lowered 10% switch chance.
+        await Service(enabled: true, new ScriptedRandom([1.0d, 0.12d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -1270,12 +1519,12 @@ public sealed class CollectiveFundServiceTests : IDisposable
         fund.FoundedByParticipantId = founder.Id;
         await context.SaveChangesAsync();
 
-        // A second fund gives a switch somewhere to go; the empty script proves the founder never draws.
+        // A second fund gives a switch somewhere to go; the founder misses its exit roll and takes no switch roll.
         var (otherFund, _) = await AddFundAsync(balance: 500_000m);
         var member2 = await AddTraderAsync(currentBalance: 50_000m);
         await AddMembershipAsync(otherFund, member2, deposit: 90_000m, cycle.Id);
 
-        await Service(enabled: true, new ScriptedRandom([], []))
+        await Service(enabled: true, new ScriptedRandom([1.0d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -1330,8 +1579,9 @@ public sealed class CollectiveFundServiceTests : IDisposable
             await AddMembershipAsync(toFund, member, deposit: 100_000m, cycle.Id);
         }
 
-        // 0.0 fires the switch; the deposit is covered so the leaver rejoins the stronger fund the same cycle.
-        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+        // The independent-exit roll misses, then 0.0 fires the switch; the covered deposit lets the member rejoin
+        // the stronger fund in the same cycle.
+        await Service(enabled: true, new ScriptedRandom([1.0d, 0.0d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
@@ -1406,7 +1656,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         context.Participants.Remove(ghost);
         await context.SaveChangesAsync();
 
-        // Members sit below the leave line and under the switch tenure (no draws), so an empty script must never
+        // Members sit below the tenure gate, so an empty script must never
         // be drawn from — the orphan is dropped without a roll rather than throwing on the missing key.
         await Service(enabled: true, new ScriptedRandom([], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
@@ -1429,7 +1679,7 @@ public sealed class CollectiveFundServiceTests : IDisposable
         // Net worth doubled across the window, far past the 2% growth threshold.
         await AddRisingWorthSeriesAsync(fundParticipant.Id, from: 100_000m, to: 200_000m);
 
-        // The member is below the leave line, under the switch tenure, and skipped as an existing member in the
+        // The member is below the tenure gate and skipped as an existing member in the
         // join pass, so nothing draws; posting the growth headline draws nothing either.
         await Service(enabled: true, new ScriptedRandom([], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
@@ -1839,6 +2089,21 @@ public sealed class CollectiveFundServiceTests : IDisposable
         await context.SaveChangesAsync();
 
         day.OpenedInCycleId = cycle.Id;
+        await context.SaveChangesAsync();
+        return cycle;
+    }
+
+    private async Task<MarketCycle> AddCycleToTradingDayAsync(int tradingDayId, int cycleNumber, int tradingCycleNumber)
+    {
+        var cycle = new MarketCycle
+        {
+            CycleNumber = cycleNumber,
+            TradingDayId = tradingDayId,
+            TradingCycleNumber = tradingCycleNumber,
+            Status = CycleStatus.Running,
+            StartedAt = DateTime.UtcNow,
+        };
+        context.MarketCycles.Add(cycle);
         await context.SaveChangesAsync();
         return cycle;
     }

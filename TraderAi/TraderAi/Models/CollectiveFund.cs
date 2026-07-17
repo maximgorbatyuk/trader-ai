@@ -47,10 +47,13 @@ public sealed class CollectiveFund
     // only starts decaying once this is more than the idle window of cycles behind the current cycle.
     public int? LastAdvertisedInCycleNumber { get; set; }
 
-    // Trading-day number on which the fund last returned a voluntary leaver's deposit. Only one member may
-    // voluntarily depart a fund per trading day, so any further leaver waits for a later day; administrative
-    // removals (capacity eviction, closure, market exit) ignore this and never set it.
+    // Trading day whose voluntary-leave quota is stored below. Keeping the snapshot on the fund makes the cap
+    // stable across every cycle and membership change within that day.
     public int? LastVoluntaryLeaveTradingDayNumber { get; set; }
+
+    public int VoluntaryLeaveQuota { get; set; }
+
+    public int VoluntaryLeavesUsed { get; set; }
 
     public ICollection<CollectiveFundParticipant> Members { get; set; } = new List<CollectiveFundParticipant>();
 }

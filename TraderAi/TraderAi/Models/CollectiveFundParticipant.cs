@@ -19,7 +19,7 @@ public sealed class CollectiveFundParticipant
     // Cash the member handed over on joining (90% of its balance then), returned in full when it leaves.
     public decimal DepositAmount { get; set; }
 
-    // Consecutive cycles the member has sat at or above the leave line; the leave chance ramps with it.
+    // Consecutive eligible cycles used to ramp the independent-leave chance.
     public int LeaveRampCycles { get; set; }
 
     // Retained for schema compatibility; leave eligibility now derives from the joined cycle's trading day.
@@ -27,4 +27,7 @@ public sealed class CollectiveFundParticipant
 
     // Set once the member has decided to leave but the fund has not yet freed enough cash to return the deposit.
     public bool IsLeaving { get; set; }
+
+    // Distinguishes a true exit from switching and administrative removal while a delayed fund wind-down finishes.
+    public bool IsIndependentExit { get; set; }
 }

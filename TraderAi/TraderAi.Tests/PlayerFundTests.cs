@@ -304,7 +304,7 @@ public sealed class PlayerFundTests : IDisposable
         await AddMembershipAsync(fund, existing, deposit: 50_000m, cycle.Id);
         var joiner = await AddTraderAsync(100_000m);
 
-        // The seated member sits below the leave line (no draw); the joiner's 0.0 lands in the join band.
+        // The seated member is below the tenure gate; the joiner's 0.0 lands in the join band.
         await FundService(new ScriptedRandom([0.0d], [])).ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 

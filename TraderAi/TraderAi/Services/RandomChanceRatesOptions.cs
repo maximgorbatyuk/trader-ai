@@ -25,7 +25,7 @@ public sealed class EventTriggerChances
     // Per-cycle chance a trader opens a new collective fund.
     public double FundOpen { get; set; } = 0.03;
 
-    // Base chance a fund member leaves; a temperament delta shifts it before it applies.
+    // Base chance a tenure-eligible fund member exits independently before any switch roll.
     public double FundLeaveBase { get; set; } = 0.20;
 
     // Ceiling on the member leave chance.

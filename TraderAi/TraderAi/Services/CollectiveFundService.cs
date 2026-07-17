@@ -18,16 +18,14 @@ public sealed class CollectiveFundService(
     LoanService loanService,
     Random random)
 {
-    // Candidates pool into a fund only while their cash sits below CollectiveFundOptions.JoinBalanceCeiling;
-    // members must leave once their own cash climbs back above this upper line.
-    private const decimal LeaveBalanceThreshold = 100_000_000m;
-
     // No fund may be created or joined during the market's opening stretch.
     private const int QuietCycles = 50;
 
-    // Once a member sits at or above the leave line its exit chance starts at the configured base and ramps each
-    // cycle to the configured cap.
+    // Once a member clears the tenure gate its exit chance starts at the configured base and ramps each cycle to
+    // the configured cap, regardless of its personal cash balance.
     private const double LeaveStepPerCycle = 0.02;
+
+    private const decimal DailyVoluntaryLeaveFraction = 0.15m;
 
     private const decimal ContributionFraction = 0.90m;
 
@@ -93,6 +91,7 @@ public sealed class CollectiveFundService(
     private Dictionary<int, PriceBandState> bandByCompany = null!;
     private Dictionary<(int ParticipantId, int CompanyId), int> available = null!;
     private Dictionary<int, int> tradingDayNumberByCycleId = null!;
+    private HashSet<int> independentExitsThisCycle = null!;
     private int currentTradingDayNumber;
 
     // Distinct dividend-payout cycle ids, most recent first (ids rise monotonically with cycles), and each fund
@@ -119,9 +118,8 @@ public sealed class CollectiveFundService(
     // Draw discipline for a scripted Random in tests: no draws while closing funds, returning deposits, ratcheting
     // peak worth, decaying advertised popularity, running the founder close, enforcing member capacity, detecting
     // fund growth, posting the growth newswire, or dropping a stale membership. In the member pass (fund id, then participant id order) each
-    // member draws at most once — the forced-leave roll if it sits at or above the leave line, otherwise the
-    // switch roll if it is a non-founder past the minimum trading-day tenure, otherwise nothing. In the join pass (independent
-    // traders, id order) a switch-flagged member draws nothing, and every other eligible trader draws once; that
+    // member draws once for an independent exit and, after a miss, at most once more for a non-founder switch.
+    // In the join pass (independent traders, id order) a switch-flagged member draws nothing, and every other eligible trader draws once; that
     // single draw both decides join-versus-open and, when it joins, positions the score-proportional fund pick.
     public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
     {
@@ -132,6 +130,7 @@ public sealed class CollectiveFundService(
 
         this.activeCrisis = activeCrisis;
         crisisCycleNumber = currentCycleNumber;
+        independentExitsThisCycle = [];
 
         await LoadStateAsync(currentCycleId);
 
@@ -142,6 +141,7 @@ public sealed class CollectiveFundService(
 
         foreach (var fund in funds.Where(fund => fund.Status == CollectiveFundStatus.Active).OrderBy(fund => fund.Id).ToList())
         {
+            PrepareVoluntaryLeaveQuota(fund);
             RatchetPeakNetWorth(fund);
             DecayPopularity(fund, currentCycleNumber);
 
@@ -187,9 +187,7 @@ public sealed class CollectiveFundService(
                     continue;
                 }
 
-                // A fund releases at most one voluntary leaver per trading day; once the day's leaver has been
-                // repaid, everyone else waits for a later day. Administrative removals above already bypass this.
-                if (VoluntaryLeaveUsedThisTradingDay(fund))
+                if (VoluntaryLeaveQuotaReached(fund))
                 {
                     continue;
                 }
@@ -203,11 +201,19 @@ public sealed class CollectiveFundService(
                     await MaybeDecideLeave(fund, membership, member, currentCycleId, now);
                 }
 
-                // A departure that actually completed drops the membership row; that spends the fund's single
-                // voluntary-leave slot for this trading day. A member merely flagged and still waiting does not.
-                if (currentTradingDayNumber > 0 && !membershipsByFundId[fund.Id].Contains(membership))
+                // A departure spends quota only after the membership row is removed. A member merely flagged and
+                // still waiting for its payout does not consume capacity, and administrative removals bypass this loop.
+                if (!membershipsByFundId[fund.Id].Contains(membership))
                 {
-                    fund.LastVoluntaryLeaveTradingDayNumber = currentTradingDayNumber;
+                    if (currentTradingDayNumber > 0)
+                    {
+                        fund.VoluntaryLeavesUsed++;
+                    }
+
+                    if (IsIndependentExit(membership, member))
+                    {
+                        independentExitsThisCycle.Add(member.Id);
+                    }
                 }
             }
         }
@@ -621,25 +627,20 @@ public sealed class CollectiveFundService(
             return;
         }
 
-        // A member that has grown rich graduates out of the fund on the ramping leave roll and does not come back.
-        if (member.CurrentBalance >= LeaveBalanceThreshold)
+        membership.LeaveRampCycles++;
+        var triggers = chanceRates.Value.EventTriggerChances;
+        var rampChance = Math.Min(
+            triggers.FundLeaveBase + (LeaveStepPerCycle * (membership.LeaveRampCycles - 1)),
+            triggers.FundLeaveMax);
+        if (random.NextDouble() < rampChance)
         {
-            membership.LeaveRampCycles++;
-            var triggers = chanceRates.Value.EventTriggerChances;
-            var rampChance = Math.Min(triggers.FundLeaveBase + (LeaveStepPerCycle * (membership.LeaveRampCycles - 1)), triggers.FundLeaveMax);
-            if (random.NextDouble() >= rampChance)
-            {
-                return;
-            }
-
+            membership.IsIndependentExit = true;
             membership.IsLeaving = true;
             await AdvanceLeave(fund, membership, member, currentCycleId, now);
             return;
         }
 
-        membership.LeaveRampCycles = 0;
-
-        // Founders stay put; everyone else past the minimum trading-day tenure may roll to chase a better fund.
+        // Founders do not switch funds; everyone else may chase a better fund after its independent-exit roll misses.
         if (member.Id == fund.FoundedByParticipantId)
         {
             return;
@@ -651,6 +652,7 @@ public sealed class CollectiveFundService(
         }
 
         member.PendingFundSwitch = true;
+        membership.IsIndependentExit = false;
         membership.IsLeaving = true;
         await AdvanceLeave(fund, membership, member, currentCycleId, now);
     }
@@ -674,10 +676,37 @@ public sealed class CollectiveFundService(
         return Math.Max(0, currentTradingDayNumber - joinedTradingDayNumber);
     }
 
-    // True once this fund has already repaid a voluntary leaver on the current trading day. Inert when trading
-    // days are not tracked (day number zero), so the throttle never blocks in that setup.
-    private bool VoluntaryLeaveUsedThisTradingDay(CollectiveFund fund) =>
-        currentTradingDayNumber > 0 && fund.LastVoluntaryLeaveTradingDayNumber == currentTradingDayNumber;
+    private void PrepareVoluntaryLeaveQuota(CollectiveFund fund)
+    {
+        if (currentTradingDayNumber <= 0)
+        {
+            return;
+        }
+
+        var memberCount = membershipsByFundId[fund.Id].Count;
+        var quota = memberCount > 0
+            ? Math.Max(1, (int)Math.Ceiling(memberCount * DailyVoluntaryLeaveFraction))
+            : 0;
+        if (fund.LastVoluntaryLeaveTradingDayNumber != currentTradingDayNumber)
+        {
+            fund.LastVoluntaryLeaveTradingDayNumber = currentTradingDayNumber;
+            fund.VoluntaryLeaveQuota = quota;
+            fund.VoluntaryLeavesUsed = 0;
+            return;
+        }
+
+        // A same-day marker with no quota comes from the one-exit schema. Preserve that completed departure when
+        // the upgraded fund initializes its new daily snapshot.
+        if (fund.VoluntaryLeaveQuota == 0 && quota > 0)
+        {
+            fund.VoluntaryLeaveQuota = quota;
+            fund.VoluntaryLeavesUsed = 1;
+        }
+    }
+
+    // Trading-day-less test setups preserve the previous uncapped behavior because no stable daily boundary exists.
+    private bool VoluntaryLeaveQuotaReached(CollectiveFund fund) =>
+        currentTradingDayNumber > 0 && fund.VoluntaryLeavesUsed >= fund.VoluntaryLeaveQuota;
 
     private void PrepareForNextTradingDayLeave(CollectiveFund fund, int currentCycleId, DateTime now)
     {
@@ -866,6 +895,7 @@ public sealed class CollectiveFundService(
         }
 
         newest.IsLeaving = true;
+        newest.IsIndependentExit = false;
         await AdvanceLeave(fund, newest, member, currentCycleId, now);
     }
 
@@ -1099,6 +1129,11 @@ public sealed class CollectiveFundService(
                     member.PendingFundLossExitRoll = true;
                 }
 
+                if (IsIndependentExit(membership, member))
+                {
+                    independentExitsThisCycle.Add(member.Id);
+                }
+
                 RemoveMembership(fund, membership);
             }
         }
@@ -1137,6 +1172,11 @@ public sealed class CollectiveFundService(
 
     private async Task MaybeJoinOrOpenAsync(Participant participant, int currentCycleId, int currentCycleNumber, DateTime now)
     {
+        if (independentExitsThisCycle.Contains(participant.Id))
+        {
+            return;
+        }
+
         // A member that left to chase a better fund waits, flag still set, until its old membership is fully wound
         // up; once free it lands in the best available fund with no cash ceiling and no roll, then the flag clears.
         if (participant.PendingFundSwitch)
@@ -1227,6 +1267,7 @@ public sealed class CollectiveFundService(
         membershipsByFundId[fund.Id] = [];
 
         JoinFund(fund, fundParticipant, founder, currentCycleId, now);
+        PrepareVoluntaryLeaveQuota(fund);
     }
 
     private void JoinFund(CollectiveFund fund, Participant fundParticipant, Participant member, int currentCycleId, DateTime now)
@@ -1261,6 +1302,7 @@ public sealed class CollectiveFundService(
             DepositAmount = deposit,
             LeaveRampCycles = 0,
             IsLeaving = false,
+            IsIndependentExit = false,
         };
         dbContext.CollectiveFundParticipants.Add(membership);
         membershipByParticipantId[member.Id] = membership;
@@ -1401,6 +1443,10 @@ public sealed class CollectiveFundService(
         membershipByParticipantId.Remove(membership.ParticipantId);
         membershipsByFundId[fund.Id].Remove(membership);
     }
+
+    private static bool IsIndependentExit(CollectiveFundParticipant membership, Participant member) =>
+        membership.IsIndependentExit
+        || (membership.IsLeaving && !member.PendingFundSwitch && membership.LeaveRampCycles > 0);
 
     private void AddFundTransaction(int participantId, decimal amount, int currentCycleId, DateTime now, int? fromWhomId, string description) =>
         dbContext.MoneyTransactions.Add(new MoneyTransaction

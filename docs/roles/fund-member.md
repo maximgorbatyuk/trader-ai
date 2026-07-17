@@ -17,10 +17,10 @@ A Fund Member is an Individual or AI Agent while it belongs to a Collective Fund
 - A member receives its share of the fund's dividend pass-through, divided by deposit size and net of some fund management fee.
 - A member also receives ordinary dividends on any shares it still personally holds.
 - A member cannot voluntarily leave during its first seven trading days in the fund. A member that joins on Day N first becomes eligible on Day N+7; intraday cycles, breaks, and market pauses do not shorten that period.
-- A wealthy member may start leaving after that safe period once its own cash balance crosses the leave threshold. Its chance to leave rises the longer it stays above that line.
+- After the safe period, a member may leave at any personal cash balance. Its chance to leave rises with each eligible cycle until it reaches the configured cap.
 - On ordinary leave, the fund returns the member's full deposit the same cycle. If the fund is short on cash, it borrows the shortfall to pay in full rather than making the member wait for share sales.
 - A non-founder member can switch to a stronger fund after the seven-trading-day safe period. Aggressive members switch more readily, conservative members less readily.
-- Even when several members are ready to leave the same fund, only one of them departs per trading day; the rest wait for a later day. The limit covers both an ordinary leave and a switch to another fund, but not administrative removals such as fund closure or capacity enforcement.
+- A fund snapshots its daily voluntary-departure quota from its member count at the start of the trading day: 15%, rounded up so a non-empty fund can release at least one member. Ordinary leaves and switches consume the quota; administrative removals such as fund closure or capacity enforcement do not.
 - A founder does not switch away from the fund it opened.
 - A switching member joins the best available fund once its old membership is settled, even if its returned cash would normally put it over the join limit.
 - If a closing fund returns only a small fraction of a member's deposit, that member gets one later chance to leave the market after it is shareless and out of any fund.
