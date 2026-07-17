@@ -11,7 +11,7 @@ public sealed class AiTraderCallServiceTests : IDisposable
     private const int MaxOrders = 10;
 
     private const string ValidDecision =
-        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"orders\":[{\"side\":\"Buy\",\"companyId\":1,\"quantity\":2,\"limitPrice\":3,\"reason\":\"r\"}]}";
+        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":1,\"quantity\":2,\"limitPrice\":3,\"reason\":\"r\"}]}";
 
     private readonly SqliteConnection connection;
     private readonly AppDbContext context;
@@ -168,6 +168,7 @@ public sealed class AiTraderCallServiceTests : IDisposable
 
         Assert.NotNull(decision);
         Assert.Empty(decision!.CancelOrderIds);
+        Assert.Null(decision.BigInvestment);
     }
 
     [Fact]

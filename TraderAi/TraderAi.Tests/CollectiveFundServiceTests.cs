@@ -109,6 +109,20 @@ public sealed class CollectiveFundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AiAgentDoesNotAutomaticallyOpenFund()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        await AddTraderAsync(currentBalance: 100_000m, type: ParticipantType.AIAgent);
+
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(0, await context.CollectiveFunds.CountAsync());
+        Assert.Equal(0, await context.CollectiveFundParticipants.CountAsync());
+    }
+
+    [Fact]
     public async Task NewFundSnapshotsItsQuotaBeforeSameCycleJoinersArrive()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m, tradingDayNumber: 20);
@@ -181,6 +195,48 @@ public sealed class CollectiveFundServiceTests : IDisposable
 
         var refreshedFund = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fundParticipant.Id);
         Assert.Equal(140_000m, refreshedFund.CurrentBalance);
+    }
+
+    [Fact]
+    public async Task AiAgentDoesNotAutomaticallyJoinExistingFund()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, _) = await AddFundAsync(balance: 50_000m);
+        var existing = await AddTraderAsync(currentBalance: 10_000m);
+        await AddMembershipAsync(fund, existing, deposit: 50_000m, cycle.Id);
+        var aiAgent = await AddTraderAsync(currentBalance: 100_000m, type: ParticipantType.AIAgent);
+
+        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.False(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == aiAgent.Id));
+        Assert.Equal(1, await context.CollectiveFundParticipants.CountAsync(member => member.CollectiveFundId == fund.Id));
+    }
+
+    [Fact]
+    public async Task AiAgentDoesNotAutomaticallyLeaveToSwitchFunds()
+    {
+        var (_, cycle, _) = await SeedAsync(price: 100m);
+        var (fund, _) = await AddFundAsync(balance: 300_000m);
+        var aiAgent = await AddTraderAsync(currentBalance: 10_000m, type: ParticipantType.AIAgent);
+        await AddMembershipAsync(fund, aiAgent, deposit: 100_000m, cycle.Id);
+        for (var index = 0; index < 2; index++)
+        {
+            var member = await AddTraderAsync(currentBalance: 10_000m);
+            await AddMembershipAsync(fund, member, deposit: 100_000m, cycle.Id);
+        }
+
+        await Service(
+                enabled: true,
+                new ScriptedRandom([1.0d, 0.0d, 1.0d, 1.0d, 1.0d, 1.0d], []),
+                minimumMembershipTradingDays: 0)
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.True(await context.CollectiveFundParticipants.AnyAsync(member => member.ParticipantId == aiAgent.Id));
+        Assert.False((await context.Participants.AsNoTracking()
+            .SingleAsync(participant => participant.Id == aiAgent.Id)).PendingFundSwitch);
     }
 
     [Fact]
@@ -2114,12 +2170,13 @@ public sealed class CollectiveFundServiceTests : IDisposable
         decimal reserved = 0m,
         Temperament temperament = Temperament.Balanced,
         RiskProfile riskProfile = RiskProfile.Medium,
-        bool pendingFundSwitch = false)
+        bool pendingFundSwitch = false,
+        ParticipantType type = ParticipantType.Individual)
     {
         var trader = new Participant
         {
             Name = "Trader",
-            Type = ParticipantType.Individual,
+            Type = type,
             Temperament = temperament,
             RiskProfile = riskProfile,
             InitialBalance = currentBalance,

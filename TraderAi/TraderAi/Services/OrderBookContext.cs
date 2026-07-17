@@ -41,7 +41,16 @@ public sealed record AiCancellationApplicationResult(
     bool Applied,
     string? RejectionReason);
 
+public sealed record AiBigInvestmentApplicationResult(
+    int CompanyId,
+    decimal Amount,
+    string Reason,
+    bool Applied,
+    int SharesMinted,
+    string? RejectionReason);
+
 public sealed record AiDecisionApplicationResult(
     bool ConfigurationStillCurrent,
     AiCancellationApplicationResult[] Cancellations,
-    AiOrderApplicationResult[] Orders);
+    AiOrderApplicationResult[] Orders,
+    AiBigInvestmentApplicationResult? BigInvestment = null);

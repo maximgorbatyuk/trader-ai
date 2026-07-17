@@ -22,6 +22,7 @@ import { maintenanceStanding } from './marginModel'
 import { FavoriteCompaniesTable } from './FavoriteCompaniesTable'
 import { favoriteCompanies } from './favoriteCompanies'
 import { CompanyModal } from './CompanyModal'
+import { ParticipantActions } from './ParticipantActions'
 
 const POLL_INTERVAL_MS = 2500
 const WORTH_HISTORY_POINTS = 64
@@ -39,7 +40,7 @@ function fundStatusClass(status) {
 // The trader detail block: a compact identity bar above tabbed sections (worth chart, holdings, orders, trades,
 // cash, investments, loans, margin, profile, and the conditional automation/members/favorites tabs). Owns its
 // own polling keyed on participantId and is shared by the Trader, Player-stats, and Fund-stats pages.
-export function ParticipantDetail({ participantId, showFavoriteCompanies = false }) {
+export function ParticipantDetail({ participantId, showFavoriteCompanies = false, showOperatorActions = false }) {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [detail, setDetail] = useState(null)
@@ -225,6 +226,9 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
               {detail.aiModel ? <span className="tag">{detail.aiModel}</span> : null}
               {detail.aiStatus ? <span className="tag">{detail.aiStatus}</span> : null}
             </p>
+          ) : null}
+          {showOperatorActions ? (
+            <ParticipantActions participant={detail} onChanged={loadAll} />
           ) : null}
         </div>
         <dl className="statbar">

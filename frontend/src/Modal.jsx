@@ -1,24 +1,23 @@
 import { useEffect, useRef } from 'react'
 
-// A minimal dialog shell: backdrop, centered card, Escape to close, body scroll lock, focus moved into the
-// dialog on open and restored to the trigger on close, and a Tab focus trap. The larger content dialogs
-// predate this and keep their own shells; new compact dialogs share this one.
-export function Modal({ titleId, className, onClose, children }) {
+// Dismissal stays configurable because required setup flows must retain the shared focus trap and scroll lock
+// without allowing Escape or backdrop clicks to bypass completion.
+export function Modal({ titleId, className, onClose, children, dismissible = true }) {
   const dialogRef = useRef(null)
 
   useEffect(() => {
     function onKeyDown(event) {
-      if (event.key === 'Escape') onClose()
+      if (dismissible && event.key === 'Escape') onClose?.()
     }
 
-    document.addEventListener('keydown', onKeyDown)
+    if (dismissible) document.addEventListener('keydown', onKeyDown)
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     return () => {
-      document.removeEventListener('keydown', onKeyDown)
+      if (dismissible) document.removeEventListener('keydown', onKeyDown)
       document.body.style.overflow = previousOverflow
     }
-  }, [onClose])
+  }, [dismissible, onClose])
 
   // Move focus into the dialog on open and restore it to the trigger on close.
   useEffect(() => {
@@ -30,8 +29,8 @@ export function Modal({ titleId, className, onClose, children }) {
   }, [])
 
   function onBackdropClick(event) {
-    if (event.target === event.currentTarget) {
-      onClose()
+    if (dismissible && event.target === event.currentTarget) {
+      onClose?.()
     }
   }
 
@@ -60,7 +59,11 @@ export function Modal({ titleId, className, onClose, children }) {
   }
 
   return (
-    <div className="modal-backdrop" onClick={onBackdropClick}>
+    <div
+      className="modal-backdrop"
+      data-dismissible={dismissible}
+      onClick={dismissible ? onBackdropClick : undefined}
+    >
       <div
         className={`modal${className ? ` ${className}` : ''}`}
         role="dialog"

@@ -1,14 +1,9 @@
-// Pure helpers for the AI-trader automation UI. These hold the client-side rules for provider/model/key entry
-// and formatting; the backend remains authoritative for validation. Nothing here evaluates or renders HTML.
+// Pure helpers for the AI-trader automation UI. These hold the client-side rules for provider and model entry
+// and formatting; the backend remains authoritative for validation. The connection key is a per-provider setting
+// and is not entered here. Nothing here evaluates or renders HTML.
 
 function isNonBlank(value) {
   return typeof value === 'string' && value.trim().length > 0
-}
-
-// A new key is required for a first conversion or whenever the provider changes; changing only the model on the
-// same provider reuses the stored key.
-export function requiresNewApiKey(state) {
-  return !state.originalProviderId || state.providerId !== state.originalProviderId
 }
 
 export function validateAutomation(state) {
@@ -28,10 +23,6 @@ export function validateAutomation(state) {
     return { valid: false, error: 'Enter a model name.' }
   }
 
-  if (requiresNewApiKey(state) && !isNonBlank(state.apiKey)) {
-    return { valid: false, error: 'Enter an API key.' }
-  }
-
   if (state.maxDecisions !== undefined && state.maxDecisions !== null) {
     const maxDecisions = Number(state.maxDecisions)
     if (!Number.isInteger(maxDecisions) || maxDecisions < 1) {
@@ -48,9 +39,6 @@ export function automationPayload(state) {
   }
 
   const payload = { type: 'AIAgent', providerId: state.providerId, model: state.model }
-  if (isNonBlank(state.apiKey)) {
-    payload.apiKey = state.apiKey
-  }
   const maxDecisions = Number(state.maxDecisions)
   if (state.maxDecisions !== undefined && state.maxDecisions !== null && state.maxDecisions !== ''
     && Number.isInteger(maxDecisions) && maxDecisions >= 1) {
@@ -60,11 +48,7 @@ export function automationPayload(state) {
 }
 
 export function testRequestPayload(state) {
-  const payload = { providerId: state.providerId, model: state.model }
-  if (isNonBlank(state.apiKey)) {
-    payload.apiKey = state.apiKey
-  }
-  return payload
+  return { providerId: state.providerId, model: state.model }
 }
 
 export function formatProviderLabel(providerLabel) {
@@ -145,17 +129,34 @@ function extractThinking(response) {
   return match ? match[1].trim() : ''
 }
 
-export function parseAiCallPresentation(responseBody, decisionJson) {
+export function parseAiCallPresentation(responseBody, decisionJson, applicationResultJson) {
   const response = parseStoredObject(responseBody)
   const decision = parseStoredObject(decisionJson)
+  const application = parseStoredObject(applicationResultJson)
   const orders = Array.isArray(decision?.orders)
     ? decision.orders.filter((order) => order && typeof order === 'object'
       && Number.isInteger(order.companyId) && order.companyId > 0)
     : []
+  const investment = decision?.bigInvestment
+  const bigInvestment = investment && typeof investment === 'object'
+    && Number.isInteger(investment.companyId) && investment.companyId > 0
+    && typeof investment.amount === 'number' && Number.isFinite(investment.amount) && investment.amount > 0
+      ? investment
+      : null
+  const investmentApplication = application?.bigInvestment
+  const bigInvestmentApplication = investmentApplication && typeof investmentApplication === 'object'
+    && Number.isInteger(investmentApplication.companyId) && investmentApplication.companyId > 0
+    && typeof investmentApplication.amount === 'number' && Number.isFinite(investmentApplication.amount)
+    && typeof investmentApplication.applied === 'boolean'
+    && Number.isInteger(investmentApplication.sharesMinted) && investmentApplication.sharesMinted >= 0
+      ? investmentApplication
+      : null
 
   return {
     thinking: extractThinking(response),
     summary: typeof decision?.summary === 'string' ? decision.summary : '',
     orders,
+    bigInvestment,
+    bigInvestmentApplication,
   }
 }

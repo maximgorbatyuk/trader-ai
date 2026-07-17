@@ -8,11 +8,16 @@ namespace TraderAi.Services;
 public sealed record AiTradeDecision
 {
     [JsonConstructor]
-    public AiTradeDecision(string summary, AiTradeOrderDecision[] orders, int[]? cancelOrderIds = null)
+    public AiTradeDecision(
+        string summary,
+        AiTradeOrderDecision[] orders,
+        int[]? cancelOrderIds = null,
+        AiBigInvestmentDecision? bigInvestment = null)
     {
         Summary = summary;
         Orders = orders;
         CancelOrderIds = cancelOrderIds ?? [];
+        BigInvestment = bigInvestment;
     }
 
     [JsonPropertyName("summary")]
@@ -23,7 +28,15 @@ public sealed record AiTradeDecision
 
     [JsonPropertyName("cancelOrderIds")]
     public int[] CancelOrderIds { get; init; }
+
+    [JsonPropertyName("bigInvestment")]
+    public AiBigInvestmentDecision? BigInvestment { get; init; }
 }
+
+public sealed record AiBigInvestmentDecision(
+    [property: JsonPropertyName("companyId")] int CompanyId,
+    [property: JsonPropertyName("amount")] decimal Amount,
+    [property: JsonPropertyName("reason")] string Reason);
 
 public sealed record AiTradeOrderDecision(
     [property: JsonPropertyName("side")] OrderType Side,

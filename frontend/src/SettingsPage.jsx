@@ -349,6 +349,19 @@ function SettingInput({ setting, id, value, disabled, invalid, errorId, onChange
       />
     )
   }
+  if (setting.valueType === 'Secret') {
+    return (
+      <input
+        {...common}
+        className="select settings-input"
+        type="password"
+        autoComplete="off"
+        value={value ?? ''}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={setting.hasValue ? 'Configured — enter a new key to replace it' : 'Not set — enter the API key'}
+      />
+    )
+  }
   return (
     <input
       {...common}

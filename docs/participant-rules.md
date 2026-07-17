@@ -9,7 +9,7 @@ Participants are the actors that can hold cash, reserve cash for buy orders, own
 - [Player](roles/player.md) - human-controlled trader.
 - [Company](roles/company.md) - share issuer and listed asset.
 - [Collective Fund](roles/collective-fund.md) - pooled automated trader.
-- [Fund Member](roles/fund-member.md) - Individual or AI Agent while it belongs to a fund.
+- [Fund Member](roles/fund-member.md) - an Individual, or a retained AI Agent membership, while it belongs to a fund.
 
 ## Shared Rules
 

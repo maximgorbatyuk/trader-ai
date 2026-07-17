@@ -129,10 +129,6 @@ namespace TraderAi.Migrations
                     b.Property<int>("ParticipantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<string>("ApiKey")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 

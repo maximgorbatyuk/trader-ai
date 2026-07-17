@@ -1091,6 +1091,22 @@
   cursor: not-allowed;
 }
 
+.actions-menu-danger {
+  color: var(--down-text);
+}
+
+.participant-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.participant-action-status {
+  margin: var(--s-1) 0 0;
+  color: var(--muted);
+  font-size: var(--t-xs);
+}
+
 /* The action dialogs hold compact forms, so they run narrower than the shared modal width. */
 .modal-action {
   width: min(560px, 100%);
@@ -1203,6 +1219,17 @@
 .btn-primary:hover:not(:disabled) {
   background: var(--ink-hover);
   border-color: var(--ink-hover);
+}
+
+.btn-danger {
+  border-color: var(--down-text);
+  background: var(--down-soft);
+  color: var(--down-text);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--down-soft) 70%, var(--surface));
+  border-color: var(--down-text);
 }
 
 .btn-reset {
@@ -1953,6 +1980,23 @@
   background: oklch(0.23 0.014 255);
 }
 
+.market-map-empty {
+  display: grid;
+  min-height: 240px;
+  height: min(50vh, 440px);
+  place-items: center;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+}
+
+.market-map-empty span {
+  color: var(--muted);
+  font-size: 3rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
 /* On the dashboard the map shares the viewport with the fund header, tab strip, filters, and news, so cap it to
    the space left below that fixed chrome; the aspect-ratio height wins on normal screens and this only engages
    on short or ultrawide viewports where the map would otherwise force a page scroll. The tiles are percentage
@@ -2542,6 +2586,10 @@
   border-radius: var(--radius);
 }
 
+.player-onboarding-map {
+  min-width: 0;
+}
+
 .player-panel-head {
   display: flex;
   align-items: flex-start;
@@ -3055,6 +3103,13 @@
   font-weight: 700;
 }
 
+.ai-big-investment {
+  padding: var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
 .modal-section {
   display: flex;
   flex-direction: column;
@@ -3144,6 +3199,108 @@
   from {
     opacity: 0;
     transform: translateY(8px);
+  }
+}
+
+/* The introduction stays compact enough to keep the market legible behind it while preserving comfortable
+   reading width for the rules and setup choices. */
+.modal-onboarding {
+  width: min(720px, 100%);
+  max-height: min(90vh, 720px);
+}
+
+.onboarding-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 180px);
+  align-items: end;
+  gap: var(--s-3) var(--s-5);
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.onboarding-head h2 {
+  margin: var(--s-1) 0 0;
+  color: var(--ink);
+  font-size: var(--t-xl);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.onboarding-progress-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+
+.onboarding-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+}
+
+.onboarding-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ink);
+}
+
+.onboarding-copy {
+  max-width: 70ch;
+}
+
+.onboarding-copy > p {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--t-base);
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.onboarding-list {
+  margin: var(--s-4) 0 0;
+  padding-left: var(--s-5);
+  color: var(--text);
+  font-size: var(--t-sm);
+  line-height: 1.6;
+}
+
+.onboarding-list li + li {
+  margin-top: var(--s-2);
+}
+
+.onboarding-list li::marker {
+  color: var(--ink);
+}
+
+.onboarding-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.onboarding-actions {
+  justify-content: space-between;
+}
+
+.onboarding-actions .btn {
+  min-width: 112px;
+}
+
+@media (max-width: 640px) {
+  .market-map-empty span {
+    font-size: 2.25rem;
+  }
+
+  .onboarding-head {
+    grid-template-columns: 1fr;
+  }
+
+  .onboarding-actions .btn {
+    min-width: 0;
   }
 }
 

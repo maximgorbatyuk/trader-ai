@@ -10,7 +10,7 @@ function TraderDetailPage() {
 
   return (
     <main className="main main-fill">
-      <ParticipantDetail key={participantId} participantId={participantId} />
+      <ParticipantDetail key={participantId} participantId={participantId} showOperatorActions />
     </main>
   )
 }

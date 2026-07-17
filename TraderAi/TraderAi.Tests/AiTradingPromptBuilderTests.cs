@@ -61,6 +61,17 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Assert.Contains("at most 10 unique order IDs", system);
         Assert.Contains("rejected", system);
         Assert.Contains("\"summary\"", system);
+        Assert.Contains("\"bigInvestment\"", system);
+        Assert.Contains("Cancellations are applied first, then bigInvestment, then orders", system);
+        Assert.Contains("bigInvestmentOpportunities", system);
+        Assert.Contains("exact amount", system);
+        Assert.Contains("Big Investment strategy:", system);
+        Assert.Contains("longer-term return opportunity", system);
+        Assert.Contains("capitalisation", system);
+        Assert.Contains("larger dividends", system);
+        Assert.Contains("more attractive to other traders", system);
+        Assert.Contains("sell the shares later at a higher price", system);
+        Assert.Contains("potential outcomes, not guarantees", system);
         Assert.Contains("\"orders\"", system);
         foreach (var document in CoreDocuments)
         {
@@ -93,6 +104,8 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
 
         Assert.Contains("final decision", planning.SystemMessage);
         Assert.Contains("next trading day", planning.SystemMessage);
+        Assert.Contains("big investment", planning.SystemMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("re-checked", planning.SystemMessage);
         Assert.Contains("sitting out the open", planning.SystemMessage);
         Assert.DoesNotContain("final decision", ordinary.SystemMessage);
         Assert.NotEqual(ordinary.SystemMessageHash, planning.SystemMessageHash);
@@ -172,7 +185,8 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         OrderBook: new AiOrderBookSnapshot([], []),
         CapitalizationHistory: [],
         SentimentHistory: [],
-        RecentApplicationFeedback: []);
+        RecentApplicationFeedback: [],
+        BigInvestmentOpportunities: []);
 
     public void Dispose()
     {

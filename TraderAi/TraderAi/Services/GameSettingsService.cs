@@ -80,6 +80,7 @@ public sealed class GameSettingsService(
         {
             var knownDefinitions = definitions.ToDictionary(definition => definition.Key, StringComparer.Ordinal);
             var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+            var effectiveChanges = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
             foreach (var (key, value) in changes)
             {
                 if (!knownDefinitions.TryGetValue(key, out var definition))
@@ -88,11 +89,21 @@ public sealed class GameSettingsService(
                     continue;
                 }
 
+                // A blank secret means "keep the stored value" rather than clearing it, so it is neither validated
+                // nor persisted; a client only submits a secret when the operator types a replacement.
+                if (definition.ValueType == GameSettingValueType.Secret && IsBlankValue(value))
+                {
+                    continue;
+                }
+
                 var error = ValidateValue(definition, value);
                 if (error is not null)
                 {
                     errors[key] = [error];
+                    continue;
                 }
+
+                effectiveChanges[key] = value;
             }
 
             if (errors.Count > 0)
@@ -108,7 +119,7 @@ public sealed class GameSettingsService(
                 row => row.Key,
                 row => row.Value.ValueJson,
                 StringComparer.Ordinal);
-            foreach (var (key, value) in changes)
+            foreach (var (key, value) in effectiveChanges)
             {
                 candidateValues[key] = value.GetRawText();
             }
@@ -116,7 +127,7 @@ public sealed class GameSettingsService(
             var candidateSnapshot = BuildSnapshot(candidateValues);
             ValidateSnapshot(candidateSnapshot);
 
-            foreach (var (key, value) in changes)
+            foreach (var (key, value) in effectiveChanges)
             {
                 if (!rows.TryGetValue(key, out var row))
                 {
@@ -163,6 +174,9 @@ public sealed class GameSettingsService(
             GameSettingValueType.Decimal when value.ValueKind != JsonValueKind.Number || !value.TryGetDecimal(out _)
                 => "Enter a number.",
             GameSettingValueType.Text or GameSettingValueType.MultilineText
+                when value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())
+                => "Enter a value.",
+            GameSettingValueType.Secret
                 when value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())
                 => "Enter a value.",
             GameSettingValueType.Url when value.ValueKind != JsonValueKind.String
@@ -406,6 +420,10 @@ public sealed class GameSettingsService(
             && minimum is >= 0d and <= 1d
             && maximum is >= 0d and <= 1d
             && minimum <= maximum;
+
+    private static bool IsBlankValue(JsonElement value)
+        => value.ValueKind is JsonValueKind.Null
+            || (value.ValueKind == JsonValueKind.String && string.IsNullOrWhiteSpace(value.GetString()));
 
     private static JsonElement ParseJsonValue(string valueJson)
     {

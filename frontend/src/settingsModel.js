@@ -50,6 +50,12 @@ export function buildSettingsUpdate(settings, drafts, dirtyKeys) {
         .split('\n')
         .map((value) => value.trim())
         .filter(Boolean)
+    } else if (setting.valueType === 'Secret') {
+      // A blank secret means "keep the stored key", so it is never submitted; only a typed replacement is sent.
+      const trimmed = String(draft ?? '').trim()
+      if (trimmed) {
+        values[setting.key] = trimmed
+      }
     } else {
       values[setting.key] = String(draft).trim()
     }

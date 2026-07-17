@@ -72,6 +72,42 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.Equal(35, company1CapPoints.Max(point => point.CycleNumber));
 
         Assert.Equal(30, snapshot.SentimentHistory.Count(point => point.IndustryId == seed.Industry1Id));
+        Assert.Empty(snapshot.BigInvestmentOpportunities);
+    }
+
+    [Fact]
+    public async Task SnapshotListsBigInvestmentBoundsUsingTransferableSettledCash()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var participant = await context.Participants.SingleAsync(candidate => candidate.Id == seed.AiParticipantId);
+        participant.CurrentBalance = 100_000m;
+        participant.SettledCashBalance = 80_000m;
+        participant.ReservedBalance = 10_000m;
+        await context.SaveChangesAsync();
+
+        var snapshot = await Builder().BuildAsync(seed.AiParticipantId);
+
+        var opportunity = snapshot!.BigInvestmentOpportunities
+            .Single(candidate => candidate.CompanyId == seed.Company1Id);
+        Assert.Equal("Acme", opportunity.CompanyName);
+        Assert.Equal(135m, opportunity.CurrentPrice);
+        Assert.Equal(135_000m, opportunity.Capitalization);
+        Assert.Equal(54_000m, opportunity.MinimumAmount);
+        Assert.Equal(80_000m, opportunity.MaximumAmount);
+    }
+
+    [Fact]
+    public async Task DisabledBigInvestmentDoesNotAdvertiseOpportunities()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var participant = await context.Participants.SingleAsync(candidate => candidate.Id == seed.AiParticipantId);
+        participant.CurrentBalance = 100_000m;
+        participant.SettledCashBalance = 100_000m;
+        await context.SaveChangesAsync();
+
+        var snapshot = await Builder(bigInvestmentEnabled: false).BuildAsync(seed.AiParticipantId);
+
+        Assert.Empty(snapshot!.BigInvestmentOpportunities);
     }
 
     [Fact]
@@ -116,6 +152,7 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.Equal(0m, snapshot.Participant.BuyingPower);
         var holding = Assert.Single(snapshot.Participant.Holdings);
         Assert.Equal(5, holding.SettledQuantity);
+        Assert.Empty(snapshot.BigInvestmentOpportunities);
     }
 
     [Fact]
@@ -151,7 +188,7 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
                 PromptHash = "hash",
                 RequestJson = "{}",
                 ApplicationResultJson =
-                    "{\"configurationStillCurrent\":true,\"cancellations\":[{\"applied\":false,\"rejectionReason\":\"Order is already closed.\"}],\"orders\":[{\"applied\":false,\"rejectionReason\":\"Quantity exceeds the current envelope.\"}]}",
+                    "{\"configurationStillCurrent\":true,\"cancellations\":[{\"applied\":false,\"rejectionReason\":\"Order is already closed.\"}],\"orders\":[{\"applied\":false,\"rejectionReason\":\"Quantity exceeds the current envelope.\"}],\"bigInvestment\":{\"applied\":false,\"rejectionReason\":\"Investment opportunity expired.\"}}",
                 Status = AiTraderCallStatus.Completed,
                 RequestedAt = DateTime.UtcNow,
             },
@@ -194,6 +231,7 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.Equal(35, feedback.SnapshotCycleNumber);
         Assert.Contains("Quantity exceeds the current envelope.", feedback.RejectionReasons);
         Assert.Contains("Order is already closed.", feedback.RejectionReasons);
+        Assert.Contains("Investment opportunity expired.", feedback.RejectionReasons);
         Assert.DoesNotContain(snapshot.RecentApplicationFeedback,
             item => item.RejectionReasons.Contains("Other participant error."));
     }
@@ -409,7 +447,7 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.True(company.BuyEnvelope.IsPassive);
     }
 
-    private AiMarketSnapshotBuilder Builder() => new(
+    private AiMarketSnapshotBuilder Builder(bool bigInvestmentEnabled = true) => new(
         context,
         new MarginService(context, Options.Create(new MarginOptions { Enabled = false })),
         new TradingClockService(context, Options.Create(new TradingClockOptions
@@ -423,6 +461,8 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Options.Create(new SettlementOptions { SettlementLagTradingDays = 1 }),
         Options.Create(new MarginOptions { Enabled = false }),
         Options.Create(new VolatilityHaltOptions()),
+        Options.Create(new BigInvestmentOptions { Enabled = bigInvestmentEnabled }),
+        Options.Create(new RandomChanceRatesOptions()),
         new AutomatedBuyOrderPolicy(Options.Create(new AutomatedTradingOptions())));
 
     private async Task<MarketSeed> SeedPriorityCeilingScenarioAsync(bool includeResidualAsk)

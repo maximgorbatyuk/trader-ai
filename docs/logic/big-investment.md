@@ -6,8 +6,9 @@ the order book.
 
 ## Rules
 
-- Any active Individual, AI Agent, or Collective Fund can be an automated investor; the human player invests only
-  through the manual action, never through the automated roll.
+- Any active Individual or Collective Fund can be selected by the automated roll; AI Agents and the human player
+  are excluded from it. An AI Agent can invest only through an explicit provider decision when its current market
+  snapshot advertises an eligible opportunity, while the human player invests only through the manual action.
 - On an ordinary cycle, the market has a single base chance that one deal happens. When it fires, one eligible
   investor and company are chosen.
 - An Extra raised-expectations rating gives that company one targeted investment opportunity on the following

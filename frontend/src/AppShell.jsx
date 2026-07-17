@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { Navigate, NavLink, Outlet, useLocation } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt, formatMoney, formatSigned, toneOf } from './format'
 import { TopBar } from './Chrome'
+import { PlayerOnboarding } from './PlayerOnboarding'
+import { loadShellSnapshot } from './appShellModel'
 import { createTradingClock, formatTradingClock, interpolateTradingClock, shouldKeepTradingClock } from './tradingClock'
 
 const SHELL_POLL_INTERVAL_MS = 1500
@@ -70,6 +72,7 @@ function SidebarChangeStat({ label, value }) {
 // shell owns the market poll and the Start/Pause/Reset actions so the navbar can drive them on every page;
 // pages read the market state and actions through the outlet context.
 export function AppShell() {
+  const location = useLocation()
   const [player, setPlayer] = useState(null)
   const [market, setMarket] = useState(null)
   const [connected, setConnected] = useState(false)
@@ -84,7 +87,7 @@ export function AppShell() {
 
   const load = useCallback(async () => {
     try {
-      const [marketData, playerData] = await Promise.all([api.getMarket(), api.getPlayer()])
+      const { market: marketData, player: playerData } = await loadShellSnapshot(api)
       const receivedAtMs = Date.now()
       setMarket(marketData)
       setTradingClockSnapshot((previous) => {
@@ -144,6 +147,7 @@ export function AppShell() {
   const tradingClock = formatTradingClock(interpolateTradingClock(tradingClockSnapshot, clockNowMs))
   const showFund = actorKind === 'fund'
   const hasFund = player?.fundParticipantId != null
+  const needsPlayerOnboarding = ready && connected && market !== null && player === null
   const performanceStats = showFund
     ? [
         { key: 'cashLast', label: 'Cash · last cycle', value: player?.fundLastCycleMoneyChange },
@@ -154,7 +158,11 @@ export function AppShell() {
 
   return (
     <div className={`app-shell${marketActive ? ' is-market-active' : ''}`}>
-      <aside className="sidebar">
+      <aside
+        className="sidebar"
+        inert={needsPlayerOnboarding ? true : undefined}
+        aria-hidden={needsPlayerOnboarding ? true : undefined}
+      >
         <nav className="sidebar-nav" aria-label="Primary">
           <NavLink className={sideLinkClass} to="/" end>
             Dashboard
@@ -258,12 +266,21 @@ export function AppShell() {
           </div>
         ) : null}
       </aside>
-      <div className="app">
+      <div
+        className="app"
+        inert={needsPlayerOnboarding ? true : undefined}
+        aria-hidden={needsPlayerOnboarding ? true : undefined}
+      >
         <TopBar market={market} pending={pending} tradingClock={tradingClock} runAction={runAction} />
-        <Outlet
-          context={{ market, connected, ready, pending, actionError, runAction, resetMarket, player, actorKind, setActorKind }}
-        />
+        {needsPlayerOnboarding && location.pathname !== '/' ? (
+          <Navigate replace to="/" />
+        ) : (
+          <Outlet
+            context={{ market, connected, ready, pending, actionError, runAction, resetMarket, player, actorKind, setActorKind }}
+          />
+        )}
       </div>
+      {needsPlayerOnboarding ? <PlayerOnboarding onCreated={load} /> : null}
     </div>
   )
 }

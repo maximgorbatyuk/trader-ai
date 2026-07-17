@@ -55,7 +55,8 @@ public sealed class AiTradingPromptBuilder(
         builder.AppendLine();
         builder.AppendLine("The response must match this JSON schema exactly:");
         builder.AppendLine(
-            "{\"summary\": string, \"cancelOrderIds\": [integer > 0], \"orders\": [{\"side\": \"Buy\" | \"Sell\", \"companyId\": integer, "
+            "{\"summary\": string, \"cancelOrderIds\": [integer > 0], \"bigInvestment\": null | {\"companyId\": integer, "
+            + "\"amount\": number > 0, \"reason\": string}, \"orders\": [{\"side\": \"Buy\" | \"Sell\", \"companyId\": integer, "
             + "\"quantity\": integer > 0, \"limitPrice\": number > 0, \"reason\": string}]}");
         builder.AppendLine();
         builder.AppendLine(

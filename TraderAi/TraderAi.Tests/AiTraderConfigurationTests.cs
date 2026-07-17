@@ -36,19 +36,18 @@ public sealed class AiTraderConfigurationTests : IDisposable
     }
 
     [Fact]
-    public async Task ConvertingIndividualToAiStoresNormalizedProviderModelAndKey()
+    public async Task ConvertingIndividualToAiStoresNormalizedProviderAndModel()
     {
         var participant = await SeedParticipantAsync(ParticipantType.Individual);
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "GLM", "glm-4.6", "secret-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "GLM", "glm-4.6"));
 
         Assert.True(result.Success);
         var config = await context.AiTraderConfigurations.SingleAsync();
         Assert.Equal("glm", config.ProviderId);
         Assert.Equal("glm-4.6", config.Model);
-        Assert.Equal("secret-key", config.ApiKey);
         Assert.Equal(1, config.Revision);
         Assert.Equal(ParticipantType.AIAgent, (await context.Participants.SingleAsync()).Type);
     }
@@ -60,7 +59,7 @@ public sealed class AiTraderConfigurationTests : IDisposable
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "future-provider", "any", "key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "future-provider", "any"));
 
         Assert.False(result.Success);
         Assert.False(await context.AiTraderConfigurations.AnyAsync());
@@ -73,7 +72,7 @@ public sealed class AiTraderConfigurationTests : IDisposable
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6-custom-tuned", "key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6-custom-tuned"));
 
         Assert.True(result.Success);
         Assert.Equal("glm-4.6-custom-tuned", (await context.AiTraderConfigurations.SingleAsync()).Model);
@@ -86,76 +85,45 @@ public sealed class AiTraderConfigurationTests : IDisposable
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "   ", "key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "   "));
 
         Assert.False(result.Success);
         Assert.False(await context.AiTraderConfigurations.AnyAsync());
     }
 
     [Fact]
-    public async Task FirstConversionRequiresNonblankKey()
-    {
-        var participant = await SeedParticipantAsync(ParticipantType.Individual);
-
-        var result = await service.UpdateAutomationAsync(
-            participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "   "));
-
-        Assert.False(result.Success);
-        Assert.False(await context.AiTraderConfigurations.AnyAsync());
-    }
-
-    [Fact]
-    public async Task EditingSameProviderWithBlankKeyRetainsKeyAndModelChangeBumpsRevision()
+    public async Task EditingModelOnSameProviderBumpsRevision()
     {
         var participant = await SeedParticipantAsync(ParticipantType.Individual);
         await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6"));
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.5", null));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.5"));
 
         Assert.True(result.Success);
         var config = await context.AiTraderConfigurations.SingleAsync();
         Assert.Equal("glm-4.5", config.Model);
-        Assert.Equal("secret-key", config.ApiKey);
         Assert.Equal(2, config.Revision);
     }
 
     [Fact]
-    public async Task ChangingProviderRequiresNewKey()
+    public async Task ChangingProviderBumpsRevision()
     {
         var participant = await SeedParticipantAsync(ParticipantType.Individual);
         await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6"));
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "minimax", "MiniMax-M2", null));
-
-        Assert.False(result.Success);
-        Assert.Equal("glm", (await context.AiTraderConfigurations.SingleAsync()).ProviderId);
-    }
-
-    [Fact]
-    public async Task ChangingProviderWithNewKeyBumpsRevision()
-    {
-        var participant = await SeedParticipantAsync(ParticipantType.Individual);
-        await service.UpdateAutomationAsync(
-            participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
-
-        var result = await service.UpdateAutomationAsync(
-            participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "minimax", "MiniMax-M2", "another-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "minimax", "MiniMax-M2"));
 
         Assert.True(result.Success);
         var config = await context.AiTraderConfigurations.SingleAsync();
         Assert.Equal("minimax", config.ProviderId);
-        Assert.Equal("another-key", config.ApiKey);
         Assert.Equal(2, config.Revision);
     }
 
@@ -165,7 +133,7 @@ public sealed class AiTraderConfigurationTests : IDisposable
         var participant = await SeedParticipantAsync(ParticipantType.Individual);
         await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6"));
 
         context.Markets.Add(new Market { Name = "Market", Status = MarketStatus.Running, CurrentCycleId = 1 });
         participant.ReservedBalance = 100m;
@@ -188,7 +156,7 @@ public sealed class AiTraderConfigurationTests : IDisposable
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.Individual, null, null, null));
+            new UpdateParticipantAutomationRequest(ParticipantType.Individual, null, null));
 
         Assert.True(result.Success);
         Assert.False(await context.AiTraderConfigurations.AnyAsync());
@@ -205,7 +173,7 @@ public sealed class AiTraderConfigurationTests : IDisposable
 
         await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6"));
 
         Assert.Equal(3, (await context.AiTraderConfigurations.SingleAsync()).MaxDecisionsPerDay);
     }
@@ -216,11 +184,11 @@ public sealed class AiTraderConfigurationTests : IDisposable
         var participant = await SeedParticipantAsync(ParticipantType.Individual);
         await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6"));
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", null, MaxDecisionsPerDay: 5));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", MaxDecisionsPerDay: 5));
 
         Assert.True(result.Success);
         var config = await context.AiTraderConfigurations.SingleAsync();
@@ -238,7 +206,7 @@ public sealed class AiTraderConfigurationTests : IDisposable
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key", MaxDecisionsPerDay: value));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", MaxDecisionsPerDay: value));
 
         Assert.False(result.Success);
         Assert.False(await context.AiTraderConfigurations.AnyAsync());
@@ -254,7 +222,7 @@ public sealed class AiTraderConfigurationTests : IDisposable
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6"));
 
         Assert.False(result.Success);
         Assert.False(result.ParticipantNotFound);
@@ -267,7 +235,7 @@ public sealed class AiTraderConfigurationTests : IDisposable
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6"));
 
         Assert.False(result.Success);
     }
@@ -281,7 +249,7 @@ public sealed class AiTraderConfigurationTests : IDisposable
 
         var result = await service.UpdateAutomationAsync(
             participant.Id,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6"));
 
         Assert.False(result.Success);
     }
@@ -291,7 +259,7 @@ public sealed class AiTraderConfigurationTests : IDisposable
     {
         var result = await service.UpdateAutomationAsync(
             9999,
-            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6", "secret-key"));
+            new UpdateParticipantAutomationRequest(ParticipantType.AIAgent, "glm", "glm-4.6"));
 
         Assert.False(result.Success);
         Assert.True(result.ParticipantNotFound);
