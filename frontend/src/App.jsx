@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useOutletContext } from 'react-router-dom'
+import { useOutletContext } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { CompanyModal } from './CompanyModal'
@@ -11,9 +11,8 @@ import { emptyActorHintFor, holdingByCompany, holdingCompanyIdSet, resolveActor 
 const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
 
-// The main dashboard: the player control surface, with the market map (and the two latest news) and the order
-// book living behind its detail tabs. The market state, connection, and control actions come from the app shell
-// through the outlet context; this page owns only its own data poll.
+// The main dashboard owns the data poll for its market map, prioritized market updates, and order book while
+// shared market state and controls stay in the app shell.
 function App() {
   const { market, connected, ready, pending, actionError, runAction, actorKind } = useOutletContext()
   const [companies, setCompanies] = useState([])
@@ -118,12 +117,6 @@ function App() {
 
             {market !== null ? (
               <>
-                <CrisisBanner crises={crises} currentCycleNumber={market.currentCycleNumber} />
-                <ScienceBanner
-                  investigations={scienceInvestigations}
-                  currentCycleNumber={market.currentCycleNumber}
-                />
-
                 <div className="dashboard">
                   <PlayerPanel
                     companies={companies}
@@ -138,6 +131,8 @@ function App() {
                         lastDividendTotal={market.lastDividendTotal}
                         currentCycleNumber={market.currentCycleNumber}
                         news={news}
+                        crises={crises}
+                        scienceInvestigations={scienceInvestigations}
                         onSelectCompany={setMapModalCompanyId}
                       />
                     }
@@ -209,106 +204,6 @@ function SeedPanel({ pending, runAction }) {
         </button>
       </div>
     </section>
-  )
-}
-
-// A crisis is only shown in the banner while it is still fresh, so an old shock does not linger at the top.
-const CRISIS_RECENT_CYCLES = 15
-
-function crisisDropRange(crisis) {
-  const percents = crisis.industries.map((link) => Number(link.impactPercent))
-  if (percents.length === 0) return null
-  return { min: Math.min(...percents), max: Math.max(...percents) }
-}
-
-function formatDropRange(crisis) {
-  const range = crisisDropRange(crisis)
-  if (!range) return ''
-  return range.min === range.max
-    ? `−${range.max.toFixed(1)}%`
-    : `−${range.min.toFixed(1)}% to −${range.max.toFixed(1)}%`
-}
-
-function sectorLabel(count) {
-  return count === 1 ? 'sector' : 'sectors'
-}
-
-function scienceGainRange(investigation) {
-  const percents = investigation.industries.map((link) => Number(link.impactPercent))
-  if (percents.length === 0) return null
-  return { min: Math.min(...percents), max: Math.max(...percents) }
-}
-
-function formatGainRange(investigation) {
-  const range = scienceGainRange(investigation)
-  if (!range) return ''
-  return range.min === range.max
-    ? `+${range.max.toFixed(1)}%`
-    : `+${range.min.toFixed(1)}% to +${range.max.toFixed(1)}%`
-}
-
-// A prominent alert for the most recent crisis, shown only while it is recent relative to the current cycle.
-function CrisisBanner({ crises, currentCycleNumber }) {
-  const latest = crises[0]
-  if (!latest) return null
-  if (
-    currentCycleNumber != null &&
-    currentCycleNumber - latest.triggeredInCycleNumber > CRISIS_RECENT_CYCLES
-  ) {
-    return null
-  }
-
-  const sectorCount = latest.industries.length
-  return (
-    <div className="crisis-banner" role="alert">
-      <span className="crisis-banner-mark" aria-hidden="true">
-        ⚠
-      </span>
-      <div className="crisis-banner-body">
-        <p className="crisis-banner-head">
-          <span className="crisis-scope">{latest.scope} crisis</span>
-          <Link className="crisis-banner-title" to={`/crises/${latest.id}`}>
-            {latest.title}
-          </Link>
-        </p>
-        <p className="crisis-banner-meta num">
-          {sectorCount} {sectorLabel(sectorCount)} · {formatDropRange(latest)} · cycle{' '}
-          {latest.triggeredInCycleNumber}
-        </p>
-      </div>
-    </div>
-  )
-}
-
-// A green counterpart to the crisis banner for the most recent science investigation, shown only while it
-// is still recent relative to the current cycle so an old breakthrough does not linger at the top.
-function ScienceBanner({ investigations, currentCycleNumber }) {
-  const latest = investigations[0]
-  if (!latest) return null
-  if (
-    currentCycleNumber != null &&
-    currentCycleNumber - latest.triggeredInCycleNumber > CRISIS_RECENT_CYCLES
-  ) {
-    return null
-  }
-
-  const sectorCount = latest.industries.length
-  return (
-    <div className="science-banner" role="status">
-      <span className="science-banner-mark" aria-hidden="true">
-        🔬
-      </span>
-      <div className="crisis-banner-body">
-        <p className="crisis-banner-head">
-          <span className="science-scope">Science breakthrough</span>
-          <span className="crisis-banner-title">{latest.title}</span>
-        </p>
-        <p className="science-banner-meta num">
-          {sectorCount} {sectorLabel(sectorCount)} · {formatGainRange(latest)} · cycle{' '}
-          {latest.triggeredInCycleNumber}
-        </p>
-      </div>
-    </div>
   )
 }
 

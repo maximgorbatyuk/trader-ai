@@ -41,11 +41,19 @@ const RISK_OPTIONS = [
   { value: 'Low', label: 'Low risk' },
 ]
 
-// The dashboard/trade-market treemap: companies sized by capitalisation, coloured by its cycle-over-cycle
-// change, behind a filter bar. Prop-driven and self-contained so both pages can feed it the same data; the two
-// latest news posts sit under the map. onSelectCompany decides whether a tile opens a modal or a detail route;
-// pass `embedded` to render inside another card's tab without the panel chrome.
-export function MarketMapPanel({ companies, participants, playerHoldingCompanyIds, lastDividendTotal, currentCycleNumber, news, onSelectCompany, embedded = false }) {
+// Keeping the update feed inside the map makes event priority consistent anywhere this market view is reused.
+export function MarketMapPanel({
+  companies,
+  participants,
+  playerHoldingCompanyIds,
+  lastDividendTotal,
+  currentCycleNumber,
+  news,
+  crises,
+  scienceInvestigations,
+  onSelectCompany,
+  embedded = false,
+}) {
   // Tile colour tracks the change in a company's total capitalisation, not its per-share price, so a stock
   // split (shares up, price down, capitalisation unchanged) reads as flat rather than a market-wide crash.
   // Anchored to the cycle number, not the poll: the move is measured against the previous cycle's caps and the
@@ -216,7 +224,14 @@ export function MarketMapPanel({ companies, participants, playerHoldingCompanyId
         )}
         </>
       )}
-      <LatestNews news={news} currentCycleNumber={currentCycleNumber} onSelectCompany={onSelectCompany} count={2} />
+      <LatestNews
+        news={news}
+        crises={crises}
+        scienceInvestigations={scienceInvestigations}
+        currentCycleNumber={currentCycleNumber}
+        onSelectCompany={onSelectCompany}
+        count={2}
+      />
     </>
   )
 

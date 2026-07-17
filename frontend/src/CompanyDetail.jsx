@@ -938,6 +938,7 @@ function PriceChartPanel({ name, prices }) {
             xLabel="Cycle"
             yLabel="Capitalization"
             label={`Capitalization history for ${name}`}
+            fill
           />
         </>
       )}

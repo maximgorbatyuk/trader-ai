@@ -393,6 +393,7 @@ function WorthChartPanel({ worthHistory }) {
           formatValue={formatCompactMoney}
           xLabel="Cycle"
           label="Total worth over time"
+          fill
         />
       )}
     </Panel>
