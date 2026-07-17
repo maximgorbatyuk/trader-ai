@@ -945,36 +945,32 @@ function PriceChartPanel({ name, prices }) {
   )
 }
 
-// The float summary that used to be its own card, now shown at the top of the Shareholders tab.
 function OwnershipSummary({ detail }) {
-  const rows = [
+  const floatPct = detail.issuedSharesCount > 0 ? detail.sharesOutstanding / detail.issuedSharesCount : 0
+  const metrics = [
     { label: 'Issued shares', value: formatInt(detail.issuedSharesCount) },
     { label: 'Held by issuer', value: formatInt(detail.sharesHeldByIssuer) },
     { label: 'Outstanding', value: formatInt(detail.sharesOutstanding) },
     { label: 'Shareholders', value: formatInt(detail.shareholderCount) },
+    { label: 'Float in market', value: formatPct(floatPct) },
   ]
-  const floatPct = detail.issuedSharesCount > 0 ? detail.sharesOutstanding / detail.issuedSharesCount : 0
 
   return (
     <div className="ownership-summary">
-      <span className="map-stat-label">Ownership</span>
-      <dl className="kv">
-        {rows.map((row) => (
-          <div className="kv-row" key={row.label}>
-            <dt>{row.label}</dt>
-            <dd className="num">{row.value}</dd>
+      <span className="map-stat-label ownership-title">Ownership</span>
+      <dl className="ownership-metrics">
+        {metrics.map((metric) => (
+          <div className="ownership-metric" key={metric.label}>
+            <dt>{metric.label}</dt>
+            <dd className="num">{metric.value}</dd>
           </div>
         ))}
-        <div className="kv-row kv-total">
-          <dt>Float in market</dt>
-          <dd className="num">{formatPct(floatPct)}</dd>
-        </div>
       </dl>
     </div>
   )
 }
 
-function ShareholdersPanel({ shareholders, detail }) {
+export function ShareholdersPanel({ shareholders, detail }) {
   const { pageRows, sortKey, sortDir, toggleSort, page, pageCount, setPage } = useClientTable(shareholders, {
     pageSize: TAB_PAGE_SIZE,
     initialSortKey: 'shares',
