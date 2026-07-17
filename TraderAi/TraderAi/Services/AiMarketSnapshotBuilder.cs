@@ -187,8 +187,13 @@ public sealed class AiMarketSnapshotBuilder(
         var companies = await BuildCompaniesAsync(prices, cycleNumbersById, participant, participantSnapshot);
         var industries = await BuildIndustriesAsync();
         var orderBook = await BuildOrderBookAsync();
-        var capitalizationHistory = await BuildCapitalizationHistoryAsync(historyCycleIds, cycleNumbersById);
-        var sentimentHistory = await BuildSentimentHistoryAsync(historyCycleIds, cycleNumbersById);
+        // Capitalization and sentiment history are the largest, most redundant snapshot sections because each
+        // company's and industry's current value is already carried elsewhere. Shortening their lookback trims the
+        // provider payload with little decision cost: capitalization keeps half the window and sentiment about 70%.
+        var capitalizationCycleIds = historyCycleIds.Take(Math.Max(1, historyCycleIds.Count / 2)).ToList();
+        var sentimentCycleIds = historyCycleIds.Take(Math.Max(1, historyCycleIds.Count * 7 / 10)).ToList();
+        var capitalizationHistory = await BuildCapitalizationHistoryAsync(capitalizationCycleIds, cycleNumbersById);
+        var sentimentHistory = await BuildSentimentHistoryAsync(sentimentCycleIds, cycleNumbersById);
         var feedback = await BuildRecentApplicationFeedbackAsync(participantId);
         IReadOnlyList<BigInvestmentOpportunity> bigInvestmentOpportunities =
             isFundMember || !bigInvestmentOptions.Value.Enabled

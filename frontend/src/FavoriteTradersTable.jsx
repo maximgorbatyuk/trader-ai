@@ -34,7 +34,16 @@ export function FavoriteTradersTable({ participants }) {
                   </Link>
                 </span>
               </th>
-              <td>{TYPE_LABEL[participant.type] ?? participant.type}</td>
+              <td>
+                {participant.type === 'AIAgent' ? (
+                  <span className="favorite-trader-tags">
+                    <span className="tag">{participant.aiProviderLabel ? `AI · ${participant.aiProviderLabel}` : 'AI'}</span>
+                    {participant.aiModel ? <span className="tag">{participant.aiModel}</span> : null}
+                  </span>
+                ) : (
+                  TYPE_LABEL[participant.type] ?? participant.type
+                )}
+              </td>
               <td className="num ta-r">{formatMoney(participant.totalWorth)}</td>
               <td className="num ta-r">{formatMoney(participant.currentBalance)}</td>
               <td className="num ta-r">{formatInt(participant.sharesOwned)}</td>

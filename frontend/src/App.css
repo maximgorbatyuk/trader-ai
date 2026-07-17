@@ -1298,6 +1298,13 @@
   flex-shrink: 0;
 }
 
+.favorite-trader-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1);
+}
+
 .select {
   width: 100%;
   padding: var(--s-2);

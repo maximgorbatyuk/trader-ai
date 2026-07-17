@@ -67,11 +67,11 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.NotEmpty(snapshot.OrderBook.Sells);
 
         var company1CapPoints = snapshot.CapitalizationHistory.Where(point => point.CompanyId == seed.Company1Id).ToList();
-        Assert.Equal(30, company1CapPoints.Count);
-        Assert.Equal(6, company1CapPoints.Min(point => point.CycleNumber));
+        Assert.Equal(15, company1CapPoints.Count);
+        Assert.Equal(21, company1CapPoints.Min(point => point.CycleNumber));
         Assert.Equal(35, company1CapPoints.Max(point => point.CycleNumber));
 
-        Assert.Equal(30, snapshot.SentimentHistory.Count(point => point.IndustryId == seed.Industry1Id));
+        Assert.Equal(21, snapshot.SentimentHistory.Count(point => point.IndustryId == seed.Industry1Id));
         Assert.Empty(snapshot.BigInvestmentOpportunities);
     }
 
