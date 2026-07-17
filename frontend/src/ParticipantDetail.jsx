@@ -14,6 +14,7 @@ import { AiTraderAutomationPanel } from './AiTraderAutomationPanel'
 import { AiTraderCallsPanel } from './AiTraderCallsPanel'
 import { useClientTable } from './useClientTable'
 import { useServerTable } from './useServerTable'
+import { useFitPageSize } from './useFitPageSize'
 import { Pager, SortHeader } from './TableControls'
 import { SettlementsTable } from './SettlementsTable'
 import { cashSettlement, quantitySettlement } from './marketAccounting'
@@ -24,7 +25,6 @@ import { CompanyModal } from './CompanyModal'
 
 const POLL_INTERVAL_MS = 2500
 const WORTH_HISTORY_POINTS = 64
-const CASH_MOVEMENT_PAGE_SIZE = 10
 const TEMPERAMENTS = ['Aggressive', 'Balanced', 'Conservative']
 const RISK_PROFILES = ['High', 'Medium', 'Low']
 const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund', Player: 'Player' }
@@ -393,6 +393,7 @@ function WorthChartPanel({ worthHistory }) {
           formatValue={formatCompactMoney}
           xLabel="Cycle"
           label="Total worth over time"
+          fill
         />
       )}
     </Panel>
@@ -499,12 +500,13 @@ function MarginPanel({ margin }) {
 }
 
 function MembersPanel({ participantId }) {
+  const [pageSize, tableRef] = useFitPageSize()
   const fetchMembers = useCallback(
     (page, pageSize, sort, sortDir) => api.getFundMembersPaged(participantId, { page, pageSize, sort, sortDir }),
     [participantId],
   )
   const { items, total, page, pageCount, setPage, sortKey, sortDir, toggleSort } = useServerTable(fetchMembers, {
-    pageSize: 10,
+    pageSize,
     initialSortKey: 'deposit',
     initialSortDir: 'desc',
   })
@@ -515,7 +517,7 @@ function MembersPanel({ participantId }) {
         <p className="note">No members have joined yet.</p>
       ) : (
         <>
-          <div className="tbl-wrap">
+          <div className="tbl-wrap" ref={tableRef}>
             <table className="tbl">
               <thead>
                 <tr>
@@ -603,12 +605,13 @@ function CompanyNameCell({ companyId, companyName, onSelectCompany }) {
 }
 
 function HoldingsPanel({ participantId, totalShares, onSelectCompany }) {
+  const [pageSize, tableRef] = useFitPageSize()
   const fetchHoldings = useCallback(
     (page, pageSize, sort, sortDir) => api.getParticipantHoldingsPaged(participantId, { page, pageSize, sort, sortDir }),
     [participantId],
   )
   const { items, total, page, pageCount, setPage, sortKey, sortDir, toggleSort } = useServerTable(fetchHoldings, {
-    pageSize: 10,
+    pageSize,
     initialSortKey: 'quantity',
     initialSortDir: 'desc',
   })
@@ -619,7 +622,7 @@ function HoldingsPanel({ participantId, totalShares, onSelectCompany }) {
         <p className="note">This trader holds no shares.</p>
       ) : (
         <>
-          <div className="tbl-wrap">
+          <div className="tbl-wrap" ref={tableRef}>
             <table className="tbl">
               <thead>
                 <tr>
@@ -665,12 +668,13 @@ function HoldingsPanel({ participantId, totalShares, onSelectCompany }) {
 }
 
 function IndustryHoldingsPanel({ participantId }) {
+  const [pageSize, tableRef] = useFitPageSize()
   const fetchIndustries = useCallback(
     (page, pageSize, sort, sortDir) => api.getParticipantPortfolioByIndustryPaged(participantId, { page, pageSize, sort, sortDir }),
     [participantId],
   )
   const { items, total, page, pageCount, setPage, sortKey, sortDir, toggleSort } = useServerTable(fetchIndustries, {
-    pageSize: 10,
+    pageSize,
     initialSortKey: 'value',
     initialSortDir: 'desc',
   })
@@ -685,7 +689,9 @@ function IndustryHoldingsPanel({ participantId }) {
         <p className="note note-sm">This trader holds no shares.</p>
       ) : (
         <>
-          <IndustryHoldingsTable rows={items} sortKey={sortKey} sortDir={sortDir} onToggleSort={toggleSort} />
+          <div ref={tableRef}>
+            <IndustryHoldingsTable rows={items} sortKey={sortKey} sortDir={sortDir} onToggleSort={toggleSort} />
+          </div>
           <Pager page={page} pageCount={pageCount} onPage={setPage} />
         </>
       )}
@@ -694,12 +700,13 @@ function IndustryHoldingsPanel({ participantId }) {
 }
 
 function InvestmentsPanel({ participantId }) {
+  const [pageSize, tableRef] = useFitPageSize()
   const fetchInvestments = useCallback(
     (page, pageSize, sort, sortDir) => api.getParticipantInvestmentsPaged(participantId, { page, pageSize, sort, sortDir }),
     [participantId],
   )
   const { items, total, page, pageCount, setPage, sortKey, sortDir, toggleSort } = useServerTable(fetchInvestments, {
-    pageSize: 10,
+    pageSize,
     initialSortKey: 'when',
     initialSortDir: 'desc',
   })
@@ -710,13 +717,15 @@ function InvestmentsPanel({ participantId }) {
         <p className="note">This trader has funded no capital-raise investments yet.</p>
       ) : (
         <>
-          <InvestmentsTable
-            investments={items}
-            showInvestor={false}
-            sortKey={sortKey}
-            sortDir={sortDir}
-            onToggleSort={toggleSort}
-          />
+          <div ref={tableRef}>
+            <InvestmentsTable
+              investments={items}
+              showInvestor={false}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onToggleSort={toggleSort}
+            />
+          </div>
           <Pager page={page} pageCount={pageCount} onPage={setPage} />
         </>
       )}
@@ -725,9 +734,10 @@ function InvestmentsPanel({ participantId }) {
 }
 
 function OrdersPanel({ orders, companyName, onSelectCompany }) {
+  const [pageSize, tableRef] = useFitPageSize()
   // Latest first: order ids increase over time, so a descending id sort keeps the newest orders on page one.
   const { pageRows, page, pageCount, setPage } = useClientTable(orders, {
-    pageSize: 10,
+    pageSize,
     initialSortKey: 'id',
     initialSortDir: 'desc',
   })
@@ -738,7 +748,7 @@ function OrdersPanel({ orders, companyName, onSelectCompany }) {
         <p className="note">No orders placed yet.</p>
       ) : (
         <>
-          <div className="tbl-wrap">
+          <div className="tbl-wrap" ref={tableRef}>
             <table className="tbl">
               <thead>
                 <tr>
@@ -946,8 +956,6 @@ function LoansPanel({ loans, status, onStatusChange }) {
   )
 }
 
-const MEMBERSHIP_HISTORY_PAGE_SIZE = 10
-
 // Join/leave history for a fund or a trader, paged newest-first from the shared endpoint. On a fund's page the
 // counterparty column names the member; on a trader's page it names the fund. Kept off pages that never touch a
 // fund by rendering nothing once the load confirms there is no history and the participant is not itself a fund.
@@ -955,16 +963,17 @@ function FundMembershipHistoryPanel({ participantId, isFund }) {
   const [ready, setReady] = useState(false)
   const [data, setData] = useState(null)
   const [page, setPage] = useState(1)
+  const [pageSize, tableRef] = useFitPageSize()
 
   const loadHistory = useCallback(async () => {
     try {
-      setData(await api.getFundMembershipHistory(participantId, page, MEMBERSHIP_HISTORY_PAGE_SIZE))
+      setData(await api.getFundMembershipHistory(participantId, page, pageSize))
     } catch {
       // Keep the last page on a failed refresh; the detail header already surfaces the offline state.
     } finally {
       setReady(true)
     }
-  }, [participantId, page])
+  }, [participantId, page, pageSize])
 
   useEffect(() => {
     const initialId = setTimeout(loadHistory, 0)
@@ -977,7 +986,7 @@ function FundMembershipHistoryPanel({ participantId, isFund }) {
 
   const total = data?.total ?? 0
   const items = data?.items ?? []
-  const pageCount = Math.max(1, Math.ceil(total / MEMBERSHIP_HISTORY_PAGE_SIZE))
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
 
   if (!ready || (!isFund && total === 0)) {
     return null
@@ -991,7 +1000,7 @@ function FundMembershipHistoryPanel({ participantId, isFund }) {
         <p className="note">No members have joined or left yet.</p>
       ) : (
         <>
-          <div className="tbl-wrap">
+          <div className="tbl-wrap" ref={tableRef}>
             <table className="tbl">
               <thead>
                 <tr>
@@ -1043,15 +1052,16 @@ function CashPanel({ participantId }) {
   const [page, setPage] = useState(1)
   const [loadError, setLoadError] = useState(null)
   const [selectedMove, setSelectedMove] = useState(null)
+  const [pageSize, tableRef] = useFitPageSize()
   const requestSequence = useRef(0)
 
   const loadMoves = useCallback(async () => {
     const requestId = ++requestSequence.current
     try {
-      const result = await api.getParticipantMoneyTransactionsPaged(participantId, page, CASH_MOVEMENT_PAGE_SIZE)
+      const result = await api.getParticipantMoneyTransactionsPaged(participantId, page, pageSize)
       if (requestId !== requestSequence.current) return
 
-      const resultPageCount = Math.max(1, Math.ceil(result.total / (result.pageSize || CASH_MOVEMENT_PAGE_SIZE)))
+      const resultPageCount = Math.max(1, Math.ceil(result.total / (result.pageSize || pageSize)))
       if (page > resultPageCount) {
         setPage(resultPageCount)
         return
@@ -1065,7 +1075,7 @@ function CashPanel({ participantId }) {
     } finally {
       if (requestId === requestSequence.current) setReady(true)
     }
-  }, [participantId, page])
+  }, [participantId, page, pageSize])
 
   useEffect(() => {
     const initialId = setTimeout(loadMoves, 0)
@@ -1079,7 +1089,7 @@ function CashPanel({ participantId }) {
 
   const moves = data?.items ?? []
   const total = data?.total ?? 0
-  const pageCount = Math.max(1, Math.ceil(total / (data?.pageSize || CASH_MOVEMENT_PAGE_SIZE)))
+  const pageCount = Math.max(1, Math.ceil(total / (data?.pageSize || pageSize)))
   const displayedPage = data?.page ?? page
 
   return (
@@ -1096,7 +1106,7 @@ function CashPanel({ participantId }) {
           {moves.length === 0 ? (
             <p className="note">No cash movements on this page.</p>
           ) : (
-            <div className="tbl-wrap">
+            <div className="tbl-wrap" ref={tableRef}>
               <table className="tbl">
                 <thead>
                   <tr>

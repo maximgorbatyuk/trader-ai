@@ -5,16 +5,11 @@ using TraderAi.Models;
 
 namespace TraderAi.Services;
 
-// A participant or fund funds a company by buying a large block of freshly minted shares at the current price.
-// The company creates the shares and hands them over in one filled deal: cash flows to corporate cash, the buyer
-// receives a settled holding, capitalisation is re-recorded, an auditor publishes a "raise", the company's
-// industry sentiment ticks up, and the company is shielded from delisting for a few trading days. The same
-// executor backs both the automated per-cycle roll and the manual player/fund action. Runs in the pre-match
-// window after primary issuance and before company closure, so the closure phase honours the fresh protection.
-//
-// Draw discipline for a scripted Random: disabled draws nothing. When enabled it draws one NextDouble to roll the
-// per-cycle trigger; a miss, or no eligible investor/company pair, stops there. When it fires it draws one Next to
-// pick the pair and one more NextDouble for the deal size. The deal executor itself draws nothing.
+// Executes both automated and manual direct funding deals by minting shares at the current price and settling the
+// resulting cash, holding, rating, sentiment, protection, and history changes together. It runs after primary
+// issuance and before closure so a fresh deal's delisting protection is honoured in the same cycle.
+// Generic draws are trigger, pair, then size; a fresh Extra raise draws pair, cash-scaled chance, then size, while
+// disabled processing and the shared deal executor draw nothing so scripted simulations remain reproducible.
 public sealed class BigInvestmentService(
     AppDbContext dbContext,
     IOptions<BigInvestmentOptions> options,
@@ -43,17 +38,32 @@ public sealed class BigInvestmentService(
         }
 
         var triggers = chanceRates.Value.EventTriggerChances;
-        if (random.NextDouble() >= triggers.BigInvestment)
+        var bands = chanceRates.Value.RandomMagnitudeBands;
+        var minFraction = (decimal)bands.BigInvestmentFractionMin;
+
+        var freshExtraRaiseCompanyIds = await (
+                from rating in dbContext.CompanyRatings
+                join cycle in dbContext.MarketCycles on rating.CreatedInCycleId equals cycle.Id
+                where rating.Rating == CompanyRiskRating.ExtraRaisedExpectations
+                    && cycle.CycleNumber == currentCycleNumber - 1
+                select rating.CompanyId)
+            .Distinct()
+            .ToHashSetAsync();
+        var hasFreshExtraRaise = freshExtraRaiseCompanyIds.Count > 0;
+
+        if (!hasFreshExtraRaise && random.NextDouble() >= triggers.BigInvestment)
         {
             return;
         }
 
-        var bands = chanceRates.Value.RandomMagnitudeBands;
-        var minFraction = (decimal)bands.BigInvestmentFractionMin;
-
         var latestPriceByCompany = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
-        var companies = await dbContext.Companies
-            .Where(company => company.ClosedInCycleId == null)
+        var companyQuery = dbContext.Companies.Where(company => company.ClosedInCycleId == null);
+        if (hasFreshExtraRaise)
+        {
+            companyQuery = companyQuery.Where(company => freshExtraRaiseCompanyIds.Contains(company.Id));
+        }
+
+        var companies = await companyQuery
             .OrderBy(company => company.Id)
             .ToListAsync();
         var investors = await dbContext.Participants
@@ -96,6 +106,18 @@ public sealed class BigInvestmentService(
         }
 
         var chosen = pairs[random.Next(pairs.Count)];
+        if (hasFreshExtraRaise)
+        {
+            var minimumRequiredCash = minFraction * chosen.Cap;
+            var cashScaledChance = Math.Min(
+                Math.Min(triggers.BigInvestmentMax, EventTriggerChances.BigInvestmentHardMax),
+                triggers.BigInvestment * (double)(Spendable(chosen.Investor) / minimumRequiredCash));
+            if (random.NextDouble() >= cashScaledChance)
+            {
+                return;
+            }
+        }
+
         var fraction = minFraction
             + ((decimal)random.NextDouble() * ((decimal)bands.BigInvestmentFractionMax - minFraction));
         var cash = Math.Min(fraction * chosen.Cap, Spendable(chosen.Investor));

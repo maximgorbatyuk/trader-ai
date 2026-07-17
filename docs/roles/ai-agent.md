@@ -24,4 +24,4 @@ An AI Agent is a trader whose decisions come from a hosted large-language-model 
 ## Lifecycle
 
 - An AI Agent shares the non-decision lifecycle of an Individual: dividends, the risk-specific automated margin rule, bankruptcy, fund membership, free-share emissions, starvation-liquidation, and market exit all behave the same. See [Individual](individual.md).
-- Market-exit replacements are always rule-based Individuals, so an AI Agent appears only through explicit operator configuration.
+- New traders that appear through market churn are always rule-based Individuals, so an AI Agent appears only through explicit operator configuration.

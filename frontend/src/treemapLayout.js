@@ -5,6 +5,11 @@
 // aspect ratio so the proportions hold at any width.
 export const MAP_BOX_W = 100
 export const MAP_BOX_H = 42
+
+// The market map holds the whole company list, so it packs into a taller box than the industries map: the extra
+// vertical space gives the long tail of small companies enough area to read as squares. The embedded map's
+// max-height guard still keeps it from forcing a page scroll on short viewports.
+export const MARKET_MAP_BOX_H = 60
 export const TONE_GLYPH = { up: '▲', down: '▼', flat: '–' }
 export const TONE_WORD = { up: 'up', down: 'down', flat: 'unchanged' }
 

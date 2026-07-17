@@ -17,6 +17,8 @@ public sealed class RandomChanceRatesOptions
 // Probabilities that gate whether a random event fires this cycle.
 public sealed class EventTriggerChances
 {
+    public const double BigInvestmentHardMax = 0.50;
+
     // Per-cycle chance an eligible trader joins a collective fund.
     public double FundJoin { get; set; } = 0.05;
 
@@ -68,6 +70,9 @@ public sealed class EventTriggerChances
     // Base per-cycle quit chance for a trader after a fund loss.
     public double ExitFundLoss { get; set; } = 0.25;
 
+    // Per-cycle chance a new trader appears while the active-trader roster is below its population cap.
+    public double TraderAppearanceBase { get; set; } = 0.10;
+
     // Local-crisis trigger chance added per trading day once the local quiet window has passed.
     public double LocalCrisisStepPerTradingDay { get; set; } = 0.03;
 
@@ -107,8 +112,12 @@ public sealed class EventTriggerChances
     // Chance a science investigation also pushes the affected industry's sentiment upward.
     public double ScienceSentimentPush { get; set; } = 0.50;
 
-    // Per-cycle chance that one eligible investor funds a big-investment deal, minting new shares in a company.
+    // Generic per-cycle chance for a big investment and the base chance at the minimum cash threshold after an
+    // Extra raised-expectations rating.
     public double BigInvestment { get; set; } = 0.15;
+
+    // Ceiling on the cash-scaled investment chance following an Extra raised-expectations rating.
+    public double BigInvestmentMax { get; set; } = BigInvestmentHardMax;
 }
 
 // Values that scale or shift a base chance rather than gating a roll on their own.

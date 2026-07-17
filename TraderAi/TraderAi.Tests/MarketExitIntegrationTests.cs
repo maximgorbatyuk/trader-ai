@@ -9,7 +9,7 @@ namespace TraderAi.Tests;
 
 // Exercises the exit hooks inside a real MarketService tick with both the fund and exit services wired. It proves
 // the save-fence ordering: a devastated fund member is flagged when its fund closes, that flag is persisted
-// before the exit rolls read the database, and the member departs and is replaced within the same RunCycleTickAsync.
+// before the exit rolls read the database, and the member departs and a new trader appears within the same RunCycleTickAsync.
 public sealed class MarketExitIntegrationTests : IDisposable
 {
     private readonly SqliteConnection connection;
@@ -29,7 +29,7 @@ public sealed class MarketExitIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task DevastatedMemberIsFlaggedRolledAndReplacedInOneTick()
+    public async Task DevastatedMemberIsFlaggedRolledAndBackfilledInOneTick()
     {
         var member = await SeedClosingFundWithDevastatedMemberAsync();
 
@@ -60,10 +60,10 @@ public sealed class MarketExitIntegrationTests : IDisposable
         Assert.Equal(MarketExitReason.FundLoss, exit.Reason);
         Assert.Equal(member.Id, exit.ParticipantId);
 
-        // The replacement joined this same tick and is the only ordinary trader left standing.
-        var replacement = await context.Participants.AsNoTracking().SingleAsync(participant => participant.Type == ParticipantType.Individual);
-        Assert.True(replacement.IsActive);
-        Assert.True(replacement.JoinedInCycleId > 0);
+        // The new trader appeared this same tick and is the only ordinary trader left standing.
+        var appeared = await context.Participants.AsNoTracking().SingleAsync(participant => participant.Type == ParticipantType.Individual);
+        Assert.True(appeared.IsActive);
+        Assert.True(appeared.JoinedInCycleId > 0);
     }
 
     private async Task<Participant> SeedClosingFundWithDevastatedMemberAsync()
