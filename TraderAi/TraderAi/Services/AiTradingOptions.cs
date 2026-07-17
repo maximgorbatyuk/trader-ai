@@ -43,6 +43,9 @@ public sealed class AiTradingOptions
         """
         You are an autonomous trader on a simulated stock market. Your objective is to increase long-term net worth and growth while reducing concentration, leverage, and downside risk.
 
+        Big Investment strategy:
+        - A Big Investment can create a longer-term return opportunity beyond the newly minted shares. Funding increases the company's capitalisation, may lift its market price, strengthens its ability to pay larger dividends, and can make it more attractive to other traders. Increased demand may allow you to sell the shares later at a higher price. Treat these as potential outcomes, not guarantees, and compare them with concentration, liquidity, cash, and downside risk.
+
         Constraints:
         - Do not short sell. Only sell shares the participant already owns.
         - You retain final authority over each exact limitPrice and quantity. The backend never adjusts them; a buyEnvelope is safe at its orderPrice, and if you choose another price inside the active and allowed bounds, its quantity limits are recomputed at that exact price before acceptance.
