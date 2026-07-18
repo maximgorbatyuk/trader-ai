@@ -166,6 +166,17 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         return new AiTradingPromptBuilder(documentation, Options.Create(options));
     }
 
+    [Fact]
+    public void SizeReportListsSectionsAndCombinedTotal()
+    {
+        var report = AiSnapshotSizeReport.Build(Snapshot(isFundMember: false), "system-message", "user-message");
+
+        Assert.Contains("companies", report);
+        Assert.Contains("sentimentHistory", report);
+        Assert.Contains("bigInvestmentOpportunities", report);
+        Assert.Contains("TOTAL(system+user)", report);
+    }
+
     private static AiMarketSnapshot Snapshot(bool isFundMember, bool isFinalDecisionOfDay = false) => new(
         ParticipantId: 1,
         IsFundMember: isFundMember,
@@ -177,12 +188,11 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Companies: new[]
         {
             new AiCompanySnapshot(
-                1, "Acme", 1, "Tech", 100m, 10_000m, "Normal", 75m, 125m, 85m, 115m,
+                1, "Acme", 1, "Tech", 100m, "Normal", 75m, 125m, 85m, 115m,
                 100, 100m, 10, null,
                 new AiBuyEnvelopeSnapshot(100m, 1_000m, 2, 10, false, "CurrentOpenOrdersBeforeCancellations"), []),
         },
         Industries: new[] { new AiIndustrySnapshot(1, "Tech", 50) },
-        OrderBook: new AiOrderBookSnapshot([], []),
         CapitalizationHistory: [],
         SentimentHistory: [],
         RecentApplicationFeedback: [],

@@ -14,11 +14,10 @@ public sealed record AiMarketSnapshot(
     AiParticipantSnapshot Participant,
     IReadOnlyList<AiCompanySnapshot> Companies,
     IReadOnlyList<AiIndustrySnapshot> Industries,
-    AiOrderBookSnapshot OrderBook,
     IReadOnlyList<AiCapitalizationHistoryPoint> CapitalizationHistory,
     IReadOnlyList<AiSentimentHistoryPoint> SentimentHistory,
     IReadOnlyList<AiApplicationFeedback> RecentApplicationFeedback,
-    IReadOnlyList<BigInvestmentOpportunity> BigInvestmentOpportunities);
+    IReadOnlyList<AiBigInvestmentOpportunity> BigInvestmentOpportunities);
 
 public sealed record AiMarketState(
     int CycleNumber,
@@ -67,9 +66,7 @@ public sealed record AiHoldingSnapshot(
     int Quantity,
     int SettledQuantity,
     decimal AverageCost,
-    decimal CurrentPrice,
-    decimal CurrentValue,
-    decimal UnrealizedResult);
+    decimal CurrentPrice);
 
 public sealed record AiOpenOrder(
     int OrderId,
@@ -88,7 +85,6 @@ public sealed record AiCompanySnapshot(
     int IndustryId,
     string IndustryName,
     decimal CurrentPrice,
-    decimal Capitalization,
     string TradingStatus,
     decimal? AllowedMinimumPrice,
     decimal? AllowedMaximumPrice,
@@ -113,10 +109,6 @@ public sealed record AiRatingSnapshot(string Rating, decimal? ImpactPercent, int
 
 public sealed record AiIndustrySnapshot(int Id, string Name, int SentimentValue);
 
-public sealed record AiOrderBookSnapshot(IReadOnlyList<AiBookEntry> Buys, IReadOnlyList<AiBookEntry> Sells);
-
-public sealed record AiBookEntry(int CompanyId, decimal LimitPrice, int RemainingQuantity);
-
 public sealed record AiCapitalizationHistoryPoint(int CompanyId, int CycleNumber, decimal? Capitalization);
 
 public sealed record AiSentimentHistoryPoint(int IndustryId, int CycleNumber, int SentimentValue);
@@ -126,6 +118,10 @@ public sealed record AiApplicationFeedback(
     int SnapshotCycleNumber,
     string Status,
     IReadOnlyList<string> RejectionReasons);
+
+// Slim projection of BigInvestmentOpportunity: company name, price, and capitalization already appear in Companies,
+// so only the funding bounds are sent to the model.
+public sealed record AiBigInvestmentOpportunity(int CompanyId, decimal MinimumAmount, decimal MaximumAmount);
 
 // Builds a fresh, batched view of the current market for one participant. It reuses the same latest-price map,
 // capitalization (price x issued shares), worth, buying-power, and price-bound formulas the rest of the backend
@@ -186,7 +182,6 @@ public sealed class AiMarketSnapshotBuilder(
         var participantSnapshot = await BuildParticipantAsync(participant, prices);
         var companies = await BuildCompaniesAsync(prices, cycleNumbersById, participant, participantSnapshot);
         var industries = await BuildIndustriesAsync();
-        var orderBook = await BuildOrderBookAsync();
         // Capitalization and sentiment history are the largest, most redundant snapshot sections because each
         // company's and industry's current value is already carried elsewhere. Shortening their lookback trims the
         // provider payload with little decision cost: capitalization keeps half the window and sentiment about 70%.
@@ -195,7 +190,7 @@ public sealed class AiMarketSnapshotBuilder(
         var capitalizationHistory = await BuildCapitalizationHistoryAsync(capitalizationCycleIds, cycleNumbersById);
         var sentimentHistory = await BuildSentimentHistoryAsync(sentimentCycleIds, cycleNumbersById);
         var feedback = await BuildRecentApplicationFeedbackAsync(participantId);
-        IReadOnlyList<BigInvestmentOpportunity> bigInvestmentOpportunities =
+        IReadOnlyList<AiBigInvestmentOpportunity> bigInvestmentOpportunities =
             isFundMember || !bigInvestmentOptions.Value.Enabled
             ? []
             : companies
@@ -207,6 +202,10 @@ public sealed class AiMarketSnapshotBuilder(
                     company.IssuedShares,
                     chanceRates.Value.RandomMagnitudeBands))
                 .OfType<BigInvestmentOpportunity>()
+                .Select(opportunity => new AiBigInvestmentOpportunity(
+                    opportunity.CompanyId,
+                    opportunity.MinimumAmount,
+                    opportunity.MaximumAmount))
                 .ToList();
 
         return new AiMarketSnapshot(
@@ -217,7 +216,6 @@ public sealed class AiMarketSnapshotBuilder(
             participantSnapshot,
             companies,
             industries,
-            orderBook,
             capitalizationHistory,
             sentimentHistory,
             feedback,
@@ -288,7 +286,8 @@ public sealed class AiMarketSnapshotBuilder(
                 .OrderByDescending(rating => rating.Id)
                 .ToListAsync())
             .GroupBy(rating => rating.CompanyId)
-            .ToDictionary(group => group.Key, group => group.Take(3).ToList());
+            // Send only the freshest rating per company to trim provider payload.
+            .ToDictionary(group => group.Key, group => group.Take(1).ToList());
 
         var sellOrders = await dbContext.Orders
             .Where(order => companyIds.Contains(order.CompanyId)
@@ -316,7 +315,7 @@ public sealed class AiMarketSnapshotBuilder(
             })
             .ToListAsync();
 
-        var holdingsValue = participantSnapshot.Holdings.Sum(holding => holding.CurrentValue);
+        var holdingsValue = participantSnapshot.Holdings.Sum(holding => holding.Quantity * holding.CurrentPrice);
         var exposure = automatedBuyOrderPolicy.AssessExposure(
             participant.RiskProfile,
             participantSnapshot.NetWorth,
@@ -409,7 +408,6 @@ public sealed class AiMarketSnapshotBuilder(
                 company.IndustryId,
                 industryNames.GetValueOrDefault(company.IndustryId, string.Empty),
                 price,
-                price * company.IssuedSharesCount,
                 band?.State.ToString() ?? nameof(LuldState.Normal),
                 bounds?.AllowedMinimumPrice,
                 bounds?.AllowedMaximumPrice,
@@ -458,31 +456,6 @@ public sealed class AiMarketSnapshotBuilder(
             .Select(industry => new AiIndustrySnapshot(industry.Id, industry.Name, industry.SentimentValue))
             .ToListAsync();
 
-    private async Task<AiOrderBookSnapshot> BuildOrderBookAsync()
-    {
-        var openOrders = await dbContext.Orders
-            .Where(order => order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
-            .Select(order => new
-            {
-                order.CompanyId,
-                order.Type,
-                order.LimitPrice,
-                Remaining = order.Quantity - order.FilledQuantity,
-            })
-            .ToListAsync();
-
-        var buys = openOrders
-            .Where(order => order.Type == OrderType.Buy)
-            .Select(order => new AiBookEntry(order.CompanyId, order.LimitPrice, order.Remaining))
-            .ToList();
-        var sells = openOrders
-            .Where(order => order.Type == OrderType.Sell)
-            .Select(order => new AiBookEntry(order.CompanyId, order.LimitPrice, order.Remaining))
-            .ToList();
-
-        return new AiOrderBookSnapshot(buys, sells);
-    }
-
     private async Task<AiParticipantSnapshot> BuildParticipantAsync(
         Participant participant,
         IReadOnlyDictionary<int, decimal> prices)
@@ -499,11 +472,9 @@ public sealed class AiMarketSnapshotBuilder(
                 holding.Quantity,
                 holding.SettledQuantity,
                 holding.AverageCost,
-                price,
-                holding.Quantity * price,
-                (price - holding.AverageCost) * holding.Quantity);
+                price);
         }).ToList();
-        var holdingsValue = holdingSnapshots.Sum(holding => holding.CurrentValue);
+        var holdingsValue = holdingSnapshots.Sum(holding => holding.Quantity * holding.CurrentPrice);
 
         var openOrders = await dbContext.Orders
             .Where(order => order.ParticipantId == participant.Id

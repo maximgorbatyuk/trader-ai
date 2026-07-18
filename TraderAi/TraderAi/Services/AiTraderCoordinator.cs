@@ -284,6 +284,12 @@ public sealed class AiTraderCoordinator(
         var client = services.GetRequiredService<IAiProviderClient>();
         var prepared = client.Prepare(provider, configuration.Model, prompt.SystemMessage, prompt.UserMessage);
 
+        if (options.Value.LogSnapshotSizeBreakdown)
+        {
+            logger.LogInformation(
+                "{SnapshotSizeReport}", AiSnapshotSizeReport.Build(snapshot, prompt.SystemMessage, prompt.UserMessage));
+        }
+
         var descriptor = new AiTraderCallDescriptor(
             participantId,
             participant.Name,
@@ -330,6 +336,13 @@ public sealed class AiTraderCoordinator(
             }
 
             invalidJsonRetriesRemaining--;
+        }
+
+        if (options.Value.LogSnapshotSizeBreakdown && response?.PromptTokens is { } measuredPromptTokens)
+        {
+            logger.LogInformation(
+                "AI provider {ProviderId}/{Model} measured prompt_tokens={PromptTokens} for participant {ParticipantId} (cycle {CycleNumber}).",
+                configuration.ProviderId, configuration.Model, measuredPromptTokens, participantId, snapshot.Market.CycleNumber);
         }
 
         if (execution.Status == AiTraderCallStatus.Completed && execution.Decision is not null)

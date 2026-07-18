@@ -41,8 +41,6 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         var holding = Assert.Single(snapshot.Participant.Holdings);
         Assert.Equal(seed.Company1Id, holding.CompanyId);
         Assert.Equal(135m, holding.CurrentPrice);
-        Assert.Equal(1_350m, holding.CurrentValue);
-        Assert.Equal(450m, holding.UnrealizedResult);
 
         var openOrder = Assert.Single(snapshot.Participant.OpenOrders);
         Assert.Equal(5, openOrder.RemainingQuantity);
@@ -52,10 +50,9 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.Equal(2, snapshot.Companies.Count);
         var company1 = snapshot.Companies.Single(company => company.CompanyId == seed.Company1Id);
         Assert.Equal(135m, company1.CurrentPrice);
-        Assert.Equal(135_000m, company1.Capitalization);
         Assert.Equal("Normal", company1.TradingStatus);
         Assert.Equal(115m, company1.ActiveLowerPrice);
-        Assert.Equal(3, company1.RecentRatings.Count);
+        Assert.Single(company1.RecentRatings);
         Assert.Equal("High", company1.RecentRatings[0].Rating);
 
         var company2 = snapshot.Companies.Single(company => company.CompanyId == seed.Company2Id);
@@ -63,8 +60,6 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.Empty(company2.RecentRatings);
 
         Assert.Equal(2, snapshot.Industries.Count);
-        Assert.NotEmpty(snapshot.OrderBook.Buys);
-        Assert.NotEmpty(snapshot.OrderBook.Sells);
 
         var company1CapPoints = snapshot.CapitalizationHistory.Where(point => point.CompanyId == seed.Company1Id).ToList();
         Assert.Equal(15, company1CapPoints.Count);
@@ -89,9 +84,6 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
 
         var opportunity = snapshot!.BigInvestmentOpportunities
             .Single(candidate => candidate.CompanyId == seed.Company1Id);
-        Assert.Equal("Acme", opportunity.CompanyName);
-        Assert.Equal(135m, opportunity.CurrentPrice);
-        Assert.Equal(135_000m, opportunity.Capitalization);
         Assert.Equal(54_000m, opportunity.MinimumAmount);
         Assert.Equal(80_000m, opportunity.MaximumAmount);
     }

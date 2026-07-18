@@ -31,6 +31,10 @@ public sealed class AiTradingOptions
 
     public int HistoryCycles { get; set; } = 30;
 
+    // Diagnostic toggle: when true, the coordinator logs a per-section size breakdown of each AI snapshot and the
+    // provider's measured prompt tokens, so provider input can be tuned against a model's context window.
+    public bool LogSnapshotSizeBreakdown { get; set; }
+
     public int RetryBaseDelaySeconds { get; set; } = 5;
 
     public int RetryMaxDelaySeconds { get; set; } = 300;
