@@ -9,6 +9,7 @@ import { RatingBadge } from './RatingBadge'
 import { NewsImpact } from './NewsImpact'
 import { NewsModal } from './NewsModal'
 import { OrderForm } from './OrderForm'
+import { PercentButtons } from './PercentButtons'
 import { InvestmentsTable } from './InvestmentsTable'
 import { TradeModal } from './TradeModal'
 import { Pager, SortHeader } from './TableControls'
@@ -674,6 +675,18 @@ function CorporateCashMovementsPanel({ movements, page, onPage, tableRef }) {
 // server rule; a successful deal refreshes the page so the new shares, cash, rating, and news show at once.
 const MIN_INVESTMENT_FRACTION = 0.4
 
+const CAPITAL_RAISE_PRESETS = [
+  { label: '40%', value: 0.4 },
+  { label: '50%', value: 0.5 },
+  { label: '60%', value: 0.6 },
+  { label: '70%', value: 0.7 },
+  { label: '80%', value: 0.8 },
+  { label: '90%', value: 0.9 },
+  { label: '100%', value: 1 },
+  { label: '150%', value: 1.5 },
+  { label: '200%', value: 2 },
+]
+
 function InvestmentForm({ companyId, currentPrice, marketCap, player, onPlaced }) {
   const [amount, setAmount] = useState('')
   const [submittingActor, setSubmittingActor] = useState(null)
@@ -688,6 +701,11 @@ function InvestmentForm({ companyId, currentPrice, marketCap, player, onPlaced }
 
   const value = Number(amount)
   const shares = currentPrice > 0 && value > 0 ? Math.floor(value / currentPrice) : 0
+
+  function pickAmount(fraction) {
+    if (typeof marketCap !== 'number') return
+    setAmount(String(Math.round(marketCap * fraction * 100) / 100))
+  }
 
   function disabledFor(actor) {
     if (submittingActor != null || !(value > 0) || shares < 1) return true
@@ -734,6 +752,7 @@ function InvestmentForm({ companyId, currentPrice, marketCap, player, onPlaced }
           value={amount}
           onChange={(event) => setAmount(event.target.value)}
         />
+        <PercentButtons options={CAPITAL_RAISE_PRESETS} ariaLabel="Set amount from a percentage of market cap" onPick={pickAmount} />
       </div>
       <p className="note note-sm">
         {minAmount != null ? `Minimum ${formatMoney(minAmount)} (40% of market cap).` : 'Minimum 40% of market cap.'}
