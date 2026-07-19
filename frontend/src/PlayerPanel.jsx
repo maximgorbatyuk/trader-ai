@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from './api'
 import { formatInt, formatMoney, formatSigned, formatSignedInt, toneOf } from './format'
 import { Pager, SortHeader } from './TableControls'
@@ -9,6 +9,7 @@ import { Modal } from './Modal'
 import { MoneyTransactionModal } from './MoneyTransactionModal'
 import { SettlementsTable } from './SettlementsTable'
 import { cashSettlement } from './marketAccounting'
+import { transferableSettledCash } from './participantActionsModel'
 import { FavoriteCompaniesTable } from './FavoriteCompaniesTable'
 import { favoriteCompanies } from './favoriteCompanies'
 import { FavoriteTradersTable } from './FavoriteTradersTable'
@@ -241,7 +242,7 @@ function OpenFundForm({ player, onRefresh }) {
       </p>
       <div className="field-pair">
         <label className="field">
-          <span>Seed amount (max {formatMoney(player.availableBalance)})</span>
+          <span>Seed amount (max {formatMoney(transferableSettledCash(player))})</span>
           <input
             className="select num"
             type="number"
@@ -269,7 +270,11 @@ function OpenFundForm({ player, onRefresh }) {
           {error}
         </p>
       ) : null}
-      <button type="submit" className="btn btn-primary" disabled={submitting || !(Number(seed) > 0)}>
+      <button
+        type="submit"
+        className="btn btn-primary"
+        disabled={submitting || !(Number(seed) > 0) || Number(seed) > transferableSettledCash(player)}
+      >
         {submitting ? 'Creating…' : 'Create fund'}
       </button>
     </form>
@@ -389,7 +394,7 @@ function FundSettingsModal({ player, onRefresh, onClose }) {
             <button
               type="button"
               className="btn btn-primary"
-              disabled={busy || !(amountNum > 0) || amountNum > (player.availableBalance ?? 0)}
+              disabled={busy || !(amountNum > 0) || amountNum > transferableSettledCash(player)}
               onClick={() => move('deposit')}
             >
               {busy ? '…' : 'Deposit'}
@@ -698,11 +703,22 @@ const FAVORITE_TRADERS_TAB = { key: 'favoriteTraders', label: 'Favorite traders'
 // The actor's detail views behind one tab strip so the panel stays compact: the roster tabs carry a live count,
 // and arrow keys move focus between tabs (roving tabindex) to match the order-book tablist. The fund variant
 // appends a Members tab.
-function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, members, attention, openOrders, loans, loanStatus, onLoanStatusChange, cashMoves, settlements, companies, participants, showFavoriteCompanies, onSelectCompany, onRefresh }) {
+export function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, members, attention, openOrders, loans, loanStatus, onLoanStatusChange, cashMoves, settlements, companies, participants, showFavoriteCompanies, onSelectCompany, onRefresh }) {
   const playerTabs = showFavoriteCompanies ? [...BASE_TABS, FAVORITES_TAB, FAVORITE_TRADERS_TAB] : BASE_TABS
   const tabs = members ? [...playerTabs, MEMBERS_TAB] : playerTabs
-  const [activeKey, setActiveKey] = useState('map')
+  const [searchParams, setSearchParams] = useSearchParams()
+  // Drive the active tab from the URL so each switch is a history entry and Back restores the last tab; an
+  // unknown key (a fund-only tab seen from the player view, or a hand-typed value) falls back to the map.
+  const requestedKey = searchParams.get('tab')
+  const activeKey = tabs.some((tab) => tab.key === requestedKey) ? requestedKey : 'map'
   const tabRefs = useRef({})
+
+  function selectTab(key) {
+    setSearchParams((prev) => {
+      prev.set('tab', key)
+      return prev
+    })
+  }
 
   const counts = {
     attention: attention.length,
@@ -715,7 +731,7 @@ function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, membe
   }
 
   function focusTab(key) {
-    setActiveKey(key)
+    selectTab(key)
     tabRefs.current[key]?.focus()
   }
 
@@ -745,7 +761,7 @@ function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap, membe
                 tabRefs.current[tab.key] = element
               }}
               className={`tab${selected ? ' is-active' : ''}`}
-              onClick={() => setActiveKey(tab.key)}
+              onClick={() => selectTab(tab.key)}
             >
               {tab.label}
               {tab.hasCount ? <span className="num book-tab-count">{counts[tab.key]}</span> : null}
