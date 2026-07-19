@@ -21,6 +21,7 @@ public sealed record AiTradeDecision
     }
 
     [JsonPropertyName("summary")]
+    [JsonConverter(typeof(SummaryJsonConverter))]
     public string Summary { get; init; }
 
     [JsonPropertyName("orders")]

@@ -83,9 +83,8 @@ public sealed record AiCompanySnapshot(
     int CompanyId,
     string Name,
     int IndustryId,
-    string IndustryName,
     decimal CurrentPrice,
-    string TradingStatus,
+    string? TradingStatus,
     decimal? AllowedMinimumPrice,
     decimal? AllowedMaximumPrice,
     decimal? ActiveLowerPrice,
@@ -102,8 +101,7 @@ public sealed record AiBuyEnvelopeSnapshot(
     decimal MaximumBudget,
     int MinimumQuantity,
     int MaximumQuantity,
-    bool IsPassive,
-    string StateBasis);
+    bool IsPassive);
 
 public sealed record AiRatingSnapshot(string Rating, decimal? ImpactPercent, int CycleNumber);
 
@@ -182,13 +180,17 @@ public sealed class AiMarketSnapshotBuilder(
         var participantSnapshot = await BuildParticipantAsync(participant, prices);
         var companies = await BuildCompaniesAsync(prices, cycleNumbersById, participant, participantSnapshot);
         var industries = await BuildIndustriesAsync();
-        // Capitalization and sentiment history are the largest, most redundant snapshot sections because each
-        // company's and industry's current value is already carried elsewhere. Shortening their lookback trims the
-        // provider payload with little decision cost: capitalization keeps half the window and sentiment about 70%.
-        var capitalizationCycleIds = historyCycleIds.Take(Math.Max(1, historyCycleIds.Count / 2)).ToList();
-        var sentimentCycleIds = historyCycleIds.Take(Math.Max(1, historyCycleIds.Count * 7 / 10)).ToList();
-        var capitalizationHistory = await BuildCapitalizationHistoryAsync(capitalizationCycleIds, cycleNumbersById);
-        var sentimentHistory = await BuildSentimentHistoryAsync(sentimentCycleIds, cycleNumbersById);
+        // Capitalization and sentiment history are the largest, most redundant sections because each company's and
+        // industry's current value is already carried elsewhere; both are downsampled into fixed 6-cycle averaged
+        // periods so a long window reads as a handful of representative points instead of one per cycle.
+        // Capitalization is additionally limited to companies the participant can act on this cycle (current holdings
+        // and companies with a live buyEnvelope), since it is by far the largest section.
+        var relevantCompanyIds = participantSnapshot.Holdings.Select(holding => holding.CompanyId)
+            .Concat(companies.Where(company => company.BuyEnvelope is not null).Select(company => company.CompanyId))
+            .ToHashSet();
+        var capitalizationHistory =
+            await BuildCapitalizationHistoryAsync(historyCycleIds, relevantCompanyIds, cycleNumbersById);
+        var sentimentHistory = await BuildSentimentHistoryAsync(historyCycleIds, cycleNumbersById);
         var feedback = await BuildRecentApplicationFeedbackAsync(participantId);
         IReadOnlyList<AiBigInvestmentOpportunity> bigInvestmentOpportunities =
             isFundMember || !bigInvestmentOptions.Value.Enabled
@@ -277,9 +279,6 @@ public sealed class AiMarketSnapshotBuilder(
         var bands = await dbContext.PriceBandStates
             .Where(band => companyIds.Contains(band.CompanyId))
             .ToDictionaryAsync(band => band.CompanyId);
-
-        var industryNames = await dbContext.Industries
-            .ToDictionaryAsync(industry => industry.Id, industry => industry.Name);
 
         var recentRatings = (await dbContext.CompanyRatings
                 .Where(rating => companyIds.Contains(rating.CompanyId))
@@ -406,9 +405,8 @@ public sealed class AiMarketSnapshotBuilder(
                 company.Id,
                 company.Name,
                 company.IndustryId,
-                industryNames.GetValueOrDefault(company.IndustryId, string.Empty),
                 price,
-                band?.State.ToString() ?? nameof(LuldState.Normal),
+                band is { State: var status } && status != LuldState.Normal ? status.ToString() : null,
                 bounds?.AllowedMinimumPrice,
                 bounds?.AllowedMaximumPrice,
                 bounds?.ActiveLowerPrice,
@@ -424,8 +422,7 @@ public sealed class AiMarketSnapshotBuilder(
                         envelope.MaximumBudget,
                         envelope.MinimumQuantity,
                         envelope.MaximumQuantity,
-                        envelope.IsPassive,
-                        "CurrentOpenOrdersBeforeCancellations"),
+                        envelope.IsPassive),
                 ratings);
         }).ToList();
     }
@@ -607,22 +604,61 @@ public sealed class AiMarketSnapshotBuilder(
         return reasons.Distinct().Take(5).ToList();
     }
 
+    // Consecutive cycles are averaged into fixed-width periods so a long window compresses to a few representative
+    // points; averaging also smooths single-cycle spikes better than sampling one cycle per period would.
+    private const int HistoryBucketCycles = 6;
+
+    // Snaps a cycle to the most-recent cycle of its fixed-width bucket, counting back from the newest cycle so the
+    // latest bucket always aligns to it and both history charts share one period grid.
+    private static int BucketCycle(int newestCycleNumber, int cycleNumber)
+        => newestCycleNumber - ((newestCycleNumber - cycleNumber) / HistoryBucketCycles) * HistoryBucketCycles;
+
     private async Task<IReadOnlyList<AiCapitalizationHistoryPoint>> BuildCapitalizationHistoryAsync(
         IReadOnlyList<int> historyCycleIds,
+        IReadOnlyCollection<int> companyIds,
         IReadOnlyDictionary<int, int> cycleNumbersById)
     {
+        if (companyIds.Count == 0)
+        {
+            return [];
+        }
+
         var snapshots = await dbContext.PriceSnapshots
-            .Where(snapshot => historyCycleIds.Contains(snapshot.CreatedInCycleId))
+            .Where(snapshot => historyCycleIds.Contains(snapshot.CreatedInCycleId)
+                && companyIds.Contains(snapshot.CompanyId))
             .Select(snapshot => new { snapshot.Id, snapshot.CompanyId, snapshot.CreatedInCycleId, snapshot.Capitalization })
             .ToListAsync();
 
-        return snapshots
+        var latestPerCycle = snapshots
             .GroupBy(snapshot => new { snapshot.CompanyId, snapshot.CreatedInCycleId })
             .Select(group => group.OrderByDescending(snapshot => snapshot.Id).First())
-            .Select(snapshot => new AiCapitalizationHistoryPoint(
+            .Select(snapshot => new
+            {
                 snapshot.CompanyId,
-                cycleNumbersById.GetValueOrDefault(snapshot.CreatedInCycleId),
-                snapshot.Capitalization))
+                CycleNumber = cycleNumbersById.GetValueOrDefault(snapshot.CreatedInCycleId),
+                snapshot.Capitalization,
+            })
+            .Where(point => point.Capitalization is not null)
+            .ToList();
+
+        if (latestPerCycle.Count == 0)
+        {
+            return [];
+        }
+
+        // Buckets are counted back from the most recent cycle so the latest period always aligns to the current cycle.
+        var newestCycleNumber = latestPerCycle.Max(point => point.CycleNumber);
+
+        return latestPerCycle
+            .GroupBy(point => new
+            {
+                point.CompanyId,
+                BucketCycle = BucketCycle(newestCycleNumber, point.CycleNumber),
+            })
+            .Select(group => new AiCapitalizationHistoryPoint(
+                group.Key.CompanyId,
+                group.Key.BucketCycle,
+                Math.Round(group.Average(point => point.Capitalization!.Value), 2)))
             .OrderBy(point => point.CompanyId)
             .ThenBy(point => point.CycleNumber)
             .ToList();
@@ -637,13 +673,34 @@ public sealed class AiMarketSnapshotBuilder(
             .Select(snapshot => new { snapshot.Id, snapshot.IndustryId, snapshot.CreatedInCycleId, snapshot.SentimentValue })
             .ToListAsync();
 
-        return snapshots
+        var latestPerCycle = snapshots
             .GroupBy(snapshot => new { snapshot.IndustryId, snapshot.CreatedInCycleId })
             .Select(group => group.OrderByDescending(snapshot => snapshot.Id).First())
-            .Select(snapshot => new AiSentimentHistoryPoint(
+            .Select(snapshot => new
+            {
                 snapshot.IndustryId,
-                cycleNumbersById.GetValueOrDefault(snapshot.CreatedInCycleId),
-                snapshot.SentimentValue))
+                CycleNumber = cycleNumbersById.GetValueOrDefault(snapshot.CreatedInCycleId),
+                snapshot.SentimentValue,
+            })
+            .ToList();
+
+        if (latestPerCycle.Count == 0)
+        {
+            return [];
+        }
+
+        var newestCycleNumber = latestPerCycle.Max(point => point.CycleNumber);
+
+        return latestPerCycle
+            .GroupBy(point => new
+            {
+                point.IndustryId,
+                BucketCycle = BucketCycle(newestCycleNumber, point.CycleNumber),
+            })
+            .Select(group => new AiSentimentHistoryPoint(
+                group.Key.IndustryId,
+                group.Key.BucketCycle,
+                (int)Math.Round(group.Average(point => point.SentimentValue), MidpointRounding.AwayFromZero)))
             .OrderBy(point => point.IndustryId)
             .ThenBy(point => point.CycleNumber)
             .ToList();

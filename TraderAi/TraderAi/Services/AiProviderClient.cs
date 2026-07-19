@@ -44,6 +44,11 @@ public sealed class AiProviderClient(IHttpClientFactory httpClientFactory, IOpti
             },
         };
 
+        if (options.Value.MaxResponseTokens > 0)
+        {
+            payload["max_tokens"] = options.Value.MaxResponseTokens;
+        }
+
         // GLM exposes an explicit switch to suppress chain-of-thought. MiniMax has no such flag and returns its
         // reasoning inline in the response content, which ParseSuccess strips before the strict decision parse.
         if (provider.Id == "glm")

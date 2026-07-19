@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TraderAi.Services;
 
@@ -8,8 +9,13 @@ namespace TraderAi.Services;
 // heuristic (chars / CharsPerToken) that should be calibrated against a provider's measured prompt_tokens.
 public static class AiSnapshotSizeReport
 {
+    // Mirrors AiTradingPromptBuilder's user-message serializer so the reported sizes match what is actually sent.
     private static readonly JsonSerializerOptions SerializerOptions =
-        new(JsonSerializerDefaults.Web) { WriteIndented = false };
+        new(JsonSerializerDefaults.Web)
+        {
+            WriteIndented = false,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        };
 
     // Mixed prose (docs) and dense numeric JSON land near this ratio; the coordinator also logs the provider's real
     // prompt_tokens so the divisor can be corrected per provider.

@@ -12,7 +12,12 @@ public sealed class AiTradingOptions
 
     public int ScanIntervalMilliseconds { get; set; } = 500;
 
-    public int RequestTimeoutSeconds { get; set; } = 120;
+    public int RequestTimeoutSeconds { get; set; } = 300;
+
+    // Caps a provider's generated tokens. A non-streaming call holds the connection open until the whole reply is
+    // produced, so an unbounded reasoning model can outrun RequestTimeoutSeconds; bounding output keeps generation
+    // time in check. Zero disables the cap.
+    public int MaxResponseTokens { get; set; } = 32768;
 
     public int MaxConcurrentRequests { get; set; } = 4;
 
@@ -54,7 +59,7 @@ public sealed class AiTradingOptions
         - Do not short sell. Only sell shares the participant already owns.
         - You retain final authority over each exact limitPrice and quantity. The backend never adjusts them; a buyEnvelope is safe at its orderPrice, and if you choose another price inside the active and allowed bounds, its quantity limits are recomputed at that exact price before acceptance.
         - When maximumPrioritySafeBuyPrice is present, do not submit a higher buy price: existing demand has priority over supply at that ceiling. A buyEnvelope may guide a passive bid at the priority ceiling when crossing a higher residual sell would be unsafe. A missing buyEnvelope means no buy currently satisfies the exact market, exposure, and priority constraints.
-        - A buyEnvelope whose stateBasis is CurrentOpenOrdersBeforeCancellations is computed before cancelOrderIds. Cancellations are applied first, then exact price and quantity limits are recomputed; a replacement may be rejected.
+        - A buyEnvelope is computed against current open orders before cancelOrderIds. Cancellations are applied first, then exact price and quantity limits are recomputed; a replacement may be rejected.
         - bigInvestmentOpportunities lists the companies currently eligible for direct funding and the exact minimumAmount and maximumAmount available for each. Set bigInvestment to null when none advances the objective; otherwise choose one listed company and retain final authority over the exact amount inside its bounds. The amount must buy a whole number of shares at currentPrice; the backend rejects rather than adjusts it.
         - Cancellations are applied first, then bigInvestment, then orders. A big investment mints immediately settled shares, spends settled cash, and may move the company price; the remaining order context is rebuilt before orders are checked.
         - A big investment and every order in one response draw from the same cash, exposure headroom, and executable supply. Each buyEnvelope is computed as if it were your only new order this turn, so budget across the whole batch: an investment or several buys sized to their individual maxima can exhaust shared limits and get later orders rejected.

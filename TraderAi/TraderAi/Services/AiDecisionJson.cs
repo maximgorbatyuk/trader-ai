@@ -148,3 +148,48 @@ public static class AiDecisionJson
         return true;
     }
 }
+
+// Some models return "summary" as an array of clause strings even though the schema asks for one string, because
+// the instruction requests a few conclusion clauses. Accepting that shape and joining it keeps an otherwise-valid
+// decision instead of discarding every order over a cosmetic field; a non-string element still fails so orders are
+// never coerced from malformed data.
+public sealed class SummaryJsonConverter : JsonConverter<string>
+{
+    public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            return reader.GetString() ?? string.Empty;
+        }
+
+        if (reader.TokenType == JsonTokenType.StartArray)
+        {
+            var clauses = new List<string>();
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndArray)
+                {
+                    return string.Join("; ", clauses);
+                }
+
+                if (reader.TokenType != JsonTokenType.String)
+                {
+                    throw new JsonException("Each summary array element must be a string.");
+                }
+
+                var clause = reader.GetString();
+                if (!string.IsNullOrWhiteSpace(clause))
+                {
+                    clauses.Add(clause.Trim());
+                }
+            }
+
+            throw new JsonException("The summary array was not terminated.");
+        }
+
+        throw new JsonException("The summary must be a string or an array of strings.");
+    }
+
+    public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options)
+        => writer.WriteStringValue(value);
+}

@@ -32,6 +32,31 @@ public sealed class AiDecisionJsonTests
     }
 
     [Fact]
+    public void ArraySummaryIsJoinedIntoOneString()
+    {
+        var json = """
+        {
+          "summary": ["Exposure far below minimum", "Deploying large positions", "Avoiding paused companies"],
+          "cancelOrderIds": [],
+          "bigInvestment": null,
+          "orders": []
+        }
+        """;
+
+        Assert.True(AiDecisionJson.TryParse(json, MaxOrders, out var decision, out var error));
+        Assert.Null(error);
+        Assert.Equal("Exposure far below minimum; Deploying large positions; Avoiding paused companies", decision!.Summary);
+    }
+
+    [Fact]
+    public void NonStringSummaryArrayElementFails()
+    {
+        var json = """{ "summary": ["ok", 3], "cancelOrderIds": [], "bigInvestment": null, "orders": [] }""";
+        Assert.False(AiDecisionJson.TryParse(json, MaxOrders, out _, out var error));
+        Assert.NotNull(error);
+    }
+
+    [Fact]
     public void EmptyOrdersIsAValidWaitDecision()
     {
         var json = """{ "summary": "Wait this cycle.", "cancelOrderIds": [], "bigInvestment": null, "orders": [] }""";

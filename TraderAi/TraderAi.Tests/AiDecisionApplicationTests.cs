@@ -738,7 +738,6 @@ public sealed class AiDecisionApplicationTests : IDisposable
         Assert.Equal(90m, company.BestExecutableSellPrice);
         Assert.Equal(2, company.BestExecutableSellQuantity);
         Assert.Equal(2, company.BuyEnvelope!.MaximumQuantity);
-        Assert.Equal("CurrentOpenOrdersBeforeCancellations", company.BuyEnvelope.StateBasis);
 
         var result = await marketService.ApplyAiDecisionAsync(
             seed.ParticipantId,

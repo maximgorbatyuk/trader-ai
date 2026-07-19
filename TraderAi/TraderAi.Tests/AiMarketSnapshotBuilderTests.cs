@@ -50,7 +50,7 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.Equal(2, snapshot.Companies.Count);
         var company1 = snapshot.Companies.Single(company => company.CompanyId == seed.Company1Id);
         Assert.Equal(135m, company1.CurrentPrice);
-        Assert.Equal("Normal", company1.TradingStatus);
+        Assert.Null(company1.TradingStatus);
         Assert.Equal(115m, company1.ActiveLowerPrice);
         Assert.Single(company1.RecentRatings);
         Assert.Equal("High", company1.RecentRatings[0].Rating);
@@ -61,12 +61,27 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
 
         Assert.Equal(2, snapshot.Industries.Count);
 
-        var company1CapPoints = snapshot.CapitalizationHistory.Where(point => point.CompanyId == seed.Company1Id).ToList();
-        Assert.Equal(15, company1CapPoints.Count);
-        Assert.Equal(21, company1CapPoints.Min(point => point.CycleNumber));
+        var company1CapPoints = snapshot.CapitalizationHistory
+            .Where(point => point.CompanyId == seed.Company1Id)
+            .OrderBy(point => point.CycleNumber)
+            .ToList();
+        // The 30-cycle window (cycles 6-35) is averaged into five 6-cycle periods labelled by their most recent cycle.
+        Assert.Equal(5, company1CapPoints.Count);
+        Assert.Equal(11, company1CapPoints.Min(point => point.CycleNumber));
         Assert.Equal(35, company1CapPoints.Max(point => point.CycleNumber));
+        // The latest period averages capitalization over cycles 30-35: mean(130..135) x 1000 shares.
+        Assert.Equal(132_500m, company1CapPoints.Single(point => point.CycleNumber == 35).Capitalization!.Value);
 
-        Assert.Equal(21, snapshot.SentimentHistory.Count(point => point.IndustryId == seed.Industry1Id));
+        var industry1SentimentPoints = snapshot.SentimentHistory
+            .Where(point => point.IndustryId == seed.Industry1Id)
+            .OrderBy(point => point.CycleNumber)
+            .ToList();
+        // The same 30-cycle window is averaged into five 6-cycle periods, matching the capitalization chart.
+        Assert.Equal(5, industry1SentimentPoints.Count);
+        Assert.Equal(11, industry1SentimentPoints.Min(point => point.CycleNumber));
+        Assert.Equal(35, industry1SentimentPoints.Max(point => point.CycleNumber));
+        // The latest period averages sentiment over cycles 30-35: mean(30..35) rounds to 33.
+        Assert.Equal(33, industry1SentimentPoints.Single(point => point.CycleNumber == 35).SentimentValue);
         Assert.Empty(snapshot.BigInvestmentOpportunities);
     }
 
@@ -407,7 +422,6 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.NotNull(company.BuyEnvelope);
         Assert.Equal(90m, company.BuyEnvelope!.OrderPrice);
         Assert.True(company.BuyEnvelope.IsPassive);
-        Assert.Equal("CurrentOpenOrdersBeforeCancellations", company.BuyEnvelope.StateBasis);
     }
 
     [Fact]
