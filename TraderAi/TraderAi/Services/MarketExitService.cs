@@ -29,15 +29,15 @@ public sealed class MarketExitService(
 
     // The active-trader roster — individuals, AI agents, and collective funds combined — never exceeds this; a new
     // trader appears only while the roster is below it.
-    private const int MaxActiveTraders = 300;
+    private const int MaxActiveTraders = 800;
 
     // A newly appearing trader draws a whole-dollar balance from the same whale/regular split the demo seed uses,
     // so its starting stats match a seeded trader: a small share start as deep-pocketed whales, the rest regular.
     private const double WhaleShare = 0.15;
-    private const int WhaleMinBalance = 100_000;
-    private const int WhaleMaxBalance = 2_000_000_000;
+    private const int WhaleMinBalance = 200_000;
+    private const int WhaleMaxBalance = 2_000_000;
     private const int RegularMinBalance = 10_000;
-    private const int RegularMaxBalance = 200_000;
+    private const int RegularMaxBalance = 300_000;
 
     private static readonly Temperament[] Temperaments =
         [Temperament.Aggressive, Temperament.Balanced, Temperament.Conservative];

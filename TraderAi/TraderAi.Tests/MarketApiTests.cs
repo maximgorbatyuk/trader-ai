@@ -717,7 +717,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             var openOrders = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
 
             Assert.Equal(100, companies!.Length);
-            Assert.Equal(300, participants!.Length);
+            Assert.Equal(600, participants!.Length);
             Assert.Equal(100, openOrders!.Length);
             Assert.All(openOrders, order =>
             {

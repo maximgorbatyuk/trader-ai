@@ -126,41 +126,41 @@ public sealed class MarketExitServiceTests : IDisposable
         var incumbent = await AddTraderAsync(currentBalance: 60_000m, cannotBuyCycles: 0, name: "Incumbent");
 
         // Appearance fires on 0.05; the whale roll 0.10 clears the 0.15 whale share, so the balance is drawn from
-        // the deep whale band that only seeded whales otherwise reach.
-        await Service(enabled: true, new ScriptedRandom([0.05d, 0.10d], [1_500_000_000, 0, 0, 0]))
+        // the whale band, well above the regular band.
+        await Service(enabled: true, new ScriptedRandom([0.05d, 0.10d], [1_500_000, 0, 0, 0]))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         var appeared = await context.Participants.AsNoTracking().SingleAsync(participant => participant.Id != incumbent.Id);
         Assert.Equal(ParticipantType.Individual, appeared.Type);
-        Assert.Equal(1_500_000_000m, appeared.InitialBalance);
-        Assert.Equal(1_500_000_000m, appeared.CurrentBalance);
+        Assert.Equal(1_500_000m, appeared.InitialBalance);
+        Assert.Equal(1_500_000m, appeared.CurrentBalance);
     }
 
     [Fact]
     public async Task NoTraderAppearsWhenRosterIsAtTheCap()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);
-        await AddFillerTradersAsync(300);
+        await AddFillerTradersAsync(800);
 
-        // The roster already holds the cap of 300 traders, so the appearance pass draws nothing — an empty script
+        // The roster already holds the cap of 800 traders, so the appearance pass draws nothing — an empty script
         // must never be dequeued.
         await Service(enabled: true, new ScriptedRandom([], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         Assert.Equal(0, await context.MarketExits.CountAsync());
-        Assert.Equal(300, await context.Participants.CountAsync());
+        Assert.Equal(800, await context.Participants.CountAsync());
     }
 
     [Fact]
     public async Task DepartureFreesASlotForASameCycleAppearance()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);
-        await AddFillerTradersAsync(299);
+        await AddFillerTradersAsync(799);
         var starved = await AddTraderAsync(currentBalance: 10_000m, cannotBuyCycles: 20, name: "Starved");
 
-        // The roster is at the cap of 300. The starved trader departs on 0.10, dropping the in-memory count to 299,
+        // The roster is at the cap of 800. The starved trader departs on 0.10, dropping the in-memory count to 799,
         // so the appearance roll fires on 0.05 (whale miss 0.99) and one new trader fills the freed slot.
         await Service(enabled: true, new ScriptedRandom([0.10d, 0.05d, 0.99d], [55_000, 0, 0, 0]))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
@@ -168,7 +168,7 @@ public sealed class MarketExitServiceTests : IDisposable
 
         Assert.False(await context.Participants.AnyAsync(participant => participant.Id == starved.Id));
         Assert.Equal(1, await context.MarketExits.CountAsync());
-        Assert.Equal(300, await context.Participants.CountAsync());
+        Assert.Equal(800, await context.Participants.CountAsync());
     }
 
     [Fact]

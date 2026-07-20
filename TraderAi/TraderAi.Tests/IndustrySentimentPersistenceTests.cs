@@ -295,13 +295,13 @@ public sealed class IndustrySentimentPersistenceTests : IClassFixture<WebApplica
     {
         var random = new Random(20260619);
         var namesType = typeof(MarketService).Assembly.GetType("TraderAi.Services.DemoMarketNames")!;
-        namesType.GetMethod("PickPeople", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, [300, random]);
+        namesType.GetMethod("PickPeople", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, [600, random]);
         namesType.GetMethod("PickCompanies", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, [100, random]);
 
-        for (var index = 0; index < 300; index++)
+        for (var index = 0; index < 600; index++)
         {
             var isWhale = random.NextDouble() < 0.15;
-            random.NextInt64(isWhale ? 100_000 : 10_000, isWhale ? 2_000_000_001 : 200_001);
+            random.NextInt64(isWhale ? 200_000 : 10_000, isWhale ? 2_000_001 : 300_001);
         }
 
         var companies = Enumerable.Range(0, 100)
