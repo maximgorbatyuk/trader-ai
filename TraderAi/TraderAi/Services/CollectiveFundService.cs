@@ -844,7 +844,11 @@ public sealed class CollectiveFundService(
         {
             var borrowShortfall = deposit - TransferableCash(fundParticipant);
             var principal = borrowShortfall * (1m + loanOptions.Value.LeavePayoutLoanBufferRate);
-            await loanService.OriginateLoanAsync(fundParticipant, principal, FundNetWorth(fundParticipant), currentCycleId, now);
+            var currentTradingDayId = await dbContext.MarketCycles
+                .Where(cycle => cycle.Id == currentCycleId)
+                .Select(cycle => cycle.TradingDayId)
+                .FirstOrDefaultAsync();
+            await loanService.OriginateLoanAsync(fundParticipant, principal, FundNetWorth(fundParticipant), currentCycleId, currentTradingDayId, now);
         }
 
         if (TransferableCash(fundParticipant) >= deposit)

@@ -904,7 +904,7 @@ function LoansPanel({ loans, status, onStatusChange }) {
                   Taken
                 </th>
                 <th scope="col" className="ta-r">
-                  Interest/cyc
+                  Interest/day
                 </th>
                 <th scope="col" className="ta-r">
                   Remaining
@@ -935,8 +935,8 @@ function LoansPanel({ loans, status, onStatusChange }) {
                   </th>
                   <td className="num ta-r">{formatMoney(loan.principal)}</td>
                   <td className="num ta-r">
-                    {formatMoney(loan.interestPerCycleAmount)}
-                    <span className="muted-sub"> {(loan.interestRatePerCycle * 100).toFixed(3)}%</span>
+                    {formatMoney(loan.interestPerTradingDayAmount)}
+                    <span className="muted-sub"> +{(loan.interestRate * 100).toFixed(1)}%</span>
                   </td>
                   <td className="num ta-r">{formatMoney(loan.remainingPrincipal)}</td>
                   <td className={`num ta-r${loan.pastDuePrincipal > 0 ? ' tone-attention' : ' muted-sub'}`}>
@@ -949,7 +949,7 @@ function LoansPanel({ loans, status, onStatusChange }) {
                     {formatMoney(loan.accruedFees)}
                   </td>
                   <td className="num ta-r">{formatMoney(loan.totalLiability)}</td>
-                  <td className="num ta-r">{loan.isClosed ? '—' : `${formatInt(loan.remainingTermCycles)} cyc`}</td>
+                  <td className="num ta-r">{loan.isClosed ? '—' : `${formatInt(loan.remainingTermTradingDays)} d`}</td>
                   <td>
                     {loan.isClosed ? (
                       <span className="tag" title={loan.closeReason ?? undefined}>

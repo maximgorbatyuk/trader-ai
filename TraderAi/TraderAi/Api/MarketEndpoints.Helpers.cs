@@ -32,10 +32,12 @@ public static partial class MarketEndpoints
         var participantNames = await LoanParticipantNamesAsync(dbContext, participantIds);
 
         var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
-        var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+        var tradingDayNumbersById = await dbContext.TradingDays
+            .ToDictionaryAsync(day => day.Id, day => day.DayNumber);
+        var currentTradingDayNumber = await CurrentTradingDayNumberAsync(dbContext);
 
         return loans
-            .Select(loan => ToLoanResponse(loan, bankNames, participantNames, cycleNumbersById, currentCycleNumber))
+            .Select(loan => ToLoanResponse(loan, bankNames, participantNames, cycleNumbersById, tradingDayNumbersById, currentTradingDayNumber))
             .ToList();
     }
 
@@ -44,11 +46,14 @@ public static partial class MarketEndpoints
         IReadOnlyDictionary<int, string> bankNames,
         IReadOnlyDictionary<int, string> participantNames,
         IReadOnlyDictionary<int, int> cycleNumbersById,
-        int currentCycleNumber)
+        IReadOnlyDictionary<int, int> tradingDayNumbersById,
+        int currentTradingDayNumber)
     {
-        var openedNumber = cycleNumbersById.GetValueOrDefault(loan.OpenedInCycleId);
-        var dueNumber = openedNumber + loan.TermCycles;
-        var interestPerCycle = Math.Round(loan.RemainingPrincipal * loan.InterestRatePerCycle, 2, MidpointRounding.AwayFromZero);
+        var openedNumber = tradingDayNumbersById.GetValueOrDefault(loan.OpenedInTradingDayId);
+        var dueNumber = openedNumber + loan.TermTradingDays;
+        var interestPerTradingDay = loan.TermTradingDays > 0
+            ? Math.Round(loan.Principal * loan.InterestRate / loan.TermTradingDays, 2, MidpointRounding.AwayFromZero)
+            : 0m;
 
         return new LoanResponse(
             loan.Id,
@@ -58,17 +63,17 @@ public static partial class MarketEndpoints
             participantNames.GetValueOrDefault(loan.ParticipantId, $"#{loan.ParticipantId}"),
             loan.Principal,
             loan.RemainingPrincipal,
-            loan.InterestRatePerCycle,
-            interestPerCycle,
+            loan.InterestRate,
+            interestPerTradingDay,
             loan.ScheduledInstallment,
             loan.PastDuePrincipal,
             loan.PastDueInterest,
             loan.AccruedFees,
             loan.TotalLiability,
-            loan.TermCycles,
+            loan.TermTradingDays,
             openedNumber,
             dueNumber,
-            Math.Max(0, dueNumber - currentCycleNumber),
+            Math.Max(0, dueNumber - currentTradingDayNumber),
             loan.Status.ToString(),
             loan.ClosedInCycleId is int closedCycleId ? cycleNumbersById.GetValueOrDefault(closedCycleId) : null,
             loan.Status == LoanStatus.Closed,
@@ -584,6 +589,14 @@ public static partial class MarketEndpoints
             .Select(cycle => cycle.CycleNumber)
             .FirstOrDefaultAsync();
     }
+
+    // The number of the market's active trading day, or zero when no market or day is set.
+    private static async Task<int> CurrentTradingDayNumberAsync(AppDbContext dbContext) =>
+        await (
+                from market in dbContext.Markets
+                join day in dbContext.TradingDays on market.CurrentTradingDayId equals day.Id
+                select (int?)day.DayNumber)
+            .FirstOrDefaultAsync() ?? 0;
 
     private static async Task<CompanyDetailResponse?> BuildCompanyDetailAsync(
         AppDbContext dbContext,

@@ -786,7 +786,7 @@ export function ActorTabs({ participantId, canCancelOrders, orderBook, marketMap
           <SettlementsSection settlements={settlements} onSelectCompany={onSelectCompany} />
         ) : null}
         {activeKey === 'loans' ? (
-          <LoansSection loans={loans} status={loanStatus} onStatusChange={onLoanStatusChange} onRepaid={onRefresh} />
+          <LoansSection loans={loans} status={loanStatus} participantId={participantId} onStatusChange={onLoanStatusChange} onRepaid={onRefresh} />
         ) : null}
         {activeKey === 'favorites' ? (
           <div className="modal-section player-section">
@@ -1034,10 +1034,12 @@ function MemberLeaveCountdown({ member }) {
   return formatSignedInt(member.leaveCountdownTradingDays)
 }
 
-function LoansSection({ loans, status, onStatusChange, onRepaid }) {
+function LoansSection({ loans, status, participantId, onStatusChange, onRepaid }) {
   const [amounts, setAmounts] = useState({})
   const [busyId, setBusyId] = useState(null)
   const [error, setError] = useState(null)
+  const [borrowAmount, setBorrowAmount] = useState('')
+  const [borrowing, setBorrowing] = useState(false)
 
   async function repay(loanId, amount) {
     setError(null)
@@ -1053,6 +1055,20 @@ function LoansSection({ loans, status, onStatusChange, onRepaid }) {
     }
   }
 
+  async function borrow() {
+    setError(null)
+    setBorrowing(true)
+    try {
+      await api.borrowLoan(participantId, Number(borrowAmount))
+      setBorrowAmount('')
+      await onRepaid()
+    } catch (borrowError) {
+      setError(borrowError.message)
+    } finally {
+      setBorrowing(false)
+    }
+  }
+
   return (
     <div className="modal-section player-section">
       <div className="book-filter">
@@ -1065,6 +1081,27 @@ function LoansSection({ loans, status, onStatusChange, onRepaid }) {
           <option value="active">Active</option>
           <option value="all">All</option>
         </select>
+        <span style={{ display: 'inline-flex', gap: '0.25rem', marginLeft: 'auto' }}>
+          <input
+            className="select select-sm"
+            style={{ width: '7rem' }}
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="Amount"
+            value={borrowAmount}
+            onChange={(event) => setBorrowAmount(event.target.value)}
+            aria-label="Amount to borrow"
+          />
+          <button
+            type="button"
+            className="btn select-sm"
+            disabled={borrowing || !(Number(borrowAmount) > 0)}
+            onClick={borrow}
+          >
+            {borrowing ? '…' : 'Take a loan'}
+          </button>
+        </span>
       </div>
       {error ? (
         <p className="command-error" role="alert">
@@ -1083,7 +1120,7 @@ function LoansSection({ loans, status, onStatusChange, onRepaid }) {
                   Taken
                 </th>
                 <th scope="col" className="ta-r">
-                  Interest/cyc
+                  Interest/day
                 </th>
                 <th scope="col" className="ta-r">
                   Remain
@@ -1118,8 +1155,8 @@ function LoansSection({ loans, status, onStatusChange, onRepaid }) {
                     </th>
                     <td className="num ta-r">{formatMoney(loan.principal)}</td>
                     <td className="num ta-r">
-                      {formatMoney(loan.interestPerCycleAmount)}
-                      <span className="muted-sub"> {(loan.interestRatePerCycle * 100).toFixed(3)}%</span>
+                      {formatMoney(loan.interestPerTradingDayAmount)}
+                      <span className="muted-sub"> +{(loan.interestRate * 100).toFixed(1)}%</span>
                     </td>
                     <td className="num ta-r">{formatMoney(loan.remainingPrincipal)}</td>
                     <td className={`num ta-r${loan.pastDuePrincipal > 0 ? ' tone-attention' : ' muted-sub'}`}>
@@ -1132,7 +1169,7 @@ function LoansSection({ loans, status, onStatusChange, onRepaid }) {
                       {formatMoney(loan.accruedFees)}
                     </td>
                     <td className="num ta-r">{formatMoney(loan.totalLiability)}</td>
-                    <td className="num ta-r">{loan.isClosed ? '—' : `${formatInt(loan.remainingTermCycles)} cyc`}</td>
+                    <td className="num ta-r">{loan.isClosed ? '—' : `${formatInt(loan.remainingTermTradingDays)} d`}</td>
                     <td className="ta-r">
                       {loan.isClosed ? (
                         <span className="muted-sub">Closed</span>

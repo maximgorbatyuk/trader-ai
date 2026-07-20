@@ -5,7 +5,7 @@ namespace TraderAi.Api;
 public sealed record BankResponse(
     int Id,
     string Name,
-    decimal InterestRatePerCycle,
+    decimal InterestRate,
     decimal Balance,
     int OpenLoanCount,
     decimal OutstandingPrincipal);
@@ -18,17 +18,17 @@ public sealed record LoanResponse(
     string ParticipantName,
     decimal Principal,
     decimal RemainingPrincipal,
-    decimal InterestRatePerCycle,
-    decimal InterestPerCycleAmount,
+    decimal InterestRate,
+    decimal InterestPerTradingDayAmount,
     decimal ScheduledInstallment,
     decimal PastDuePrincipal,
     decimal PastDueInterest,
     decimal AccruedFees,
     decimal TotalLiability,
-    int TermCycles,
-    int OpenedInCycleNumber,
-    int DueInCycleNumber,
-    int RemainingTermCycles,
+    int TermTradingDays,
+    int OpenedInTradingDayNumber,
+    int DueTradingDayNumber,
+    int RemainingTermTradingDays,
     string Status,
     int? ClosedInCycleNumber,
     bool IsClosed,
@@ -37,6 +37,8 @@ public sealed record LoanResponse(
 public sealed record PagedLoansResponse(LoanResponse[] Items, int Total, int Page, int PageSize);
 
 public sealed record RepayLoanRequest(decimal? Amount);
+
+public sealed record BorrowLoanRequest(decimal Amount);
 
 public sealed record BankruptcyResponse(
     int Id,

@@ -6,13 +6,13 @@ import { Panel } from './Panel'
 
 const POLL_INTERVAL_MS = 2500
 
-// A per-cycle rate reads more clearly framed the way the bank quotes it: rate × 50 cycles as a percentage.
-function rateNote(ratePerCycle) {
-  if (typeof ratePerCycle !== 'number') return '—'
-  return `${(ratePerCycle * 100).toFixed(3)}% / cycle · ≈ ${(ratePerCycle * 50 * 100).toFixed(1)}% / 50 cyc`
+// The bank quotes a single total-interest rate charged over a loan's whole term.
+function rateNote(interestRate) {
+  if (typeof interestRate !== 'number') return '—'
+  return `${(interestRate * 100).toFixed(1)}% total per loan`
 }
 
-// Roster of lending banks with their per-cycle rate and current outstanding book.
+// Roster of lending banks with their total-interest rate and current outstanding book.
 function BanksPage() {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
@@ -82,7 +82,7 @@ function BanksPage() {
                         <th scope="row" className="cell-ellipsis">
                           {bank.name}
                         </th>
-                        <td className="num">{rateNote(bank.interestRatePerCycle)}</td>
+                        <td className="num">{rateNote(bank.interestRate)}</td>
                         <td className="num ta-r">{formatMoney(bank.balance)}</td>
                         <td className="num ta-r">{formatInt(bank.openLoanCount)}</td>
                         <td className="num ta-r">{formatMoney(bank.outstandingPrincipal)}</td>

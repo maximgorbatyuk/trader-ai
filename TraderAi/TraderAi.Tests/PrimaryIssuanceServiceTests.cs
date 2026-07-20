@@ -730,7 +730,7 @@ public sealed class PrimaryIssuanceServiceTests : IDisposable
             ParticipantId = participant.Id,
             Principal = 1_000m,
             RemainingPrincipal = 1_000m,
-            TermCycles = 10,
+            TermTradingDays = 10,
             ScheduledInstallment = 100m,
             Status = LoanStatus.Open,
             OpenedInCycleId = cycleId,

@@ -581,7 +581,7 @@ public sealed class MatchingEngine(
             return existing;
         }
 
-        var created = new Bank { Name = feeBankName, InterestRatePerCycle = 0m };
+        var created = new Bank { Name = feeBankName, InterestRate = 0m };
         dbContext.Banks.Add(created);
         return created;
     }

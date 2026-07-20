@@ -482,7 +482,7 @@ public sealed class PlayerFundTests : IDisposable
         await market.OpenPlayerFundAsync(4_000m, null);
         var fund = await context.CollectiveFunds.SingleAsync();
         var cycleId = (await context.Markets.SingleAsync()).CurrentCycleId!.Value;
-        var bank = new Bank { Name = "Test bank", InterestRatePerCycle = 0.001m };
+        var bank = new Bank { Name = "Test bank", InterestRate = 0.10m };
         context.Banks.Add(bank);
         await context.SaveChangesAsync();
         context.Loans.Add(new Loan
@@ -491,8 +491,8 @@ public sealed class PlayerFundTests : IDisposable
             ParticipantId = fund.ParticipantId,
             Principal = 500m,
             RemainingPrincipal = 500m,
-            InterestRatePerCycle = 0.001m,
-            TermCycles = 10,
+            InterestRate = 0.10m,
+            TermTradingDays = 10,
             ScheduledInstallment = 50m,
             Status = LoanStatus.Open,
             OpenedInCycleId = cycleId,

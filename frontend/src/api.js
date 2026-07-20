@@ -104,6 +104,7 @@ export const api = {
   getParticipantLoans: (participantId, { status } = {}) =>
     get(`/participants/${participantId}/loans${toQuery({ status })}`),
   repayLoan: (loanId, amount) => post(`/loans/${loanId}/repay`, amount != null ? { amount } : undefined),
+  borrowLoan: (participantId, amount) => post(`/participants/${participantId}/loans`, { amount }),
   getNewsThemes: (scope) => get(`/news/themes${toQuery({ scope })}`),
   getIndustries: () => get('/industries'),
   getIndustry: (industryId) => get(`/industries/${industryId}`),

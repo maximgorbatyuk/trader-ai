@@ -82,7 +82,7 @@ public static partial class MarketEndpoints
                 .Select(bank => new BankResponse(
                     bank.Id,
                     bank.Name,
-                    bank.InterestRatePerCycle,
+                    bank.InterestRate,
                     bank.Balance,
                     openByBank.TryGetValue(bank.Id, out var open) ? open.Count : 0,
                     openByBank.TryGetValue(bank.Id, out var open2) ? open2.Outstanding : 0m))
@@ -113,7 +113,7 @@ public static partial class MarketEndpoints
                 "pastDue" => descending
                     ? query.OrderByDescending(loan => loan.PastDuePrincipal + loan.PastDueInterest + loan.AccruedFees)
                     : query.OrderBy(loan => loan.PastDuePrincipal + loan.PastDueInterest + loan.AccruedFees),
-                "term" => descending ? query.OrderByDescending(loan => loan.TermCycles) : query.OrderBy(loan => loan.TermCycles),
+                "term" => descending ? query.OrderByDescending(loan => loan.TermTradingDays) : query.OrderBy(loan => loan.TermTradingDays),
                 _ => descending ? query.OrderByDescending(loan => loan.Id) : query.OrderBy(loan => loan.Id),
             };
 
@@ -125,6 +125,20 @@ public static partial class MarketEndpoints
         app.MapPost("/loans/{loanId:int}/repay", async (int loanId, RepayLoanRequest? request, MarketService marketService, AppDbContext dbContext) =>
         {
             var result = await marketService.RepayLoanAsync(loanId, request?.Amount);
+            if (!result.Success || result.Loan is null)
+            {
+                return Results.BadRequest(new { error = result.Error });
+            }
+
+            var response = (await BuildLoanResponsesAsync(dbContext, [result.Loan])).Single();
+            return Results.Ok(response);
+        });
+
+        // Player-initiated borrowing for a participant (the player or its managed fund). The amount is capped to
+        // a fraction of gross worth inside the service, so an over-cap request comes back as a 400.
+        app.MapPost("/participants/{participantId:int}/loans", async (int participantId, BorrowLoanRequest? request, MarketService marketService, AppDbContext dbContext) =>
+        {
+            var result = await marketService.BorrowLoanAsync(participantId, request?.Amount ?? 0m);
             if (!result.Success || result.Loan is null)
             {
                 return Results.BadRequest(new { error = result.Error });

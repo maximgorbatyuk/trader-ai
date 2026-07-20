@@ -45,7 +45,7 @@ export function BankLoansTable({ loans, sortKey, sortDir, onToggleSort }) {
             <th scope="col" className="ta-r">
               Total liability
             </th>
-            {sortableHeader('term', 'Term', 'Loan term in cycles')}
+            {sortableHeader('term', 'Term', 'Loan term in trading days')}
             <th scope="col" className="ta-r">
               Remaining
             </th>
@@ -74,8 +74,8 @@ export function BankLoansTable({ loans, sortKey, sortDir, onToggleSort }) {
                 {formatMoney(loan.accruedFees)}
               </td>
               <td className="num ta-r">{formatMoney(loan.totalLiability)}</td>
-              <td className="num ta-r">{formatInt(loan.termCycles)}</td>
-              <td className="num ta-r">{loan.isClosed ? '—' : `${formatInt(loan.remainingTermCycles)} cyc`}</td>
+              <td className="num ta-r">{formatInt(loan.termTradingDays)}</td>
+              <td className="num ta-r">{loan.isClosed ? '—' : `${formatInt(loan.remainingTermTradingDays)} d`}</td>
               <td>
                 {loan.isClosed ? (
                   <span className="tag" title={loan.closeReason ?? undefined}>

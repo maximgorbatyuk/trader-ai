@@ -784,6 +784,36 @@ public sealed class MarketService(
         return await loanService.RepayLoanAsync(loanId, amount, currentCycleId, DateTime.UtcNow);
     });
 
+    // Player-initiated borrowing goes through the cycle lock so the debt-cap check and disbursement cannot race a
+    // running tick's writes. Gross worth is cash plus current holdings value, matching the borrowing-capacity rule.
+    public Task<BorrowLoanResult> BorrowLoanAsync(int participantId, decimal amount) => WithLockAsync(async () =>
+    {
+        if (loanService is null)
+        {
+            return BorrowLoanResult.Fail("Loans are not enabled.");
+        }
+
+        var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
+        if (participant is null)
+        {
+            return BorrowLoanResult.Fail("Borrower not found.");
+        }
+
+        var market = await dbContext.Markets.FirstOrDefaultAsync();
+        var currentCycleId = market?.CurrentCycleId ?? 0;
+        var currentTradingDayId = market?.CurrentTradingDayId ?? 0;
+
+        var prices = await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
+        var holdingsValue = (await dbContext.Holdings
+                .Where(holding => holding.ParticipantId == participantId && holding.Quantity > 0)
+                .Select(holding => new { holding.CompanyId, holding.Quantity })
+                .ToListAsync())
+            .Sum(holding => holding.Quantity * prices.GetValueOrDefault(holding.CompanyId));
+        var grossWorth = participant.CurrentBalance + holdingsValue;
+
+        return await loanService.BorrowLoanAsync(participant, amount, grossWorth, currentCycleId, currentTradingDayId, DateTime.UtcNow);
+    });
+
     public Task<Market?> SetStatusAsync(MarketStatus status) => WithLockAsync(async () =>
     {
         var market = await dbContext.Markets.FirstOrDefaultAsync();
@@ -1159,14 +1189,6 @@ public sealed class MarketService(
         }
 
         await LiquidateStarvedHoldersAsync(participantsById);
-
-        // Charges this cycle's loan payments (and lists distress sells) before bankruptcy so its debt-percent
-        // and this cycle's matching both read post-payment loan state.
-        if (loanService is not null)
-        {
-            await loanService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
-            await dbContext.SaveChangesAsync();
-        }
 
         // Runs in the pre-match window so a wealthy trader's collapse and a bankrupt trader's cheaper re-listing
         // reach the book before this cycle's matching; the newly listed fire-sale rests a cycle before it can cross.
@@ -1916,6 +1938,14 @@ public sealed class MarketService(
         {
             await dbContext.SaveChangesAsync();
             await collectiveFundService.PayManagerFeesForTradingDayAsync(currentCycle.TradingDayId, currentCycle.Id, now);
+        }
+
+        // The trading day just closed, so each open loan takes its once-a-day payment (and lists distress sells)
+        // before the day-end worth snapshot reads post-payment balances and liabilities.
+        if (nextCycle is null && currentCycle.TradingDayId > 0 && loanService is not null)
+        {
+            await loanService.ProcessForTradingDayAsync(currentCycle.TradingDayId, currentCycle.Id, now);
+            await dbContext.SaveChangesAsync();
         }
 
         // Runs once this cycle's fills and shocks are persisted so each trader's holdings reflect final prices;
@@ -3383,7 +3413,7 @@ public sealed class MarketService(
         dbContext.Banks.Add(new Bank
         {
             Name = loanOptionValues.BankName,
-            InterestRatePerCycle = loanOptionValues.InterestRatePerCycle,
+            InterestRate = loanOptionValues.InterestRate,
         });
 
         // Drawn last so adding the dividend schedule does not shift the generated demo data above.

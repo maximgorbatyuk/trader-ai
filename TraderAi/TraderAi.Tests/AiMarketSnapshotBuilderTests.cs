@@ -346,7 +346,7 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
             ParticipantId = ai.Id,
             Principal = 100m,
             RemainingPrincipal = 100m,
-            TermCycles = 10,
+            TermTradingDays = 10,
             ScheduledInstallment = 10m,
             Status = LoanStatus.Open,
             OpenedInCycleId = cycleId,

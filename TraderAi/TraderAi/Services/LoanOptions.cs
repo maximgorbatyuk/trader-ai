@@ -12,21 +12,21 @@ public sealed class LoanOptions
     // The single bank seeded on first usage.
     public string BankName { get; set; } = "National bank";
 
-    // "5% per 50 cycles" → 0.05 / 50 = 0.001 per cycle.
-    public decimal InterestRatePerCycle { get; set; } = 0.001m;
+    // Total interest collected over the whole loan, as a fraction of principal: the borrower repays principal + 10%.
+    public decimal InterestRate { get; set; } = 0.10m;
 
-    // A new loan's term is scaled by its size relative to the borrower's worth, clamped to this band.
-    public int MinTermCycles { get; set; } = 25;
-    public int MaxTermCycles { get; set; } = 200;
+    // A new loan's term in trading days is scaled by its size relative to the borrower's worth, clamped to this band.
+    public int MinTermTradingDays { get; set; } = 5;
+    public int MaxTermTradingDays { get; set; } = 20;
 
     // Loans created by the negative-balance migration use this fixed term.
-    public int BackfillTermCycles { get; set; } = 100;
+    public int BackfillTermTradingDays { get; set; } = 10;
 
-    // A missed or partial payment carries the unpaid amount to next cycle inflated by this fine rate.
+    // A missed or partial payment carries the unpaid amount to the next trading day inflated by this fine rate.
     public decimal MissedPaymentFineRate { get; set; } = 0.10m;
 
-    // Inside this many cycles of the term, a borrower still in arrears is force-liquidated to raise cash.
-    public int DistressWindowCycles { get; set; } = 15;
+    // Inside this many trading days of the term, a borrower still in arrears is force-liquidated to raise cash.
+    public int DistressWindowTradingDays { get; set; } = 2;
 
     // A collective fund short on cash to return a departing member's deposit borrows the shortfall inflated by
     // this fraction, so the payout clears with a small buffer instead of the fund force-selling shares up front.

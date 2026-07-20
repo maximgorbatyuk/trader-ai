@@ -208,8 +208,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                     RemainingPrincipal = 100m,
                     PastDueInterest = 5m,
                     AccruedFees = 2m,
-                    InterestRatePerCycle = bank.InterestRatePerCycle,
-                    TermCycles = 10,
+                    InterestRate = bank.InterestRate,
+                    TermTradingDays = 10,
                     ScheduledInstallment = 10m,
                     Status = LoanStatus.Open,
                     OpenedInCycleId = cycle.Id,
@@ -409,7 +409,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 bankId = bank.Id;
                 cycleNumber = cycle.CycleNumber;
                 bank.Balance = 1_005m;
-                db.Loans.Add(new Loan { BankId = bank.Id, ParticipantId = participant.Id, Principal = 100m, RemainingPrincipal = 100m, InterestRatePerCycle = bank.InterestRatePerCycle, TermCycles = 10, ScheduledInstallment = 10m, Status = LoanStatus.Open, OpenedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow });
+                db.Loans.Add(new Loan { BankId = bank.Id, ParticipantId = participant.Id, Principal = 100m, RemainingPrincipal = 100m, InterestRate = bank.InterestRate, TermTradingDays = 10, ScheduledInstallment = 10m, Status = LoanStatus.Open, OpenedInCycleId = cycle.Id, CreatedAt = DateTime.UtcNow });
                 db.MarginAccounts.Add(new MarginAccount { ParticipantId = participant.Id, DebitBalance = 200m, AccruedInterest = 5m, InitialMarginRate = 0.50m, MaintenanceMarginRate = 0.25m, Status = MarginAccountStatus.Active });
                 var corporateCashCreatedAt = DateTime.UtcNow;
                 db.CorporateCashTransactions.AddRange(
@@ -2813,7 +2813,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 var now = DateTime.UtcNow;
                 var cycle = new MarketCycle { CycleNumber = 12, Status = CycleStatus.Running, StartedAt = now };
-                var bank = new Bank { Name = "National bank", InterestRatePerCycle = 0.001m };
+                var bank = new Bank { Name = "National bank", InterestRate = 0.10m };
                 var borrower = new Participant
                 {
                     Name = "Borrower",
@@ -2842,8 +2842,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                     ParticipantId = borrower.Id,
                     Principal = 10_000m,
                     RemainingPrincipal = 10_000m,
-                    InterestRatePerCycle = 0.001m,
-                    TermCycles = 100,
+                    InterestRate = 0.10m,
+                    TermTradingDays = 20,
                     ScheduledInstallment = 100m,
                     PastDuePrincipal = 100m,
                     PastDueInterest = 10m,

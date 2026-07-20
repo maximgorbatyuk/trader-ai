@@ -118,8 +118,8 @@ function LoanDetail({ loan }) {
           <dd className="num">{formatMoney(loan.remainingPrincipal)}</dd>
         </div>
         <div>
-          <dt>Interest/cyc</dt>
-          <dd className="num">{(loan.interestRatePerCycle * 100).toFixed(3)}%</dd>
+          <dt>Interest rate</dt>
+          <dd className="num">+{(loan.interestRate * 100).toFixed(1)}%</dd>
         </div>
         <div>
           <dt>Principal due</dt>

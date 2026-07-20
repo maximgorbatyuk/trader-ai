@@ -455,7 +455,7 @@ public sealed class BankruptcyServiceTests : IDisposable
         var bank = await context.Banks.FirstOrDefaultAsync();
         if (bank is null)
         {
-            bank = new Bank { Name = "National bank", InterestRatePerCycle = 0.001m };
+            bank = new Bank { Name = "National bank", InterestRate = 0.10m };
             context.Banks.Add(bank);
             await context.SaveChangesAsync();
         }
@@ -466,8 +466,8 @@ public sealed class BankruptcyServiceTests : IDisposable
             ParticipantId = participantId,
             Principal = remainingPrincipal,
             RemainingPrincipal = remainingPrincipal,
-            InterestRatePerCycle = bank.InterestRatePerCycle,
-            TermCycles = 100,
+            InterestRate = bank.InterestRate,
+            TermTradingDays = 20,
             ScheduledInstallment = remainingPrincipal / 100m,
             AccruedFees = accruedFees,
             Status = LoanStatus.Open,

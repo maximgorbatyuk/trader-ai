@@ -140,6 +140,7 @@ public sealed class AccountingReconciliationTests : IDisposable
             principal: 300m,
             grossWorth: 5_000m,
             seed.Cycle.Id,
+            seed.Cycle.TradingDayId,
             DateTime.UtcNow);
         var margin = new MarginAccount
         {

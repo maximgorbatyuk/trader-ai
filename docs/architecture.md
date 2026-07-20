@@ -111,7 +111,7 @@ Margin accounts and explicit term loans are separate liabilities. A matched purc
 
 The shared account can support any participant type, but automated discretionary use is narrower: Low- and Medium-risk Individuals and AI Agents buy with cash only, while High-risk automated traders may use margin up to 10% of net worth. This restriction does not change manual Player orders or Collective Fund behavior.
 
-Explicit term loans remain available for workflows such as a fund meeting a departing member's payout. Loan servicing classifies overdue principal inside remaining principal while tracking overdue interest and assessed fees separately, so principal is never counted twice and participant and bank balances remain reconcilable.
+Explicit term loans can be taken by traders — the human player borrows from its own panel — and also cover obligations such as a fund meeting a departing member's payout. Each loan runs a size-scaled term of trading days and is serviced once at the end of each trading day. Loan servicing classifies overdue principal inside remaining principal while tracking overdue interest and assessed fees separately, so principal is never counted twice and participant and bank balances remain reconcilable.
 
 The bank grows through secondary-market trade fees and through loan interest and fees when borrowers pay them. Principal repayment removes an existing liability and is therefore not treated as new bank revenue; unpaid interest or fees do not increase the bank balance.
 

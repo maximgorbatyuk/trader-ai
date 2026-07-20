@@ -143,7 +143,7 @@ public sealed class DecisionFlowTests : IDisposable
         var seller = await context.Participants.SingleAsync(participant => participant.Name == "Alice");
         seller.ReservedBalance = 1_200m;
 
-        var bank = new Bank { Name = "Test Bank", InterestRatePerCycle = 0.01m };
+        var bank = new Bank { Name = "Test Bank", InterestRate = 0.10m };
         context.Banks.Add(bank);
         await context.SaveChangesAsync();
         context.Loans.Add(new Loan
@@ -152,8 +152,8 @@ public sealed class DecisionFlowTests : IDisposable
             ParticipantId = seller.Id,
             Principal = 300m,
             RemainingPrincipal = 300m,
-            InterestRatePerCycle = 0.01m,
-            TermCycles = 10,
+            InterestRate = 0.10m,
+            TermTradingDays = 10,
             ScheduledInstallment = 30m,
             PastDueInterest = 20m,
             AccruedFees = 10m,

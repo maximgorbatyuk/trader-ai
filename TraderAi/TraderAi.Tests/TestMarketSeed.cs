@@ -123,7 +123,7 @@ internal static class TestMarketSeed
         var bank = new Bank
         {
             Name = "National bank",
-            InterestRatePerCycle = 0.001m,
+            InterestRate = 0.10m,
         };
         context.AddRange(company, seller, buyer, bank);
         await context.SaveChangesAsync();

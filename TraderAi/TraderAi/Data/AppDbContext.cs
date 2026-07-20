@@ -372,10 +372,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             }
         }
 
-        // The per-cycle interest rate (e.g. 0.001) would round to 0.00 at the money scale above, so give the
-        // rate columns a finer scale after the blanket pass.
-        modelBuilder.Entity<Bank>().Property(bank => bank.InterestRatePerCycle).HasPrecision(18, 6);
-        modelBuilder.Entity<Loan>().Property(loan => loan.InterestRatePerCycle).HasPrecision(18, 6);
+        // The interest rate is a fraction, so a finer scale after the blanket money pass keeps it from rounding.
+        modelBuilder.Entity<Bank>().Property(bank => bank.InterestRate).HasPrecision(18, 6);
+        modelBuilder.Entity<Loan>().Property(loan => loan.InterestRate).HasPrecision(18, 6);
 
         // Behavioural-audit indices are min-max-normalised sums near the 0..5 range; the money scale above would
         // flatten the small gaps the nearest-group-average classification reads, so give them a finer scale.
