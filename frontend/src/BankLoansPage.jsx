@@ -4,9 +4,9 @@ import { api } from './api'
 import { formatInt } from './format'
 import { Panel } from './Panel'
 import { BankLoansTable } from './BankLoansTable'
+import { useFitPageSize } from './useFitPageSize'
 
 const POLL_INTERVAL_MS = 2500
-const PAGE_SIZE = 20
 
 // Roster of bank loans. Bank and status filters, sort, and paging are held here and sent to the server.
 function BankLoansPage() {
@@ -19,6 +19,7 @@ function BankLoansPage() {
   const [status, setStatus] = useState('active')
   const [sortKey, setSortKey] = useState('principal')
   const [sortDir, setSortDir] = useState('desc')
+  const [pageSize, tableRef] = useFitPageSize()
 
   // Banks seldom change, so the filter list is fetched once rather than on every poll.
   useEffect(() => {
@@ -40,12 +41,17 @@ function BankLoansPage() {
     try {
       const result = await api.getLoansPaged({
         page,
-        pageSize: PAGE_SIZE,
+        pageSize,
         bankId: bankFilter || undefined,
         status,
         sort: sortKey,
         sortDir,
       })
+      const resultPageCount = Math.max(1, Math.ceil((result?.total ?? 0) / pageSize))
+      if (page > resultPageCount) {
+        setPage(resultPageCount)
+        return
+      }
       setData(result)
       setLoadError(null)
     } catch (error) {
@@ -53,7 +59,7 @@ function BankLoansPage() {
     } finally {
       setReady(true)
     }
-  }, [page, bankFilter, status, sortKey, sortDir])
+  }, [page, pageSize, bankFilter, status, sortKey, sortDir])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)
@@ -76,7 +82,7 @@ function BankLoansPage() {
 
   const total = data?.total ?? 0
   const items = data?.items ?? []
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
 
   return (
     <main className="main">
@@ -128,7 +134,9 @@ function BankLoansPage() {
               </select>
             </div>
 
-            <BankLoansTable loans={items} sortKey={sortKey} sortDir={sortDir} onToggleSort={toggleSort} />
+            <div ref={tableRef}>
+              <BankLoansTable loans={items} sortKey={sortKey} sortDir={sortDir} onToggleSort={toggleSort} />
+            </div>
 
             {pageCount > 1 ? (
               <div className="pager">
