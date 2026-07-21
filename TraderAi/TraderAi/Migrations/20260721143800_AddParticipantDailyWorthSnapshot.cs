@@ -38,8 +38,9 @@ namespace TraderAi.Migrations
 
             // One-time back-population so existing markets chart daily worth immediately. Each day's close is the
             // participant's worth in that day's last recorded cycle, derived from the per-cycle worth already
-            // captured (live plus archived) rather than synthesized. MarketCycles rows are never archived, so the
-            // join always resolves; days with no per-cycle worth simply get no daily row.
+            // captured (live plus archived) rather than synthesized. Only closed days are back-filled: the open
+            // day has no true close yet, and the runtime writer records it when the day ends. MarketCycles rows
+            // are never archived, so the join always resolves; days with no per-cycle worth get no daily row.
             migrationBuilder.Sql(@"
 INSERT INTO ParticipantDailyWorthSnapshots
     (ParticipantId, TradingDayId, Balance, HoldingsValue, LoanLiability, MarginLiability, CreatedAt)
@@ -58,7 +59,8 @@ FROM (
             FROM ParticipantWorthSnapshotArchives
     ) s
     JOIN MarketCycles mc ON mc.Id = s.CreatedInCycleId
-    WHERE mc.TradingDayId > 0
+    JOIN TradingDays td ON td.Id = mc.TradingDayId
+    WHERE mc.TradingDayId > 0 AND td.ClosedInCycleId IS NOT NULL
 ) ranked
 WHERE rn = 1;");
         }

@@ -1956,6 +1956,11 @@ public sealed class MarketService(
         // daily close equals the per-cycle close without recomputing prices, holdings, or liabilities.
         if (nextCycle is null && currentCycle.TradingDayId > 0)
         {
+            // Write the day's close idempotently: clear any existing rows for it first so this authoritative
+            // close supersedes a provisional row that a mid-day back-fill migration may have left for the day.
+            await dbContext.ParticipantDailyWorthSnapshots
+                .Where(snapshot => snapshot.TradingDayId == currentCycle.TradingDayId)
+                .ExecuteDeleteAsync();
             foreach (var snapshot in cycleWorthSnapshots)
             {
                 dbContext.ParticipantDailyWorthSnapshots.Add(new ParticipantDailyWorthSnapshot

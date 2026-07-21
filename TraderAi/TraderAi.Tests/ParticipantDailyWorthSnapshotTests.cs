@@ -51,6 +51,35 @@ public sealed class ParticipantDailyWorthSnapshotTests : IDisposable
     }
 
     [Fact]
+    public async Task DayCloseReplacesAProvisionalDailyRowInsteadOfViolatingUniqueness()
+    {
+        var (day, _) = await SeedTradingDayAtCycleAsync(tradingCycleNumber: 210);
+        var participantIds = await context.Participants.Select(participant => participant.Id).ToListAsync();
+
+        // Simulate the back-fill migration having recorded a provisional row for this still-open day; the real
+        // close must supersede it rather than collide on the unique (participant, day) index.
+        foreach (var participantId in participantIds)
+        {
+            context.ParticipantDailyWorthSnapshots.Add(new ParticipantDailyWorthSnapshot
+            {
+                ParticipantId = participantId,
+                TradingDayId = day.Id,
+                Balance = -999m,
+                CreatedAt = DateTime.UtcNow,
+            });
+        }
+        await context.SaveChangesAsync();
+        var service = BuildService();
+
+        var advance = await service.AdvanceCycleAsync();
+
+        Assert.True(advance.Success);
+        var dailySnapshots = await context.ParticipantDailyWorthSnapshots.ToListAsync();
+        Assert.Equal(participantIds.Count, dailySnapshots.Count);
+        Assert.All(dailySnapshots, daily => Assert.NotEqual(-999m, daily.Balance));
+    }
+
+    [Fact]
     public async Task NonClosingCycleWritesNoDailyWorthRows()
     {
         await SeedTradingDayAtCycleAsync(tradingCycleNumber: 5);
