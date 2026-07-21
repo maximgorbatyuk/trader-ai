@@ -40,8 +40,7 @@ public sealed class ShareEmissionService(
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
 
-        var cycleNumbersById = await dbContext.MarketCycles
-            .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+        var cycleNumbersById = await dbContext.CycleNumbersByIdAsync();
 
         var lastEmissionCycleByCompany = (await dbContext.ShareEmissions
                 .Select(emission => new { emission.CompanyId, emission.CreatedInCycleId })

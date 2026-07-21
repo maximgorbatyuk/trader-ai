@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import './aiTrader.css'
 import { api } from './api'
-import { Panel } from './Panel'
 import { AiRawResponseModal } from './AiRawResponseModal'
 import { automationPayload, testRequestPayload, validateAutomation } from './aiTraderModel'
 
@@ -10,11 +9,8 @@ const AUTOMATION_TYPES = [
   { value: 'AIAgent', label: 'AI agent' },
 ]
 
-// Detail-page control for converting a trader between rule-based Individual and a provider-backed AI agent. The
-// provider connection key is a per-provider setting, so the trader only picks a provider and model here. The form
-// keeps its own local edit state and the parent remounts it per participant (via key), so the detail page's
-// polling never clobbers an in-progress edit.
-export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
+// Local edit state keeps participant polling from overwriting unsaved automation changes.
+export function AiTraderAutomationSettings({ participantId, detail, onChanged, onRawResponseVisibilityChange }) {
   const [providers, setProviders] = useState([])
   const [type, setType] = useState(detail.type === 'AIAgent' ? 'AIAgent' : 'Individual')
   const [providerId, setProviderId] = useState(detail.aiProviderId ?? '')
@@ -75,7 +71,7 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
   }
 
   async function handleTest() {
-    setShowRawResponse(false)
+    closeRawResponse()
     setTest({ status: 'testing', message: '', responseBody: null, statusCode: null })
     try {
       const result = await api.testParticipantAutomation(participantId, testRequestPayload(formState))
@@ -92,12 +88,18 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
     }
   }
 
+  function openRawResponse() {
+    setShowRawResponse(true)
+    onRawResponseVisibilityChange?.(true)
+  }
+
+  function closeRawResponse() {
+    setShowRawResponse(false)
+    onRawResponseVisibilityChange?.(false)
+  }
+
   return (
-    <Panel
-      title="Automation"
-      count={detail.type === 'AIAgent' ? 'AI agent' : 'Rule-based'}
-      className="panel-automation"
-    >
+    <>
       <div className="profile-form">
         <label className="field">
           <span>Trader type</span>
@@ -181,7 +183,7 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
               </p>
             ) : null}
             {(test.status === 'ok' || test.status === 'error') && test.responseBody ? (
-              <button className="btn" type="button" onClick={() => setShowRawResponse(true)}>
+              <button className="btn" type="button" onClick={openRawResponse}>
                 View raw response
               </button>
             ) : null}
@@ -214,9 +216,9 @@ export function AiTraderAutomationPanel({ participantId, detail, onChanged }) {
         <AiRawResponseModal
           statusCode={test.statusCode}
           body={test.responseBody}
-          onClose={() => setShowRawResponse(false)}
+          onClose={closeRawResponse}
         />
       ) : null}
-    </Panel>
+    </>
   )
 }

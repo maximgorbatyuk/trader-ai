@@ -43,6 +43,8 @@ Margin debit interest also uses the trading-day boundary and accrues at most onc
 
 Collective-fund membership uses the same boundary. A member that joins on Day N cannot voluntarily leave until Day N+7. On Day N+6 an AI-managed fund starts preparing for that possibility by moving from its ordinary 10% cash buffer toward a 15% buffer; sales placed for that preparation can settle when Day N+7 opens. See [Fund Member](../roles/fund-member.md) and [Collective Fund](../roles/collective-fund.md).
 
+Each day close also records one worth snapshot per participant into a compact daily series. That series backs the multi-day total-worth chart, which plots recent day closes together with a live current-worth point for the open day.
+
 Security-specific LULD durations count active trading cycles. A market-wide break or manual market pause therefore freezes a company's limit-state and trading-pause countdown along with the main clock. Security-specific LULD states do not stop the market-wide day clock while other securities continue to trade. See [LULD price controls](luld.md).
 
 ## Where to see it

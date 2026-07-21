@@ -189,6 +189,19 @@ public sealed record ParticipantWorthPointResponse(
     decimal TotalWorth,
     DateTime CreatedAt);
 
+// One point on the long-horizon total-worth chart. History points are trading-day closes; the trailing point
+// carries IsCurrent when it is the live, in-progress net worth rather than a recorded close.
+public sealed record ParticipantDailyWorthPointResponse(
+    int TradingDayId,
+    int DayNumber,
+    decimal Balance,
+    decimal HoldingsValue,
+    decimal LoanLiability,
+    decimal MarginLiability,
+    decimal TotalWorth,
+    DateTime CreatedAt,
+    bool IsCurrent);
+
 public sealed record SettlementInstructionResponse(
     int Id,
     int ShareTransactionId,

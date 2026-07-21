@@ -3587,14 +3587,6 @@
   font-size: var(--t-xs);
 }
 
-/* Multi-panel detail tabs (e.g. the trader Automation tab) stack their panels; side-by-side pairs use
-   .grid-detail instead. */
-.detail-tab-stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
-
 /* On the company page the routed <main> owns the full column so the tabbed card stretches to the bottom of
    the viewport instead of leaving dead page background beneath it. Scoped to .main-fill so the shared .main
    and the trader detail block keep their natural height. */
