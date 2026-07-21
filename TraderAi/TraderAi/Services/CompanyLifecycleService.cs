@@ -442,8 +442,7 @@ public sealed class CompanyLifecycleService(
     // close (snapshots are read in ascending id order), so a cycle with several trades still contributes one point.
     private async Task<Dictionary<int, List<decimal>>> PerCycleClosesByCompanyAsync()
     {
-        var cycleNumbersById = await dbContext.MarketCycles
-            .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+        var cycleNumbersById = await dbContext.CycleNumbersByIdAsync();
 
         var snapshots = await dbContext.PriceSnapshots
             .OrderBy(snapshot => snapshot.Id)

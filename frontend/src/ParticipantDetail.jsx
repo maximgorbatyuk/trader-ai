@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useOutletContext } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatCompactMoney, formatInt, formatMoney, formatSigned, formatSignedInt, toneOf } from './format'
@@ -10,7 +10,6 @@ import { MoneyTransactionModal } from './MoneyTransactionModal'
 import { IndustryHoldingsTable } from './IndustryHoldingsTable'
 import { TradeModal } from './TradeModal'
 import { InvestmentsTable } from './InvestmentsTable'
-import { AiTraderAutomationPanel } from './AiTraderAutomationPanel'
 import { AiTraderCallsPanel } from './AiTraderCallsPanel'
 import { useClientTable } from './useClientTable'
 import { useServerTable } from './useServerTable'
@@ -26,7 +25,6 @@ import { ParticipantActions } from './ParticipantActions'
 import { FavoriteTraderToggle } from './FavoriteTraderToggle'
 
 const POLL_INTERVAL_MS = 2500
-const WORTH_HISTORY_POINTS = 64
 const TEMPERAMENTS = ['Aggressive', 'Balanced', 'Conservative']
 const RISK_PROFILES = ['High', 'Medium', 'Low']
 const TYPE_LABEL = { Individual: 'Individual', Company: 'Company', AIAgent: 'AI agent', CollectiveFund: 'Collective fund', Player: 'Player' }
@@ -42,13 +40,14 @@ function fundStatusClass(status) {
 // cash, investments, loans, margin, profile, and the conditional automation/members/favorites tabs). Owns its
 // own polling keyed on participantId and is shared by the Trader, Player-stats, and Fund-stats pages.
 export function ParticipantDetail({ participantId, showFavoriteCompanies = false, showOperatorActions = false }) {
+  const { actorKind = 'player' } = useOutletContext() ?? {}
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [detail, setDetail] = useState(null)
   const [orders, setOrders] = useState([])
   const [trades, setTrades] = useState([])
   const [companies, setCompanies] = useState([])
-  const [worthHistory, setWorthHistory] = useState([])
+  const [dailyWorthHistory, setDailyWorthHistory] = useState([])
   const [loans, setLoans] = useState([])
   const [settlements, setSettlements] = useState([])
   const [loanStatus, setLoanStatus] = useState('active')
@@ -69,12 +68,12 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
 
   const loadAll = useCallback(async () => {
     try {
-      const [detailData, orderData, tradeData, companyData, worthData, loanData, settlementData, fundHistoryData] = await Promise.all([
+      const [detailData, orderData, tradeData, companyData, dailyWorthData, loanData, settlementData, fundHistoryData] = await Promise.all([
         api.getParticipant(participantId),
         api.getParticipantOrders(participantId, 100),
         api.getParticipantShareTransactions(participantId),
         api.getCompanies(),
-        api.getParticipantWorthHistory(participantId),
+        api.getParticipantDailyWorthHistory(participantId),
         api.getParticipantLoans(participantId, { status: loanStatus }),
         api.getParticipantSettlements(participantId),
         api.getFundMembershipHistory(participantId, 1, 1),
@@ -84,7 +83,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
       setOrders(orderData)
       setTrades(tradeData)
       setCompanies(companyData)
-      setWorthHistory(worthData ?? [])
+      setDailyWorthHistory(dailyWorthData ?? [])
       setLoans(loanData ?? [])
       setSettlements(settlementData?.items ?? [])
       setFundHistoryTotal(fundHistoryData?.total ?? 0)
@@ -302,7 +301,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
           id={`traderpanel-${safeActive}`}
           aria-labelledby={`tradertab-${safeActive}`}
         >
-          {safeActive === 'worth' ? <WorthChartPanel worthHistory={worthHistory} /> : null}
+          {safeActive === 'worth' ? <WorthChartPanel dailyWorthHistory={dailyWorthHistory} /> : null}
           {safeActive === 'holdings' ? (
             <HoldingsPanel participantId={participantId} totalShares={detail.sharesOwned} onSelectCompany={setModalCompanyId} />
           ) : null}
@@ -345,10 +344,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
             </div>
           ) : null}
           {safeActive === 'ai' ? (
-            <div className="detail-tab-stack">
-              <AiTraderAutomationPanel key={`automation-${participantId}`} participantId={participantId} detail={detail} onChanged={loadAll} />
-              <AiTraderCallsPanel key={`ai-calls-${participantId}`} participantId={participantId} isAiTrader={detail.type === 'AIAgent'} />
-            </div>
+            <AutomationTabContent participantId={participantId} detail={detail} />
           ) : null}
           {safeActive === 'members' ? (
             <MembersPanel participantId={participantId} />
@@ -374,6 +370,7 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
       {modalCompany ? (
         <CompanyModal
           company={modalCompany}
+          actorKind={actorKind}
           onClose={() => setModalCompanyId(null)}
           onFavoriteChanged={(isFavorite) => {
             setCompanies((current) => current.map((company) =>
@@ -385,27 +382,36 @@ export function ParticipantDetail({ participantId, showFavoriteCompanies = false
   )
 }
 
-function WorthChartPanel({ worthHistory }) {
-  const values = worthHistory.map((point) => point.totalWorth)
-  const cycles = worthHistory.map((point) => point.cycleNumber)
+export function AutomationTabContent({ participantId, detail }) {
+  if (detail.type !== 'AIAgent') {
+    return <p className="note">The trader is not AI managed</p>
+  }
+
+  return <AiTraderCallsPanel key={`ai-calls-${participantId}`} participantId={participantId} isAiTrader />
+}
+
+function WorthChartPanel({ dailyWorthHistory }) {
+  const values = dailyWorthHistory.map((point) => point.totalWorth)
+  // Trading-day number labels the x-axis; the trailing point is the live current worth for the in-progress day.
+  const days = dailyWorthHistory.map((point) => point.dayNumber)
   const change = values.length >= 2 ? values.at(-1) - values.at(0) : 0
 
   return (
     <Panel
       title="Total worth"
-      count={`${worthHistory.length} snapshot${worthHistory.length === 1 ? '' : 's'}`}
+      count={`${dailyWorthHistory.length} day${dailyWorthHistory.length === 1 ? '' : 's'}`}
       className="panel-worth"
     >
       {values.length < 2 ? (
-        <p className="note">Not enough history yet. Total worth is recorded once per completed cycle.</p>
+        <p className="note">Not enough history yet. Total worth is recorded at each trading-day close.</p>
       ) : (
         <LineChart
-          values={values.slice(-WORTH_HISTORY_POINTS)}
-          cycles={cycles.slice(-WORTH_HISTORY_POINTS)}
+          values={values}
+          cycles={days}
           tone={toneOf(change)}
           formatValue={formatCompactMoney}
-          xLabel="Cycle"
-          label="Total worth over time"
+          xLabel="Trading day"
+          label="Total worth over trading days"
           fill
         />
       )}

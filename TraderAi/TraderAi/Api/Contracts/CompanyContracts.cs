@@ -2,6 +2,11 @@ using TraderAi.Models;
 
 namespace TraderAi.Api;
 
+public sealed record CompanyPositionResponse(
+    int Shares,
+    decimal OwnershipPct,
+    decimal MarketValue);
+
 public sealed record CompanyResponse(
     int Id,
     string Name,
@@ -21,7 +26,9 @@ public sealed record CompanyResponse(
     decimal? MinimumOrderPrice,
     decimal? MaximumOrderPrice,
     int? LimitStateStartedCycleNumber,
-    int? PauseUntilCycleNumber);
+    int? PauseUntilCycleNumber,
+    CompanyPositionResponse? PlayerPosition,
+    CompanyPositionResponse? FundPosition);
 
 public sealed record CompanyAttentionResponse(
     int CompanyId,

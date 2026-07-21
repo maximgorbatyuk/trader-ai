@@ -913,6 +913,71 @@ public static partial class MarketEndpoints
             return Results.Ok(response);
         });
 
+        app.MapGet("/participants/{participantId:int}/daily-worth-history", async (
+            int participantId, int? take, AppDbContext dbContext, MarginService marginService) =>
+        {
+            var participant = await dbContext.Participants.FirstOrDefaultAsync(candidate => candidate.Id == participantId);
+            if (participant is null)
+            {
+                return Results.NotFound(new { error = "Participant not found." });
+            }
+
+            // Newest first for the cap, then flipped to chronological so the chart reads left-to-right.
+            var limit = Math.Clamp(take ?? 20, 1, 365);
+            var snapshots = await dbContext.ParticipantDailyWorthSnapshots
+                .Where(snapshot => snapshot.ParticipantId == participantId)
+                .OrderByDescending(snapshot => snapshot.Id)
+                .Take(limit)
+                .ToListAsync();
+
+            var dayNumberById = await dbContext.TradingDays
+                .ToDictionaryAsync(day => day.Id, day => day.DayNumber);
+
+            var points = snapshots
+                .OrderBy(snapshot => snapshot.Id)
+                .Select(snapshot => new ParticipantDailyWorthPointResponse(
+                    snapshot.TradingDayId,
+                    dayNumberById.GetValueOrDefault(snapshot.TradingDayId),
+                    snapshot.Balance,
+                    snapshot.HoldingsValue,
+                    snapshot.LoanLiability,
+                    snapshot.MarginLiability,
+                    snapshot.Balance + snapshot.HoldingsValue - snapshot.LoanLiability - snapshot.MarginLiability,
+                    snapshot.CreatedAt,
+                    false))
+                .ToList();
+
+            // The daily rows are day closes, so the last vertical marker would lag a full day behind. Append the
+            // live net worth as the current point using the shared valuation and latest-price lookup.
+            var prices = await LatestPriceByCompanyAsync(dbContext);
+            var valuations = await BuildParticipantValuationsAsync(dbContext, marginService, new[] { participant }, prices);
+            var valuation = valuations[participant.Id];
+
+            var market = await dbContext.Markets.FirstOrDefaultAsync();
+            var currentTradingDayId = market?.CurrentTradingDayId ?? 0;
+            var currentDayNumber = dayNumberById.GetValueOrDefault(currentTradingDayId);
+
+            // If a close for the in-progress day already exists (e.g. read during the following break), drop it so
+            // the day is not plotted twice; the live point supersedes it.
+            if (points.Count > 0 && points[^1].TradingDayId == currentTradingDayId)
+            {
+                points.RemoveAt(points.Count - 1);
+            }
+
+            points.Add(new ParticipantDailyWorthPointResponse(
+                currentTradingDayId,
+                currentDayNumber,
+                participant.CurrentBalance,
+                valuation.HoldingsValue,
+                valuation.LoanLiability,
+                valuation.Margin.TotalLiability,
+                valuation.TotalWorth,
+                DateTime.UtcNow,
+                true));
+
+            return Results.Ok(points.ToArray());
+        });
+
         // Fund join/leave history for a participant, serving both sides from one contract: a trader's page sees
         // the funds it joined or left, a fund's page sees the members who joined or left it. Server-paged,
         // newest-first.

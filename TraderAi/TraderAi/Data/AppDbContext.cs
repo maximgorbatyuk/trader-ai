@@ -81,7 +81,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<MoneyTransactionArchive> MoneyTransactionArchives => Set<MoneyTransactionArchive>();
 
+    public DbSet<OrderArchive> OrderArchives => Set<OrderArchive>();
+
     public DbSet<ParticipantWorthSnapshotArchive> ParticipantWorthSnapshotArchives => Set<ParticipantWorthSnapshotArchive>();
+
+    public DbSet<ParticipantDailyWorthSnapshot> ParticipantDailyWorthSnapshots => Set<ParticipantDailyWorthSnapshot>();
 
     public DbSet<SectorSentimentSnapshot> SectorSentimentSnapshots => Set<SectorSentimentSnapshot>();
 
@@ -98,6 +102,85 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<AiTraderConfiguration> AiTraderConfigurations => Set<AiTraderConfiguration>();
 
     public DbSet<AiTraderCall> AiTraderCalls => Set<AiTraderCall>();
+
+    // Per-context read cache for maps that many per-cycle services request repeatedly. The whole tick runs on
+    // one scoped context, so this collapses those repeated reads to a single query per map; each map is rebuilt
+    // only after a save touches the table it derives from, keeping it consistent with committed state.
+    private long priceSnapshotGeneration;
+    private long marketCycleGeneration;
+    private Dictionary<int, decimal>? latestPriceByCompany;
+    private long latestPriceGeneration = -1;
+    private IReadOnlyDictionary<int, int>? cycleNumbersById;
+    private long cycleNumbersGeneration = -1;
+
+    // Latest price per company by its highest snapshot id, so the whole history is never materialised. A fresh
+    // copy is returned because callers such as the decision pass prune companies from their own view.
+    public async Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync()
+    {
+        if (latestPriceByCompany is null || latestPriceGeneration != priceSnapshotGeneration)
+        {
+            var latestSnapshotIds = await PriceSnapshots
+                .GroupBy(snapshot => snapshot.CompanyId)
+                .Select(group => group.Max(snapshot => snapshot.Id))
+                .ToListAsync();
+            latestPriceByCompany = (await PriceSnapshots
+                    .AsNoTracking()
+                    .Where(snapshot => latestSnapshotIds.Contains(snapshot.Id))
+                    .Select(snapshot => new { snapshot.CompanyId, snapshot.Price })
+                    .ToListAsync())
+                .ToDictionary(row => row.CompanyId, row => row.Price);
+            latestPriceGeneration = priceSnapshotGeneration;
+        }
+
+        return new Dictionary<int, decimal>(latestPriceByCompany);
+    }
+
+    // Cycle number by id is immutable history within a tick, so callers share one read-only map.
+    public async Task<IReadOnlyDictionary<int, int>> CycleNumbersByIdAsync()
+    {
+        if (cycleNumbersById is null || cycleNumbersGeneration != marketCycleGeneration)
+        {
+            cycleNumbersById = await MarketCycles.ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+            cycleNumbersGeneration = marketCycleGeneration;
+        }
+
+        return cycleNumbersById;
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        var pricesTouched = HasPendingChanges<PriceSnapshot>();
+        var cyclesTouched = HasPendingChanges<MarketCycle>();
+        var result = base.SaveChanges(acceptAllChangesOnSuccess);
+        InvalidateReadCache(pricesTouched, cyclesTouched);
+        return result;
+    }
+
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        var pricesTouched = HasPendingChanges<PriceSnapshot>();
+        var cyclesTouched = HasPendingChanges<MarketCycle>();
+        var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        InvalidateReadCache(pricesTouched, cyclesTouched);
+        return result;
+    }
+
+    private bool HasPendingChanges<TEntity>() where TEntity : class =>
+        ChangeTracker.Entries<TEntity>().Any(entry =>
+            entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted);
+
+    private void InvalidateReadCache(bool pricesTouched, bool cyclesTouched)
+    {
+        if (pricesTouched)
+        {
+            priceSnapshotGeneration++;
+        }
+
+        if (cyclesTouched)
+        {
+            marketCycleGeneration++;
+        }
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -201,6 +284,14 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<Order>()
             .HasIndex(order => new { order.ParticipantId, order.CompanyId, order.Type, order.Status });
 
+        // Archiving selects terminal orders by the cycle they were created in, so the source table indexes it.
+        modelBuilder.Entity<Order>()
+            .HasIndex(order => order.CreatedInCycleId);
+
+        // The exit path sums a departing participant's lifetime orders across live and archived rows.
+        modelBuilder.Entity<OrderArchive>()
+            .HasIndex(order => order.ParticipantId);
+
         // Latest-price-per-company and per-company price history both seek on (company, id).
         modelBuilder.Entity<PriceSnapshot>()
             .HasIndex(snapshot => new { snapshot.CompanyId, snapshot.Id });
@@ -214,6 +305,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<ParticipantWorthSnapshot>()
             .HasIndex(snapshot => snapshot.CreatedInCycleId);
+
+        // One daily worth row per participant per closed trading day; read back in day order for the
+        // long-horizon total-worth chart, and unique so a day close cannot record a participant twice.
+        modelBuilder.Entity<ParticipantDailyWorthSnapshot>()
+            .HasIndex(snapshot => new { snapshot.ParticipantId, snapshot.TradingDayId })
+            .IsUnique();
 
         modelBuilder.Entity<Bank>()
             .HasMany<Loan>()

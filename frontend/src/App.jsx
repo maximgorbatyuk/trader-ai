@@ -165,6 +165,7 @@ function App() {
       {mapModalCompany ? (
         <CompanyModal
           company={mapModalCompany}
+          actorKind={actorKind}
           onClose={() => setMapModalCompanyId(null)}
           onFavoriteChanged={(isFavorite) => {
             setCompanies((current) => current.map((company) =>

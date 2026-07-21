@@ -1050,8 +1050,7 @@ public sealed class MarketService(
             return;
         }
 
-        var cycleNumbersById = await dbContext.MarketCycles
-            .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+        var cycleNumbersById = await dbContext.CycleNumbersByIdAsync();
         var currentCycleNumber = cycleNumbersById.GetValueOrDefault(currentCycleId);
 
         // Resolved once here so bankruptcy and auditors both read the same window; a crisis triggered a prior
@@ -1950,7 +1949,32 @@ public sealed class MarketService(
 
         // Runs once this cycle's fills and shocks are persisted so each trader's holdings reflect final prices;
         // the added rows flush with the market update below, inside the advance transaction.
-        await WriteWorthSnapshotsAsync(currentCycle.Id, now);
+        var cycleWorthSnapshots = await WriteWorthSnapshotsAsync(currentCycle.Id, now);
+
+        // When the day just closed, copy each participant's closing worth into the daily table that backs the
+        // long-horizon total-worth chart. Reuses the components just computed for the day's last cycle, so the
+        // daily close equals the per-cycle close without recomputing prices, holdings, or liabilities.
+        if (nextCycle is null && currentCycle.TradingDayId > 0)
+        {
+            // Write the day's close idempotently: clear any existing rows for it first so this authoritative
+            // close supersedes a provisional row that a mid-day back-fill migration may have left for the day.
+            await dbContext.ParticipantDailyWorthSnapshots
+                .Where(snapshot => snapshot.TradingDayId == currentCycle.TradingDayId)
+                .ExecuteDeleteAsync();
+            foreach (var snapshot in cycleWorthSnapshots)
+            {
+                dbContext.ParticipantDailyWorthSnapshots.Add(new ParticipantDailyWorthSnapshot
+                {
+                    ParticipantId = snapshot.ParticipantId,
+                    TradingDayId = currentCycle.TradingDayId,
+                    Balance = snapshot.Balance,
+                    HoldingsValue = snapshot.HoldingsValue,
+                    LoanLiability = snapshot.LoanLiability,
+                    MarginLiability = snapshot.MarginLiability,
+                    CreatedAt = now,
+                });
+            }
+        }
 
         // On its thirty-cycle cadence the behavioural audit reclassifies the player and its fund from recent
         // activity; its staged participant and news changes flush with the market update below.
@@ -2015,6 +2039,31 @@ public sealed class MarketService(
             .Where(row => row.CreatedInCycleId <= cutoffCycleId && !currentPriceAnchorIds.Contains(row.Id))
             .ExecuteDeleteAsync();
 
+        // Only terminal orders are moved; open and partially-filled orders stay in the live book because
+        // matching, decisions, and ageing still read them, and the age cap keeps them far inside the window.
+        // Enum columns persist as their member name, so the raw filter matches on the string the ORM stores.
+        var filledStatus = nameof(OrderStatus.Filled);
+        var cancelledStatus = nameof(OrderStatus.Cancelled);
+        await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
+            INSERT INTO OrderArchives (Id, ParticipantId, CompanyId, Type, Status, Quantity, FilledQuantity, LimitPrice, ReservedCashAmount, IsFloatReplenishment, RelatedLoanId, RelatedMarginCallId, CreatedInCycleId, CreatedAt, UpdatedAt)
+            SELECT Id, ParticipantId, CompanyId, Type, Status, Quantity, FilledQuantity, LimitPrice, ReservedCashAmount, IsFloatReplenishment, RelatedLoanId, RelatedMarginCallId, CreatedInCycleId, CreatedAt, UpdatedAt
+            FROM Orders
+            WHERE CreatedInCycleId <= {cutoffCycleId} AND Status IN ({filledStatus}, {cancelledStatus})");
+        // A money transaction keeps an enforced foreign key to its order, so clear that soft link on any
+        // still-live transaction before the aged terminal order it points to is removed. The link only feeds a
+        // transaction-detail view that already tolerates a missing order, and the order itself is preserved in
+        // the archive under the same id.
+        await dbContext.MoneyTransactions
+            .Where(transaction => transaction.RelatedOrderId != null
+                && dbContext.Orders.Any(order => order.Id == transaction.RelatedOrderId
+                    && order.CreatedInCycleId <= cutoffCycleId
+                    && (order.Status == OrderStatus.Filled || order.Status == OrderStatus.Cancelled)))
+            .ExecuteUpdateAsync(setters => setters.SetProperty(transaction => transaction.RelatedOrderId, (int?)null));
+        await dbContext.Orders
+            .Where(row => row.CreatedInCycleId <= cutoffCycleId
+                && (row.Status == OrderStatus.Filled || row.Status == OrderStatus.Cancelled))
+            .ExecuteDeleteAsync();
+
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
             INSERT INTO MoneyTransactionArchives (Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt)
             SELECT Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt
@@ -2039,7 +2088,7 @@ public sealed class MarketService(
 
     // Records each trader's cash and holdings value for the just-completed cycle so per-cycle change figures
     // and the total-worth chart can be derived later. Every participant is captured, not just the human player.
-    private async Task WriteWorthSnapshotsAsync(int completedCycleId, DateTime now)
+    private async Task<List<ParticipantWorthSnapshot>> WriteWorthSnapshotsAsync(int completedCycleId, DateTime now)
     {
         var industrySentiments = await dbContext.Industries
             .Select(industry => new { industry.Id, industry.SentimentValue })
@@ -2056,9 +2105,10 @@ public sealed class MarketService(
         }
 
         var participants = await dbContext.Participants.ToListAsync();
+        var worthSnapshots = new List<ParticipantWorthSnapshot>(participants.Count);
         if (participants.Count == 0)
         {
-            return;
+            return worthSnapshots;
         }
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
@@ -2082,7 +2132,7 @@ public sealed class MarketService(
                 ? holdings.Sum(holding => holding.Value * latestPriceByCompany.GetValueOrDefault(holding.Key))
                 : 0m;
 
-            dbContext.ParticipantWorthSnapshots.Add(new ParticipantWorthSnapshot
+            var snapshot = new ParticipantWorthSnapshot
             {
                 ParticipantId = participant.Id,
                 CreatedInCycleId = completedCycleId,
@@ -2091,8 +2141,12 @@ public sealed class MarketService(
                 LoanLiability = loanLiabilityByParticipant.GetValueOrDefault(participant.Id),
                 MarginLiability = marginLiabilityByParticipant.GetValueOrDefault(participant.Id),
                 CreatedAt = now,
-            });
+            };
+            dbContext.ParticipantWorthSnapshots.Add(snapshot);
+            worthSnapshots.Add(snapshot);
         }
+
+        return worthSnapshots;
     }
 
     private async Task<CreatePlayerResult> CreatePlayerCoreAsync(string? name)
@@ -2708,8 +2762,7 @@ public sealed class MarketService(
                 // unbounded by share count and overflows a 32-bit accumulator on a hot company.
                 group => group.Sum(order => order.Type == OrderType.Buy ? (long)order.Remaining : -(long)order.Remaining));
 
-        var cycleNumbersById = await dbContext.MarketCycles
-            .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+        var cycleNumbersById = await dbContext.CycleNumbersByIdAsync();
         var currentCycleNumber = cycleNumbersById.GetValueOrDefault(market.CurrentCycleId.Value);
         var baselineCycleNumber = currentCycleNumber - LongRangeWindowCycles;
 
@@ -2719,10 +2772,14 @@ public sealed class MarketService(
 
         // Delisted companies keep their price history for the detail page but must not be offered to the engine,
         // which would otherwise rest ghost bids on a stock that has no float to fill them.
-        var closedCompanyIds = (await dbContext.Companies
-                .Where(company => company.ClosedInCycleId != null)
-                .Select(company => company.Id)
-                .ToListAsync())
+        // One projection of every company serves the closed-set, per-company issued supply, and sector lookup
+        // below, so the decision pass reads the company table once instead of three times.
+        var companyRows = await dbContext.Companies.AsNoTracking()
+            .Select(company => new { company.Id, company.ClosedInCycleId, company.IndustryId, company.IssuedSharesCount })
+            .ToListAsync();
+        var closedCompanyIds = companyRows
+            .Where(company => company.ClosedInCycleId != null)
+            .Select(company => company.Id)
             .ToHashSet();
 
         // A company frozen by a volatility halt cannot trade this cycle, so like a delisted one it is kept out
@@ -2746,17 +2803,13 @@ public sealed class MarketService(
             .Select(snapshot => snapshot.CompanyId)
             .Where(companyId => !closedCompanyIds.Contains(companyId) && !haltedCompanyIds.Contains(companyId))
             .ToHashSet();
-        var sentimentByCompany = await dbContext.Companies.AsNoTracking()
-            .Where(company => quoteCompanyIds.Contains(company.Id))
-            .Join(
-                dbContext.Industries.AsNoTracking(),
-                company => company.IndustryId,
-                industry => industry.Id,
-                (company, industry) => new { company.Id, industry.SentimentValue })
-            .ToDictionaryAsync(pair => pair.Id, pair => pair.SentimentValue);
-        var issuedSharesByCompany = await dbContext.Companies.AsNoTracking()
-            .Where(company => quoteCompanyIds.Contains(company.Id))
-            .ToDictionaryAsync(company => company.Id, company => company.IssuedSharesCount);
+        var sentimentByIndustry = await dbContext.Industries.AsNoTracking()
+            .ToDictionaryAsync(industry => industry.Id, industry => industry.SentimentValue);
+        var quoteCompanyRows = companyRows.Where(company => quoteCompanyIds.Contains(company.Id)).ToList();
+        var sentimentByCompany = quoteCompanyRows
+            .ToDictionary(company => company.Id, company => sentimentByIndustry.GetValueOrDefault(company.IndustryId));
+        var issuedSharesByCompany = quoteCompanyRows
+            .ToDictionary(company => company.Id, company => company.IssuedSharesCount);
         var quotes = snapshots
             .GroupBy(snapshot => snapshot.CompanyId)
             .Where(group => !closedCompanyIds.Contains(group.Key) && !haltedCompanyIds.Contains(group.Key))
@@ -2928,15 +2981,17 @@ public sealed class MarketService(
 
         var loanLiabilityByParticipant = await LoanService.OpenLoanLiabilityByParticipantAsync(dbContext);
         var marginLiabilityByParticipant = await MarginService.LiabilityByParticipantAsync(dbContext);
-        var fundStatusByParticipantId = await dbContext.CollectiveFunds
-            .ToDictionaryAsync(fund => fund.ParticipantId, fund => fund.Status);
+        // One fund read covers both the status gate and the player-managed exclusion below.
+        var fundRows = await dbContext.CollectiveFunds
+            .Select(fund => new { fund.ParticipantId, fund.Status, fund.IsPlayerManaged })
+            .ToListAsync();
+        var fundStatusByParticipantId = fundRows.ToDictionary(fund => fund.ParticipantId, fund => fund.Status);
 
         // A player-managed fund only trades when the human places an order through it, so it is left out of the
         // automatic decision pass entirely.
-        var playerManagedFundParticipantIds = (await dbContext.CollectiveFunds
-                .Where(fund => fund.IsPlayerManaged)
-                .Select(fund => fund.ParticipantId)
-                .ToListAsync())
+        var playerManagedFundParticipantIds = fundRows
+            .Where(fund => fund.IsPlayerManaged)
+            .Select(fund => fund.ParticipantId)
             .ToHashSet();
         var memberParticipantIds = (await dbContext.CollectiveFundParticipants
                 .Select(member => member.ParticipantId)
@@ -3207,6 +3262,7 @@ public sealed class MarketService(
         await dbContext.Orders.ExecuteDeleteAsync();
         await dbContext.MarketCycles.ExecuteDeleteAsync();
         await dbContext.ParticipantWorthSnapshots.ExecuteDeleteAsync();
+        await dbContext.ParticipantDailyWorthSnapshots.ExecuteDeleteAsync();
         await dbContext.PriceSnapshotArchives.ExecuteDeleteAsync();
         await dbContext.MoneyTransactionArchives.ExecuteDeleteAsync();
         await dbContext.ParticipantWorthSnapshotArchives.ExecuteDeleteAsync();
@@ -3228,7 +3284,7 @@ public sealed class MarketService(
             "'ShareTransactions', 'MoneyTransactions', 'DividendPayouts', 'CorporateCashTransactions', 'StockDenominationEvents', 'PriceBandStates', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
             "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', 'CrisisEvents', " +
             "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
-            "'CollectiveFunds', 'CollectiveFundParticipants', 'CollectiveFundMembershipEvents', 'ParticipantWorthSnapshots', " +
+            "'CollectiveFunds', 'CollectiveFundParticipants', 'CollectiveFundMembershipEvents', 'ParticipantWorthSnapshots', 'ParticipantDailyWorthSnapshots', " +
             "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives', " +
             "'SectorSentimentSnapshots', 'SectorSentimentSnapshotArchives', " +
             "'AiTraderCalls', 'AiTraderConfigurations', " +

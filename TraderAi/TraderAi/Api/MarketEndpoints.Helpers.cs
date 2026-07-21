@@ -119,12 +119,39 @@ public static partial class MarketEndpoints
         var industryNameById = await IndustryNameByIdAsync(dbContext);
         var latestRatingByCompany = await LatestRatingByCompanyAsync(dbContext);
         var priceBandByCompany = await dbContext.PriceBandStates.ToDictionaryAsync(state => state.CompanyId);
+        var playerId = await dbContext.Participants
+            .Where(participant => participant.Type == ParticipantType.Player)
+            .Select(participant => (int?)participant.Id)
+            .FirstOrDefaultAsync();
+        var fundId = playerId is int ownerId
+            ? await dbContext.CollectiveFunds
+                .Where(fund => fund.IsPlayerManaged
+                    && fund.FoundedByParticipantId == ownerId
+                    && fund.Status != CollectiveFundStatus.Closed)
+                .Select(fund => (int?)fund.ParticipantId)
+                .FirstOrDefaultAsync()
+            : null;
+        var positionParticipantIds = new[] { playerId, fundId }
+            .Where(participantId => participantId.HasValue)
+            .Select(participantId => participantId!.Value)
+            .Distinct()
+            .ToArray();
+        var positionRows = positionParticipantIds.Length == 0
+            ? []
+            : await dbContext.Holdings
+                .Where(holding => positionParticipantIds.Contains(holding.ParticipantId) && holding.Quantity > 0)
+                .Select(holding => new { holding.ParticipantId, holding.CompanyId, Shares = holding.Quantity })
+                .ToListAsync();
+        var positionShares = positionRows.ToDictionary(
+            holding => (holding.ParticipantId, holding.CompanyId),
+            holding => holding.Shares);
 
         return companies
             .Select(company =>
             {
                 priceBandByCompany.TryGetValue(company.Id, out var band);
-                var bounds = ResolveOrderPriceBounds(band, latestPriceByCompany.GetValueOrDefault(company.Id), haltOptions);
+                var currentPrice = latestPriceByCompany.GetValueOrDefault(company.Id);
+                var bounds = ResolveOrderPriceBounds(band, currentPrice, haltOptions);
                 return new CompanyResponse(
                     company.Id,
                     company.Name,
@@ -132,7 +159,7 @@ public static partial class MarketEndpoints
                     company.IndustryId,
                     industryNameById.GetValueOrDefault(company.IndustryId),
                     company.IssuedSharesCount,
-                    latestPriceByCompany.GetValueOrDefault(company.Id),
+                    currentPrice,
                     changeByCompany.GetValueOrDefault(company.Id),
                     latestRatingByCompany.TryGetValue(company.Id, out var rating) ? rating.ToString() : null,
                     band is not null && band.State != LuldState.Normal,
@@ -144,9 +171,29 @@ public static partial class MarketEndpoints
                     bounds?.AllowedMinimumPrice,
                     bounds?.AllowedMaximumPrice,
                     band?.LimitStateStartedCycleNumber,
-                    band?.PauseUntilCycleNumber);
+                    band?.PauseUntilCycleNumber,
+                    BuildCompanyPositionResponse(playerId, company, currentPrice, positionShares),
+                    BuildCompanyPositionResponse(fundId, company, currentPrice, positionShares));
             })
             .ToList();
+    }
+
+    private static CompanyPositionResponse? BuildCompanyPositionResponse(
+        int? participantId,
+        Company company,
+        decimal currentPrice,
+        IReadOnlyDictionary<(int ParticipantId, int CompanyId), int> positionShares)
+    {
+        if (participantId is not int ownerId)
+        {
+            return null;
+        }
+
+        var shares = positionShares.GetValueOrDefault((ownerId, company.Id));
+        var ownershipPct = company.IssuedSharesCount > 0
+            ? (decimal)shares / company.IssuedSharesCount
+            : 0m;
+        return new CompanyPositionResponse(shares, ownershipPct, shares * currentPrice);
     }
 
     // Allowed-range prices are derived: reuse the persisted band as the reference when present, otherwise fall back

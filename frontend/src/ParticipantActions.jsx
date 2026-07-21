@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { formatMoney } from './format'
 import { Modal } from './Modal'
+import { AiTraderAutomationSettings } from './AiTraderAutomationPanel'
 import { parseCashAdjustment, transferableSettledCash } from './participantActionsModel'
 
 export function ParticipantActions({ participant, onChanged }) {
@@ -56,24 +57,7 @@ export function ParticipantActions({ participant, onChanged }) {
           Actions
           <span className="actions-caret" aria-hidden="true">▾</span>
         </button>
-        {menuOpen ? (
-          <div className="actions-menu" role="group" ref={menuRef} aria-label="Trader actions">
-            <button type="button" className="actions-menu-item" onClick={() => choose('rename')}>
-              Rename
-            </button>
-            <button type="button" className="actions-menu-item" onClick={() => choose('cash')}>
-              Adjust cash
-            </button>
-            <button
-              type="button"
-              className="actions-menu-item actions-menu-danger"
-              disabled={participant.memberOfCollectiveFundId == null}
-              onClick={() => choose('leave')}
-            >
-              Force to leave Fund
-            </button>
-          </div>
-        ) : null}
+        {menuOpen ? <ParticipantActionsMenu participant={participant} onChoose={choose} menuRef={menuRef} /> : null}
       </div>
 
       {notice ? <p className="participant-action-status" role="status">{notice}</p> : null}
@@ -84,9 +68,40 @@ export function ParticipantActions({ participant, onChanged }) {
       {action === 'cash' ? (
         <CashAdjustmentDialog participant={participant} onClose={() => setAction(null)} onCompleted={completed} />
       ) : null}
+      {action === 'automation' ? (
+        <AutomationDialog participant={participant} onClose={() => setAction(null)} onCompleted={completed} />
+      ) : null}
       {action === 'leave' ? (
         <ForceLeaveDialog participant={participant} onClose={() => setAction(null)} onCompleted={completed} />
       ) : null}
+    </div>
+  )
+}
+
+export function ParticipantActionsMenu({ participant, onChoose, menuRef }) {
+  const canManageAutomation = participant.type === 'Individual' || participant.type === 'AIAgent'
+
+  return (
+    <div className="actions-menu" role="group" ref={menuRef} aria-label="Trader actions">
+      <button type="button" className="actions-menu-item" onClick={() => onChoose('rename')}>
+        Rename
+      </button>
+      <button type="button" className="actions-menu-item" onClick={() => onChoose('cash')}>
+        Adjust cash
+      </button>
+      {canManageAutomation ? (
+        <button type="button" className="actions-menu-item" onClick={() => onChoose('automation')}>
+          Automation settings
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="actions-menu-item actions-menu-danger"
+        disabled={participant.memberOfCollectiveFundId == null}
+        onClick={() => onChoose('leave')}
+      >
+        Force to leave Fund
+      </button>
     </div>
   )
 }
@@ -185,6 +200,28 @@ function CashAdjustmentDialog({ participant, onClose, onCompleted }) {
   )
 }
 
+function AutomationDialog({ participant, onClose, onCompleted }) {
+  const [rawResponseOpen, setRawResponseOpen] = useState(false)
+  const titleId = `participant-automation-${participant.id}`
+
+  return (
+    <ActionModal
+      titleId={titleId}
+      label="Trader action"
+      title={`Automation settings for ${participant.name}`}
+      onClose={onClose}
+      dismissible={!rawResponseOpen}
+    >
+      <AiTraderAutomationSettings
+        participantId={participant.id}
+        detail={participant}
+        onChanged={() => onCompleted('Automation settings saved.')}
+        onRawResponseVisibilityChange={setRawResponseOpen}
+      />
+    </ActionModal>
+  )
+}
+
 function ForceLeaveDialog({ participant, onClose, onCompleted }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -226,9 +263,9 @@ function ForceLeaveDialog({ participant, onClose, onCompleted }) {
   )
 }
 
-function ActionModal({ titleId, label, title, onClose, children }) {
+function ActionModal({ titleId, label, title, onClose, children, dismissible = true }) {
   return (
-    <Modal titleId={titleId} className="modal-action" onClose={onClose}>
+    <Modal titleId={titleId} className="modal-action" onClose={onClose} dismissible={dismissible}>
       <header className="modal-head">
         <div className="command-id">
           <span className="command-label">{label}</span>

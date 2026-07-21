@@ -165,7 +165,10 @@ public sealed class MarketExitService(
         }
 
         var quitBalance = participant.CurrentBalance;
-        var ordersPlaced = await dbContext.Orders.CountAsync(order => order.ParticipantId == participant.Id);
+        // Terminal orders age into the archive, so the lifetime tally sums both stores to stay accurate for a
+        // participant whose early orders were already moved out of the live table.
+        var ordersPlaced = await dbContext.Orders.CountAsync(order => order.ParticipantId == participant.Id)
+            + await dbContext.OrderArchives.CountAsync(order => order.ParticipantId == participant.Id);
 
         dbContext.MarketExits.Add(new MarketExit
         {

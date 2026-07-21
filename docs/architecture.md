@@ -125,6 +125,8 @@ Price, participant worth, cash movement, sector sentiment, and stock-denominatio
 
 Frequently used history remains in live tables for a configured retention window. Older rows move to archive tables inside the cycle transaction, preserving identifiers while keeping operational queries small. Price retention excludes the newest live snapshot for every company from archival, preserving one current-price anchor even during a long quiet period. Runtime APIs read the live window, and resetting the demo market clears both live and archived simulation state while preserving operator-managed game settings.
 
+Participant worth is recorded at two grains: once per completed cycle for recent change, and once at each trading-day close for a compact long-horizon series. The per-cycle series ages into its archive, while the smaller daily series is retained so the multi-day total-worth chart stays populated. A migration derives the daily series from the recorded per-cycle worth rather than fabricating it, so it too begins only where real history exists.
+
 ## Documentation map
 
 - [Domain](domain.md) describes the data model and core market rules.

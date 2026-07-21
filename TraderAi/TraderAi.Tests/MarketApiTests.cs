@@ -160,6 +160,87 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task CompanyResponsesIncludePlayerAndManagedFundPositions()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+            await client.PostAsJsonAsync("/player", new { name = "Ada" });
+            var playerResponse = await (await client.PostAsJsonAsync(
+                    "/player/fund",
+                    new { seedAmount = 500m, name = "Ada Fund" }))
+                .Content.ReadFromJsonAsync<PlayerDto>();
+            var fundId = playerResponse!.FundParticipantId!.Value;
+
+            int heldCompanyId;
+            int emptyCompanyId;
+            int issuedShares;
+            decimal currentPrice;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var playerId = await db.Participants
+                    .Where(participant => participant.Type == ParticipantType.Player)
+                    .Select(participant => participant.Id)
+                    .SingleAsync();
+                var companies = await db.Companies.OrderBy(company => company.Id).Take(2).ToListAsync();
+                var heldCompany = companies[0];
+                heldCompanyId = heldCompany.Id;
+                emptyCompanyId = companies[1].Id;
+                issuedShares = heldCompany.IssuedSharesCount;
+                currentPrice = await db.PriceSnapshots
+                    .Where(snapshot => snapshot.CompanyId == heldCompanyId)
+                    .OrderByDescending(snapshot => snapshot.Id)
+                    .Select(snapshot => snapshot.Price)
+                    .FirstAsync();
+
+                db.Holdings.AddRange(
+                    new Holding
+                    {
+                        ParticipantId = playerId,
+                        CompanyId = heldCompanyId,
+                        Quantity = 123,
+                        SettledQuantity = 123,
+                        AverageCost = currentPrice,
+                    },
+                    new Holding
+                    {
+                        ParticipantId = fundId,
+                        CompanyId = heldCompanyId,
+                        Quantity = 77,
+                        SettledQuantity = 77,
+                        AverageCost = currentPrice,
+                    });
+                await db.SaveChangesAsync();
+            }
+
+            using var companiesResponse = await client.GetFromJsonAsync<JsonDocument>("/companies");
+            var rows = companiesResponse!.RootElement.EnumerateArray().ToArray();
+            var heldRow = rows.Single(row => row.GetProperty("id").GetInt32() == heldCompanyId);
+            Assert.True(heldRow.TryGetProperty("playerPosition", out var playerPosition));
+            Assert.Equal(123, playerPosition.GetProperty("shares").GetInt32());
+            Assert.Equal((decimal)123 / issuedShares, playerPosition.GetProperty("ownershipPct").GetDecimal());
+            Assert.Equal(123 * currentPrice, playerPosition.GetProperty("marketValue").GetDecimal());
+            Assert.True(heldRow.TryGetProperty("fundPosition", out var fundPosition));
+            Assert.Equal(77, fundPosition.GetProperty("shares").GetInt32());
+            Assert.Equal((decimal)77 / issuedShares, fundPosition.GetProperty("ownershipPct").GetDecimal());
+            Assert.Equal(77 * currentPrice, fundPosition.GetProperty("marketValue").GetDecimal());
+
+            var emptyRow = rows.Single(row => row.GetProperty("id").GetInt32() == emptyCompanyId);
+            Assert.Equal(0, emptyRow.GetProperty("playerPosition").GetProperty("shares").GetInt32());
+            Assert.Equal(0, emptyRow.GetProperty("fundPosition").GetProperty("shares").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AccountingContractsShareValuationAndPendingSettlementSummary()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -770,6 +851,20 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 $"/participants/{buyer.Id}/settlements?status=pending&page=1&pageSize=10");
             Assert.Single(settlementsBeforeReset!.Items);
 
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                db.ParticipantDailyWorthSnapshots.Add(new ParticipantDailyWorthSnapshot
+                {
+                    ParticipantId = buyer.Id,
+                    TradingDayId = 1,
+                    Balance = 1_000m,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                await db.SaveChangesAsync();
+                Assert.NotEmpty(await db.ParticipantDailyWorthSnapshots.ToListAsync());
+            }
+
             using var resetResponse = await client.PostAsync("/market/reset", null);
             Assert.Equal(HttpStatusCode.OK, resetResponse.StatusCode);
 
@@ -795,11 +890,86 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             var settlementsAfterReset = await client.GetFromJsonAsync<PagedSettlementsDto>(
                 $"/participants/{buyer.Id}/settlements?status=pending&page=1&pageSize=10");
             Assert.Empty(settlementsAfterReset!.Items);
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                Assert.Empty(await db.ParticipantDailyWorthSnapshots.ToListAsync());
+            }
             Assert.All(openOrders, order =>
             {
                 Assert.Null(order.ParticipantId);
                 Assert.Equal("Sell", order.Type);
             });
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DailyWorthHistoryReturnsDayClosesThenLiveCurrentPoint()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+
+            int participantId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var now = DateTime.UtcNow;
+                var cycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
+                db.MarketCycles.Add(cycle);
+                var participant = new Participant
+                {
+                    Name = "Ada",
+                    Type = ParticipantType.Individual,
+                    Temperament = Temperament.Balanced,
+                    RiskProfile = RiskProfile.Medium,
+                    InitialBalance = 1_000m,
+                    CurrentBalance = 1_000m,
+                    IsActive = true,
+                };
+                db.Participants.Add(participant);
+                await db.SaveChangesAsync();
+
+                var dayOne = new TradingDay { DayNumber = 1, State = TradingSessionState.Break, OpenedInCycleId = cycle.Id, ClosedInCycleId = cycle.Id };
+                var dayTwo = new TradingDay { DayNumber = 2, State = TradingSessionState.Break, OpenedInCycleId = cycle.Id, ClosedInCycleId = cycle.Id };
+                var dayThree = new TradingDay { DayNumber = 3, State = TradingSessionState.Trading, OpenedInCycleId = cycle.Id };
+                db.TradingDays.AddRange(dayOne, dayTwo, dayThree);
+                await db.SaveChangesAsync();
+
+                db.ParticipantDailyWorthSnapshots.AddRange(
+                    new ParticipantDailyWorthSnapshot { ParticipantId = participant.Id, TradingDayId = dayOne.Id, Balance = 800m, CreatedAt = now },
+                    new ParticipantDailyWorthSnapshot { ParticipantId = participant.Id, TradingDayId = dayTwo.Id, Balance = 900m, CreatedAt = now });
+                db.Markets.Add(new Market
+                {
+                    Name = "Worth test",
+                    Status = MarketStatus.Paused,
+                    CurrentCycleId = cycle.Id,
+                    CurrentTradingDayId = dayThree.Id,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                });
+                await db.SaveChangesAsync();
+                participantId = participant.Id;
+            }
+
+            var points = await client.GetFromJsonAsync<JsonElement[]>($"/participants/{participantId}/daily-worth-history");
+
+            // Two recorded day closes (worth 800, 900) followed by the live current point for the open day 3.
+            Assert.Equal(3, points!.Length);
+            Assert.Equal(new[] { 1, 2, 3 }, points.Select(point => point.GetProperty("dayNumber").GetInt32()).ToArray());
+            Assert.Equal(new[] { 800m, 900m, 1_000m }, points.Select(point => point.GetProperty("totalWorth").GetDecimal()).ToArray());
+            Assert.False(points[0].GetProperty("isCurrent").GetBoolean());
+            Assert.False(points[1].GetProperty("isCurrent").GetBoolean());
+            Assert.True(points[2].GetProperty("isCurrent").GetBoolean());
         }
         finally
         {

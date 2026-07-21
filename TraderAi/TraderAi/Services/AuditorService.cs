@@ -61,8 +61,7 @@ public sealed class AuditorService(
             return;
         }
 
-        var cycleNumbersById = await dbContext.MarketCycles
-            .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+        var cycleNumbersById = await dbContext.CycleNumbersByIdAsync();
 
         var snapshotsByCompany = (await dbContext.PriceSnapshots
                 .OrderBy(snapshot => snapshot.Id)

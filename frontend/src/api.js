@@ -134,6 +134,8 @@ export const api = {
     get(`/participants/${participantId}/money-transactions/${transactionId}`),
   getParticipantWorthHistory: (participantId, take) =>
     get(take ? `/participants/${participantId}/worth-history?take=${take}` : `/participants/${participantId}/worth-history`),
+  getParticipantDailyWorthHistory: (participantId, take) =>
+    get(take ? `/participants/${participantId}/daily-worth-history?take=${take}` : `/participants/${participantId}/daily-worth-history`),
   getFundMembershipHistory: (participantId, page = 1, pageSize = 10) =>
     get(`/participants/${participantId}/fund-membership-history?page=${page}&pageSize=${pageSize}`),
   updateParticipantProfile: (participantId, profile) => put(`/participants/${participantId}/profile`, profile),

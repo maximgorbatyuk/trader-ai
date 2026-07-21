@@ -16,6 +16,13 @@ function formatPct(value) {
   return `${sign}${(Math.abs(value) * 100).toFixed(2)}%`
 }
 
+function formatOwnershipPct(value) {
+  if (typeof value !== 'number') return '—'
+  const percentage = value * 100
+  if (percentage > 0 && percentage < 0.01) return '<0.01%'
+  return `${percentage.toFixed(2)}%`
+}
+
 // Sentiment is a small signed index; a leading + keeps its sign explicit, matching the industries page.
 function formatSentiment(value) {
   if (typeof value !== 'number') return '—'
@@ -30,12 +37,10 @@ function formatCyclesAgo(cyclesAgo) {
 
 // Detail dialog for one company opened from the market map. Live price, cap and share count come from the
 // dashboard's already-polled company record; the price history and most recent trade are fetched here.
-export function CompanyModal({ company, onClose, onFavoriteChanged }) {
+export function CompanyModal({ company, actorKind = 'player', onClose, onFavoriteChanged }) {
   const companyId = company?.id
   const [prices, setPrices] = useState([])
   const [player, setPlayer] = useState(null)
-  const [ownedShares, setOwnedShares] = useState(0)
-  const [fundOwnedShares, setFundOwnedShares] = useState(0)
   const [industrySentiment, setIndustrySentiment] = useState([])
   const [latestRating, setLatestRating] = useState(null)
   const [activeForm, setActiveForm] = useState('none')
@@ -60,25 +65,6 @@ export function CompanyModal({ company, onClose, onFavoriteChanged }) {
         setPlayer(playerData)
         setIndustrySentiment(sentimentData ?? [])
         setLatestRating((ratingData && ratingData[0]) ?? null)
-
-        if (playerData) {
-          const holdings = await api.getHoldings(playerData.id)
-          if (!active) return
-          const holding = holdings.find((item) => item.companyId === companyId)
-          setOwnedShares(holding ? holding.shares : 0)
-
-          if (playerData.fundParticipantId != null) {
-            const fundHoldings = await api.getHoldings(playerData.fundParticipantId)
-            if (!active) return
-            const fundHolding = fundHoldings.find((item) => item.companyId === companyId)
-            setFundOwnedShares(fundHolding ? fundHolding.shares : 0)
-          } else {
-            setFundOwnedShares(0)
-          }
-        } else {
-          setOwnedShares(0)
-          setFundOwnedShares(0)
-        }
       } catch {
         // Keep the last known values when a refresh fails.
       }
@@ -126,6 +112,10 @@ export function CompanyModal({ company, onClose, onFavoriteChanged }) {
     player?.fundParticipantId != null
       ? { id: player.fundParticipantId, name: player.fundName, availableBalance: player.fundAvailableBalance, margin: player.fundMargin }
       : null
+  const ownedShares = company.playerPosition?.shares ?? 0
+  const fundOwnedShares = company.fundPosition?.shares ?? 0
+  const actorPosition = actorKind === 'fund' ? company.fundPosition : company.playerPosition
+  const actorPositionLabel = actorKind === 'fund' ? 'Managed fund position' : 'Player position'
   const capitalization = company.issuedSharesCount * (company.currentPrice ?? 0)
   // The trend line charts capitalisation, not price, so a stock split (price down, shares up, cap flat) does
   // not read as a crash. Capitalisation is recorded going forward, so snapshots predating it are skipped.
@@ -255,6 +245,28 @@ export function CompanyModal({ company, onClose, onFavoriteChanged }) {
               <dd className="num">{formatInt(company.issuedSharesCount)}</dd>
             </div>
           </dl>
+
+          <div className="modal-section">
+            <span className="map-stat-label">{actorPositionLabel}</span>
+            {(actorPosition?.shares ?? 0) > 0 ? (
+              <dl className="modal-stats">
+                <div>
+                  <dt>Shares owned</dt>
+                  <dd className="num">{formatInt(actorPosition.shares)}</dd>
+                </div>
+                <div>
+                  <dt>Ownership</dt>
+                  <dd className="num">{formatOwnershipPct(actorPosition.ownershipPct)}</dd>
+                </div>
+                <div>
+                  <dt>Position value</dt>
+                  <dd className="num">{formatMoney(actorPosition.marketValue)}</dd>
+                </div>
+              </dl>
+            ) : (
+              <p className="note note-sm">No shares of this company</p>
+            )}
+          </div>
 
           <div className="modal-section">
             <span className="map-stat-label">Latest risk estimation</span>
