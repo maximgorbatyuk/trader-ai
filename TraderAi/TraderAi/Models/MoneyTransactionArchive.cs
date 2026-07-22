@@ -6,6 +6,8 @@ public sealed class MoneyTransactionArchive
 {
     public int Id { get; set; }
 
+    public int? MarketRunId { get; set; }
+
     public int ParticipantId { get; set; }
 
     public MoneyTransactionType Type { get; set; }

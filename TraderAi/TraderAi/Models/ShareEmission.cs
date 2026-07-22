@@ -6,6 +6,8 @@ public sealed class ShareEmission
 {
     public int Id { get; set; }
 
+    public int? MarketRunId { get; set; }
+
     public int CompanyId { get; set; }
 
     public int SharesEmitted { get; set; }
@@ -15,4 +17,6 @@ public sealed class ShareEmission
     public int CreatedInCycleId { get; set; }
 
     public DateTime CreatedAt { get; set; }
+
+    public List<ShareEmissionRecipient> Recipients { get; set; } = [];
 }

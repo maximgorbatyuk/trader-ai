@@ -15,7 +15,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     private static readonly DateTimeOffset Now = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
 
     private static readonly string ValidDecision =
-        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"limitPrice\":100,\"reason\":\"r\"}]}";
+        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"limitPrice\":100,\"reason\":\"r\"}],\"predictions\":[]}";
 
     private readonly string databasePath;
     private readonly ServiceProvider provider;
@@ -209,9 +209,83 @@ public sealed class AiTraderCoordinatorTests : IDisposable
 
         Assert.Equal(AiTraderCallStatus.Completed, status);
         Assert.Equal(2, calls);
-        Assert.Equal(2, await Db().AiTraderCalls.CountAsync());
+        var attempts = await Db().AiTraderCalls.OrderBy(call => call.Id).ToListAsync();
+        Assert.Equal(2, attempts.Count);
+        Assert.Equal(attempts[0].AttemptGroupId, attempts[1].AttemptGroupId);
+        Assert.Equal(new[] { 1, 2 }, attempts.Select(attempt => attempt.AttemptNumber));
+        Assert.Equal("invalid_json", attempts[0].FailureCategory);
+        Assert.Null(attempts[1].FailureCategory);
         Assert.Equal(1, await Db().Orders.CountAsync());
         Assert.Equal(AiTraderRuntimeStatus.Waiting, Runtime().Get(seed.ParticipantId).Status);
+    }
+
+    [Fact]
+    public async Task ProviderInvalidJsonRetryOverrideWinsOverTheGlobalLimit()
+    {
+        var seed = await SeedMarketAsync();
+        Settings().MaxInvalidJsonRetries = 0;
+        Settings().Providers["glm"].MaxInvalidJsonRetries = 1;
+        var valid = ValidDecision.Replace("COMPANY", seed.CompanyId.ToString());
+        var calls = 0;
+        fakeClient.OnSend = _ => Task.FromResult(Success(++calls == 1
+            ? "{\"summary\":\"x\",\"orders\":}"
+            : valid));
+
+        var status = await Coordinator().ProcessParticipantAsync(
+            seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+
+        Assert.Equal(AiTraderCallStatus.Completed, status);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public async Task ProviderTransportRetryOverrideBoundsSameCycleBackoff()
+    {
+        var seed = await SeedMarketAsync();
+        Settings().MaxTransportRetries = 0;
+        Settings().Providers["glm"].MaxTransportRetries = 1;
+        fakeClient.OnSend = _ => Task.FromResult(HttpError(500));
+        var coordinator = Coordinator();
+
+        await coordinator.ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+        Assert.NotNull(Runtime().Get(seed.ParticipantId).NextRetryAt);
+
+        await coordinator.ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+
+        Assert.Null(Runtime().Get(seed.ParticipantId).NextRetryAt);
+        var attempts = await Db().AiTraderCalls.OrderBy(call => call.Id).ToListAsync();
+        Assert.Equal(attempts[0].AttemptGroupId, attempts[1].AttemptGroupId);
+        Assert.Equal(new[] { 1, 2 }, attempts.Select(attempt => attempt.AttemptNumber));
+    }
+
+    [Fact]
+    public async Task ANewScheduledCycleStartsANewAttemptGroup()
+    {
+        var seed = await SeedMarketAsync();
+        const string waitDecision =
+            "{\"summary\":\"Wait.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[],\"predictions\":[]}";
+        fakeClient.OnSend = _ => Task.FromResult(Success(waitDecision));
+        var coordinator = Coordinator();
+
+        await coordinator.ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+        await coordinator.ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber + 1, CancellationToken.None);
+
+        var attempts = await Db().AiTraderCalls.OrderBy(call => call.Id).ToListAsync();
+        Assert.Equal(2, attempts.Count);
+        Assert.NotEqual(attempts[0].AttemptGroupId, attempts[1].AttemptGroupId);
+        Assert.All(attempts, attempt => Assert.Equal(1, attempt.AttemptNumber));
+    }
+
+    [Fact]
+    public async Task LongerProviderRetryAfterControlsTheBackoffWindow()
+    {
+        var seed = await SeedMarketAsync();
+        Settings().Providers["glm"].MaxTransportRetries = 1;
+        fakeClient.OnSend = _ => Task.FromResult(HttpError(429, TimeSpan.FromSeconds(90)));
+
+        await Coordinator().ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+
+        Assert.Equal(Now.AddSeconds(90).UtcDateTime, Runtime().Get(seed.ParticipantId).NextRetryAt);
     }
 
     [Fact]
@@ -450,7 +524,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
             await db.SaveChangesAsync();
         }
         var decision =
-            $"{{\"summary\":\"Fund Acme.\",\"cancelOrderIds\":[],\"bigInvestment\":{{\"companyId\":{seed.CompanyId},\"amount\":50000,\"reason\":\"growth\"}},\"orders\":[]}}";
+            $"{{\"summary\":\"Fund Acme.\",\"cancelOrderIds\":[],\"bigInvestment\":{{\"companyId\":{seed.CompanyId},\"shares\":500,\"reason\":\"growth\"}},\"orders\":[],\"predictions\":[]}}";
         fakeClient.OnSend = _ => Task.FromResult(Success(decision));
         var coordinator = Coordinator();
 
@@ -637,8 +711,8 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     private static AiProviderResponse Success(string content)
         => new(AiProviderCallOutcome.Success, 200, content, content, 1, 1, 2, null, null);
 
-    private static AiProviderResponse HttpError(int status)
-        => new(AiProviderCallOutcome.HttpError, status, "error body", null, null, null, null, null, "http error");
+    private static AiProviderResponse HttpError(int status, TimeSpan? retryAfter = null)
+        => new(AiProviderCallOutcome.HttpError, status, "error body", null, null, null, null, retryAfter, "http error");
 
     private static string CreateTempDocs()
     {

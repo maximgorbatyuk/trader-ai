@@ -318,10 +318,14 @@ public sealed class MatchingEngine(
         // A company-originated offer has no seller position; only a participant seller's holding shrinks.
         // Capture cost basis before the reduce so a profitable fund sale can pay its manager below; a sell never
         // moves AverageCost, so reading it here or after the reduce is equivalent.
-        var sellerAverageCost = 0m;
+        decimal? sellerAverageCost = null;
+        decimal? sellerCostBasis = null;
+        var sellerTradeFee = 0m;
+        var sellerManagerFee = 0m;
         if (seller is not null)
         {
             sellerAverageCost = holdings[(seller.Id, companyId)].AverageCost;
+            sellerCostBasis = Round(sellerAverageCost.Value * quantity);
             ReduceHolding(holdings, seller.Id, companyId, quantity);
         }
 
@@ -389,20 +393,19 @@ public sealed class MatchingEngine(
             // The seller keeps the full sale credit above and pays the fee as a separate debit, so the two
             // ledger rows net to the seller's actual balance change. Company-float sells (seller == null) are
             // primary issuance and carry no fee.
-            var fee = 0m;
             if (feeBank is not null)
             {
-                fee = Round(spent * feeRate);
-                if (fee > 0m)
+                sellerTradeFee = Round(spent * feeRate);
+                if (sellerTradeFee > 0m)
                 {
-                    seller.SettledCashBalance -= fee;
-                    feeBank.Balance += fee;
+                    seller.SettledCashBalance -= sellerTradeFee;
+                    feeBank.Balance += sellerTradeFee;
 
                     dbContext.MoneyTransactions.Add(new MoneyTransaction
                     {
                         ParticipantId = seller.Id,
                         Type = MoneyTransactionType.TradeFee,
-                        Amount = fee,
+                        Amount = sellerTradeFee,
                         RelatedOrderId = sell.Id,
                         RelatedShareTransaction = shareTransaction,
                         Description = $"Trading fee on sale of {company.Name}",
@@ -412,7 +415,7 @@ public sealed class MatchingEngine(
                 }
             }
 
-            var netProceeds = spent - fee;
+            var netProceeds = spent - sellerTradeFee;
             if (marginService is null)
             {
                 seller.CurrentBalance += netProceeds;
@@ -435,13 +438,14 @@ public sealed class MatchingEngine(
             // when the founder is gone, or when the fund lacks the free cash for it (then the fund keeps it all).
             if (fundsBySellerId is not null && fundsBySellerId.TryGetValue(seller.Id, out var sellerFund))
             {
-                var gain = spent - Round(sellerAverageCost * quantity);
+                var gain = spent - sellerCostBasis!.Value;
                 var managerFee = gain > 0m ? Round(gain * managerProfitFeeShare) : 0m;
                 if (managerFee > 0m
                     && participants.TryGetValue(sellerFund.FoundedByParticipantId, out var manager)
                     && manager.IsActive && !manager.IsBankrupt
                     && Math.Min(seller.AvailableBalance, seller.SettledCashBalance) >= managerFee)
                 {
+                    sellerManagerFee = managerFee;
                     seller.CurrentBalance -= managerFee;
                     seller.SettledCashBalance -= managerFee;
                     manager.CurrentBalance += managerFee;
@@ -472,6 +476,15 @@ public sealed class MatchingEngine(
                     });
                 }
             }
+
+            shareTransaction.SellerAverageCost = sellerAverageCost;
+            shareTransaction.SellerCostBasis = sellerCostBasis;
+            shareTransaction.SellerTradeFee = sellerTradeFee;
+            shareTransaction.SellerManagerFee = sellerManagerFee;
+            shareTransaction.SellerGrossRealizedPnl = spent - sellerCostBasis!.Value;
+            shareTransaction.SellerNetRealizedPnl = shareTransaction.SellerGrossRealizedPnl
+                - sellerTradeFee
+                - sellerManagerFee;
         }
         else if (settlementService is null)
         {

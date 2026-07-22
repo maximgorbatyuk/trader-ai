@@ -1220,7 +1220,13 @@ public static partial class MarketEndpoints
         transaction.CreatedAt,
         transaction.SettlementInstruction?.TradeDayNumber,
         transaction.SettlementInstruction?.DueDayNumber,
-        transaction.SettlementInstruction?.Status.ToString());
+        transaction.SettlementInstruction?.Status.ToString(),
+        transaction.SellerAverageCost,
+        transaction.SellerCostBasis,
+        transaction.SellerTradeFee,
+        transaction.SellerManagerFee,
+        transaction.SellerGrossRealizedPnl,
+        transaction.SellerNetRealizedPnl);
 
     private static async Task<MarketResponse> BuildMarketResponseAsync(
         Market market,

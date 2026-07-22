@@ -17,4 +17,6 @@ Free-share emission lets a very large company issue new shares for free, dilutin
 - Each emission is announced as news with no price impact.
 - The company page lists a company's emissions.
 
-The emission logic lives in `ShareEmissionService`.
+## Audit evidence
+
+Every new emission keeps one recipient row per awarded trader with the exact granted quantity. The emission total and recipient count can therefore be reconciled to the individual grants without relying on current holdings, which may change after the event. Older emissions created before recipient evidence was introduced are not reconstructed from later portfolio state.

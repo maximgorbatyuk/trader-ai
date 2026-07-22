@@ -2,7 +2,6 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Microsoft.Extensions.Options;
 
 namespace TraderAi.Services;
 
@@ -22,7 +21,7 @@ public interface IAiProviderClient
 // header at send time. Both GLM and MiniMax return the same OpenAI-shaped envelope, so only request shaping
 // (disabling provider "thinking") differs. Provider request/response details must be confirmed against live
 // provider documentation; the shaping here is validated only against a fake transport in tests.
-public sealed class AiProviderClient(IHttpClientFactory httpClientFactory, IOptions<AiTradingOptions> options)
+public sealed class AiProviderClient(IHttpClientFactory httpClientFactory)
     : IAiProviderClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.General);
@@ -44,9 +43,9 @@ public sealed class AiProviderClient(IHttpClientFactory httpClientFactory, IOpti
             },
         };
 
-        if (options.Value.MaxResponseTokens > 0)
+        if (provider.MaxResponseTokens > 0)
         {
-            payload["max_tokens"] = options.Value.MaxResponseTokens;
+            payload["max_tokens"] = provider.MaxResponseTokens;
         }
 
         // GLM exposes an explicit switch to suppress chain-of-thought. MiniMax has no such flag and returns its
@@ -57,7 +56,8 @@ public sealed class AiProviderClient(IHttpClientFactory httpClientFactory, IOpti
         }
 
         var requestJson = JsonSerializer.Serialize(payload, SerializerOptions);
-        return new PreparedAiProviderRequest(provider.Id, provider.Label, model, provider.Endpoint, requestJson);
+        return new PreparedAiProviderRequest(
+            provider.Id, provider.Label, model, provider.Endpoint, requestJson, provider.RequestTimeoutSeconds);
     }
 
     public Task<AiProviderResponse> SendTestAsync(
@@ -79,7 +79,7 @@ public sealed class AiProviderClient(IHttpClientFactory httpClientFactory, IOpti
         client.Timeout = Timeout.InfiniteTimeSpan;
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, options.Value.RequestTimeoutSeconds)));
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, prepared.RequestTimeoutSeconds)));
 
         using var request = new HttpRequestMessage(HttpMethod.Post, prepared.Endpoint)
         {

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using TraderAi.Data;
 
@@ -10,9 +11,11 @@ using TraderAi.Data;
 namespace TraderAi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260722012954_AddAiPredictions")]
+    partial class AddAiPredictions
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
@@ -90,12 +93,6 @@ namespace TraderAi.Migrations
                     b.Property<int>("AppliedOrders")
                         .HasColumnType("INTEGER");
 
-                    b.Property<Guid>("AttemptGroupId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("AttemptNumber")
-                        .HasColumnType("INTEGER");
-
                     b.Property<int?>("CompletionTokens")
                         .HasColumnType("INTEGER");
 
@@ -110,10 +107,6 @@ namespace TraderAi.Migrations
 
                     b.Property<string>("Error")
                         .HasMaxLength(2000)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("FailureCategory")
-                        .HasMaxLength(64)
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("HttpStatusCode")
@@ -191,9 +184,6 @@ namespace TraderAi.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("MarketRunId");
-
-                    b.HasIndex("AttemptGroupId", "AttemptNumber")
-                        .IsUnique();
 
                     b.HasIndex("ParticipantId", "Id");
 

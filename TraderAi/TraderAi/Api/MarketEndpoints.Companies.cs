@@ -194,9 +194,11 @@ public static partial class MarketEndpoints
             var limit = Math.Clamp(take ?? 20, 1, 100);
             var cycleNumbersById = await CycleNumbersByIdAsync(dbContext);
             var currentCycleNumber = await CurrentCycleNumberAsync(dbContext);
+            var currentRunId = await dbContext.Markets.Select(market => market.CurrentRunId).SingleOrDefaultAsync();
 
             var emissions = await dbContext.ShareEmissions
-                .Where(emission => emission.CompanyId == companyId)
+                .Where(emission => emission.CompanyId == companyId
+                    && (emission.MarketRunId == currentRunId || emission.MarketRunId == null))
                 .OrderByDescending(emission => emission.Id)
                 .Take(limit)
                 .ToListAsync();
@@ -216,8 +218,10 @@ public static partial class MarketEndpoints
         app.MapGet("/companies/{companyId:int}/investments", async (int companyId, int? take, AppDbContext dbContext) =>
         {
             var limit = Math.Clamp(take ?? 20, 1, 100);
+            var currentRunId = await dbContext.Markets.Select(market => market.CurrentRunId).SingleOrDefaultAsync();
             var investments = await dbContext.CompanyInvestments
-                .Where(investment => investment.CompanyId == companyId)
+                .Where(investment => investment.CompanyId == companyId
+                    && (investment.MarketRunId == currentRunId || investment.MarketRunId == null))
                 .OrderByDescending(investment => investment.Id)
                 .Take(limit)
                 .ToListAsync();

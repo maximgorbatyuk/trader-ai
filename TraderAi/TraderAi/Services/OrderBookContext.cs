@@ -34,7 +34,16 @@ public sealed record AiOrderApplicationResult(
     string Reason,
     bool Applied,
     int? CreatedOrderId,
-    string? RejectionReason);
+    string? RejectionReason,
+    AiOrderConstraintFeedback? ConstraintFeedback = null);
+
+public sealed record AiOrderConstraintFeedback(
+    string Code,
+    int? MinimumQuantity = null,
+    int? MaximumQuantity = null,
+    decimal? MinimumPrice = null,
+    decimal? MaximumPrice = null,
+    decimal? MaximumBudget = null);
 
 public sealed record AiCancellationApplicationResult(
     int OrderId,

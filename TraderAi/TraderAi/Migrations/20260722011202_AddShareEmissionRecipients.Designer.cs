@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using TraderAi.Data;
 
@@ -10,70 +11,14 @@ using TraderAi.Data;
 namespace TraderAi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260722011202_AddShareEmissionRecipients")]
+    partial class AddShareEmissionRecipients
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
-
-            modelBuilder.Entity("TraderAi.Models.AiPrediction", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<long>("AiTraderCallId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<decimal>("BaselinePrice")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("CompanyId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<decimal>("Confidence")
-                        .HasPrecision(18, 6)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Direction")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("HorizonCycles")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("MarketRunId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("ParticipantId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Reason")
-                        .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("SnapshotCycleNumber")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("SnapshotTradingDayNumber")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<decimal?>("TargetPrice")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("MarketRunId", "SnapshotCycleNumber");
-
-                    b.HasIndex("AiTraderCallId", "CompanyId", "HorizonCycles")
-                        .IsUnique();
-
-                    b.ToTable("AiPredictions");
-                });
 
             modelBuilder.Entity("TraderAi.Models.AiTraderCall", b =>
                 {
@@ -90,12 +35,6 @@ namespace TraderAi.Migrations
                     b.Property<int>("AppliedOrders")
                         .HasColumnType("INTEGER");
 
-                    b.Property<Guid>("AttemptGroupId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("AttemptNumber")
-                        .HasColumnType("INTEGER");
-
                     b.Property<int?>("CompletionTokens")
                         .HasColumnType("INTEGER");
 
@@ -110,10 +49,6 @@ namespace TraderAi.Migrations
 
                     b.Property<string>("Error")
                         .HasMaxLength(2000)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("FailureCategory")
-                        .HasMaxLength(64)
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("HttpStatusCode")
@@ -191,9 +126,6 @@ namespace TraderAi.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("MarketRunId");
-
-                    b.HasIndex("AttemptGroupId", "AttemptNumber")
-                        .IsUnique();
 
                     b.HasIndex("ParticipantId", "Id");
 
@@ -2251,17 +2183,6 @@ namespace TraderAi.Migrations
                     b.ToTable("TradingDays");
                 });
 
-            modelBuilder.Entity("TraderAi.Models.AiPrediction", b =>
-                {
-                    b.HasOne("TraderAi.Models.AiTraderCall", "AiTraderCall")
-                        .WithMany("Predictions")
-                        .HasForeignKey("AiTraderCallId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("AiTraderCall");
-                });
-
             modelBuilder.Entity("TraderAi.Models.AiTraderConfiguration", b =>
                 {
                     b.HasOne("TraderAi.Models.Participant", null)
@@ -2443,11 +2364,6 @@ namespace TraderAi.Migrations
                         .HasForeignKey("EffectiveInCycleId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-                });
-
-            modelBuilder.Entity("TraderAi.Models.AiTraderCall", b =>
-                {
-                    b.Navigation("Predictions");
                 });
 
             modelBuilder.Entity("TraderAi.Models.CollectiveFund", b =>

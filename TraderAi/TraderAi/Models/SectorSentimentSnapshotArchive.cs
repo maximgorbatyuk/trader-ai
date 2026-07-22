@@ -5,6 +5,8 @@ public sealed class SectorSentimentSnapshotArchive
 {
     public int Id { get; set; }
 
+    public int? MarketRunId { get; set; }
+
     public int IndustryId { get; set; }
 
     public int SentimentValue { get; set; }

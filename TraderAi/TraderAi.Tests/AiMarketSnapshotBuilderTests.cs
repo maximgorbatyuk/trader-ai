@@ -99,8 +99,9 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
 
         var opportunity = snapshot!.BigInvestmentOpportunities
             .Single(candidate => candidate.CompanyId == seed.Company1Id);
-        Assert.Equal(54_000m, opportunity.MinimumAmount);
-        Assert.Equal(80_000m, opportunity.MaximumAmount);
+        Assert.Equal(135m, opportunity.CurrentPrice);
+        Assert.Equal(400, opportunity.MinimumShares);
+        Assert.Equal(592, opportunity.MaximumShares);
     }
 
     [Fact]
@@ -195,7 +196,7 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
                 PromptHash = "hash",
                 RequestJson = "{}",
                 ApplicationResultJson =
-                    "{\"configurationStillCurrent\":true,\"cancellations\":[{\"applied\":false,\"rejectionReason\":\"Order is already closed.\"}],\"orders\":[{\"applied\":false,\"rejectionReason\":\"Quantity exceeds the current envelope.\"}],\"bigInvestment\":{\"applied\":false,\"rejectionReason\":\"Investment opportunity expired.\"}}",
+                    "{\"configurationStillCurrent\":true,\"cancellations\":[{\"applied\":false,\"rejectionReason\":\"Order is already closed.\"}],\"orders\":[{\"applied\":false,\"rejectionReason\":\"Quantity exceeds the current envelope.\",\"constraintFeedback\":{\"code\":\"quantity_above_maximum\",\"minimumQuantity\":5,\"maximumQuantity\":20}}],\"bigInvestment\":{\"applied\":false,\"rejectionReason\":\"Investment opportunity expired.\"}}",
                 Status = AiTraderCallStatus.Completed,
                 RequestedAt = DateTime.UtcNow,
             },
@@ -236,11 +237,13 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
 
         var feedback = Assert.Single(snapshot.RecentApplicationFeedback);
         Assert.Equal(35, feedback.SnapshotCycleNumber);
-        Assert.Contains("Quantity exceeds the current envelope.", feedback.RejectionReasons);
-        Assert.Contains("Order is already closed.", feedback.RejectionReasons);
-        Assert.Contains("Investment opportunity expired.", feedback.RejectionReasons);
+        var quantityRejection = Assert.Single(feedback.Rejections, rejection => rejection.Code == "quantity_above_maximum");
+        Assert.Equal(5, quantityRejection.MinimumQuantity);
+        Assert.Equal(20, quantityRejection.MaximumQuantity);
+        Assert.Contains(feedback.Rejections, rejection => rejection.Code == "cancellation_rejected");
+        Assert.Contains(feedback.Rejections, rejection => rejection.Code == "investment_rejected");
         Assert.DoesNotContain(snapshot.RecentApplicationFeedback,
-            item => item.RejectionReasons.Contains("Other participant error."));
+            item => item.Rejections.Any(rejection => rejection.Reason == "Other participant error."));
     }
 
     [Fact]

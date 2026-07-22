@@ -77,6 +77,33 @@ public sealed class AiTraderPersistenceTests : IDisposable
         Assert.Equal(participant.Id, (await context.AiTraderCalls.SingleAsync()).ParticipantId);
     }
 
+    [Fact]
+    public async Task PredictionsCascadeWhenAuditedCallIsDeleted()
+    {
+        var call = AiCall(1);
+        context.AiTraderCalls.Add(call);
+        await context.SaveChangesAsync();
+        context.AiPredictions.Add(new AiPrediction
+        {
+            AiTraderCallId = call.Id,
+            ParticipantId = 1,
+            CompanyId = 2,
+            SnapshotCycleNumber = 3,
+            SnapshotTradingDayNumber = 1,
+            BaselinePrice = 100m,
+            Direction = AiPredictionDirection.Down,
+            Confidence = 0.75m,
+            HorizonCycles = 210,
+            Reason = "Weak demand.",
+        });
+        await context.SaveChangesAsync();
+
+        context.AiTraderCalls.Remove(call);
+        await context.SaveChangesAsync();
+
+        Assert.Empty(await context.AiPredictions.ToListAsync());
+    }
+
     private static Participant TestParticipant(ParticipantType type) => new()
     {
         Name = "Test Trader",

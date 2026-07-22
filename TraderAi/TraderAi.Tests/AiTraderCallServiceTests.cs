@@ -9,9 +9,14 @@ namespace TraderAi.Tests;
 public sealed class AiTraderCallServiceTests : IDisposable
 {
     private const int MaxOrders = 10;
+    private const int MaxPredictions = 10;
+    private const int PredictionHorizon = 210;
 
     private const string ValidDecision =
         "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":1,\"quantity\":2,\"limitPrice\":3,\"reason\":\"r\"}]}";
+
+    private const string ValidDecisionWithPrediction =
+        "{\"summary\":\"Expect strength.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[],\"predictions\":[{\"companyId\":1,\"direction\":\"Up\",\"confidence\":0.72,\"horizonCycles\":210,\"targetPrice\":125.50,\"reason\":\"Demand.\"}]}";
 
     private readonly SqliteConnection connection;
     private readonly AppDbContext context;
@@ -74,6 +79,64 @@ public sealed class AiTraderCallServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SuccessfulStrictDecisionPersistsPredictionFromExactSnapshot()
+    {
+        var descriptor = Descriptor() with
+        {
+            MarketRunId = 7,
+            SnapshotTradingDayNumber = 3,
+            CompanyPrices = new Dictionary<int, decimal> { [1] = 100m },
+        };
+
+        var execution = await service.ExecuteAsync(
+            descriptor,
+            MaxOrders,
+            MaxPredictions,
+            PredictionHorizon,
+            _ => Task.FromResult(Ok(ValidDecisionWithPrediction, ValidDecisionWithPrediction)),
+            CancellationToken.None);
+
+        Assert.Equal(AiTraderCallStatus.Completed, execution.Status);
+        var call = await context.AiTraderCalls.SingleAsync();
+        var prediction = await context.AiPredictions.SingleAsync();
+        Assert.Equal(call.Id, prediction.AiTraderCallId);
+        Assert.Equal(7, prediction.MarketRunId);
+        Assert.Equal(descriptor.ParticipantId, prediction.ParticipantId);
+        Assert.Equal(1, prediction.CompanyId);
+        Assert.Equal(descriptor.SnapshotCycleNumber, prediction.SnapshotCycleNumber);
+        Assert.Equal(3, prediction.SnapshotTradingDayNumber);
+        Assert.Equal(100m, prediction.BaselinePrice);
+        Assert.Equal(AiPredictionDirection.Up, prediction.Direction);
+        Assert.Equal(0.72m, prediction.Confidence);
+        Assert.Equal(210, prediction.HorizonCycles);
+        Assert.Equal(125.50m, prediction.TargetPrice);
+        Assert.Equal("Demand.", prediction.Reason);
+    }
+
+    [Fact]
+    public async Task PredictionForCompanyOutsideRequestSnapshotInvalidatesCall()
+    {
+        var descriptor = Descriptor() with
+        {
+            MarketRunId = 7,
+            SnapshotTradingDayNumber = 3,
+            CompanyPrices = new Dictionary<int, decimal>(),
+        };
+
+        var execution = await service.ExecuteAsync(
+            descriptor,
+            MaxOrders,
+            MaxPredictions,
+            PredictionHorizon,
+            _ => Task.FromResult(Ok(ValidDecisionWithPrediction, ValidDecisionWithPrediction)),
+            CancellationToken.None);
+
+        Assert.Equal(AiTraderCallStatus.InvalidJson, execution.Status);
+        Assert.Empty(await context.AiPredictions.ToListAsync());
+        Assert.Null((await context.AiTraderCalls.SingleAsync()).DecisionJson);
+    }
+
+    [Fact]
     public async Task HttpErrorBodyIsRetained()
     {
         await service.ExecuteAsync(Descriptor(), MaxOrders,
@@ -84,6 +147,21 @@ public sealed class AiTraderCallServiceTests : IDisposable
         Assert.Equal(500, stored.HttpStatusCode);
         Assert.Equal("internal error body", stored.ResponseBody);
         Assert.Null(stored.DecisionJson);
+    }
+
+    [Fact]
+    public async Task ExplicitAttemptMetadataAndNormalizedFailureArePersisted()
+    {
+        var groupId = Guid.NewGuid();
+        var descriptor = Descriptor() with { AttemptGroupId = groupId, AttemptNumber = 2 };
+
+        await service.ExecuteAsync(descriptor, MaxOrders,
+            _ => Task.FromResult(HttpError(500, "internal error body")), CancellationToken.None);
+
+        var stored = await context.AiTraderCalls.SingleAsync();
+        Assert.Equal(groupId, stored.AttemptGroupId);
+        Assert.Equal(2, stored.AttemptNumber);
+        Assert.Equal("http_error", stored.FailureCategory);
     }
 
     [Fact]

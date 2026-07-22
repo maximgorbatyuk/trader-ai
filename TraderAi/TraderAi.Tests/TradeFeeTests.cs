@@ -43,6 +43,9 @@ public sealed class TradeFeeTests : IDisposable
     {
         var service = BuildService(feeEnabled: true, feeRate: 0.01m);
         var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
+        var sellerHolding = await context.Holdings.SingleAsync(holding => holding.ParticipantId == seed.Seller.Id);
+        sellerHolding.AverageCost = 110m;
+        await context.SaveChangesAsync();
 
         // Both limits sit at 100, so execution is 100 and the trade value is 1000; the 1% fee is 10.
         await service.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 10, 100m);
@@ -69,6 +72,14 @@ public sealed class TradeFeeTests : IDisposable
             .SingleAsync(money => money.Type == MoneyTransactionType.TradeFee);
         Assert.Equal(seed.Seller.Id, fee.ParticipantId);
         Assert.Equal(10m, fee.Amount);
+
+        var transaction = await context.ShareTransactions.SingleAsync();
+        Assert.Equal(110m, transaction.SellerAverageCost);
+        Assert.Equal(1100m, transaction.SellerCostBasis);
+        Assert.Equal(10m, transaction.SellerTradeFee);
+        Assert.Equal(0m, transaction.SellerManagerFee);
+        Assert.Equal(-100m, transaction.SellerGrossRealizedPnl);
+        Assert.Equal(-110m, transaction.SellerNetRealizedPnl);
 
         await context.Entry(seed.Company).ReloadAsync();
         Assert.Equal(0m, seed.Company.CashBalance);
@@ -135,6 +146,14 @@ public sealed class TradeFeeTests : IDisposable
         Assert.Equal(CorporateCashTransactionType.PrimaryIssuance, corporateMovement.Type);
         Assert.Equal(1000m, corporateMovement.Amount);
         Assert.Equal(tradedCycleId, corporateMovement.CreatedInCycleId);
+
+        var transaction = await context.ShareTransactions.SingleAsync();
+        Assert.Null(transaction.SellerAverageCost);
+        Assert.Null(transaction.SellerCostBasis);
+        Assert.Null(transaction.SellerTradeFee);
+        Assert.Null(transaction.SellerManagerFee);
+        Assert.Null(transaction.SellerGrossRealizedPnl);
+        Assert.Null(transaction.SellerNetRealizedPnl);
     }
 
     private async Task<SeedResult> SeedAsync(decimal sellerCash, decimal buyerCash, int sellerShares, decimal sharePrice)

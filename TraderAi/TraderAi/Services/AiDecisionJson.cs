@@ -19,6 +19,32 @@ public static class AiDecisionJson
     };
 
     public static bool TryParse(string content, int maxOrders, out AiTradeDecision? decision, out string? error)
+        => TryParseCore(content, maxOrders, 0, 0, false, out decision, out error);
+
+    public static bool TryParse(
+        string content,
+        int maxOrders,
+        int maxPredictions,
+        int requiredPredictionHorizon,
+        out AiTradeDecision? decision,
+        out string? error)
+        => TryParseCore(
+            content,
+            maxOrders,
+            maxPredictions,
+            requiredPredictionHorizon,
+            true,
+            out decision,
+            out error);
+
+    private static bool TryParseCore(
+        string content,
+        int maxOrders,
+        int maxPredictions,
+        int requiredPredictionHorizon,
+        bool requirePredictions,
+        out AiTradeDecision? decision,
+        out string? error)
     {
         decision = null;
         error = null;
@@ -51,6 +77,27 @@ public static class AiDecisionJson
             {
                 error = "A bigInvestment object or null is required.";
                 return false;
+            }
+
+            if (requirePredictions)
+            {
+                if (!document.RootElement.TryGetProperty("predictions", out var predictions)
+                    || predictions.ValueKind != JsonValueKind.Array)
+                {
+                    error = "A predictions array is required.";
+                    return false;
+                }
+
+                foreach (var prediction in predictions.EnumerateArray())
+                {
+                    if (!prediction.TryGetProperty("direction", out var direction)
+                        || direction.ValueKind != JsonValueKind.String
+                        || direction.GetString() is not ("Up" or "Down"))
+                    {
+                        error = "Each prediction direction must be exactly Up or Down.";
+                        return false;
+                    }
+                }
             }
         }
 
@@ -96,6 +143,57 @@ public static class AiDecisionJson
             return false;
         }
 
+        if (requirePredictions)
+        {
+            if (parsed.Predictions.Length > maxPredictions)
+            {
+                error = $"A decision may contain at most {maxPredictions} predictions.";
+                return false;
+            }
+
+            if (parsed.Predictions
+                .Select(prediction => (prediction.CompanyId, prediction.HorizonCycles))
+                .Distinct()
+                .Count() != parsed.Predictions.Length)
+            {
+                error = "Each prediction companyId and horizonCycles pair must be unique.";
+                return false;
+            }
+
+            foreach (var prediction in parsed.Predictions)
+            {
+                if (prediction.CompanyId <= 0)
+                {
+                    error = "Each prediction companyId must be positive.";
+                    return false;
+                }
+
+                if (prediction.Confidence is < 0.5m or > 1m)
+                {
+                    error = "Each prediction confidence must be between 0.5 and 1.";
+                    return false;
+                }
+
+                if (prediction.HorizonCycles <= 0 || prediction.HorizonCycles != requiredPredictionHorizon)
+                {
+                    error = $"Each prediction horizonCycles must equal the configured horizon of {requiredPredictionHorizon}.";
+                    return false;
+                }
+
+                if (prediction.TargetPrice is <= 0m)
+                {
+                    error = "Each prediction targetPrice must be positive when provided.";
+                    return false;
+                }
+
+                if (string.IsNullOrWhiteSpace(prediction.Reason))
+                {
+                    error = "Each prediction requires a non-empty reason.";
+                    return false;
+                }
+            }
+        }
+
         if (parsed.BigInvestment is { } investment)
         {
             if (investment.CompanyId <= 0)
@@ -104,9 +202,17 @@ public static class AiDecisionJson
                 return false;
             }
 
-            if (investment.Amount <= 0m)
+            if (requirePredictions)
             {
-                error = "The bigInvestment amount must be positive.";
+                if (investment.Shares is not > 0 || investment.Amount is not null)
+                {
+                    error = "A fresh bigInvestment must contain positive shares and no amount.";
+                    return false;
+                }
+            }
+            else if (investment.Amount is not > 0m && investment.Shares is not > 0)
+            {
+                error = "The bigInvestment amount or shares must be positive.";
                 return false;
             }
 

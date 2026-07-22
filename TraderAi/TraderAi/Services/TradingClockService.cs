@@ -79,6 +79,7 @@ public sealed class TradingClockService(AppDbContext dbContext, IOptions<Trading
         {
             var nextCycle = new MarketCycle
             {
+                MarketRunId = market.CurrentRunId,
                 CycleNumber = currentCycle.CycleNumber + 1,
                 TradingDayId = day.Id,
                 TradingCycleNumber = currentCycle.TradingCycleNumber + 1,
@@ -137,6 +138,7 @@ public sealed class TradingClockService(AppDbContext dbContext, IOptions<Trading
 
         var nextCycle = new MarketCycle
         {
+            MarketRunId = market.CurrentRunId,
             CycleNumber = currentCycleNumber + 1,
             TradingDayId = nextDay.Id,
             TradingCycleNumber = 1,

@@ -332,6 +332,7 @@ public sealed class MarketService(
         {
             string? rejectionReason = null;
             var sharesMinted = 0;
+            var appliedAmount = 0m;
             var company = await dbContext.Companies
                 .FirstOrDefaultAsync(candidate => candidate.Id == investment.CompanyId);
             if (bigInvestmentService is null || !bigInvestmentService.IsEnabled)
@@ -364,22 +365,44 @@ public sealed class MarketService(
                 {
                     rejectionReason = "The big investment opportunity is no longer available.";
                 }
-                else if (investment.Amount < opportunity.MinimumAmount
-                         || investment.Amount > opportunity.MaximumAmount)
+                else if (investment.Shares is int requestedShares)
                 {
-                    rejectionReason = $"Investment amount must be between {opportunity.MinimumAmount:N2} and {opportunity.MaximumAmount:N2}.";
+                    if (requestedShares < opportunity.MinimumShares || requestedShares > opportunity.MaximumShares)
+                    {
+                        rejectionReason = $"Investment shares must be between {opportunity.MinimumShares:N0} and {opportunity.MaximumShares:N0}.";
+                    }
+                    else
+                    {
+                        appliedAmount = requestedShares * price;
+                    }
                 }
-                else if (Math.Floor(investment.Amount / price) * price != investment.Amount)
+                else if (investment.Amount is decimal legacyAmount)
                 {
-                    rejectionReason = "Investment amount must buy exact whole shares at the current price.";
+                    if (legacyAmount < opportunity.MinimumAmount || legacyAmount > opportunity.MaximumAmount)
+                    {
+                        rejectionReason = $"Investment amount must be between {opportunity.MinimumAmount:N2} and {opportunity.MaximumAmount:N2}.";
+                    }
+                    else if (Math.Floor(legacyAmount / price) * price != legacyAmount)
+                    {
+                        rejectionReason = "Investment amount must buy exact whole shares at the current price.";
+                    }
+                    else
+                    {
+                        appliedAmount = legacyAmount;
+                    }
                 }
                 else
+                {
+                    rejectionReason = "Investment shares are required.";
+                }
+
+                if (rejectionReason is null)
                 {
                     sharesMinted = await bigInvestmentService.ExecuteDealAsync(
                         participant!,
                         company,
                         price,
-                        investment.Amount,
+                        appliedAmount,
                         context.CurrentCycleId,
                         DateTime.UtcNow);
                     if (sharesMinted <= 0)
@@ -397,7 +420,7 @@ public sealed class MarketService(
 
             bigInvestmentResult = new AiBigInvestmentApplicationResult(
                 investment.CompanyId,
-                investment.Amount,
+                appliedAmount,
                 investment.Reason,
                 rejectionReason is null,
                 sharesMinted,
@@ -415,14 +438,14 @@ public sealed class MarketService(
         for (var index = 0; index < decision.Orders.Length; index++)
         {
             var order = decision.Orders[index];
-            var validationError = order.Side == OrderType.Buy
+            var validationFailure = order.Side == OrderType.Buy
                 ? await ValidateAiBuyOrderAsync(
                     context,
                     executableAskLevelsByCompany,
                     priorBuyPriorityLimitByCompany,
                     order)
                 : null;
-            var placement = validationError is null
+            var placement = validationFailure is null
                 ? await PlaceOrderCoreAsync(
                     participantId,
                     order.CompanyId,
@@ -432,7 +455,11 @@ public sealed class MarketService(
                     context.PriceByCompany,
                     deferSave: false,
                     context.BoundsByCompany)
-                : PlaceOrderResult.Fail(validationError);
+                : PlaceOrderResult.Fail(validationFailure.Reason);
+            var constraintFeedback = validationFailure?.Feedback
+                ?? (!placement.Success && placement.Error is not null
+                    ? MapPlacementFailure(context, order, placement.Error)
+                    : null);
 
             if (placement.Success && order.Side == OrderType.Buy)
             {
@@ -459,7 +486,8 @@ public sealed class MarketService(
                 order.Reason,
                 placement.Success,
                 placement.Order?.Id,
-                placement.Error));
+                placement.Error,
+                constraintFeedback));
         }
 
         return new AiDecisionApplicationResult(
@@ -496,7 +524,9 @@ public sealed class MarketService(
         };
     }
 
-    private async Task<string?> ValidateAiBuyOrderAsync(
+    private sealed record AiOrderValidationFailure(string Reason, AiOrderConstraintFeedback Feedback);
+
+    private async Task<AiOrderValidationFailure?> ValidateAiBuyOrderAsync(
         OrderBookContext context,
         IReadOnlyDictionary<int, List<ExecutableAskLevel>> executableAskLevelsByCompany,
         IReadOnlyDictionary<int, decimal> priorBuyPriorityLimitByCompany,
@@ -506,27 +536,31 @@ public sealed class MarketService(
             .FirstOrDefaultAsync(candidate => candidate.Id == order.CompanyId);
         if (company is null)
         {
-            return "Company not found.";
+            return new("Company not found.", new("company_not_found"));
         }
 
         if (company.ClosedInCycleId is not null)
         {
-            return "This company is delisted.";
+            return new("This company is delisted.", new("company_unavailable"));
         }
 
         if (!context.BoundsByCompany.TryGetValue(order.CompanyId, out var bounds))
         {
-            return "No reference price is available for this company yet.";
+            return new("No reference price is available for this company yet.", new("missing_reference_price"));
         }
 
         if (!bounds.IsWithinAllowedRange(order.LimitPrice))
         {
-            return $"Limit price must be between ${bounds.AllowedMinimumPrice:F2} and ${bounds.AllowedMaximumPrice:F2}.";
+            return new(
+                $"Limit price must be between ${bounds.AllowedMinimumPrice:F2} and ${bounds.AllowedMaximumPrice:F2}.",
+                new("price_out_of_range", MinimumPrice: bounds.AllowedMinimumPrice, MaximumPrice: bounds.AllowedMaximumPrice));
         }
 
         if (!bounds.IsWithinActiveBand(order.LimitPrice))
         {
-            return $"AI buy limit price must stay inside the active band ${bounds.ActiveLowerPrice:F2}–${bounds.ActiveUpperPrice:F2}.";
+            return new(
+                $"AI buy limit price must stay inside the active band ${bounds.ActiveLowerPrice:F2}–${bounds.ActiveUpperPrice:F2}.",
+                new("active_price_band", MinimumPrice: bounds.ActiveLowerPrice, MaximumPrice: bounds.ActiveUpperPrice));
         }
 
         var netWorth = context.Participant.CurrentBalance
@@ -539,7 +573,9 @@ public sealed class MarketService(
         if (context.Participant.RiskProfile != RiskProfile.High
             && orderNotional > Math.Max(0m, availableCash))
         {
-            return "Margin is only available to High risk automated traders.";
+            return new(
+                "Margin is only available to High risk automated traders.",
+                new("cash_limit", MaximumBudget: Math.Max(0m, availableCash)));
         }
 
         var buyingPower = marginService is null
@@ -551,7 +587,9 @@ public sealed class MarketService(
         if (priorBuyPriorityLimitByCompany.TryGetValue(order.CompanyId, out var priorPriorityLimit)
             && order.LimitPrice > priorPriorityLimit)
         {
-            return $"Buy limit price would violate earlier demand priority above ${priorPriorityLimit:F2}.";
+            return new(
+                $"Buy limit price would violate earlier demand priority above ${priorPriorityLimit:F2}.",
+                new("priority_price_limit", MaximumPrice: priorPriorityLimit));
         }
 
         var exposure = automatedBuyPolicy.AssessExposure(
@@ -562,7 +600,9 @@ public sealed class MarketService(
             && bestSellPrice is decimal bestAsk
             && order.LimitPrice < bestAsk)
         {
-            return $"Below-target buy must cross the best executable sell at ${bestAsk:F2}.";
+            return new(
+                $"Below-target buy must cross the best executable sell at ${bestAsk:F2}.",
+                new("executable_price_floor", MinimumPrice: bestAsk));
         }
 
         var executableQuantity = executableSells
@@ -581,20 +621,71 @@ public sealed class MarketService(
             (int)Math.Min(executableQuantity, int.MaxValue)));
         if (envelope is null)
         {
-            return "Buy order exceeds the automated exposure, reserved-order, cash, or margin limits.";
+            return new(
+                "Buy order exceeds the automated exposure, reserved-order, cash, or margin limits.",
+                new("exposure_or_funding_limit", MaximumBudget: Math.Max(0m, buyingPower)));
         }
 
         if (order.Quantity < envelope.MinimumQuantity)
         {
-            return $"Buy quantity must be at least {envelope.MinimumQuantity} for the current envelope.";
+            return new(
+                $"Buy quantity must be at least {envelope.MinimumQuantity} for the current envelope.",
+                new("quantity_below_minimum", MinimumQuantity: envelope.MinimumQuantity, MaximumQuantity: envelope.MaximumQuantity));
         }
 
         if (order.Quantity > envelope.MaximumQuantity)
         {
-            return $"Buy quantity must be at most {envelope.MaximumQuantity} for the current envelope.";
+            return new(
+                $"Buy quantity must be at most {envelope.MaximumQuantity} for the current envelope.",
+                new("quantity_above_maximum", MinimumQuantity: envelope.MinimumQuantity, MaximumQuantity: envelope.MaximumQuantity));
         }
 
         return null;
+    }
+
+    private static AiOrderConstraintFeedback MapPlacementFailure(
+        OrderBookContext context,
+        AiTradeOrderDecision order,
+        string error)
+    {
+        if (error.Contains("trading break", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("Order entry is disabled", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("Market is not running", StringComparison.OrdinalIgnoreCase))
+        {
+            return new("trading_paused");
+        }
+
+        if (error.Contains("price must be between", StringComparison.OrdinalIgnoreCase)
+            && context.BoundsByCompany.TryGetValue(order.CompanyId, out var bounds))
+        {
+            return new(
+                "price_out_of_range",
+                MinimumPrice: bounds.AllowedMinimumPrice,
+                MaximumPrice: bounds.AllowedMaximumPrice);
+        }
+
+        if (error.Contains("cash", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("buying power", StringComparison.OrdinalIgnoreCase))
+        {
+            return new("cash_limit", MaximumBudget: Math.Max(0m, context.Participant.AvailableBalance));
+        }
+
+        if (error.Contains("shares", StringComparison.OrdinalIgnoreCase))
+        {
+            return new("insufficient_shares");
+        }
+
+        if (error.Contains("Quantity", StringComparison.OrdinalIgnoreCase))
+        {
+            return new("invalid_quantity", MinimumQuantity: 1);
+        }
+
+        if (error.Contains("Cancel your open", StringComparison.OrdinalIgnoreCase))
+        {
+            return new("conflicting_order");
+        }
+
+        return new("order_rejected");
     }
 
     private async Task<(
@@ -1922,6 +2013,7 @@ public sealed class MarketService(
         {
             nextCycle = new MarketCycle
             {
+                MarketRunId = market.CurrentRunId,
                 CycleNumber = currentCycle.CycleNumber + 1,
                 Status = CycleStatus.Running,
                 StartedAt = now,
@@ -2024,14 +2116,16 @@ public sealed class MarketService(
             return;
         }
 
+        var currentRunId = await dbContext.Markets.Select(market => market.CurrentRunId).SingleAsync();
+
         var currentPriceAnchorIds = await dbContext.PriceSnapshots
             .GroupBy(snapshot => snapshot.CompanyId)
             .Select(group => group.Max(snapshot => snapshot.Id))
             .ToListAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO PriceSnapshotArchives (Id, CompanyId, Price, Capitalization, SourceShareTransactionId, CreatedInCycleId, CreatedAt)
-            SELECT Id, CompanyId, Price, Capitalization, SourceShareTransactionId, CreatedInCycleId, CreatedAt
+            INSERT INTO PriceSnapshotArchives (Id, MarketRunId, CompanyId, Price, Capitalization, SourceShareTransactionId, CreatedInCycleId, CreatedAt)
+            SELECT Id, {currentRunId}, CompanyId, Price, Capitalization, SourceShareTransactionId, CreatedInCycleId, CreatedAt
             FROM PriceSnapshots
             WHERE CreatedInCycleId <= {cutoffCycleId}
               AND Id NOT IN (SELECT MAX(Id) FROM PriceSnapshots GROUP BY CompanyId)");
@@ -2045,8 +2139,8 @@ public sealed class MarketService(
         var filledStatus = nameof(OrderStatus.Filled);
         var cancelledStatus = nameof(OrderStatus.Cancelled);
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO OrderArchives (Id, ParticipantId, CompanyId, Type, Status, Quantity, FilledQuantity, LimitPrice, ReservedCashAmount, IsFloatReplenishment, RelatedLoanId, RelatedMarginCallId, CreatedInCycleId, CreatedAt, UpdatedAt)
-            SELECT Id, ParticipantId, CompanyId, Type, Status, Quantity, FilledQuantity, LimitPrice, ReservedCashAmount, IsFloatReplenishment, RelatedLoanId, RelatedMarginCallId, CreatedInCycleId, CreatedAt, UpdatedAt
+            INSERT INTO OrderArchives (Id, MarketRunId, ParticipantId, CompanyId, Type, Status, Quantity, FilledQuantity, LimitPrice, ReservedCashAmount, IsFloatReplenishment, RelatedLoanId, RelatedMarginCallId, CreatedInCycleId, CreatedAt, UpdatedAt)
+            SELECT Id, {currentRunId}, ParticipantId, CompanyId, Type, Status, Quantity, FilledQuantity, LimitPrice, ReservedCashAmount, IsFloatReplenishment, RelatedLoanId, RelatedMarginCallId, CreatedInCycleId, CreatedAt, UpdatedAt
             FROM Orders
             WHERE CreatedInCycleId <= {cutoffCycleId} AND Status IN ({filledStatus}, {cancelledStatus})");
         // A money transaction keeps an enforced foreign key to its order, so clear that soft link on any
@@ -2065,8 +2159,8 @@ public sealed class MarketService(
             .ExecuteDeleteAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO MoneyTransactionArchives (Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt)
-            SELECT Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt
+            INSERT INTO MoneyTransactionArchives (Id, MarketRunId, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt)
+            SELECT Id, {currentRunId}, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt
             FROM MoneyTransactions WHERE CreatedInCycleId <= {cutoffCycleId}");
         // The archive twin keeps no dividend line detail, so drop the breakdown with its parent rather than
         // leaving rows that reference an archived transaction.
@@ -2074,14 +2168,14 @@ public sealed class MarketService(
         await dbContext.MoneyTransactions.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO ParticipantWorthSnapshotArchives (Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, MarginLiability, CreatedAt)
-            SELECT Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, MarginLiability, CreatedAt
+            INSERT INTO ParticipantWorthSnapshotArchives (Id, MarketRunId, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, MarginLiability, CreatedAt)
+            SELECT Id, {currentRunId}, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, MarginLiability, CreatedAt
             FROM ParticipantWorthSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
         await dbContext.ParticipantWorthSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO SectorSentimentSnapshotArchives (Id, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt)
-            SELECT Id, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt
+            INSERT INTO SectorSentimentSnapshotArchives (Id, MarketRunId, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt)
+            SELECT Id, {currentRunId}, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt
             FROM SectorSentimentSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
         await dbContext.SectorSentimentSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
     }
@@ -3231,6 +3325,19 @@ public sealed class MarketService(
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync();
 
+        var activeRunId = await dbContext.Markets
+            .Select(market => (int?)market.CurrentRunId)
+            .SingleOrDefaultAsync();
+        if (activeRunId is > 0)
+        {
+            var activeRun = await dbContext.MarketRuns.SingleOrDefaultAsync(run => run.Id == activeRunId);
+            if (activeRun is not null)
+            {
+                activeRun.EndedAt = DateTime.UtcNow;
+                await dbContext.SaveChangesAsync();
+            }
+        }
+
         await dbContext.MarginCalls.ExecuteDeleteAsync();
         await dbContext.MarginAccounts.ExecuteDeleteAsync();
         await dbContext.Loans.ExecuteDeleteAsync();
@@ -3259,8 +3366,8 @@ public sealed class MarketService(
         await dbContext.PriceSnapshots.ExecuteDeleteAsync();
         await dbContext.Holdings.ExecuteDeleteAsync();
         await dbContext.ShareTransactions.ExecuteDeleteAsync();
+        await dbContext.OrderArchives.ExecuteDeleteAsync();
         await dbContext.Orders.ExecuteDeleteAsync();
-        await dbContext.MarketCycles.ExecuteDeleteAsync();
         await dbContext.ParticipantWorthSnapshots.ExecuteDeleteAsync();
         await dbContext.ParticipantDailyWorthSnapshots.ExecuteDeleteAsync();
         await dbContext.PriceSnapshotArchives.ExecuteDeleteAsync();
@@ -3268,27 +3375,21 @@ public sealed class MarketService(
         await dbContext.ParticipantWorthSnapshotArchives.ExecuteDeleteAsync();
         await dbContext.SectorSentimentSnapshots.ExecuteDeleteAsync();
         await dbContext.SectorSentimentSnapshotArchives.ExecuteDeleteAsync();
+        await dbContext.CompanyInvestments.ExecuteDeleteAsync();
+        await dbContext.ShareEmissions.ExecuteDeleteAsync();
+        await dbContext.CompanyRatings.ExecuteDeleteAsync();
+        await dbContext.Auditors.ExecuteDeleteAsync();
         // Call history has no foreign key, so it is cleared first; the configuration would otherwise cascade with
         // its participant, but a full reset removes both AI tables explicitly and in dependency order.
         await dbContext.AiTraderCalls.ExecuteDeleteAsync();
         await dbContext.AiTraderConfigurations.ExecuteDeleteAsync();
+        await dbContext.MarketCycles.ExecuteDeleteAsync();
         await dbContext.Participants.ExecuteDeleteAsync();
         await dbContext.Companies.ExecuteDeleteAsync();
         await dbContext.Industries.ExecuteDeleteAsync();
         await dbContext.Markets.ExecuteDeleteAsync();
 
         dbContext.ChangeTracker.Clear();
-        await dbContext.Database.ExecuteSqlRawAsync(
-            "DELETE FROM sqlite_sequence WHERE name IN (" +
-            "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
-            "'ShareTransactions', 'MoneyTransactions', 'DividendPayouts', 'CorporateCashTransactions', 'StockDenominationEvents', 'PriceBandStates', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
-            "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', 'CrisisEvents', " +
-            "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
-            "'CollectiveFunds', 'CollectiveFundParticipants', 'CollectiveFundMembershipEvents', 'ParticipantWorthSnapshots', 'ParticipantDailyWorthSnapshots', " +
-            "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives', " +
-            "'SectorSentimentSnapshots', 'SectorSentimentSnapshotArchives', " +
-            "'AiTraderCalls', 'AiTraderConfigurations', " +
-            "'Banks', 'Loans', 'MarginAccounts', 'MarginCalls', 'TradingDays', 'TradingBreakCycles', 'SettlementInstructions')");
 
         var market = await SeedDemoMarketCoreAsync();
         await transaction.CommitAsync();
@@ -3318,11 +3419,16 @@ public sealed class MarketService(
         var random = new Random(randomSeed);
         var now = DateTime.UtcNow;
 
+        var marketRun = new MarketRun { StartedAt = now };
+        dbContext.MarketRuns.Add(marketRun);
+        await dbContext.SaveChangesAsync();
+
         var participantNames = DemoMarketNames.PickPeople(participantCount, random);
         var companyNames = DemoMarketNames.PickCompanies(companyCount, random);
 
         var firstCycle = new MarketCycle
         {
+            MarketRunId = marketRun.Id,
             CycleNumber = 1,
             TradingCycleNumber = 1,
             Status = CycleStatus.Running,
@@ -3334,6 +3440,7 @@ public sealed class MarketService(
         {
             Name = "Demo Market",
             Status = MarketStatus.NotStarted,
+            CurrentRunId = marketRun.Id,
             CreatedAt = now,
             UpdatedAt = now,
         };

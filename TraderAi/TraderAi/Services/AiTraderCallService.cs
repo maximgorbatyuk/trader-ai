@@ -17,7 +17,12 @@ public sealed record AiTraderCallDescriptor(
     int SnapshotCycleId,
     int SnapshotCycleNumber,
     string PromptHash,
-    string RequestJson);
+    string RequestJson,
+    int? MarketRunId = null,
+    int SnapshotTradingDayNumber = 0,
+    IReadOnlyDictionary<int, decimal>? CompanyPrices = null,
+    Guid AttemptGroupId = default,
+    int AttemptNumber = 1);
 
 public sealed record AiTraderCallExecution(long CallId, AiTraderCallStatus Status, AiTradeDecision? Decision);
 
@@ -61,14 +66,41 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
     private static readonly JsonSerializerOptions StoredJsonOptions =
         new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
 
-    public async Task<AiTraderCallExecution> ExecuteAsync(
+    public Task<AiTraderCallExecution> ExecuteAsync(
         AiTraderCallDescriptor descriptor,
         int maxOrders,
+        Func<CancellationToken, Task<AiProviderResponse>> send,
+        CancellationToken cancellationToken)
+        => ExecuteCoreAsync(descriptor, maxOrders, null, null, send, cancellationToken);
+
+    public Task<AiTraderCallExecution> ExecuteAsync(
+        AiTraderCallDescriptor descriptor,
+        int maxOrders,
+        int maxPredictions,
+        int predictionHorizonCycles,
+        Func<CancellationToken, Task<AiProviderResponse>> send,
+        CancellationToken cancellationToken)
+        => ExecuteCoreAsync(
+            descriptor,
+            maxOrders,
+            maxPredictions,
+            predictionHorizonCycles,
+            send,
+            cancellationToken);
+
+    private async Task<AiTraderCallExecution> ExecuteCoreAsync(
+        AiTraderCallDescriptor descriptor,
+        int maxOrders,
+        int? maxPredictions,
+        int? predictionHorizonCycles,
         Func<CancellationToken, Task<AiProviderResponse>> send,
         CancellationToken cancellationToken)
     {
         var call = new AiTraderCall
         {
+            AttemptGroupId = descriptor.AttemptGroupId == Guid.Empty ? Guid.NewGuid() : descriptor.AttemptGroupId,
+            AttemptNumber = Math.Max(1, descriptor.AttemptNumber),
+            MarketRunId = descriptor.MarketRunId,
             ParticipantId = descriptor.ParticipantId,
             ParticipantName = descriptor.ParticipantName,
             ProviderId = descriptor.ProviderId,
@@ -98,14 +130,52 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
         string? decisionJson = null;
         string? summary = null;
         var error = response.Error;
+        var predictions = new List<AiPrediction>();
 
         if (response.Outcome == AiProviderCallOutcome.Success && response.AssistantContent is { } content)
         {
-            if (AiDecisionJson.TryParse(content, maxOrders, out decision, out var parseError))
+            var parsed = maxPredictions is int predictionLimit && predictionHorizonCycles is int predictionHorizon
+                ? AiDecisionJson.TryParse(
+                    content,
+                    maxOrders,
+                    predictionLimit,
+                    predictionHorizon,
+                    out decision,
+                    out var parseError)
+                : AiDecisionJson.TryParse(content, maxOrders, out decision, out parseError);
+            if (parsed)
             {
-                status = AiTraderCallStatus.Completed;
-                decisionJson = JsonSerializer.Serialize(decision, StoredJsonOptions);
-                summary = decision!.Summary;
+                var missingCompanyId = decision!.Predictions
+                    .Select(prediction => prediction.CompanyId)
+                    .FirstOrDefault(companyId => descriptor.CompanyPrices is null
+                        || !descriptor.CompanyPrices.ContainsKey(companyId));
+                if (missingCompanyId > 0)
+                {
+                    status = AiTraderCallStatus.InvalidJson;
+                    decision = null;
+                    error = $"Prediction companyId {missingCompanyId} was not present in the request snapshot.";
+                }
+                else
+                {
+                    status = AiTraderCallStatus.Completed;
+                    decisionJson = JsonSerializer.Serialize(decision, StoredJsonOptions);
+                    summary = decision.Summary;
+                    predictions.AddRange(decision.Predictions.Select(prediction => new AiPrediction
+                    {
+                        AiTraderCallId = call.Id,
+                        MarketRunId = descriptor.MarketRunId ?? 0,
+                        ParticipantId = descriptor.ParticipantId,
+                        CompanyId = prediction.CompanyId,
+                        SnapshotCycleNumber = descriptor.SnapshotCycleNumber,
+                        SnapshotTradingDayNumber = descriptor.SnapshotTradingDayNumber,
+                        BaselinePrice = descriptor.CompanyPrices![prediction.CompanyId],
+                        Direction = prediction.Direction,
+                        Confidence = prediction.Confidence,
+                        HorizonCycles = prediction.HorizonCycles,
+                        TargetPrice = prediction.TargetPrice,
+                        Reason = prediction.Reason,
+                    }));
+                }
             }
             else
             {
@@ -122,6 +192,7 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
             stored.DecisionJson = decisionJson;
             stored.Summary = Truncate(summary, 1000);
             stored.Status = status;
+            stored.FailureCategory = FailureCategory(status);
             stored.HttpStatusCode = response.HttpStatusCode;
             stored.Error = Truncate(error, 2000);
             stored.PromptTokens = response.PromptTokens;
@@ -129,6 +200,7 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
             stored.TotalTokens = response.TotalTokens;
             stored.RespondedAt = DateTime.UtcNow;
             stored.DurationMilliseconds = stopwatch.ElapsedMilliseconds;
+            dbContext.AiPredictions.AddRange(predictions);
             await dbContext.SaveChangesAsync();
         });
 
@@ -199,6 +271,7 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
             }
 
             stored.Status = AiTraderCallStatus.Abandoned;
+            stored.FailureCategory = "abandoned";
             stored.Error = Truncate(reason, 2000);
             await dbContext.SaveChangesAsync();
         });
@@ -206,14 +279,18 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
 
     // Deferred plans that are due (target day opened) or stale (target day already passed) for one participant,
     // newest first, so the coordinator can apply the due one and abandon the rest.
-    public Task<List<AiTraderCall>> GetDuePendingNextDayCallsAsync(int participantId, int currentDayNumber)
-        => dbContext.AiTraderCalls
+    public async Task<List<AiTraderCall>> GetDuePendingNextDayCallsAsync(int participantId, int currentDayNumber)
+    {
+        var currentRunId = await CurrentRunIdAsync();
+        return await dbContext.AiTraderCalls
             .Where(call => call.ParticipantId == participantId
+                && (call.MarketRunId == currentRunId || call.MarketRunId == null)
                 && call.Status == AiTraderCallStatus.PendingNextDay
                 && call.NextDayTargetDayNumber != null
                 && call.NextDayTargetDayNumber <= currentDayNumber)
             .OrderByDescending(call => call.Id)
             .ToListAsync();
+    }
 
     // A row left Pending across a restart is orphaned: no in-flight call can still be tracking it.
     public async Task<int> AbandonStalePendingCallsAsync()
@@ -226,6 +303,7 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
             foreach (var call in stale)
             {
                 call.Status = AiTraderCallStatus.Abandoned;
+                call.FailureCategory = "abandoned";
                 call.Error ??= "Abandoned because the application restarted before the call completed.";
             }
 
@@ -243,7 +321,9 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
         var normalizedPage = Math.Max(1, page);
         var normalizedPageSize = Math.Clamp(pageSize, 1, MaxPageSize);
 
-        var query = dbContext.AiTraderCalls.Where(call => call.ParticipantId == participantId);
+        var currentRunId = await CurrentRunIdAsync();
+        var query = dbContext.AiTraderCalls.Where(call => call.ParticipantId == participantId
+            && (call.MarketRunId == currentRunId || call.MarketRunId == null));
         var total = await query.CountAsync();
 
         var items = await query
@@ -269,17 +349,25 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
         return new AiTraderCallPage(items, total, normalizedPage, normalizedPageSize);
     }
 
-    public Task<AiTraderCall?> GetCallAsync(int participantId, long callId)
-        => dbContext.AiTraderCalls
-            .FirstOrDefaultAsync(call => call.Id == callId && call.ParticipantId == participantId);
+    public async Task<AiTraderCall?> GetCallAsync(int participantId, long callId)
+    {
+        var currentRunId = await CurrentRunIdAsync();
+        return await dbContext.AiTraderCalls
+            .Include(call => call.Predictions)
+            .FirstOrDefaultAsync(call => call.Id == callId
+                && call.ParticipantId == participantId
+                && (call.MarketRunId == currentRunId || call.MarketRunId == null));
+    }
 
     // Read-only decision-quality summary for one AI trader: provider-call reliability (JSON completion), order-proposal
     // validity (acceptance), and capital actually deployed. Executed notional is realized buy trades rather than order
     // count, because order count overstates useful activity when few orders fill.
     public async Task<AiDecisionQualitySummary> GetDecisionQualityAsync(int participantId)
     {
+        var currentRunId = await CurrentRunIdAsync();
         var statusCounts = await dbContext.AiTraderCalls
-            .Where(call => call.ParticipantId == participantId)
+            .Where(call => call.ParticipantId == participantId
+                && (call.MarketRunId == currentRunId || call.MarketRunId == null))
             .GroupBy(call => call.Status)
             .Select(group => new
             {
@@ -332,8 +420,21 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
         _ => AiTraderCallStatus.HttpError,
     };
 
+    private static string? FailureCategory(AiTraderCallStatus status) => status switch
+    {
+        AiTraderCallStatus.InvalidJson => "invalid_json",
+        AiTraderCallStatus.HttpError => "http_error",
+        AiTraderCallStatus.TimedOut => "timeout",
+        AiTraderCallStatus.Cancelled => "cancelled",
+        AiTraderCallStatus.Abandoned => "abandoned",
+        _ => null,
+    };
+
     private static string? Truncate(string? value, int maxLength)
         => value is null || value.Length <= maxLength ? value : value[..maxLength];
+
+    private Task<int> CurrentRunIdAsync()
+        => dbContext.Markets.Select(market => market.CurrentRunId).SingleOrDefaultAsync();
 
     private async Task WithLockAsync(Func<Task> action)
     {

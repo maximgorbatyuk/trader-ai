@@ -12,12 +12,14 @@ public sealed record AiTradeDecision
         string summary,
         AiTradeOrderDecision[] orders,
         int[]? cancelOrderIds = null,
-        AiBigInvestmentDecision? bigInvestment = null)
+        AiBigInvestmentDecision? bigInvestment = null,
+        AiTradePredictionDecision[]? predictions = null)
     {
         Summary = summary;
         Orders = orders;
         CancelOrderIds = cancelOrderIds ?? [];
         BigInvestment = bigInvestment;
+        Predictions = predictions ?? [];
     }
 
     [JsonPropertyName("summary")]
@@ -32,12 +34,52 @@ public sealed record AiTradeDecision
 
     [JsonPropertyName("bigInvestment")]
     public AiBigInvestmentDecision? BigInvestment { get; init; }
+
+    [JsonPropertyName("predictions")]
+    public AiTradePredictionDecision[] Predictions { get; init; }
 }
 
-public sealed record AiBigInvestmentDecision(
+public sealed record AiTradePredictionDecision(
     [property: JsonPropertyName("companyId")] int CompanyId,
-    [property: JsonPropertyName("amount")] decimal Amount,
+    [property: JsonPropertyName("direction")] AiPredictionDirection Direction,
+    [property: JsonPropertyName("confidence")] decimal Confidence,
+    [property: JsonPropertyName("horizonCycles")] int HorizonCycles,
+    [property: JsonPropertyName("targetPrice")] decimal? TargetPrice,
     [property: JsonPropertyName("reason")] string Reason);
+
+public sealed record AiBigInvestmentDecision
+{
+    [JsonConstructor]
+    public AiBigInvestmentDecision(int companyId, int? shares, decimal? amount, string reason)
+    {
+        CompanyId = companyId;
+        Shares = shares;
+        Amount = amount;
+        Reason = reason;
+    }
+
+    public AiBigInvestmentDecision(int companyId, int shares, string reason)
+        : this(companyId, shares, null, reason)
+    {
+    }
+
+    public AiBigInvestmentDecision(int companyId, decimal amount, string reason)
+        : this(companyId, null, amount, reason)
+    {
+    }
+
+    [JsonPropertyName("companyId")]
+    public int CompanyId { get; init; }
+
+    [JsonPropertyName("shares")]
+    public int? Shares { get; init; }
+
+    [JsonPropertyName("amount")]
+    public decimal? Amount { get; init; }
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; init; }
+}
 
 public sealed record AiTradeOrderDecision(
     [property: JsonPropertyName("side")] OrderType Side,
@@ -53,7 +95,8 @@ public sealed record PreparedAiProviderRequest(
     string ProviderLabel,
     string Model,
     Uri Endpoint,
-    string RequestJson);
+    string RequestJson,
+    int RequestTimeoutSeconds = 300);
 
 public enum AiProviderCallOutcome
 {

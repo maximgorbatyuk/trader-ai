@@ -79,6 +79,14 @@ public sealed class FundManagerProfitFeeTests : IDisposable
 
         // Nothing is created: the debit off the fund equals the credit to the manager.
         Assert.Equal(feePaid.Amount, feeReceived.Amount);
+
+        var transaction = await context.ShareTransactions.SingleAsync();
+        Assert.Equal(100m, transaction.SellerAverageCost);
+        Assert.Equal(1000m, transaction.SellerCostBasis);
+        Assert.Equal(0m, transaction.SellerTradeFee);
+        Assert.Equal(50m, transaction.SellerManagerFee);
+        Assert.Equal(500m, transaction.SellerGrossRealizedPnl);
+        Assert.Equal(450m, transaction.SellerNetRealizedPnl);
     }
 
     [Fact]

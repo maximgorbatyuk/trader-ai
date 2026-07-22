@@ -11,7 +11,9 @@ public sealed record BigInvestmentOpportunity(
     decimal CurrentPrice,
     decimal Capitalization,
     decimal MinimumAmount,
-    decimal MaximumAmount);
+    decimal MaximumAmount,
+    int MinimumShares,
+    int MaximumShares);
 
 // Executes both automated and manual direct funding deals by minting shares at the current price and settling the
 // resulting cash, holding, rating, sentiment, protection, and history changes together. It runs after primary
@@ -250,8 +252,13 @@ public sealed class BigInvestmentService(
         }
 
         var investorSharesAfter = priorHoldingQuantity + newShares;
+        var marketRunId = await dbContext.MarketCycles
+            .Where(cycle => cycle.Id == currentCycleId)
+            .Select(cycle => (int?)cycle.MarketRunId)
+            .SingleOrDefaultAsync();
         dbContext.CompanyInvestments.Add(new CompanyInvestment
         {
+            MarketRunId = marketRunId,
             CompanyId = company.Id,
             InvestorParticipantId = investor.Id,
             DealValue = cash,
@@ -364,14 +371,18 @@ public sealed class BigInvestmentService(
         var maximumAmount = Math.Min(
             (decimal)bands.BigInvestmentFractionMax * capitalization,
             Spendable(investor));
-        return minimumAmount > 0m && maximumAmount >= minimumAmount
+        var minimumShares = (int)Math.Min(int.MaxValue, Math.Ceiling(minimumAmount / price));
+        var maximumShares = (int)Math.Min(int.MaxValue, Math.Floor(maximumAmount / price));
+        return minimumShares > 0 && maximumShares >= minimumShares
             ? new BigInvestmentOpportunity(
                 companyId,
                 companyName,
                 price,
                 capitalization,
                 minimumAmount,
-                maximumAmount)
+                maximumAmount,
+                minimumShares,
+                maximumShares)
             : null;
     }
 

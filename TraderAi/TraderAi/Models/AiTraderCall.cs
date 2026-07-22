@@ -7,6 +7,14 @@ public sealed class AiTraderCall
 {
     public long Id { get; set; }
 
+    public Guid AttemptGroupId { get; set; } = Guid.NewGuid();
+
+    public int AttemptNumber { get; set; } = 1;
+
+    public string? FailureCategory { get; set; }
+
+    public int? MarketRunId { get; set; }
+
     public int ParticipantId { get; set; }
 
     public required string ParticipantName { get; set; }
@@ -64,4 +72,6 @@ public sealed class AiTraderCall
     // Set on an end-of-day planning call whose orders are deferred: the trading-day number at whose opening cycle
     // the stored decision should be applied. Null for ordinary calls.
     public int? NextDayTargetDayNumber { get; set; }
+
+    public List<AiPrediction> Predictions { get; set; } = [];
 }

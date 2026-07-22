@@ -8,6 +8,8 @@ public sealed class Market
 
     public MarketStatus Status { get; set; }
 
+    public int CurrentRunId { get; set; }
+
     public int? CurrentCycleId { get; set; }
 
     public int? CurrentTradingDayId { get; set; }

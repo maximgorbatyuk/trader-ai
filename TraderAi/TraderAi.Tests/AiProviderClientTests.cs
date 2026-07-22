@@ -14,6 +14,54 @@ public sealed class AiProviderClientTests
         new("minimax", "MiniMax", new Uri("https://minimax.test/v1/chat/completions"), new[] { "MiniMax-M2" });
 
     [Fact]
+    public void CatalogCombinesProviderOverridesWithGlobalFallbacksWithoutExposingTheApiKey()
+    {
+        var settings = new AiTradingOptions
+        {
+            RequestTimeoutSeconds = 120,
+            MaxResponseTokens = 8_000,
+            MaxInvalidJsonRetries = 2,
+            MaxTransportRetries = 3,
+            Providers = new Dictionary<string, AiProviderOptions>
+            {
+                ["overridden"] = new()
+                {
+                    DisplayName = "Overridden",
+                    Endpoint = "https://overridden.test/chat",
+                    ApiKey = "never-expose-this",
+                    Models = ["model-a"],
+                    RequestTimeoutSeconds = 45,
+                    MaxResponseTokens = 4_000,
+                    MaxInvalidJsonRetries = 1,
+                    MaxTransportRetries = 0,
+                },
+                ["fallback"] = new()
+                {
+                    DisplayName = "Fallback",
+                    Endpoint = "https://fallback.test/chat",
+                    ApiKey = "also-secret",
+                    Models = ["model-b"],
+                },
+            },
+        };
+
+        var catalog = new AiProviderCatalog(Options.Create(settings));
+
+        var overridden = Assert.IsType<AiProviderDescriptor>(catalog.Find("overridden"));
+        Assert.Equal(45, overridden.RequestTimeoutSeconds);
+        Assert.Equal(4_000, overridden.MaxResponseTokens);
+        Assert.Equal(1, overridden.MaxInvalidJsonRetries);
+        Assert.Equal(0, overridden.MaxTransportRetries);
+        var fallback = Assert.IsType<AiProviderDescriptor>(catalog.Find("fallback"));
+        Assert.Equal(120, fallback.RequestTimeoutSeconds);
+        Assert.Equal(8_000, fallback.MaxResponseTokens);
+        Assert.Equal(2, fallback.MaxInvalidJsonRetries);
+        Assert.Equal(3, fallback.MaxTransportRetries);
+        Assert.DoesNotContain("never-expose-this", JsonSerializer.Serialize(overridden));
+        Assert.Equal("never-expose-this", catalog.FindApiKey("overridden"));
+    }
+
+    [Fact]
     public void PreparedRequestUsesEndpointAndModelAndDisablesThinkingForGlm()
     {
         var client = Client(out _);
@@ -37,6 +85,17 @@ public sealed class AiProviderClientTests
 
         Assert.Equal(MiniMax.Endpoint, prepared.Endpoint);
         Assert.DoesNotContain("thinking", prepared.RequestJson);
+    }
+
+    [Fact]
+    public void PreparedRequestUsesTheProvidersEffectiveResponseTokenLimit()
+    {
+        var provider = Glm with { MaxResponseTokens = 1_234 };
+        var client = Client(out _);
+
+        var prepared = client.Prepare(provider, "glm-4.6", "system", "user");
+
+        Assert.Contains("\"max_tokens\":1234", prepared.RequestJson);
     }
 
     [Theory]
@@ -227,9 +286,26 @@ public sealed class AiProviderClientTests
             await Task.Delay(Timeout.Infinite, ct);
             return Ok(Envelope("hi"));
         });
-        var client = Client(handler, timeoutSeconds: 1);
+        var client = Client(handler);
 
-        var prepared = client.Prepare(Glm, "glm-4.6", "system", "user");
+        var prepared = client.Prepare(Glm with { RequestTimeoutSeconds = 1 }, "glm-4.6", "system", "user");
+        var response = await client.SendAsync(prepared, "key", CancellationToken.None);
+
+        Assert.Equal(AiProviderCallOutcome.TimedOut, response.Outcome);
+    }
+
+    [Fact]
+    public async Task ProviderTimeoutOverrideWinsOverTheGlobalTimeout()
+    {
+        var handler = new StubHandler(async (_, ct) =>
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            return Ok(Envelope("hi"));
+        });
+        var client = Client(handler);
+        var provider = Glm with { RequestTimeoutSeconds = 1 };
+
+        var prepared = client.Prepare(provider, "glm-4.6", "system", "user");
         var response = await client.SendAsync(prepared, "key", CancellationToken.None);
 
         Assert.Equal(AiProviderCallOutcome.TimedOut, response.Outcome);
@@ -250,19 +326,14 @@ public sealed class AiProviderClientTests
             + "}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":22,\"total_tokens\":33}}";
     }
 
-    private static AiProviderClient Client(int timeoutSeconds = 120)
-        => Client(new StubHandler((_, _) => Task.FromResult(Ok("{}"))), timeoutSeconds);
-
     private static AiProviderClient Client(out StubHandler handler)
     {
         handler = new StubHandler((_, _) => Task.FromResult(Ok("{}")));
         return Client(handler);
     }
 
-    private static AiProviderClient Client(StubHandler handler, int timeoutSeconds = 120)
-        => new(
-            new FakeHttpClientFactory(handler),
-            Options.Create(new AiTradingOptions { RequestTimeoutSeconds = timeoutSeconds }));
+    private static AiProviderClient Client(StubHandler handler)
+        => new(new FakeHttpClientFactory(handler));
 
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {

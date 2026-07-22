@@ -64,6 +64,12 @@ public sealed class MatchingTests : IDisposable
         var transaction = await context.ShareTransactions.SingleAsync();
         Assert.Equal(5, transaction.Quantity);
         Assert.Equal(105m, transaction.Price);
+        Assert.Equal(100m, transaction.SellerAverageCost);
+        Assert.Equal(500m, transaction.SellerCostBasis);
+        Assert.Equal(0m, transaction.SellerTradeFee);
+        Assert.Equal(0m, transaction.SellerManagerFee);
+        Assert.Equal(25m, transaction.SellerGrossRealizedPnl);
+        Assert.Equal(25m, transaction.SellerNetRealizedPnl);
 
         var latestSnapshot = await context.PriceSnapshots.OrderByDescending(snapshot => snapshot.Id).FirstAsync();
         Assert.Equal(105m, latestSnapshot.Price);

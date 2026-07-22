@@ -17,6 +17,18 @@ public sealed class ShareTransaction
 
     public decimal TotalCost { get; set; }
 
+    public decimal? SellerAverageCost { get; set; }
+
+    public decimal? SellerCostBasis { get; set; }
+
+    public decimal? SellerTradeFee { get; set; }
+
+    public decimal? SellerManagerFee { get; set; }
+
+    public decimal? SellerGrossRealizedPnl { get; set; }
+
+    public decimal? SellerNetRealizedPnl { get; set; }
+
     public int CreatedInCycleId { get; set; }
 
     public DateTime CreatedAt { get; set; }

@@ -15,6 +15,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<MarketCycle> MarketCycles => Set<MarketCycle>();
 
+    public DbSet<MarketRun> MarketRuns => Set<MarketRun>();
+
     public DbSet<TradingDay> TradingDays => Set<TradingDay>();
 
     public DbSet<TradingBreakCycle> TradingBreakCycles => Set<TradingBreakCycle>();
@@ -75,6 +77,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<ShareEmission> ShareEmissions => Set<ShareEmission>();
 
+    public DbSet<ShareEmissionRecipient> ShareEmissionRecipients => Set<ShareEmissionRecipient>();
+
     public DbSet<CompanyInvestment> CompanyInvestments => Set<CompanyInvestment>();
 
     public DbSet<PriceSnapshotArchive> PriceSnapshotArchives => Set<PriceSnapshotArchive>();
@@ -102,6 +106,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<AiTraderConfiguration> AiTraderConfigurations => Set<AiTraderConfiguration>();
 
     public DbSet<AiTraderCall> AiTraderCalls => Set<AiTraderCall>();
+
+    public DbSet<AiPrediction> AiPredictions => Set<AiPrediction>();
 
     // Per-context read cache for maps that many per-cycle services request repeatedly. The whole tick runs on
     // one scoped context, so this collapses those repeated reads to a single query per map; each map is rebuilt
@@ -235,6 +241,50 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<MarketCycle>()
             .HasIndex(cycle => cycle.CycleNumber)
             .IsUnique();
+
+        modelBuilder.Entity<Market>()
+            .HasIndex(market => market.CurrentRunId);
+
+        modelBuilder.Entity<MarketCycle>()
+            .HasIndex(cycle => cycle.MarketRunId);
+
+        modelBuilder.Entity<AiTraderCall>()
+            .HasIndex(call => call.MarketRunId);
+
+        modelBuilder.Entity<AiTraderCall>()
+            .HasIndex(call => new { call.AttemptGroupId, call.AttemptNumber })
+            .IsUnique();
+
+        modelBuilder.Entity<CompanyInvestment>()
+            .HasIndex(investment => investment.MarketRunId);
+
+        modelBuilder.Entity<ShareEmission>()
+            .HasIndex(emission => emission.MarketRunId);
+
+        modelBuilder.Entity<ShareEmission>()
+            .HasMany(emission => emission.Recipients)
+            .WithOne(recipient => recipient.ShareEmission)
+            .HasForeignKey(recipient => recipient.ShareEmissionId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<ShareEmissionRecipient>()
+            .HasIndex(recipient => new { recipient.ShareEmissionId, recipient.ParticipantId })
+            .IsUnique();
+
+        modelBuilder.Entity<OrderArchive>()
+            .HasIndex(order => order.MarketRunId);
+
+        modelBuilder.Entity<PriceSnapshotArchive>()
+            .HasIndex(snapshot => snapshot.MarketRunId);
+
+        modelBuilder.Entity<MoneyTransactionArchive>()
+            .HasIndex(transaction => transaction.MarketRunId);
+
+        modelBuilder.Entity<ParticipantWorthSnapshotArchive>()
+            .HasIndex(snapshot => snapshot.MarketRunId);
+
+        modelBuilder.Entity<SectorSentimentSnapshotArchive>()
+            .HasIndex(snapshot => snapshot.MarketRunId);
 
         modelBuilder.Entity<TradingDay>()
             .HasIndex(day => day.DayNumber)
@@ -433,6 +483,22 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasIndex(call => new { call.ParticipantId, call.Id });
 
         modelBuilder.Entity<AiTraderCall>()
+            .HasMany(call => call.Predictions)
+            .WithOne(prediction => prediction.AiTraderCall)
+            .HasForeignKey(prediction => prediction.AiTraderCallId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<AiPrediction>()
+            .HasIndex(prediction => new { prediction.AiTraderCallId, prediction.CompanyId, prediction.HorizonCycles })
+            .IsUnique();
+
+        modelBuilder.Entity<AiPrediction>()
+            .HasIndex(prediction => new { prediction.MarketRunId, prediction.SnapshotCycleNumber });
+
+        modelBuilder.Entity<AiPrediction>()
+            .Property(prediction => prediction.Reason).HasMaxLength(1000);
+
+        modelBuilder.Entity<AiTraderCall>()
             .Property(call => call.ProviderId).HasMaxLength(64);
 
         modelBuilder.Entity<AiTraderCall>()
@@ -449,6 +515,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<AiTraderCall>()
             .Property(call => call.Summary).HasMaxLength(1000);
+
+        modelBuilder.Entity<AiTraderCall>()
+            .Property(call => call.FailureCategory).HasMaxLength(64);
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
@@ -472,6 +541,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         // The interest rate is a fraction, so a finer scale after the blanket money pass keeps it from rounding.
         modelBuilder.Entity<Bank>().Property(bank => bank.InterestRate).HasPrecision(18, 6);
         modelBuilder.Entity<Loan>().Property(loan => loan.InterestRate).HasPrecision(18, 6);
+        modelBuilder.Entity<AiPrediction>().Property(prediction => prediction.Confidence).HasPrecision(18, 6);
 
         // Behavioural-audit indices are min-max-normalised sums near the 0..5 range; the money scale above would
         // flatten the small gaps the nearest-group-average classification reads, so give them a finer scale.

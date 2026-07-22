@@ -2,7 +2,15 @@ using Microsoft.Extensions.Options;
 
 namespace TraderAi.Services;
 
-public sealed record AiProviderDescriptor(string Id, string Label, Uri Endpoint, IReadOnlyList<string> Models);
+public sealed record AiProviderDescriptor(
+    string Id,
+    string Label,
+    Uri Endpoint,
+    IReadOnlyList<string> Models,
+    int RequestTimeoutSeconds = 300,
+    int MaxResponseTokens = 32768,
+    int MaxInvalidJsonRetries = 1,
+    int MaxTransportRetries = 1);
 
 // Read-only view over the configured providers. It normalises provider ids to their catalog key so the frontend
 // can never persist an unknown provider; the model is free-form text and the per-provider model list is only
@@ -31,7 +39,11 @@ public sealed class AiProviderCatalog
                 id,
                 provider.DisplayName,
                 new Uri(provider.Endpoint),
-                provider.Models.ToList());
+                provider.Models.ToList(),
+                provider.RequestTimeoutSeconds ?? options.Value.RequestTimeoutSeconds,
+                provider.MaxResponseTokens ?? options.Value.MaxResponseTokens,
+                provider.MaxInvalidJsonRetries ?? options.Value.MaxInvalidJsonRetries,
+                provider.MaxTransportRetries ?? options.Value.MaxTransportRetries);
         }
 
         return byId;

@@ -566,6 +566,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                         Quantity = quantity,
                         Price = 10m,
                         TotalCost = quantity * 10m,
+                        SellerAverageCost = quantity == 3 ? 8m : null,
+                        SellerCostBasis = quantity == 3 ? 24m : null,
+                        SellerTradeFee = quantity == 3 ? 1m : null,
+                        SellerManagerFee = quantity == 3 ? 2m : null,
+                        SellerGrossRealizedPnl = quantity == 3 ? 6m : null,
+                        SellerNetRealizedPnl = quantity == 3 ? 3m : null,
                         CreatedInCycleId = cycle.Id,
                         CreatedAt = createdAt.AddSeconds(quantity),
                         UpdatedAt = createdAt.AddSeconds(quantity),
@@ -587,6 +593,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(2, firstPage.PageSize);
             Assert.Equal([3, 2], firstPage.Items.Select(transaction => transaction.Quantity));
             Assert.Equal("Settled", firstPage.Items[0].SettlementStatus);
+            Assert.Equal(8m, firstPage.Items[0].SellerAverageCost);
+            Assert.Equal(24m, firstPage.Items[0].SellerCostBasis);
+            Assert.Equal(1m, firstPage.Items[0].SellerTradeFee);
+            Assert.Equal(2m, firstPage.Items[0].SellerManagerFee);
+            Assert.Equal(6m, firstPage.Items[0].SellerGrossRealizedPnl);
+            Assert.Equal(3m, firstPage.Items[0].SellerNetRealizedPnl);
 
             var secondPage = await client.GetFromJsonAsync<PagedShareTransactionsDto>(
                 "/transactions/shares/paged?page=2&pageSize=2");
@@ -699,6 +711,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(quantity, transaction.Quantity);
             Assert.Equal(price, transaction.Price);
             Assert.Null(transaction.SellerId);
+            Assert.Null(transaction.SellerAverageCost);
+            Assert.Null(transaction.SellerCostBasis);
+            Assert.Null(transaction.SellerTradeFee);
+            Assert.Null(transaction.SellerManagerFee);
+            Assert.Null(transaction.SellerGrossRealizedPnl);
+            Assert.Null(transaction.SellerNetRealizedPnl);
 
             var companiesAfter = await client.GetFromJsonAsync<CompanyDto[]>("/companies");
             var companyAfter = companiesAfter!.Single(company => company.Id == companySell.CompanyId);
@@ -869,9 +887,9 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(HttpStatusCode.OK, resetResponse.StatusCode);
 
             var market = await resetResponse.Content.ReadFromJsonAsync<MarketDto>();
-            Assert.Equal(1, market!.Id);
+            Assert.True(market!.Id > 1);
             Assert.Equal("NotStarted", market.Status);
-            Assert.Equal(1, market.CurrentCycleId);
+            Assert.True(market.CurrentCycleId > 1);
 
             var cycles = await client.GetFromJsonAsync<CycleDto[]>("/cycles");
             var transactions = await client.GetFromJsonAsync<ShareTransactionDto[]>("/transactions/shares");
@@ -879,16 +897,17 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             var openOrders = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
 
             var cycle = Assert.Single(cycles!);
-            Assert.Equal(1, cycle.Id);
+            Assert.Equal(market.CurrentCycleId, cycle.Id);
             Assert.Equal(1, cycle.CycleNumber);
             Assert.Empty(transactions!);
             Assert.Single(activity!);
             Assert.Equal(100, openOrders!.Length);
+            var resetParticipant = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!.First();
             var corporateAfterReset = await client.GetFromJsonAsync<PagedCorporateCashMovementsDto>(
-                $"/companies/{companySell.CompanyId}/corporate-cash-movements?page=1&pageSize=10");
+                $"/companies/{openOrders[0].CompanyId}/corporate-cash-movements?page=1&pageSize=10");
             Assert.Empty(corporateAfterReset!.Items);
             var settlementsAfterReset = await client.GetFromJsonAsync<PagedSettlementsDto>(
-                $"/participants/{buyer.Id}/settlements?status=pending&page=1&pageSize=10");
+                $"/participants/{resetParticipant.Id}/settlements?status=pending&page=1&pageSize=10");
             Assert.Empty(settlementsAfterReset!.Items);
             using (var scope = configuredFactory.Services.CreateScope())
             {
@@ -900,6 +919,108 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 Assert.Null(order.ParticipantId);
                 Assert.Equal("Sell", order.Type);
             });
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ResetStartsNewRunAndClearsPreviouslyOmittedRunState()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int previousRunId;
+            int previousMaxCycleId;
+            int previousMaxOrderId;
+            int previousMaxAuditorId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var cycle = await db.MarketCycles.SingleAsync(candidate => candidate.Id == market.CurrentCycleId);
+                var company = await db.Companies.FirstAsync();
+                var auditor = await db.Auditors.FirstAsync();
+                previousRunId = market.CurrentRunId;
+                previousMaxCycleId = await db.MarketCycles.MaxAsync(candidate => candidate.Id);
+                previousMaxOrderId = await db.Orders.MaxAsync(candidate => candidate.Id);
+                previousMaxAuditorId = await db.Auditors.MaxAsync(candidate => candidate.Id);
+
+                db.OrderArchives.Add(new OrderArchive
+                {
+                    ParticipantId = null,
+                    CompanyId = company.Id,
+                    Type = OrderType.Sell,
+                    Status = OrderStatus.Filled,
+                    Quantity = 1,
+                    FilledQuantity = 1,
+                    LimitPrice = 1m,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                });
+                db.CompanyInvestments.Add(new CompanyInvestment
+                {
+                    CompanyId = company.Id,
+                    InvestorParticipantId = 1,
+                    DealValue = 100m,
+                    SharesIssued = 1,
+                    SharesBeforeDeal = 1,
+                    CapitalizationBeforeDeal = 100m,
+                    FinalCapitalization = 200m,
+                    InvestorSharePercent = 50m,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                db.ShareEmissions.Add(new ShareEmission
+                {
+                    CompanyId = company.Id,
+                    SharesEmitted = 1,
+                    RecipientCount = 1,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                db.CompanyRatings.Add(new CompanyRating
+                {
+                    CompanyId = company.Id,
+                    AuditorId = auditor.Id,
+                    Rating = CompanyRiskRating.Low,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                db.GameSettings.Add(new GameSetting { Key = "Test:Preserved", ValueJson = "true" });
+                await db.SaveChangesAsync();
+            }
+
+            using var resetResponse = await client.PostAsync("/market/reset", null);
+            resetResponse.EnsureSuccessStatusCode();
+
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var currentCycle = await db.MarketCycles.SingleAsync(candidate => candidate.Id == market.CurrentCycleId);
+
+                Assert.NotEqual(previousRunId, market.CurrentRunId);
+                Assert.Equal(market.CurrentRunId, currentCycle.MarketRunId);
+                Assert.True(currentCycle.Id > previousMaxCycleId);
+                Assert.True(await db.Orders.MinAsync(candidate => candidate.Id) > previousMaxOrderId);
+                Assert.Empty(await db.OrderArchives.ToListAsync());
+                Assert.Empty(await db.CompanyInvestments.ToListAsync());
+                Assert.Empty(await db.ShareEmissions.ToListAsync());
+                Assert.Empty(await db.CompanyRatings.ToListAsync());
+                Assert.All(await db.Auditors.ToListAsync(), candidate => Assert.True(candidate.Id > previousMaxAuditorId));
+                Assert.NotNull(await db.GameSettings.SingleOrDefaultAsync(setting => setting.Key == "Test:Preserved"));
+                Assert.NotNull(await db.MarketRuns.SingleOrDefaultAsync(run => run.Id == previousRunId && run.EndedAt != null));
+            }
         }
         finally
         {
@@ -3520,6 +3641,22 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 }
 
                 await db.SaveChangesAsync();
+                var latestCall = await db.AiTraderCalls.OrderByDescending(call => call.Id).FirstAsync();
+                db.AiPredictions.Add(new AiPrediction
+                {
+                    AiTraderCallId = latestCall.Id,
+                    ParticipantId = ownerId,
+                    CompanyId = 42,
+                    SnapshotCycleNumber = 5,
+                    SnapshotTradingDayNumber = 1,
+                    BaselinePrice = 100m,
+                    Direction = AiPredictionDirection.Up,
+                    Confidence = 0.72m,
+                    HorizonCycles = 210,
+                    TargetPrice = 125m,
+                    Reason = "Demand.",
+                });
+                await db.SaveChangesAsync();
             }
 
             using var pageDoc = JsonDocument.Parse(
@@ -3535,10 +3672,146 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(HttpStatusCode.OK, ownerDetail.StatusCode);
             using var detailDoc = JsonDocument.Parse(await ownerDetail.Content.ReadAsStringAsync());
             Assert.False(string.IsNullOrEmpty(detailDoc.RootElement.GetProperty("requestJson").GetString()));
+            Assert.NotEqual(Guid.Empty, detailDoc.RootElement.GetProperty("attemptGroupId").GetGuid());
+            Assert.Equal(1, detailDoc.RootElement.GetProperty("attemptNumber").GetInt32());
+            Assert.Equal(JsonValueKind.Null, detailDoc.RootElement.GetProperty("failureCategory").ValueKind);
+            var prediction = Assert.Single(detailDoc.RootElement.GetProperty("predictions").EnumerateArray());
+            Assert.Equal(42, prediction.GetProperty("companyId").GetInt32());
+            Assert.Equal("Up", prediction.GetProperty("direction").GetString());
+            Assert.Equal(0.72m, prediction.GetProperty("confidence").GetDecimal());
+            Assert.Equal(100m, prediction.GetProperty("baselinePrice").GetDecimal());
 
             using var otherDetail = await client.GetAsync($"/participants/{otherId}/ai-calls/{callId}");
             Assert.Equal(HttpStatusCode.NotFound, otherDetail.StatusCode);
         });
+    }
+
+    [Fact]
+    public async Task AiPredictionQualityValidatesClusteringAndReturnsCommonWindowMetrics()
+    {
+        await WithClientAsync(async (client, factoryInstance) =>
+        {
+            await client.PostAsync("/market/seed", null);
+
+            using var invalid = await client.GetAsync("/market/ai-prediction-quality?clusterBy=participant");
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+
+            using (var empty = JsonDocument.Parse(
+                       await client.GetStringAsync("/market/ai-prediction-quality?clusterBy=call")))
+            {
+                Assert.Empty(empty.RootElement.GetProperty("groups").EnumerateArray());
+                Assert.Equal(JsonValueKind.Null, empty.RootElement.GetProperty("commonStartCycle").ValueKind);
+            }
+
+            using (var scope = factoryInstance.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var currentCycle = await db.MarketCycles.SingleAsync(cycle => cycle.Id == market.CurrentCycleId);
+                var cycle2 = new MarketCycle
+                {
+                    MarketRunId = market.CurrentRunId,
+                    CycleNumber = 2,
+                    TradingDayId = currentCycle.TradingDayId,
+                    TradingCycleNumber = 2,
+                    Status = CycleStatus.Completed,
+                };
+                var cycle3 = new MarketCycle
+                {
+                    MarketRunId = market.CurrentRunId,
+                    CycleNumber = 3,
+                    TradingDayId = currentCycle.TradingDayId,
+                    TradingCycleNumber = 3,
+                    Status = CycleStatus.Completed,
+                };
+                db.AddRange(cycle2, cycle3);
+                await db.SaveChangesAsync();
+                market.CurrentCycleId = cycle3.Id;
+                var companyId = await db.Companies.Select(company => company.Id).FirstAsync();
+                db.PriceSnapshots.Add(new PriceSnapshot
+                {
+                    CompanyId = companyId,
+                    Price = 110m,
+                    CreatedInCycleId = cycle3.Id,
+                    CreatedAt = DateTime.UtcNow,
+                });
+
+                for (var index = 0; index < 5; index++)
+                {
+                    AddPredictionCall(
+                        db, market.CurrentRunId, cycle2, companyId, "glm", "GLM", "model-a", index + 1);
+                }
+
+                AddPredictionCall(
+                    db, market.CurrentRunId, cycle2, companyId, "minimax", "MiniMax", "model-b", 1);
+                await db.SaveChangesAsync();
+            }
+
+            using var byCall = JsonDocument.Parse(
+                await client.GetStringAsync("/market/ai-prediction-quality?clusterBy=call"));
+            Assert.Equal(2, byCall.RootElement.GetProperty("commonStartCycle").GetInt32());
+            Assert.Equal(2, byCall.RootElement.GetProperty("commonEndCycle").GetInt32());
+            var groups = byCall.RootElement.GetProperty("groups").EnumerateArray().ToList();
+            Assert.Equal(2, groups.Count);
+            var glm = Assert.Single(groups, group => group.GetProperty("providerId").GetString() == "glm");
+            Assert.Equal(5, glm.GetProperty("maturePredictionCount").GetInt32());
+            Assert.Equal(5, glm.GetProperty("commonWindowPredictionCount").GetInt32());
+            Assert.Equal(5, glm.GetProperty("clusterCount").GetInt32());
+            Assert.Equal("call", glm.GetProperty("clusteringUnit").GetString());
+            Assert.Equal("Available", glm.GetProperty("directionalAccuracy")
+                .GetProperty("uncertaintyStatus").GetString());
+            Assert.NotEmpty(glm.GetProperty("calibrationBins").EnumerateArray());
+            var minimax = Assert.Single(groups, group => group.GetProperty("providerId").GetString() == "minimax");
+            Assert.Equal("InsufficientClusters", minimax.GetProperty("directionalAccuracy")
+                .GetProperty("uncertaintyStatus").GetString());
+
+            using var byDay = JsonDocument.Parse(
+                await client.GetStringAsync("/market/ai-prediction-quality?clusterBy=tradingDay"));
+            Assert.All(byDay.RootElement.GetProperty("groups").EnumerateArray(), group =>
+                Assert.Equal("tradingDay", group.GetProperty("clusteringUnit").GetString()));
+        });
+    }
+
+    private static void AddPredictionCall(
+        AppDbContext db,
+        int marketRunId,
+        MarketCycle snapshotCycle,
+        int companyId,
+        string providerId,
+        string providerLabel,
+        string model,
+        int tradingDayNumber)
+    {
+        var call = new AiTraderCall
+        {
+            MarketRunId = marketRunId,
+            ParticipantId = tradingDayNumber,
+            ParticipantName = providerLabel,
+            ProviderId = providerId,
+            ProviderLabel = providerLabel,
+            Model = model,
+            SnapshotCycleId = snapshotCycle.Id,
+            SnapshotCycleNumber = snapshotCycle.CycleNumber,
+            PromptHash = "hash",
+            RequestJson = "{}",
+            Status = AiTraderCallStatus.Completed,
+            RequestedAt = DateTime.UtcNow,
+        };
+        call.Predictions.Add(new AiPrediction
+        {
+            MarketRunId = marketRunId,
+            ParticipantId = tradingDayNumber,
+            CompanyId = companyId,
+            SnapshotCycleNumber = snapshotCycle.CycleNumber,
+            SnapshotTradingDayNumber = tradingDayNumber,
+            BaselinePrice = 100m,
+            Direction = AiPredictionDirection.Up,
+            Confidence = 0.8m,
+            HorizonCycles = 1,
+            TargetPrice = 105m,
+            Reason = "Demand.",
+        });
+        db.AiTraderCalls.Add(call);
     }
 
     private static async Task<int> FirstIndividualIdAsync(WebApplicationFactory<Program> factoryInstance)
@@ -3791,7 +4064,13 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal Price,
         int? TradeDayNumber,
         int? DueDayNumber,
-        string? SettlementStatus);
+        string? SettlementStatus,
+        decimal? SellerAverageCost,
+        decimal? SellerCostBasis,
+        decimal? SellerTradeFee,
+        decimal? SellerManagerFee,
+        decimal? SellerGrossRealizedPnl,
+        decimal? SellerNetRealizedPnl);
 
     private sealed record PagedShareTransactionsDto(ShareTransactionDto[] Items, int Total, int Page, int PageSize);
 

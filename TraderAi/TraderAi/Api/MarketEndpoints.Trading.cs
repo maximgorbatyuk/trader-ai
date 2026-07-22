@@ -53,7 +53,9 @@ public static partial class MarketEndpoints
         app.MapGet("/investments", async (int? take, AppDbContext dbContext) =>
         {
             var limit = Math.Clamp(take ?? 50, 1, 500);
+            var currentRunId = await dbContext.Markets.Select(market => market.CurrentRunId).SingleOrDefaultAsync();
             var investments = await dbContext.CompanyInvestments
+                .Where(investment => investment.MarketRunId == currentRunId || investment.MarketRunId == null)
                 .OrderByDescending(investment => investment.Id)
                 .Take(limit)
                 .ToListAsync();

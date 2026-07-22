@@ -6,6 +6,8 @@ public sealed class PriceSnapshotArchive
 {
     public int Id { get; set; }
 
+    public int? MarketRunId { get; set; }
+
     public int CompanyId { get; set; }
 
     public decimal Price { get; set; }
