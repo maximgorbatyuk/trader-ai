@@ -25,8 +25,8 @@ the order book.
   company's issued share count.
 - The investor receives the new shares immediately as a settled holding and pays the cash immediately; the company
   receives the cash as corporate cash.
-- Capitalisation is re-recorded at the deal price against the enlarged share count.
-- An auditor publishes a raised-expectations rating for the company, lifting its price.
+- Capitalisation is re-recorded at the unchanged per-share deal price against the enlarged share count; this snapshot alone does not move the per-share price.
+- An attached raised-expectations rating then requests an 8% price increase. LULD can clamp the realized move, and the rating impact preserves resting orders rather than cancelling stale orders.
 - The company's industry sentiment ticks up by a small amount.
 - The company is shielded from delisting for the next few trading days.
 - Each deal is announced on the Newswire without a separate price impact of its own.
@@ -51,9 +51,6 @@ the trading day and cycle it happened in. The record survives a departed investo
   credit in the **Corporate cash movements** panel, and shows the raised-expectations rating and the enlarged share
   count.
 - The deal appears on the **Newswire** as an **Investment** item naming the investor, company, share count, and size.
-
-The deal logic lives in `BigInvestmentService`; the manual action is served by `MarketService.InvestInCompanyAsync`;
-the deal facts are stored as `CompanyInvestment` records.
 
 See [Corporate cash](corporate-cash.md) for the issuer cash credit and [Company](../roles/company.md) for the
 delisting-protection window.

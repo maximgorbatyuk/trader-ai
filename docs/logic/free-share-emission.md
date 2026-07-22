@@ -11,9 +11,9 @@ Free-share emission lets a very large company issue new shares for free, dilutin
 - New shares go only to active traders who do not already hold the company.
 - No recipient receives more than a small fixed number of free shares.
 - The amount actually emitted is limited by how many eligible recipients there are.
-- Recipients receive the shares at zero cost.
-- The new shares are listed as a company sell order at a zero price.
-- Emission forces no price change and cancels no existing orders; the added supply moves the price through normal trading.
+- The grant is recorded through a company-originated sell order with a zero limit that is filled in place. It never rests in the order book or participates in matching.
+- Recipients receive settled holdings with a zero cost basis; no zero-price trade or price point is recorded.
+- Emission forces no price change and cancels no existing orders. The larger issued supply and recipients' later sell decisions can weigh on price through ordinary matching.
 - Each emission is announced as news with no price impact.
 - The company page lists a company's emissions.
 
