@@ -193,6 +193,7 @@ public static partial class MarketEndpoints
             AppDbContext dbContext,
             AiProviderCatalog catalog,
             IAiProviderClient client,
+            ILoggerFactory loggerFactory,
             CancellationToken cancellationToken) =>
         {
             if (!await dbContext.Participants.AnyAsync(candidate => candidate.Id == participantId, cancellationToken))
@@ -222,6 +223,16 @@ public static partial class MarketEndpoints
             var response = await client.SendTestAsync(provider, model, apiKey, cancellationToken);
             stopwatch.Stop();
             var success = response.Outcome == AiProviderCallOutcome.Success;
+
+            // The test call is not persisted to the AI call audit log, so a failure would otherwise leave no server-side
+            // trace; log it here to diagnose provider auth and configuration problems.
+            if (!success)
+            {
+                loggerFactory.CreateLogger("TraderAi.Api.AutomationTest").LogWarning(
+                    "Automation test failed for participant {ParticipantId} using {ProviderLabel}/{Model}: outcome={Outcome}, httpStatus={HttpStatus}, error={Error}. Response body: {ResponseBody}",
+                    participantId, provider.Label, model, response.Outcome, response.HttpStatusCode, response.Error, response.RawBody);
+            }
+
             return Results.Ok(new AiProviderTestResponse(
                 success,
                 response.HttpStatusCode,
