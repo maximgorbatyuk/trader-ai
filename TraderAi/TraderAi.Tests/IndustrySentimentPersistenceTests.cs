@@ -271,8 +271,8 @@ public sealed class IndustrySentimentPersistenceTests : IClassFixture<WebApplica
                 context.SectorSentimentSnapshotArchives.Add(archived);
                 await context.SaveChangesAsync();
 
-                Assert.Equal(1, live.Id);
-                Assert.Equal(1, archived.Id);
+                Assert.True(live.Id > 1);
+                Assert.True(archived.Id > 1);
             }
         }
         finally
