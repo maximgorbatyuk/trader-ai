@@ -450,7 +450,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
             await db.SaveChangesAsync();
         }
         var decision =
-            $"{{\"summary\":\"Fund Acme.\",\"cancelOrderIds\":[],\"bigInvestment\":{{\"companyId\":{seed.CompanyId},\"amount\":50000,\"reason\":\"growth\"}},\"orders\":[],\"predictions\":[]}}";
+            $"{{\"summary\":\"Fund Acme.\",\"cancelOrderIds\":[],\"bigInvestment\":{{\"companyId\":{seed.CompanyId},\"shares\":500,\"reason\":\"growth\"}},\"orders\":[],\"predictions\":[]}}";
         fakeClient.OnSend = _ => Task.FromResult(Success(decision));
         var coordinator = Coordinator();
 

@@ -202,9 +202,17 @@ public static class AiDecisionJson
                 return false;
             }
 
-            if (investment.Amount <= 0m)
+            if (requirePredictions)
             {
-                error = "The bigInvestment amount must be positive.";
+                if (investment.Shares is not > 0 || investment.Amount is not null)
+                {
+                    error = "A fresh bigInvestment must contain positive shares and no amount.";
+                    return false;
+                }
+            }
+            else if (investment.Amount is not > 0m && investment.Shares is not > 0)
+            {
+                error = "The bigInvestment amount or shares must be positive.";
                 return false;
             }
 

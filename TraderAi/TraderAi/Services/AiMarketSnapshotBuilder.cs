@@ -115,11 +115,24 @@ public sealed record AiApplicationFeedback(
     long CallId,
     int SnapshotCycleNumber,
     string Status,
-    IReadOnlyList<string> RejectionReasons);
+    IReadOnlyList<AiApplicationRejectionFeedback> Rejections);
+
+public sealed record AiApplicationRejectionFeedback(
+    string Code,
+    string Reason,
+    int? MinimumQuantity = null,
+    int? MaximumQuantity = null,
+    decimal? MinimumPrice = null,
+    decimal? MaximumPrice = null,
+    decimal? MaximumBudget = null);
 
 // Slim projection of BigInvestmentOpportunity: company name, price, and capitalization already appear in Companies,
 // so only the funding bounds are sent to the model.
-public sealed record AiBigInvestmentOpportunity(int CompanyId, decimal MinimumAmount, decimal MaximumAmount);
+public sealed record AiBigInvestmentOpportunity(
+    int CompanyId,
+    decimal CurrentPrice,
+    int MinimumShares,
+    int MaximumShares);
 
 // Builds a fresh, batched view of the current market for one participant. It reuses the same latest-price map,
 // capitalization (price x issued shares), worth, buying-power, and price-bound formulas the rest of the backend
@@ -206,8 +219,9 @@ public sealed class AiMarketSnapshotBuilder(
                 .OfType<BigInvestmentOpportunity>()
                 .Select(opportunity => new AiBigInvestmentOpportunity(
                     opportunity.CompanyId,
-                    opportunity.MinimumAmount,
-                    opportunity.MaximumAmount))
+                    opportunity.CurrentPrice,
+                    opportunity.MinimumShares,
+                    opportunity.MaximumShares))
                 .ToList();
 
         return new AiMarketSnapshot(
@@ -548,21 +562,23 @@ public sealed class AiMarketSnapshotBuilder(
             call.Id,
             call.SnapshotCycleNumber,
             call.Status.ToString(),
-            ExtractRejectionReasons(call.ApplicationResultJson, call.Error)))
+            ExtractRejections(call.ApplicationResultJson, call.Error)))
             .ToList();
     }
 
-    private static IReadOnlyList<string> ExtractRejectionReasons(string? applicationResultJson, string? error)
+    private static IReadOnlyList<AiApplicationRejectionFeedback> ExtractRejections(
+        string? applicationResultJson,
+        string? error)
     {
-        var reasons = new List<string>();
+        var rejections = new List<AiApplicationRejectionFeedback>();
         if (!string.IsNullOrWhiteSpace(error))
         {
-            reasons.Add(error);
+            rejections.Add(new("provider_error", error));
         }
 
         if (string.IsNullOrWhiteSpace(applicationResultJson))
         {
-            return reasons;
+            return rejections;
         }
 
         try
@@ -583,7 +599,10 @@ public sealed class AiMarketSnapshotBuilder(
                         && result.TryGetProperty("rejectionReason", out var reason)
                         && reason.GetString() is { Length: > 0 } text)
                     {
-                        reasons.Add(text);
+                        rejections.Add(ReadConstraintFeedback(
+                            result,
+                            text,
+                            propertyName == "orders" ? "order_rejected" : "cancellation_rejected"));
                     }
                 }
             }
@@ -595,16 +614,53 @@ public sealed class AiMarketSnapshotBuilder(
                 && investment.TryGetProperty("rejectionReason", out var investmentReason)
                 && investmentReason.GetString() is { Length: > 0 } investmentText)
             {
-                reasons.Add(investmentText);
+                rejections.Add(new("investment_rejected", investmentText));
             }
         }
         catch (JsonException)
         {
-            return reasons;
+            return rejections;
         }
 
-        return reasons.Distinct().Take(5).ToList();
+        return rejections
+            .DistinctBy(rejection => (rejection.Code, rejection.Reason))
+            .Take(5)
+            .ToList();
     }
+
+    private static AiApplicationRejectionFeedback ReadConstraintFeedback(
+        JsonElement result,
+        string reason,
+        string fallbackCode)
+    {
+        if (!result.TryGetProperty("constraintFeedback", out var feedback)
+            || feedback.ValueKind != JsonValueKind.Object)
+        {
+            return new(fallbackCode, reason);
+        }
+
+        var code = feedback.TryGetProperty("code", out var codeElement)
+            ? codeElement.GetString() ?? fallbackCode
+            : fallbackCode;
+        return new AiApplicationRejectionFeedback(
+            code,
+            reason,
+            OptionalInt(feedback, "minimumQuantity"),
+            OptionalInt(feedback, "maximumQuantity"),
+            OptionalDecimal(feedback, "minimumPrice"),
+            OptionalDecimal(feedback, "maximumPrice"),
+            OptionalDecimal(feedback, "maximumBudget"));
+    }
+
+    private static int? OptionalInt(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.Number
+            ? property.GetInt32()
+            : null;
+
+    private static decimal? OptionalDecimal(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.Number
+            ? property.GetDecimal()
+            : null;
 
     // Consecutive cycles are averaged into fixed-width periods so a long window compresses to a few representative
     // points; averaging also smooths single-cycle spikes better than sampling one cycle per period would.

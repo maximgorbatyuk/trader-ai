@@ -74,7 +74,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var decision = new AiTradeDecision(
             "fund company directly",
             [],
-            bigInvestment: new AiBigInvestmentDecision(seed.CompanyBId, 50_000m, "long-term growth"));
+            bigInvestment: new AiBigInvestmentDecision(seed.CompanyBId, shares: 500, reason: "long-term growth"));
 
         var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
 
@@ -83,6 +83,25 @@ public sealed class AiDecisionApplicationTests : IDisposable
         Assert.Equal(50_000m, participant.CurrentBalance);
         Assert.Equal(50_000m, participant.SettledCashBalance);
         Assert.Equal(1, await context.CompanyInvestments.CountAsync());
+    }
+
+    [Fact]
+    public async Task StoredLegacyAmountInvestmentRemainsApplicable()
+    {
+        var seed = await SeedAsync();
+        var participant = await context.Participants.SingleAsync(candidate => candidate.Id == seed.ParticipantId);
+        participant.CurrentBalance = 100_000m;
+        participant.SettledCashBalance = 100_000m;
+        await context.SaveChangesAsync();
+        var callService = new AiTraderCallService(context, new MarketCycleLock());
+        var storedJson = $$"""{ "summary": "Legacy funding.", "cancelOrderIds": [], "bigInvestment": { "companyId": {{seed.CompanyBId}}, "amount": 50000, "reason": "Growth." }, "orders": [] }""";
+        var decision = callService.DeserializeDecision(storedJson);
+
+        var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision!);
+
+        Assert.True(result.BigInvestment!.Applied);
+        Assert.Equal(500, result.BigInvestment.SharesMinted);
+        Assert.Equal(50_000m, result.BigInvestment.Amount);
     }
 
     [Fact]
@@ -162,6 +181,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         Assert.True(result.BigInvestment!.Applied);
         Assert.False(result.Orders[0].Applied);
         Assert.Contains("exposure", result.Orders[0].RejectionReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("exposure_or_funding_limit", result.Orders[0].ConstraintFeedback!.Code);
     }
 
     [Fact]
@@ -333,6 +353,10 @@ public sealed class AiDecisionApplicationTests : IDisposable
 
         Assert.False(result.Orders[0].Applied);
         Assert.Contains("active band", result.Orders[0].RejectionReason, StringComparison.OrdinalIgnoreCase);
+        var feedback = Assert.IsType<AiOrderConstraintFeedback>(result.Orders[0].ConstraintFeedback);
+        Assert.Equal("active_price_band", feedback.Code);
+        Assert.NotNull(feedback.MinimumPrice);
+        Assert.NotNull(feedback.MaximumPrice);
     }
 
     [Fact]
@@ -352,6 +376,9 @@ public sealed class AiDecisionApplicationTests : IDisposable
 
         Assert.False(result.Orders[0].Applied);
         Assert.Contains("at most 1", result.Orders[0].RejectionReason);
+        var feedback = Assert.IsType<AiOrderConstraintFeedback>(result.Orders[0].ConstraintFeedback);
+        Assert.Equal("quantity_above_maximum", feedback.Code);
+        Assert.Equal(1, feedback.MaximumQuantity);
     }
 
     [Fact]
@@ -455,6 +482,9 @@ public sealed class AiDecisionApplicationTests : IDisposable
 
         Assert.False(application.Orders[0].Applied);
         Assert.Contains("priority", application.Orders[0].RejectionReason, StringComparison.OrdinalIgnoreCase);
+        var feedback = Assert.IsType<AiOrderConstraintFeedback>(application.Orders[0].ConstraintFeedback);
+        Assert.Equal("priority_price_limit", feedback.Code);
+        Assert.Equal(100m, feedback.MaximumPrice);
 
         var cycle = await context.MarketCycles.SingleAsync();
         var fills = await new MatchingEngine(context).RunAsync(cycle);
@@ -559,6 +589,12 @@ public sealed class AiDecisionApplicationTests : IDisposable
         Assert.All(result.Orders, order => Assert.False(order.Applied));
         Assert.Contains("at least 5", result.Orders[0].RejectionReason);
         Assert.Contains("at most 20", result.Orders[1].RejectionReason);
+        var belowMinimumFeedback = Assert.IsType<AiOrderConstraintFeedback>(result.Orders[0].ConstraintFeedback);
+        var aboveMaximumFeedback = Assert.IsType<AiOrderConstraintFeedback>(result.Orders[1].ConstraintFeedback);
+        Assert.Equal("quantity_below_minimum", belowMinimumFeedback.Code);
+        Assert.Equal(5, belowMinimumFeedback.MinimumQuantity);
+        Assert.Equal("quantity_above_maximum", aboveMaximumFeedback.Code);
+        Assert.Equal(20, aboveMaximumFeedback.MaximumQuantity);
     }
 
     [Theory]
@@ -581,6 +617,34 @@ public sealed class AiDecisionApplicationTests : IDisposable
 
         Assert.False(result.Orders[0].Applied);
         Assert.Contains("only available to High risk", result.Orders[0].RejectionReason);
+        var feedback = Assert.IsType<AiOrderConstraintFeedback>(result.Orders[0].ConstraintFeedback);
+        Assert.Equal("cash_limit", feedback.Code);
+        Assert.NotNull(feedback.MaximumBudget);
+    }
+
+    [Fact]
+    public async Task TradingPauseReturnsStableStructuredFeedback()
+    {
+        var seed = await SeedAsync();
+        var cycleId = (await context.Markets.SingleAsync()).CurrentCycleId!.Value;
+        context.PriceBandStates.Add(new PriceBandState
+        {
+            CompanyId = seed.CompanyBId,
+            State = LuldState.TradingPause,
+            ReferencePrice = 100m,
+            LowerBandPrice = 90m,
+            UpperBandPrice = 110m,
+            UpdatedInCycleId = cycleId,
+        });
+        await context.SaveChangesAsync();
+
+        var result = await marketService.ApplyAiDecisionAsync(
+            seed.ParticipantId,
+            1,
+            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 100m, "paused")));
+
+        Assert.False(result.Orders[0].Applied);
+        Assert.Equal("trading_paused", result.Orders[0].ConstraintFeedback!.Code);
     }
 
     [Fact]

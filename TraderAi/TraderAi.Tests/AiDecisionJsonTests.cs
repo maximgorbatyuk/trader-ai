@@ -204,6 +204,28 @@ public sealed class AiDecisionJsonTests
     }
 
     [Fact]
+    public void FreshBigInvestmentAcceptsWholeShares()
+    {
+        var json = """{ "summary": "Fund directly.", "cancelOrderIds": [], "bigInvestment": { "companyId": 42, "shares": 500, "reason": "Growth." }, "orders": [], "predictions": [] }""";
+
+        Assert.True(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out var decision, out var error));
+        Assert.Null(error);
+        Assert.Equal(500, decision!.BigInvestment!.Shares);
+        Assert.Null(decision.BigInvestment.Amount);
+    }
+
+    [Fact]
+    public void FreshBigInvestmentRejectsLegacyAmount()
+    {
+        var json = """{ "summary": "Fund directly.", "cancelOrderIds": [], "bigInvestment": { "companyId": 42, "amount": 50000, "reason": "Growth." }, "orders": [], "predictions": [] }""";
+
+        Assert.False(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out _, out var error));
+        Assert.Contains("shares", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void MissingBigInvestmentFailsForFreshAssistantContent()
     {
         var json = """{ "summary": "Wait this cycle.", "cancelOrderIds": [], "orders": [] }""";

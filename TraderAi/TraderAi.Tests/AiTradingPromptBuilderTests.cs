@@ -65,7 +65,9 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Assert.Contains("\"bigInvestment\"", system);
         Assert.Contains("Cancellations are applied first, then bigInvestment, then orders", system);
         Assert.Contains("bigInvestmentOpportunities", system);
-        Assert.Contains("exact amount", system);
+        Assert.Contains("exact whole-share quantity", system);
+        Assert.Contains("minimumShares", system);
+        Assert.Contains("maximumShares", system);
         Assert.Contains("Big Investment strategy:", system);
         Assert.Contains("longer-term return opportunity", system);
         Assert.Contains("capitalisation", system);

@@ -47,10 +47,39 @@ public sealed record AiTradePredictionDecision(
     [property: JsonPropertyName("targetPrice")] decimal? TargetPrice,
     [property: JsonPropertyName("reason")] string Reason);
 
-public sealed record AiBigInvestmentDecision(
-    [property: JsonPropertyName("companyId")] int CompanyId,
-    [property: JsonPropertyName("amount")] decimal Amount,
-    [property: JsonPropertyName("reason")] string Reason);
+public sealed record AiBigInvestmentDecision
+{
+    [JsonConstructor]
+    public AiBigInvestmentDecision(int companyId, int? shares, decimal? amount, string reason)
+    {
+        CompanyId = companyId;
+        Shares = shares;
+        Amount = amount;
+        Reason = reason;
+    }
+
+    public AiBigInvestmentDecision(int companyId, int shares, string reason)
+        : this(companyId, shares, null, reason)
+    {
+    }
+
+    public AiBigInvestmentDecision(int companyId, decimal amount, string reason)
+        : this(companyId, null, amount, reason)
+    {
+    }
+
+    [JsonPropertyName("companyId")]
+    public int CompanyId { get; init; }
+
+    [JsonPropertyName("shares")]
+    public int? Shares { get; init; }
+
+    [JsonPropertyName("amount")]
+    public decimal? Amount { get; init; }
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; init; }
+}
 
 public sealed record AiTradeOrderDecision(
     [property: JsonPropertyName("side")] OrderType Side,
