@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
 import { formatInt } from './format'
@@ -25,7 +25,6 @@ const TYPE_OPTIONS = [
 // Roster of traders. Search, type filter, sort, and paging are held here and sent to the server; clicking a
 // trader opens its own detail page.
 function TradersPage() {
-  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedView = searchParams.get('view')
   const view =
@@ -33,15 +32,31 @@ function TradersPage() {
       ? requestedView
       : 'all'
   const rosterStatus = view === 'active' ? 'active' : view === 'in-fund' ? 'in-fund' : undefined
+  // The page lives in the URL so a paged position survives navigating into a trader and back, and Prev/Next
+  // become history entries the browser buttons can walk.
+  const page = Math.max(1, Number.parseInt(searchParams.get('page'), 10) || 1)
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [data, setData] = useState(null)
-  const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState('all')
   const [sortKey, setSortKey] = useState('total')
   const [sortDir, setSortDir] = useState('desc')
   const [pageSize, tableRef] = useFitPageSize()
+
+  // Write the page into the query param while preserving the current view. Explicit paging pushes a history
+  // entry; filter/sort resets and the live-poll clamp pass { replace: true } so they do not pollute history.
+  const setPage = useCallback(
+    (next, options) => {
+      setSearchParams((prev) => {
+        const params = new URLSearchParams(prev)
+        if (next <= 1) params.delete('page')
+        else params.set('page', String(next))
+        return params
+      }, options)
+    },
+    [setSearchParams],
+  )
 
   const loadAll = useCallback(async () => {
     try {
@@ -57,7 +72,7 @@ function TradersPage() {
       // A resize can shrink the page size (or a live refresh the total) below the current page; snap back.
       const resultPageCount = Math.max(1, Math.ceil((result?.total ?? 0) / pageSize))
       if (page > resultPageCount) {
-        setPage(resultPageCount)
+        setPage(resultPageCount, { replace: true })
         return
       }
       setData(result)
@@ -67,7 +82,7 @@ function TradersPage() {
     } finally {
       setReady(true)
     }
-  }, [page, pageSize, search, typeFilter, sortKey, sortDir, rosterStatus])
+  }, [page, pageSize, search, typeFilter, sortKey, sortDir, rosterStatus, setPage])
 
   useEffect(() => {
     if (!ROSTER_VIEWS.includes(view)) return undefined
@@ -80,12 +95,8 @@ function TradersPage() {
     }
   }, [loadAll, view])
 
-  function selectTrader(participant) {
-    navigate(`/traders/${participant.id}`)
-  }
-
   function toggleSort(key) {
-    setPage(1)
+    setPage(1, { replace: true })
     if (key === sortKey) {
       setSortDir((dir) => (dir === 'desc' ? 'asc' : 'desc'))
     } else {
@@ -143,7 +154,7 @@ function TradersPage() {
                 value={search}
                 onChange={(event) => {
                   setSearch(event.target.value)
-                  setPage(1)
+                  setPage(1, { replace: true })
                 }}
               />
               <select
@@ -152,7 +163,7 @@ function TradersPage() {
                 value={typeFilter}
                 onChange={(event) => {
                   setTypeFilter(event.target.value)
-                  setPage(1)
+                  setPage(1, { replace: true })
                 }}
               >
                 {TYPE_OPTIONS.map((option) => (
@@ -169,19 +180,18 @@ function TradersPage() {
                 sortKey={sortKey}
                 sortDir={sortDir}
                 onToggleSort={toggleSort}
-                onSelectTrader={selectTrader}
               />
             </div>
 
             {pageCount > 1 ? (
               <div className="pager">
-                <button type="button" className="btn" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>
+                <button type="button" className="btn" disabled={page <= 1} onClick={() => setPage(page - 1)}>
                   ← Prev
                 </button>
                 <span className="pager-status num">
                   Page {page} / {pageCount}
                 </span>
-                <button type="button" className="btn" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>
+                <button type="button" className="btn" disabled={page >= pageCount} onClick={() => setPage(page + 1)}>
                   Next →
                 </button>
               </div>

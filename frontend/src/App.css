@@ -2728,6 +2728,7 @@
   font: inherit;
   font-weight: 600;
   text-align: left;
+  text-decoration: none;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;

@@ -1,10 +1,11 @@
+import { Link } from 'react-router-dom'
 import { formatInt, formatMoney, TRADER_TYPE_LABEL } from './format'
 import { TemperamentTag } from './TemperamentTag'
 
 // Presentational roster of one page of traders. Sorting, searching, type filtering, and paging are owned by
 // the Traders page (the server does the work), so this component just renders the current page and reports
-// header clicks up via onToggleSort. The name is a button so the page can open the detail block below it.
-export function TradersTable({ participants, sortKey, sortDir, onToggleSort, onSelectTrader, selectedId }) {
+// header clicks up via onToggleSort. The name links to the trader's detail route so it opens in a new tab.
+export function TradersTable({ participants, sortKey, sortDir, onToggleSort, selectedId }) {
   function sortableHeader(key, label, title) {
     const active = sortKey === key
     return (
@@ -51,14 +52,13 @@ export function TradersTable({ participants, sortKey, sortDir, onToggleSort, onS
               <tr key={participant.id} className={isSelected ? 'is-selected' : undefined} aria-current={isSelected ? 'true' : undefined}>
                 <th scope="row">
                   <span className="cell-trader">
-                    <button
-                      type="button"
+                    <Link
                       className="cell-name-btn cell-ellipsis"
-                      onClick={() => onSelectTrader?.(participant)}
+                      to={`/traders/${participant.id}`}
                       title={`Open ${participant.name} details`}
                     >
                       {participant.name}
-                    </button>
+                    </Link>
                     <TemperamentTag temperament={participant.temperament} type={participant.type} />
                     {participant.type === 'CollectiveFund' ? (
                       <span className="tag tag-collective">Fund</span>
