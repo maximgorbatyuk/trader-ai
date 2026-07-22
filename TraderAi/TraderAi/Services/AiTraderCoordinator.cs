@@ -148,6 +148,7 @@ public sealed class AiTraderCoordinator(
             {
                 var hasDuePlan = await dbContext.AiTraderCalls.AnyAsync(
                     call => call.ParticipantId == participantId
+                        && (call.MarketRunId == market.CurrentRunId || call.MarketRunId == null)
                         && call.Status == AiTraderCallStatus.PendingNextDay
                         && call.NextDayTargetDayNumber != null
                         && call.NextDayTargetDayNumber <= currentDayNumber,
@@ -300,7 +301,8 @@ public sealed class AiTraderCoordinator(
             market?.CurrentCycleId ?? 0,
             snapshot.Market.CycleNumber,
             prompt.SystemMessageHash,
-            prepared.RequestJson);
+            prepared.RequestJson,
+            market?.CurrentRunId);
 
         var callService = services.GetRequiredService<AiTraderCallService>();
 

@@ -593,8 +593,10 @@ public static partial class MarketEndpoints
         app.MapGet("/participants/{participantId:int}/investments", async (int participantId, int? take, AppDbContext dbContext) =>
         {
             var limit = Math.Clamp(take ?? 20, 1, 100);
+            var currentRunId = await dbContext.Markets.Select(market => market.CurrentRunId).SingleOrDefaultAsync();
             var investments = await dbContext.CompanyInvestments
-                .Where(investment => investment.InvestorParticipantId == participantId)
+                .Where(investment => investment.InvestorParticipantId == participantId
+                    && (investment.MarketRunId == currentRunId || investment.MarketRunId == null))
                 .OrderByDescending(investment => investment.Id)
                 .Take(limit)
                 .ToListAsync();
@@ -609,9 +611,11 @@ public static partial class MarketEndpoints
         {
             var (pageIndex, size) = ResolvePaging(page, pageSize, 10);
             var descending = SortDescending(sortDir);
+            var currentRunId = await dbContext.Markets.Select(market => market.CurrentRunId).SingleOrDefaultAsync();
 
             var investments = await dbContext.CompanyInvestments
-                .Where(investment => investment.InvestorParticipantId == participantId)
+                .Where(investment => investment.InvestorParticipantId == participantId
+                    && (investment.MarketRunId == currentRunId || investment.MarketRunId == null))
                 .ToListAsync();
             var rows = await ToInvestmentResponsesAsync(dbContext, investments);
 

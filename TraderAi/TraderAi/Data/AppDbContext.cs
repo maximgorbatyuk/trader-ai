@@ -15,6 +15,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<MarketCycle> MarketCycles => Set<MarketCycle>();
 
+    public DbSet<MarketRun> MarketRuns => Set<MarketRun>();
+
     public DbSet<TradingDay> TradingDays => Set<TradingDay>();
 
     public DbSet<TradingBreakCycle> TradingBreakCycles => Set<TradingBreakCycle>();
@@ -235,6 +237,36 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<MarketCycle>()
             .HasIndex(cycle => cycle.CycleNumber)
             .IsUnique();
+
+        modelBuilder.Entity<Market>()
+            .HasIndex(market => market.CurrentRunId);
+
+        modelBuilder.Entity<MarketCycle>()
+            .HasIndex(cycle => cycle.MarketRunId);
+
+        modelBuilder.Entity<AiTraderCall>()
+            .HasIndex(call => call.MarketRunId);
+
+        modelBuilder.Entity<CompanyInvestment>()
+            .HasIndex(investment => investment.MarketRunId);
+
+        modelBuilder.Entity<ShareEmission>()
+            .HasIndex(emission => emission.MarketRunId);
+
+        modelBuilder.Entity<OrderArchive>()
+            .HasIndex(order => order.MarketRunId);
+
+        modelBuilder.Entity<PriceSnapshotArchive>()
+            .HasIndex(snapshot => snapshot.MarketRunId);
+
+        modelBuilder.Entity<MoneyTransactionArchive>()
+            .HasIndex(transaction => transaction.MarketRunId);
+
+        modelBuilder.Entity<ParticipantWorthSnapshotArchive>()
+            .HasIndex(snapshot => snapshot.MarketRunId);
+
+        modelBuilder.Entity<SectorSentimentSnapshotArchive>()
+            .HasIndex(snapshot => snapshot.MarketRunId);
 
         modelBuilder.Entity<TradingDay>()
             .HasIndex(day => day.DayNumber)

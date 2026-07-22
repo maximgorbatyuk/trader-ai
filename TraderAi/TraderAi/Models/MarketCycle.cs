@@ -4,6 +4,8 @@ public sealed class MarketCycle
 {
     public int Id { get; set; }
 
+    public int MarketRunId { get; set; }
+
     public int CycleNumber { get; set; }
 
     public int TradingDayId { get; set; }

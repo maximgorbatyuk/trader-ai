@@ -250,8 +250,13 @@ public sealed class BigInvestmentService(
         }
 
         var investorSharesAfter = priorHoldingQuantity + newShares;
+        var marketRunId = await dbContext.MarketCycles
+            .Where(cycle => cycle.Id == currentCycleId)
+            .Select(cycle => (int?)cycle.MarketRunId)
+            .SingleOrDefaultAsync();
         dbContext.CompanyInvestments.Add(new CompanyInvestment
         {
+            MarketRunId = marketRunId,
             CompanyId = company.Id,
             InvestorParticipantId = investor.Id,
             DealValue = cash,

@@ -6,6 +6,8 @@ public sealed class ParticipantWorthSnapshotArchive
 {
     public int Id { get; set; }
 
+    public int? MarketRunId { get; set; }
+
     public int ParticipantId { get; set; }
 
     public int CreatedInCycleId { get; set; }

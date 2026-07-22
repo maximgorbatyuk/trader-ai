@@ -39,6 +39,10 @@ public sealed class ShareEmissionService(
         }
 
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
+        var marketRunId = await dbContext.MarketCycles
+            .Where(cycle => cycle.Id == currentCycleId)
+            .Select(cycle => (int?)cycle.MarketRunId)
+            .SingleOrDefaultAsync();
 
         var cycleNumbersById = await dbContext.CycleNumbersByIdAsync();
 
@@ -160,6 +164,7 @@ public sealed class ShareEmissionService(
 
             dbContext.ShareEmissions.Add(new ShareEmission
             {
+                MarketRunId = marketRunId,
                 CompanyId = company.Id,
                 SharesEmitted = distributed,
                 RecipientCount = recipientsNeeded,

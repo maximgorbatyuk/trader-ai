@@ -1922,6 +1922,7 @@ public sealed class MarketService(
         {
             nextCycle = new MarketCycle
             {
+                MarketRunId = market.CurrentRunId,
                 CycleNumber = currentCycle.CycleNumber + 1,
                 Status = CycleStatus.Running,
                 StartedAt = now,
@@ -2024,14 +2025,16 @@ public sealed class MarketService(
             return;
         }
 
+        var currentRunId = await dbContext.Markets.Select(market => market.CurrentRunId).SingleAsync();
+
         var currentPriceAnchorIds = await dbContext.PriceSnapshots
             .GroupBy(snapshot => snapshot.CompanyId)
             .Select(group => group.Max(snapshot => snapshot.Id))
             .ToListAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO PriceSnapshotArchives (Id, CompanyId, Price, Capitalization, SourceShareTransactionId, CreatedInCycleId, CreatedAt)
-            SELECT Id, CompanyId, Price, Capitalization, SourceShareTransactionId, CreatedInCycleId, CreatedAt
+            INSERT INTO PriceSnapshotArchives (Id, MarketRunId, CompanyId, Price, Capitalization, SourceShareTransactionId, CreatedInCycleId, CreatedAt)
+            SELECT Id, {currentRunId}, CompanyId, Price, Capitalization, SourceShareTransactionId, CreatedInCycleId, CreatedAt
             FROM PriceSnapshots
             WHERE CreatedInCycleId <= {cutoffCycleId}
               AND Id NOT IN (SELECT MAX(Id) FROM PriceSnapshots GROUP BY CompanyId)");
@@ -2045,8 +2048,8 @@ public sealed class MarketService(
         var filledStatus = nameof(OrderStatus.Filled);
         var cancelledStatus = nameof(OrderStatus.Cancelled);
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO OrderArchives (Id, ParticipantId, CompanyId, Type, Status, Quantity, FilledQuantity, LimitPrice, ReservedCashAmount, IsFloatReplenishment, RelatedLoanId, RelatedMarginCallId, CreatedInCycleId, CreatedAt, UpdatedAt)
-            SELECT Id, ParticipantId, CompanyId, Type, Status, Quantity, FilledQuantity, LimitPrice, ReservedCashAmount, IsFloatReplenishment, RelatedLoanId, RelatedMarginCallId, CreatedInCycleId, CreatedAt, UpdatedAt
+            INSERT INTO OrderArchives (Id, MarketRunId, ParticipantId, CompanyId, Type, Status, Quantity, FilledQuantity, LimitPrice, ReservedCashAmount, IsFloatReplenishment, RelatedLoanId, RelatedMarginCallId, CreatedInCycleId, CreatedAt, UpdatedAt)
+            SELECT Id, {currentRunId}, ParticipantId, CompanyId, Type, Status, Quantity, FilledQuantity, LimitPrice, ReservedCashAmount, IsFloatReplenishment, RelatedLoanId, RelatedMarginCallId, CreatedInCycleId, CreatedAt, UpdatedAt
             FROM Orders
             WHERE CreatedInCycleId <= {cutoffCycleId} AND Status IN ({filledStatus}, {cancelledStatus})");
         // A money transaction keeps an enforced foreign key to its order, so clear that soft link on any
@@ -2065,8 +2068,8 @@ public sealed class MarketService(
             .ExecuteDeleteAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO MoneyTransactionArchives (Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt)
-            SELECT Id, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt
+            INSERT INTO MoneyTransactionArchives (Id, MarketRunId, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt)
+            SELECT Id, {currentRunId}, ParticipantId, Type, Amount, RelatedOrderId, RelatedShareTransactionId, RelatedLoanId, FromWhomId, Description, CreatedInCycleId, CreatedAt
             FROM MoneyTransactions WHERE CreatedInCycleId <= {cutoffCycleId}");
         // The archive twin keeps no dividend line detail, so drop the breakdown with its parent rather than
         // leaving rows that reference an archived transaction.
@@ -2074,14 +2077,14 @@ public sealed class MarketService(
         await dbContext.MoneyTransactions.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO ParticipantWorthSnapshotArchives (Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, MarginLiability, CreatedAt)
-            SELECT Id, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, MarginLiability, CreatedAt
+            INSERT INTO ParticipantWorthSnapshotArchives (Id, MarketRunId, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, MarginLiability, CreatedAt)
+            SELECT Id, {currentRunId}, ParticipantId, CreatedInCycleId, Balance, HoldingsValue, LoanLiability, MarginLiability, CreatedAt
             FROM ParticipantWorthSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
         await dbContext.ParticipantWorthSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
 
         await dbContext.Database.ExecuteSqlInterpolatedAsync($@"
-            INSERT INTO SectorSentimentSnapshotArchives (Id, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt)
-            SELECT Id, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt
+            INSERT INTO SectorSentimentSnapshotArchives (Id, MarketRunId, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt)
+            SELECT Id, {currentRunId}, IndustryId, SentimentValue, CreatedInCycleId, CreatedAt
             FROM SectorSentimentSnapshots WHERE CreatedInCycleId <= {cutoffCycleId}");
         await dbContext.SectorSentimentSnapshots.Where(row => row.CreatedInCycleId <= cutoffCycleId).ExecuteDeleteAsync();
     }
@@ -3231,6 +3234,19 @@ public sealed class MarketService(
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync();
 
+        var activeRunId = await dbContext.Markets
+            .Select(market => (int?)market.CurrentRunId)
+            .SingleOrDefaultAsync();
+        if (activeRunId is > 0)
+        {
+            var activeRun = await dbContext.MarketRuns.SingleOrDefaultAsync(run => run.Id == activeRunId);
+            if (activeRun is not null)
+            {
+                activeRun.EndedAt = DateTime.UtcNow;
+                await dbContext.SaveChangesAsync();
+            }
+        }
+
         await dbContext.MarginCalls.ExecuteDeleteAsync();
         await dbContext.MarginAccounts.ExecuteDeleteAsync();
         await dbContext.Loans.ExecuteDeleteAsync();
@@ -3259,8 +3275,8 @@ public sealed class MarketService(
         await dbContext.PriceSnapshots.ExecuteDeleteAsync();
         await dbContext.Holdings.ExecuteDeleteAsync();
         await dbContext.ShareTransactions.ExecuteDeleteAsync();
+        await dbContext.OrderArchives.ExecuteDeleteAsync();
         await dbContext.Orders.ExecuteDeleteAsync();
-        await dbContext.MarketCycles.ExecuteDeleteAsync();
         await dbContext.ParticipantWorthSnapshots.ExecuteDeleteAsync();
         await dbContext.ParticipantDailyWorthSnapshots.ExecuteDeleteAsync();
         await dbContext.PriceSnapshotArchives.ExecuteDeleteAsync();
@@ -3268,27 +3284,21 @@ public sealed class MarketService(
         await dbContext.ParticipantWorthSnapshotArchives.ExecuteDeleteAsync();
         await dbContext.SectorSentimentSnapshots.ExecuteDeleteAsync();
         await dbContext.SectorSentimentSnapshotArchives.ExecuteDeleteAsync();
+        await dbContext.CompanyInvestments.ExecuteDeleteAsync();
+        await dbContext.ShareEmissions.ExecuteDeleteAsync();
+        await dbContext.CompanyRatings.ExecuteDeleteAsync();
+        await dbContext.Auditors.ExecuteDeleteAsync();
         // Call history has no foreign key, so it is cleared first; the configuration would otherwise cascade with
         // its participant, but a full reset removes both AI tables explicitly and in dependency order.
         await dbContext.AiTraderCalls.ExecuteDeleteAsync();
         await dbContext.AiTraderConfigurations.ExecuteDeleteAsync();
+        await dbContext.MarketCycles.ExecuteDeleteAsync();
         await dbContext.Participants.ExecuteDeleteAsync();
         await dbContext.Companies.ExecuteDeleteAsync();
         await dbContext.Industries.ExecuteDeleteAsync();
         await dbContext.Markets.ExecuteDeleteAsync();
 
         dbContext.ChangeTracker.Clear();
-        await dbContext.Database.ExecuteSqlRawAsync(
-            "DELETE FROM sqlite_sequence WHERE name IN (" +
-            "'Companies', 'MarketCycles', 'Markets', 'Orders', 'Participants', " +
-            "'ShareTransactions', 'MoneyTransactions', 'DividendPayouts', 'CorporateCashTransactions', 'StockDenominationEvents', 'PriceBandStates', 'OrderFills', 'PriceSnapshots', 'Holdings', " +
-            "'Industries', 'NewsPosts', 'NewsPostIndustries', 'Crises', 'CrisisIndustries', 'CrisisEvents', " +
-            "'ScienceInvestigations', 'ScienceInvestigationIndustries', 'Bankruptcies', 'MarketExits', " +
-            "'CollectiveFunds', 'CollectiveFundParticipants', 'CollectiveFundMembershipEvents', 'ParticipantWorthSnapshots', 'ParticipantDailyWorthSnapshots', " +
-            "'PriceSnapshotArchives', 'MoneyTransactionArchives', 'ParticipantWorthSnapshotArchives', " +
-            "'SectorSentimentSnapshots', 'SectorSentimentSnapshotArchives', " +
-            "'AiTraderCalls', 'AiTraderConfigurations', " +
-            "'Banks', 'Loans', 'MarginAccounts', 'MarginCalls', 'TradingDays', 'TradingBreakCycles', 'SettlementInstructions')");
 
         var market = await SeedDemoMarketCoreAsync();
         await transaction.CommitAsync();
@@ -3318,11 +3328,16 @@ public sealed class MarketService(
         var random = new Random(randomSeed);
         var now = DateTime.UtcNow;
 
+        var marketRun = new MarketRun { StartedAt = now };
+        dbContext.MarketRuns.Add(marketRun);
+        await dbContext.SaveChangesAsync();
+
         var participantNames = DemoMarketNames.PickPeople(participantCount, random);
         var companyNames = DemoMarketNames.PickCompanies(companyCount, random);
 
         var firstCycle = new MarketCycle
         {
+            MarketRunId = marketRun.Id,
             CycleNumber = 1,
             TradingCycleNumber = 1,
             Status = CycleStatus.Running,
@@ -3334,6 +3349,7 @@ public sealed class MarketService(
         {
             Name = "Demo Market",
             Status = MarketStatus.NotStarted,
+            CurrentRunId = marketRun.Id,
             CreatedAt = now,
             UpdatedAt = now,
         };

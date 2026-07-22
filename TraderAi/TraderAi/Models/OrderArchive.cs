@@ -7,6 +7,8 @@ public sealed class OrderArchive
 {
     public int Id { get; set; }
 
+    public int? MarketRunId { get; set; }
+
     public int? ParticipantId { get; set; }
 
     public int CompanyId { get; set; }

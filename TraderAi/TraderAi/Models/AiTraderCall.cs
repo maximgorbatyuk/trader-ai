@@ -7,6 +7,8 @@ public sealed class AiTraderCall
 {
     public long Id { get; set; }
 
+    public int? MarketRunId { get; set; }
+
     public int ParticipantId { get; set; }
 
     public required string ParticipantName { get; set; }

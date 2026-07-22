@@ -869,9 +869,9 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(HttpStatusCode.OK, resetResponse.StatusCode);
 
             var market = await resetResponse.Content.ReadFromJsonAsync<MarketDto>();
-            Assert.Equal(1, market!.Id);
+            Assert.True(market!.Id > 1);
             Assert.Equal("NotStarted", market.Status);
-            Assert.Equal(1, market.CurrentCycleId);
+            Assert.True(market.CurrentCycleId > 1);
 
             var cycles = await client.GetFromJsonAsync<CycleDto[]>("/cycles");
             var transactions = await client.GetFromJsonAsync<ShareTransactionDto[]>("/transactions/shares");
@@ -879,16 +879,17 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             var openOrders = await client.GetFromJsonAsync<OrderDto[]>("/orders?status=open");
 
             var cycle = Assert.Single(cycles!);
-            Assert.Equal(1, cycle.Id);
+            Assert.Equal(market.CurrentCycleId, cycle.Id);
             Assert.Equal(1, cycle.CycleNumber);
             Assert.Empty(transactions!);
             Assert.Single(activity!);
             Assert.Equal(100, openOrders!.Length);
+            var resetParticipant = (await client.GetFromJsonAsync<ParticipantDto[]>("/participants"))!.First();
             var corporateAfterReset = await client.GetFromJsonAsync<PagedCorporateCashMovementsDto>(
-                $"/companies/{companySell.CompanyId}/corporate-cash-movements?page=1&pageSize=10");
+                $"/companies/{openOrders[0].CompanyId}/corporate-cash-movements?page=1&pageSize=10");
             Assert.Empty(corporateAfterReset!.Items);
             var settlementsAfterReset = await client.GetFromJsonAsync<PagedSettlementsDto>(
-                $"/participants/{buyer.Id}/settlements?status=pending&page=1&pageSize=10");
+                $"/participants/{resetParticipant.Id}/settlements?status=pending&page=1&pageSize=10");
             Assert.Empty(settlementsAfterReset!.Items);
             using (var scope = configuredFactory.Services.CreateScope())
             {
@@ -900,6 +901,108 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 Assert.Null(order.ParticipantId);
                 Assert.Equal("Sell", order.Type);
             });
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ResetStartsNewRunAndClearsPreviouslyOmittedRunState()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(Path.Combine(databaseDirectory, "app.db"));
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int previousRunId;
+            int previousMaxCycleId;
+            int previousMaxOrderId;
+            int previousMaxAuditorId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var cycle = await db.MarketCycles.SingleAsync(candidate => candidate.Id == market.CurrentCycleId);
+                var company = await db.Companies.FirstAsync();
+                var auditor = await db.Auditors.FirstAsync();
+                previousRunId = market.CurrentRunId;
+                previousMaxCycleId = await db.MarketCycles.MaxAsync(candidate => candidate.Id);
+                previousMaxOrderId = await db.Orders.MaxAsync(candidate => candidate.Id);
+                previousMaxAuditorId = await db.Auditors.MaxAsync(candidate => candidate.Id);
+
+                db.OrderArchives.Add(new OrderArchive
+                {
+                    ParticipantId = null,
+                    CompanyId = company.Id,
+                    Type = OrderType.Sell,
+                    Status = OrderStatus.Filled,
+                    Quantity = 1,
+                    FilledQuantity = 1,
+                    LimitPrice = 1m,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                });
+                db.CompanyInvestments.Add(new CompanyInvestment
+                {
+                    CompanyId = company.Id,
+                    InvestorParticipantId = 1,
+                    DealValue = 100m,
+                    SharesIssued = 1,
+                    SharesBeforeDeal = 1,
+                    CapitalizationBeforeDeal = 100m,
+                    FinalCapitalization = 200m,
+                    InvestorSharePercent = 50m,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                db.ShareEmissions.Add(new ShareEmission
+                {
+                    CompanyId = company.Id,
+                    SharesEmitted = 1,
+                    RecipientCount = 1,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                db.CompanyRatings.Add(new CompanyRating
+                {
+                    CompanyId = company.Id,
+                    AuditorId = auditor.Id,
+                    Rating = CompanyRiskRating.Low,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                db.GameSettings.Add(new GameSetting { Key = "Test:Preserved", ValueJson = "true" });
+                await db.SaveChangesAsync();
+            }
+
+            using var resetResponse = await client.PostAsync("/market/reset", null);
+            resetResponse.EnsureSuccessStatusCode();
+
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var currentCycle = await db.MarketCycles.SingleAsync(candidate => candidate.Id == market.CurrentCycleId);
+
+                Assert.NotEqual(previousRunId, market.CurrentRunId);
+                Assert.Equal(market.CurrentRunId, currentCycle.MarketRunId);
+                Assert.True(currentCycle.Id > previousMaxCycleId);
+                Assert.True(await db.Orders.MinAsync(candidate => candidate.Id) > previousMaxOrderId);
+                Assert.Empty(await db.OrderArchives.ToListAsync());
+                Assert.Empty(await db.CompanyInvestments.ToListAsync());
+                Assert.Empty(await db.ShareEmissions.ToListAsync());
+                Assert.Empty(await db.CompanyRatings.ToListAsync());
+                Assert.All(await db.Auditors.ToListAsync(), candidate => Assert.True(candidate.Id > previousMaxAuditorId));
+                Assert.NotNull(await db.GameSettings.SingleOrDefaultAsync(setting => setting.Key == "Test:Preserved"));
+                Assert.NotNull(await db.MarketRuns.SingleOrDefaultAsync(run => run.Id == previousRunId && run.EndedAt != null));
+            }
         }
         finally
         {

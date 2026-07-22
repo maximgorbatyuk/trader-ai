@@ -8,6 +8,8 @@ public sealed class CompanyInvestment
 {
     public int Id { get; set; }
 
+    public int? MarketRunId { get; set; }
+
     public int CompanyId { get; set; }
 
     public int InvestorParticipantId { get; set; }

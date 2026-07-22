@@ -17,7 +17,8 @@ public sealed record AiTraderCallDescriptor(
     int SnapshotCycleId,
     int SnapshotCycleNumber,
     string PromptHash,
-    string RequestJson);
+    string RequestJson,
+    int? MarketRunId = null);
 
 public sealed record AiTraderCallExecution(long CallId, AiTraderCallStatus Status, AiTradeDecision? Decision);
 
@@ -69,6 +70,7 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
     {
         var call = new AiTraderCall
         {
+            MarketRunId = descriptor.MarketRunId,
             ParticipantId = descriptor.ParticipantId,
             ParticipantName = descriptor.ParticipantName,
             ProviderId = descriptor.ProviderId,
@@ -206,14 +208,18 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
 
     // Deferred plans that are due (target day opened) or stale (target day already passed) for one participant,
     // newest first, so the coordinator can apply the due one and abandon the rest.
-    public Task<List<AiTraderCall>> GetDuePendingNextDayCallsAsync(int participantId, int currentDayNumber)
-        => dbContext.AiTraderCalls
+    public async Task<List<AiTraderCall>> GetDuePendingNextDayCallsAsync(int participantId, int currentDayNumber)
+    {
+        var currentRunId = await CurrentRunIdAsync();
+        return await dbContext.AiTraderCalls
             .Where(call => call.ParticipantId == participantId
+                && (call.MarketRunId == currentRunId || call.MarketRunId == null)
                 && call.Status == AiTraderCallStatus.PendingNextDay
                 && call.NextDayTargetDayNumber != null
                 && call.NextDayTargetDayNumber <= currentDayNumber)
             .OrderByDescending(call => call.Id)
             .ToListAsync();
+    }
 
     // A row left Pending across a restart is orphaned: no in-flight call can still be tracking it.
     public async Task<int> AbandonStalePendingCallsAsync()
@@ -243,7 +249,9 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
         var normalizedPage = Math.Max(1, page);
         var normalizedPageSize = Math.Clamp(pageSize, 1, MaxPageSize);
 
-        var query = dbContext.AiTraderCalls.Where(call => call.ParticipantId == participantId);
+        var currentRunId = await CurrentRunIdAsync();
+        var query = dbContext.AiTraderCalls.Where(call => call.ParticipantId == participantId
+            && (call.MarketRunId == currentRunId || call.MarketRunId == null));
         var total = await query.CountAsync();
 
         var items = await query
@@ -269,17 +277,23 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
         return new AiTraderCallPage(items, total, normalizedPage, normalizedPageSize);
     }
 
-    public Task<AiTraderCall?> GetCallAsync(int participantId, long callId)
-        => dbContext.AiTraderCalls
-            .FirstOrDefaultAsync(call => call.Id == callId && call.ParticipantId == participantId);
+    public async Task<AiTraderCall?> GetCallAsync(int participantId, long callId)
+    {
+        var currentRunId = await CurrentRunIdAsync();
+        return await dbContext.AiTraderCalls.FirstOrDefaultAsync(call => call.Id == callId
+            && call.ParticipantId == participantId
+            && (call.MarketRunId == currentRunId || call.MarketRunId == null));
+    }
 
     // Read-only decision-quality summary for one AI trader: provider-call reliability (JSON completion), order-proposal
     // validity (acceptance), and capital actually deployed. Executed notional is realized buy trades rather than order
     // count, because order count overstates useful activity when few orders fill.
     public async Task<AiDecisionQualitySummary> GetDecisionQualityAsync(int participantId)
     {
+        var currentRunId = await CurrentRunIdAsync();
         var statusCounts = await dbContext.AiTraderCalls
-            .Where(call => call.ParticipantId == participantId)
+            .Where(call => call.ParticipantId == participantId
+                && (call.MarketRunId == currentRunId || call.MarketRunId == null))
             .GroupBy(call => call.Status)
             .Select(group => new
             {
@@ -334,6 +348,9 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
 
     private static string? Truncate(string? value, int maxLength)
         => value is null || value.Length <= maxLength ? value : value[..maxLength];
+
+    private Task<int> CurrentRunIdAsync()
+        => dbContext.Markets.Select(market => market.CurrentRunId).SingleOrDefaultAsync();
 
     private async Task WithLockAsync(Func<Task> action)
     {

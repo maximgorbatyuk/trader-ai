@@ -527,8 +527,10 @@ public sealed class AiMarketSnapshotBuilder(
 
     private async Task<IReadOnlyList<AiApplicationFeedback>> BuildRecentApplicationFeedbackAsync(int participantId)
     {
+        var currentRunId = await dbContext.Markets.Select(market => market.CurrentRunId).SingleOrDefaultAsync();
         var calls = await dbContext.AiTraderCalls
             .Where(call => call.ParticipantId == participantId
+                && (call.MarketRunId == currentRunId || call.MarketRunId == null)
                 && (call.ApplicationResultJson != null || call.Error != null))
             .OrderByDescending(call => call.Id)
             .Take(3)
