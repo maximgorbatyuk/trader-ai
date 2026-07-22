@@ -17,4 +17,6 @@ public sealed class ShareEmission
     public int CreatedInCycleId { get; set; }
 
     public DateTime CreatedAt { get; set; }
+
+    public List<ShareEmissionRecipient> Recipients { get; set; } = [];
 }

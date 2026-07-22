@@ -36,7 +36,13 @@ public sealed record ShareTransactionResponse(
     DateTime CreatedAt,
     int? TradeDayNumber,
     int? DueDayNumber,
-    string? SettlementStatus);
+    string? SettlementStatus,
+    decimal? SellerAverageCost,
+    decimal? SellerCostBasis,
+    decimal? SellerTradeFee,
+    decimal? SellerManagerFee,
+    decimal? SellerGrossRealizedPnl,
+    decimal? SellerNetRealizedPnl);
 
 public sealed record PagedShareTransactionsResponse(
     ShareTransactionResponse[] Items,

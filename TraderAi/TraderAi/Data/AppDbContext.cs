@@ -77,6 +77,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<ShareEmission> ShareEmissions => Set<ShareEmission>();
 
+    public DbSet<ShareEmissionRecipient> ShareEmissionRecipients => Set<ShareEmissionRecipient>();
+
     public DbSet<CompanyInvestment> CompanyInvestments => Set<CompanyInvestment>();
 
     public DbSet<PriceSnapshotArchive> PriceSnapshotArchives => Set<PriceSnapshotArchive>();
@@ -252,6 +254,16 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<ShareEmission>()
             .HasIndex(emission => emission.MarketRunId);
+
+        modelBuilder.Entity<ShareEmission>()
+            .HasMany(emission => emission.Recipients)
+            .WithOne(recipient => recipient.ShareEmission)
+            .HasForeignKey(recipient => recipient.ShareEmissionId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<ShareEmissionRecipient>()
+            .HasIndex(recipient => new { recipient.ShareEmissionId, recipient.ParticipantId })
+            .IsUnique();
 
         modelBuilder.Entity<OrderArchive>()
             .HasIndex(order => order.MarketRunId);

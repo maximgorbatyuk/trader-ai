@@ -566,6 +566,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                         Quantity = quantity,
                         Price = 10m,
                         TotalCost = quantity * 10m,
+                        SellerAverageCost = quantity == 3 ? 8m : null,
+                        SellerCostBasis = quantity == 3 ? 24m : null,
+                        SellerTradeFee = quantity == 3 ? 1m : null,
+                        SellerManagerFee = quantity == 3 ? 2m : null,
+                        SellerGrossRealizedPnl = quantity == 3 ? 6m : null,
+                        SellerNetRealizedPnl = quantity == 3 ? 3m : null,
                         CreatedInCycleId = cycle.Id,
                         CreatedAt = createdAt.AddSeconds(quantity),
                         UpdatedAt = createdAt.AddSeconds(quantity),
@@ -587,6 +593,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(2, firstPage.PageSize);
             Assert.Equal([3, 2], firstPage.Items.Select(transaction => transaction.Quantity));
             Assert.Equal("Settled", firstPage.Items[0].SettlementStatus);
+            Assert.Equal(8m, firstPage.Items[0].SellerAverageCost);
+            Assert.Equal(24m, firstPage.Items[0].SellerCostBasis);
+            Assert.Equal(1m, firstPage.Items[0].SellerTradeFee);
+            Assert.Equal(2m, firstPage.Items[0].SellerManagerFee);
+            Assert.Equal(6m, firstPage.Items[0].SellerGrossRealizedPnl);
+            Assert.Equal(3m, firstPage.Items[0].SellerNetRealizedPnl);
 
             var secondPage = await client.GetFromJsonAsync<PagedShareTransactionsDto>(
                 "/transactions/shares/paged?page=2&pageSize=2");
@@ -699,6 +711,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(quantity, transaction.Quantity);
             Assert.Equal(price, transaction.Price);
             Assert.Null(transaction.SellerId);
+            Assert.Null(transaction.SellerAverageCost);
+            Assert.Null(transaction.SellerCostBasis);
+            Assert.Null(transaction.SellerTradeFee);
+            Assert.Null(transaction.SellerManagerFee);
+            Assert.Null(transaction.SellerGrossRealizedPnl);
+            Assert.Null(transaction.SellerNetRealizedPnl);
 
             var companiesAfter = await client.GetFromJsonAsync<CompanyDto[]>("/companies");
             var companyAfter = companiesAfter!.Single(company => company.Id == companySell.CompanyId);
@@ -3894,7 +3912,13 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal Price,
         int? TradeDayNumber,
         int? DueDayNumber,
-        string? SettlementStatus);
+        string? SettlementStatus,
+        decimal? SellerAverageCost,
+        decimal? SellerCostBasis,
+        decimal? SellerTradeFee,
+        decimal? SellerManagerFee,
+        decimal? SellerGrossRealizedPnl,
+        decimal? SellerNetRealizedPnl);
 
     private sealed record PagedShareTransactionsDto(ShareTransactionDto[] Items, int Total, int Page, int PageSize);
 

@@ -144,6 +144,16 @@ public sealed class ShareEmissionService(
                 UpdatedAt = now,
             });
 
+            var emission = new ShareEmission
+            {
+                MarketRunId = marketRunId,
+                CompanyId = company.Id,
+                SharesEmitted = distributed,
+                RecipientCount = recipientsNeeded,
+                CreatedInCycleId = currentCycleId,
+                CreatedAt = now,
+            };
+
             var remaining = distributed;
             for (var index = 0; index < recipientsNeeded; index++)
             {
@@ -156,21 +166,18 @@ public sealed class ShareEmissionService(
                     SettledQuantity = grant,
                     AverageCost = 0m,
                 });
+                emission.Recipients.Add(new ShareEmissionRecipient
+                {
+                    ParticipantId = eligible[index],
+                    Quantity = grant,
+                });
                 remaining -= grant;
             }
 
             company.IssuedSharesCount += distributed;
             company.UpdatedAt = now;
 
-            dbContext.ShareEmissions.Add(new ShareEmission
-            {
-                MarketRunId = marketRunId,
-                CompanyId = company.Id,
-                SharesEmitted = distributed,
-                RecipientCount = recipientsNeeded,
-                CreatedInCycleId = currentCycleId,
-                CreatedAt = now,
-            });
+            dbContext.ShareEmissions.Add(emission);
 
             dbContext.NewsPosts.Add(new NewsPost
             {

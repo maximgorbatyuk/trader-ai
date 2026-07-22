@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using TraderAi.Data;
 
@@ -10,9 +11,11 @@ using TraderAi.Data;
 namespace TraderAi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260722011005_AddTradeAuditRecords")]
+    partial class AddTradeAuditRecords
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
@@ -1950,29 +1953,6 @@ namespace TraderAi.Migrations
                     b.ToTable("ShareEmissions");
                 });
 
-            modelBuilder.Entity("TraderAi.Models.ShareEmissionRecipient", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("ParticipantId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("Quantity")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("ShareEmissionId")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ShareEmissionId", "ParticipantId")
-                        .IsUnique();
-
-                    b.ToTable("ShareEmissionRecipients");
-                });
-
             modelBuilder.Entity("TraderAi.Models.ShareTransaction", b =>
                 {
                     b.Property<int>("Id")
@@ -2337,17 +2317,6 @@ namespace TraderAi.Migrations
                     b.Navigation("ShareTransaction");
                 });
 
-            modelBuilder.Entity("TraderAi.Models.ShareEmissionRecipient", b =>
-                {
-                    b.HasOne("TraderAi.Models.ShareEmission", "ShareEmission")
-                        .WithMany("Recipients")
-                        .HasForeignKey("ShareEmissionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("ShareEmission");
-                });
-
             modelBuilder.Entity("TraderAi.Models.StockDenominationEvent", b =>
                 {
                     b.HasOne("TraderAi.Models.Company", null)
@@ -2388,11 +2357,6 @@ namespace TraderAi.Migrations
             modelBuilder.Entity("TraderAi.Models.ScienceInvestigation", b =>
                 {
                     b.Navigation("Industries");
-                });
-
-            modelBuilder.Entity("TraderAi.Models.ShareEmission", b =>
-                {
-                    b.Navigation("Recipients");
                 });
 
             modelBuilder.Entity("TraderAi.Models.ShareTransaction", b =>

@@ -151,6 +151,40 @@ public sealed class ShareEmissionServiceTests : IDisposable
         Assert.Equal(100, grants.Sum(grant => grant.Quantity));
         Assert.DoesNotContain(third.Id, grants.Select(grant => grant.ParticipantId));
         Assert.Equal(1100, (await context.Companies.AsNoTracking().FirstAsync()).IssuedSharesCount);
+
+        var recipients = await context.ShareEmissionRecipients.AsNoTracking().ToListAsync();
+        Assert.Equal(2, recipients.Count);
+        Assert.Equal(emission.Id, Assert.Single(recipients.Select(recipient => recipient.ShareEmissionId).Distinct()));
+        Assert.Equal(emission.SharesEmitted, recipients.Sum(recipient => recipient.Quantity));
+        Assert.Equal(
+            grants.OrderBy(grant => grant.ParticipantId).Select(grant => (grant.ParticipantId, grant.Quantity)),
+            recipients.OrderBy(recipient => recipient.ParticipantId).Select(recipient => (recipient.ParticipantId, recipient.Quantity)));
+    }
+
+    [Fact]
+    public async Task RecipientAuditSurvivesParticipantDeletionAndCascadesWithEmission()
+    {
+        var cycle = await AddCycleAsync(60);
+        await SetupMarketAsync(cycle);
+        var company = await AddCompanyAsync(issuedShares: 1000);
+        await AddSnapshotAsync(company.Id, price: 500_000m, cycle);
+        var trader = await AddTraderAsync();
+
+        await Service(enabled: true, new ScriptedRandom([0.01d, 0.0d], [0]))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var emission = await context.ShareEmissions.SingleAsync();
+        var recipient = await context.ShareEmissionRecipients.SingleAsync();
+        Assert.Equal(trader.Id, recipient.ParticipantId);
+
+        context.Participants.Remove(trader);
+        await context.SaveChangesAsync();
+        Assert.Equal(trader.Id, (await context.ShareEmissionRecipients.AsNoTracking().SingleAsync()).ParticipantId);
+
+        context.ShareEmissions.Remove(emission);
+        await context.SaveChangesAsync();
+        Assert.Empty(await context.ShareEmissionRecipients.ToListAsync());
     }
 
     [Fact]
