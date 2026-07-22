@@ -3672,6 +3672,9 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(HttpStatusCode.OK, ownerDetail.StatusCode);
             using var detailDoc = JsonDocument.Parse(await ownerDetail.Content.ReadAsStringAsync());
             Assert.False(string.IsNullOrEmpty(detailDoc.RootElement.GetProperty("requestJson").GetString()));
+            Assert.NotEqual(Guid.Empty, detailDoc.RootElement.GetProperty("attemptGroupId").GetGuid());
+            Assert.Equal(1, detailDoc.RootElement.GetProperty("attemptNumber").GetInt32());
+            Assert.Equal(JsonValueKind.Null, detailDoc.RootElement.GetProperty("failureCategory").ValueKind);
             var prediction = Assert.Single(detailDoc.RootElement.GetProperty("predictions").EnumerateArray());
             Assert.Equal(42, prediction.GetProperty("companyId").GetInt32());
             Assert.Equal("Up", prediction.GetProperty("direction").GetString());

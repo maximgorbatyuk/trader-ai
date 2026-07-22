@@ -7,6 +7,12 @@ public sealed class AiTraderCall
 {
     public long Id { get; set; }
 
+    public Guid AttemptGroupId { get; set; } = Guid.NewGuid();
+
+    public int AttemptNumber { get; set; } = 1;
+
+    public string? FailureCategory { get; set; }
+
     public int? MarketRunId { get; set; }
 
     public int ParticipantId { get; set; }

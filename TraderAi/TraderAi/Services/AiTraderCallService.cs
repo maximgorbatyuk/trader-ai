@@ -20,7 +20,9 @@ public sealed record AiTraderCallDescriptor(
     string RequestJson,
     int? MarketRunId = null,
     int SnapshotTradingDayNumber = 0,
-    IReadOnlyDictionary<int, decimal>? CompanyPrices = null);
+    IReadOnlyDictionary<int, decimal>? CompanyPrices = null,
+    Guid AttemptGroupId = default,
+    int AttemptNumber = 1);
 
 public sealed record AiTraderCallExecution(long CallId, AiTraderCallStatus Status, AiTradeDecision? Decision);
 
@@ -96,6 +98,8 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
     {
         var call = new AiTraderCall
         {
+            AttemptGroupId = descriptor.AttemptGroupId == Guid.Empty ? Guid.NewGuid() : descriptor.AttemptGroupId,
+            AttemptNumber = Math.Max(1, descriptor.AttemptNumber),
             MarketRunId = descriptor.MarketRunId,
             ParticipantId = descriptor.ParticipantId,
             ParticipantName = descriptor.ParticipantName,
@@ -188,6 +192,7 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
             stored.DecisionJson = decisionJson;
             stored.Summary = Truncate(summary, 1000);
             stored.Status = status;
+            stored.FailureCategory = FailureCategory(status);
             stored.HttpStatusCode = response.HttpStatusCode;
             stored.Error = Truncate(error, 2000);
             stored.PromptTokens = response.PromptTokens;
@@ -266,6 +271,7 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
             }
 
             stored.Status = AiTraderCallStatus.Abandoned;
+            stored.FailureCategory = "abandoned";
             stored.Error = Truncate(reason, 2000);
             await dbContext.SaveChangesAsync();
         });
@@ -297,6 +303,7 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
             foreach (var call in stale)
             {
                 call.Status = AiTraderCallStatus.Abandoned;
+                call.FailureCategory = "abandoned";
                 call.Error ??= "Abandoned because the application restarted before the call completed.";
             }
 
@@ -411,6 +418,16 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
         AiProviderCallOutcome.TimedOut => AiTraderCallStatus.TimedOut,
         AiProviderCallOutcome.Cancelled => AiTraderCallStatus.Cancelled,
         _ => AiTraderCallStatus.HttpError,
+    };
+
+    private static string? FailureCategory(AiTraderCallStatus status) => status switch
+    {
+        AiTraderCallStatus.InvalidJson => "invalid_json",
+        AiTraderCallStatus.HttpError => "http_error",
+        AiTraderCallStatus.TimedOut => "timeout",
+        AiTraderCallStatus.Cancelled => "cancelled",
+        AiTraderCallStatus.Abandoned => "abandoned",
+        _ => null,
     };
 
     private static string? Truncate(string? value, int maxLength)

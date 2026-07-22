@@ -251,6 +251,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AiTraderCall>()
             .HasIndex(call => call.MarketRunId);
 
+        modelBuilder.Entity<AiTraderCall>()
+            .HasIndex(call => new { call.AttemptGroupId, call.AttemptNumber })
+            .IsUnique();
+
         modelBuilder.Entity<CompanyInvestment>()
             .HasIndex(investment => investment.MarketRunId);
 
@@ -511,6 +515,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<AiTraderCall>()
             .Property(call => call.Summary).HasMaxLength(1000);
+
+        modelBuilder.Entity<AiTraderCall>()
+            .Property(call => call.FailureCategory).HasMaxLength(64);
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {

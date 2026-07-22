@@ -29,6 +29,9 @@ public sealed record AiPredictionResponse(
 
 public sealed record AiTraderCallDetailResponse(
     long Id,
+    Guid AttemptGroupId,
+    int AttemptNumber,
+    string? FailureCategory,
     string ProviderId,
     string ProviderLabel,
     string Model,

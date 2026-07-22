@@ -132,12 +132,16 @@ public sealed class AiTraderCoordinator(
 
             if (schedules.TryGetValue(participantId, out var schedule))
             {
-                if (schedule.NextRetryAt is { } retryAt && now < retryAt)
+                if (schedule.TargetCycleNumber is { } targetCycleNumber
+                    && targetCycleNumber != currentCycle.CycleNumber)
+                {
+                    schedules.TryRemove(participantId, out _);
+                }
+                else if (schedule.NextRetryAt is { } retryAt && now < retryAt)
                 {
                     continue;
                 }
-
-                if (schedule.NextRetryAt is null && schedule.LastCycleNumber == currentCycle.CycleNumber)
+                else if (schedule.NextRetryAt is null && schedule.LastCycleNumber == currentCycle.CycleNumber)
                 {
                     continue;
                 }
@@ -305,6 +309,8 @@ public sealed class AiTraderCoordinator(
             market?.CurrentRunId,
             snapshot.Market.TradingDayNumber,
             snapshot.Companies.ToDictionary(company => company.CompanyId, company => company.CurrentPrice));
+        var attemptContext = AttemptContextFor(participantId, cycleNumber);
+        var attemptNumber = attemptContext.AttemptNumber;
 
         var callService = services.GetRequiredService<AiTraderCallService>();
 
@@ -321,7 +327,11 @@ public sealed class AiTraderCoordinator(
         while (true)
         {
             execution = await callService.ExecuteAsync(
-                descriptor,
+                descriptor with
+                {
+                    AttemptGroupId = attemptContext.GroupId,
+                    AttemptNumber = attemptNumber,
+                },
                 options.Value.MaxOrdersPerDecision,
                 options.Value.MaxPredictionsPerDecision,
                 options.Value.PredictionHorizonCycles,
@@ -331,6 +341,7 @@ public sealed class AiTraderCoordinator(
                     return response;
                 },
                 linked.Token);
+            attemptNumber++;
 
             // A malformed reply wastes the whole scheduled decision; retry the same request a bounded number of times
             // before surfacing the error, and stop early if the call was cancelled by a mid-flight configuration edit.
@@ -397,7 +408,14 @@ public sealed class AiTraderCoordinator(
             return execution.Status;
         }
 
-        HandleFailure(participantId, cycleNumber, provider, execution, response);
+        HandleFailure(
+            participantId,
+            cycleNumber,
+            provider,
+            execution,
+            response,
+            attemptContext.GroupId,
+            attemptNumber);
         return execution.Status;
     }
 
@@ -471,7 +489,9 @@ public sealed class AiTraderCoordinator(
         int cycleNumber,
         AiProviderDescriptor provider,
         AiTraderCallExecution execution,
-        AiProviderResponse? response)
+        AiProviderResponse? response,
+        Guid attemptGroupId,
+        int nextAttemptNumber)
     {
         var now = timeProvider.GetUtcNow();
         var schedule = new ParticipantSchedule();
@@ -479,6 +499,7 @@ public sealed class AiTraderCoordinator(
         switch (execution.Status)
         {
             case AiTraderCallStatus.HttpError when response?.HttpStatusCode is 401 or 403:
+                PreserveAttemptContext(schedule, cycleNumber, attemptGroupId, nextAttemptNumber);
                 schedule.NextRetryAt = now.AddSeconds(options.Value.AuthErrorRetrySeconds);
                 SetError(participantId, "Authentication failed; check the API key.", schedule.NextRetryAt);
                 break;
@@ -487,6 +508,7 @@ public sealed class AiTraderCoordinator(
                 schedule.Attempts = NextAttempts(participantId);
                 if (schedule.Attempts <= provider.MaxTransportRetries)
                 {
+                    PreserveAttemptContext(schedule, cycleNumber, attemptGroupId, nextAttemptNumber);
                     schedule.NextRetryAt = ComputeRetry(now, schedule.Attempts, response?.RetryAfter);
                     SetError(participantId, "Provider call failed; will retry.", schedule.NextRetryAt);
                 }
@@ -514,6 +536,30 @@ public sealed class AiTraderCoordinator(
     private int NextAttempts(int participantId)
         => schedules.TryGetValue(participantId, out var existing) ? existing.Attempts + 1 : 1;
 
+    private AttemptContext AttemptContextFor(int participantId, int cycleNumber)
+    {
+        if (schedules.TryGetValue(participantId, out var schedule)
+            && schedule.TargetCycleNumber == cycleNumber
+            && schedule.AttemptGroupId != Guid.Empty
+            && schedule.NextRetryAt is not null)
+        {
+            return new AttemptContext(schedule.AttemptGroupId, Math.Max(1, schedule.NextAttemptNumber));
+        }
+
+        return new AttemptContext(Guid.NewGuid(), 1);
+    }
+
+    private static void PreserveAttemptContext(
+        ParticipantSchedule schedule,
+        int cycleNumber,
+        Guid attemptGroupId,
+        int nextAttemptNumber)
+    {
+        schedule.TargetCycleNumber = cycleNumber;
+        schedule.AttemptGroupId = attemptGroupId;
+        schedule.NextAttemptNumber = nextAttemptNumber;
+    }
+
     private DateTimeOffset ComputeRetry(DateTimeOffset now, int attempts, TimeSpan? retryAfter)
     {
         var seconds = Math.Min(
@@ -540,5 +586,13 @@ public sealed class AiTraderCoordinator(
         public DateTimeOffset? NextRetryAt { get; set; }
 
         public int Attempts { get; set; }
+
+        public int? TargetCycleNumber { get; set; }
+
+        public Guid AttemptGroupId { get; set; }
+
+        public int NextAttemptNumber { get; set; } = 1;
     }
+
+    private sealed record AttemptContext(Guid GroupId, int AttemptNumber);
 }

@@ -247,6 +247,9 @@ public static partial class MarketEndpoints
                 ? Results.NotFound(new { error = "Call not found." })
                 : Results.Ok(new AiTraderCallDetailResponse(
                     call.Id,
+                    call.AttemptGroupId,
+                    call.AttemptNumber,
+                    call.FailureCategory,
                     call.ProviderId,
                     call.ProviderLabel,
                     call.Model,

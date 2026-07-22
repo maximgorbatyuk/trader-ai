@@ -150,6 +150,21 @@ public sealed class AiTraderCallServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExplicitAttemptMetadataAndNormalizedFailureArePersisted()
+    {
+        var groupId = Guid.NewGuid();
+        var descriptor = Descriptor() with { AttemptGroupId = groupId, AttemptNumber = 2 };
+
+        await service.ExecuteAsync(descriptor, MaxOrders,
+            _ => Task.FromResult(HttpError(500, "internal error body")), CancellationToken.None);
+
+        var stored = await context.AiTraderCalls.SingleAsync();
+        Assert.Equal(groupId, stored.AttemptGroupId);
+        Assert.Equal(2, stored.AttemptNumber);
+        Assert.Equal("http_error", stored.FailureCategory);
+    }
+
+    [Fact]
     public async Task InvalidJsonRetainsRawResponseAndError()
     {
         const string malformed = "{\"summary\":\"x\",\"orders\":}";

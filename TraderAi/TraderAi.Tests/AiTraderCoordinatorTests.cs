@@ -209,7 +209,12 @@ public sealed class AiTraderCoordinatorTests : IDisposable
 
         Assert.Equal(AiTraderCallStatus.Completed, status);
         Assert.Equal(2, calls);
-        Assert.Equal(2, await Db().AiTraderCalls.CountAsync());
+        var attempts = await Db().AiTraderCalls.OrderBy(call => call.Id).ToListAsync();
+        Assert.Equal(2, attempts.Count);
+        Assert.Equal(attempts[0].AttemptGroupId, attempts[1].AttemptGroupId);
+        Assert.Equal(new[] { 1, 2 }, attempts.Select(attempt => attempt.AttemptNumber));
+        Assert.Equal("invalid_json", attempts[0].FailureCategory);
+        Assert.Null(attempts[1].FailureCategory);
         Assert.Equal(1, await Db().Orders.CountAsync());
         Assert.Equal(AiTraderRuntimeStatus.Waiting, Runtime().Get(seed.ParticipantId).Status);
     }
@@ -248,6 +253,27 @@ public sealed class AiTraderCoordinatorTests : IDisposable
         await coordinator.ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
 
         Assert.Null(Runtime().Get(seed.ParticipantId).NextRetryAt);
+        var attempts = await Db().AiTraderCalls.OrderBy(call => call.Id).ToListAsync();
+        Assert.Equal(attempts[0].AttemptGroupId, attempts[1].AttemptGroupId);
+        Assert.Equal(new[] { 1, 2 }, attempts.Select(attempt => attempt.AttemptNumber));
+    }
+
+    [Fact]
+    public async Task ANewScheduledCycleStartsANewAttemptGroup()
+    {
+        var seed = await SeedMarketAsync();
+        const string waitDecision =
+            "{\"summary\":\"Wait.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[],\"predictions\":[]}";
+        fakeClient.OnSend = _ => Task.FromResult(Success(waitDecision));
+        var coordinator = Coordinator();
+
+        await coordinator.ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+        await coordinator.ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber + 1, CancellationToken.None);
+
+        var attempts = await Db().AiTraderCalls.OrderBy(call => call.Id).ToListAsync();
+        Assert.Equal(2, attempts.Count);
+        Assert.NotEqual(attempts[0].AttemptGroupId, attempts[1].AttemptGroupId);
+        Assert.All(attempts, attempt => Assert.Equal(1, attempt.AttemptNumber));
     }
 
     [Fact]
