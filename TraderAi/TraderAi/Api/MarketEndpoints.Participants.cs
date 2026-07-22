@@ -267,7 +267,21 @@ public static partial class MarketEndpoints
                     call.DurationMilliseconds,
                     call.RequestedAt,
                     call.RespondedAt,
-                    call.AppliedAt));
+                    call.AppliedAt,
+                    call.Predictions
+                        .OrderBy(prediction => prediction.Id)
+                        .Select(prediction => new AiPredictionResponse(
+                            prediction.Id,
+                            prediction.CompanyId,
+                            prediction.SnapshotCycleNumber,
+                            prediction.SnapshotTradingDayNumber,
+                            prediction.BaselinePrice,
+                            prediction.Direction.ToString(),
+                            prediction.Confidence,
+                            prediction.HorizonCycles,
+                            prediction.TargetPrice,
+                            prediction.Reason))
+                        .ToArray()));
         });
 
         app.MapGet("/participants/{participantId:int}/holdings", async (int participantId, AppDbContext dbContext) =>

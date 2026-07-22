@@ -18,7 +18,9 @@ public sealed record AiTraderCallDescriptor(
     int SnapshotCycleNumber,
     string PromptHash,
     string RequestJson,
-    int? MarketRunId = null);
+    int? MarketRunId = null,
+    int SnapshotTradingDayNumber = 0,
+    IReadOnlyDictionary<int, decimal>? CompanyPrices = null);
 
 public sealed record AiTraderCallExecution(long CallId, AiTraderCallStatus Status, AiTradeDecision? Decision);
 
@@ -62,9 +64,33 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
     private static readonly JsonSerializerOptions StoredJsonOptions =
         new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
 
-    public async Task<AiTraderCallExecution> ExecuteAsync(
+    public Task<AiTraderCallExecution> ExecuteAsync(
         AiTraderCallDescriptor descriptor,
         int maxOrders,
+        Func<CancellationToken, Task<AiProviderResponse>> send,
+        CancellationToken cancellationToken)
+        => ExecuteCoreAsync(descriptor, maxOrders, null, null, send, cancellationToken);
+
+    public Task<AiTraderCallExecution> ExecuteAsync(
+        AiTraderCallDescriptor descriptor,
+        int maxOrders,
+        int maxPredictions,
+        int predictionHorizonCycles,
+        Func<CancellationToken, Task<AiProviderResponse>> send,
+        CancellationToken cancellationToken)
+        => ExecuteCoreAsync(
+            descriptor,
+            maxOrders,
+            maxPredictions,
+            predictionHorizonCycles,
+            send,
+            cancellationToken);
+
+    private async Task<AiTraderCallExecution> ExecuteCoreAsync(
+        AiTraderCallDescriptor descriptor,
+        int maxOrders,
+        int? maxPredictions,
+        int? predictionHorizonCycles,
         Func<CancellationToken, Task<AiProviderResponse>> send,
         CancellationToken cancellationToken)
     {
@@ -100,14 +126,52 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
         string? decisionJson = null;
         string? summary = null;
         var error = response.Error;
+        var predictions = new List<AiPrediction>();
 
         if (response.Outcome == AiProviderCallOutcome.Success && response.AssistantContent is { } content)
         {
-            if (AiDecisionJson.TryParse(content, maxOrders, out decision, out var parseError))
+            var parsed = maxPredictions is int predictionLimit && predictionHorizonCycles is int predictionHorizon
+                ? AiDecisionJson.TryParse(
+                    content,
+                    maxOrders,
+                    predictionLimit,
+                    predictionHorizon,
+                    out decision,
+                    out var parseError)
+                : AiDecisionJson.TryParse(content, maxOrders, out decision, out parseError);
+            if (parsed)
             {
-                status = AiTraderCallStatus.Completed;
-                decisionJson = JsonSerializer.Serialize(decision, StoredJsonOptions);
-                summary = decision!.Summary;
+                var missingCompanyId = decision!.Predictions
+                    .Select(prediction => prediction.CompanyId)
+                    .FirstOrDefault(companyId => descriptor.CompanyPrices is null
+                        || !descriptor.CompanyPrices.ContainsKey(companyId));
+                if (missingCompanyId > 0)
+                {
+                    status = AiTraderCallStatus.InvalidJson;
+                    decision = null;
+                    error = $"Prediction companyId {missingCompanyId} was not present in the request snapshot.";
+                }
+                else
+                {
+                    status = AiTraderCallStatus.Completed;
+                    decisionJson = JsonSerializer.Serialize(decision, StoredJsonOptions);
+                    summary = decision.Summary;
+                    predictions.AddRange(decision.Predictions.Select(prediction => new AiPrediction
+                    {
+                        AiTraderCallId = call.Id,
+                        MarketRunId = descriptor.MarketRunId ?? 0,
+                        ParticipantId = descriptor.ParticipantId,
+                        CompanyId = prediction.CompanyId,
+                        SnapshotCycleNumber = descriptor.SnapshotCycleNumber,
+                        SnapshotTradingDayNumber = descriptor.SnapshotTradingDayNumber,
+                        BaselinePrice = descriptor.CompanyPrices![prediction.CompanyId],
+                        Direction = prediction.Direction,
+                        Confidence = prediction.Confidence,
+                        HorizonCycles = prediction.HorizonCycles,
+                        TargetPrice = prediction.TargetPrice,
+                        Reason = prediction.Reason,
+                    }));
+                }
             }
             else
             {
@@ -131,6 +195,7 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
             stored.TotalTokens = response.TotalTokens;
             stored.RespondedAt = DateTime.UtcNow;
             stored.DurationMilliseconds = stopwatch.ElapsedMilliseconds;
+            dbContext.AiPredictions.AddRange(predictions);
             await dbContext.SaveChangesAsync();
         });
 
@@ -280,9 +345,11 @@ public sealed class AiTraderCallService(AppDbContext dbContext, MarketCycleLock 
     public async Task<AiTraderCall?> GetCallAsync(int participantId, long callId)
     {
         var currentRunId = await CurrentRunIdAsync();
-        return await dbContext.AiTraderCalls.FirstOrDefaultAsync(call => call.Id == callId
-            && call.ParticipantId == participantId
-            && (call.MarketRunId == currentRunId || call.MarketRunId == null));
+        return await dbContext.AiTraderCalls
+            .Include(call => call.Predictions)
+            .FirstOrDefaultAsync(call => call.Id == callId
+                && call.ParticipantId == participantId
+                && (call.MarketRunId == currentRunId || call.MarketRunId == null));
     }
 
     // Read-only decision-quality summary for one AI trader: provider-call reliability (JSON completion), order-proposal

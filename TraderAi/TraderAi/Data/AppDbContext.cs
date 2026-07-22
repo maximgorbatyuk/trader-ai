@@ -107,6 +107,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<AiTraderCall> AiTraderCalls => Set<AiTraderCall>();
 
+    public DbSet<AiPrediction> AiPredictions => Set<AiPrediction>();
+
     // Per-context read cache for maps that many per-cycle services request repeatedly. The whole tick runs on
     // one scoped context, so this collapses those repeated reads to a single query per map; each map is rebuilt
     // only after a save touches the table it derives from, keeping it consistent with committed state.
@@ -477,6 +479,22 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasIndex(call => new { call.ParticipantId, call.Id });
 
         modelBuilder.Entity<AiTraderCall>()
+            .HasMany(call => call.Predictions)
+            .WithOne(prediction => prediction.AiTraderCall)
+            .HasForeignKey(prediction => prediction.AiTraderCallId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<AiPrediction>()
+            .HasIndex(prediction => new { prediction.AiTraderCallId, prediction.CompanyId, prediction.HorizonCycles })
+            .IsUnique();
+
+        modelBuilder.Entity<AiPrediction>()
+            .HasIndex(prediction => new { prediction.MarketRunId, prediction.SnapshotCycleNumber });
+
+        modelBuilder.Entity<AiPrediction>()
+            .Property(prediction => prediction.Reason).HasMaxLength(1000);
+
+        modelBuilder.Entity<AiTraderCall>()
             .Property(call => call.ProviderId).HasMaxLength(64);
 
         modelBuilder.Entity<AiTraderCall>()
@@ -516,6 +534,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         // The interest rate is a fraction, so a finer scale after the blanket money pass keeps it from rounding.
         modelBuilder.Entity<Bank>().Property(bank => bank.InterestRate).HasPrecision(18, 6);
         modelBuilder.Entity<Loan>().Property(loan => loan.InterestRate).HasPrecision(18, 6);
+        modelBuilder.Entity<AiPrediction>().Property(prediction => prediction.Confidence).HasPrecision(18, 6);
 
         // Behavioural-audit indices are min-max-normalised sums near the 0..5 range; the money scale above would
         // flatten the small gaps the nearest-group-average classification reads, so give them a finer scale.

@@ -3641,6 +3641,22 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 }
 
                 await db.SaveChangesAsync();
+                var latestCall = await db.AiTraderCalls.OrderByDescending(call => call.Id).FirstAsync();
+                db.AiPredictions.Add(new AiPrediction
+                {
+                    AiTraderCallId = latestCall.Id,
+                    ParticipantId = ownerId,
+                    CompanyId = 42,
+                    SnapshotCycleNumber = 5,
+                    SnapshotTradingDayNumber = 1,
+                    BaselinePrice = 100m,
+                    Direction = AiPredictionDirection.Up,
+                    Confidence = 0.72m,
+                    HorizonCycles = 210,
+                    TargetPrice = 125m,
+                    Reason = "Demand.",
+                });
+                await db.SaveChangesAsync();
             }
 
             using var pageDoc = JsonDocument.Parse(
@@ -3656,6 +3672,11 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(HttpStatusCode.OK, ownerDetail.StatusCode);
             using var detailDoc = JsonDocument.Parse(await ownerDetail.Content.ReadAsStringAsync());
             Assert.False(string.IsNullOrEmpty(detailDoc.RootElement.GetProperty("requestJson").GetString()));
+            var prediction = Assert.Single(detailDoc.RootElement.GetProperty("predictions").EnumerateArray());
+            Assert.Equal(42, prediction.GetProperty("companyId").GetInt32());
+            Assert.Equal("Up", prediction.GetProperty("direction").GetString());
+            Assert.Equal(0.72m, prediction.GetProperty("confidence").GetDecimal());
+            Assert.Equal(100m, prediction.GetProperty("baselinePrice").GetDecimal());
 
             using var otherDetail = await client.GetAsync($"/participants/{otherId}/ai-calls/{callId}");
             Assert.Equal(HttpStatusCode.NotFound, otherDetail.StatusCode);

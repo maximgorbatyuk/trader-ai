@@ -74,6 +74,9 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Assert.Contains("sell the shares later at a higher price", system);
         Assert.Contains("potential outcomes, not guarantees", system);
         Assert.Contains("\"orders\"", system);
+        Assert.Contains("\"predictions\"", system);
+        Assert.Contains("forecasts, not hidden reasoning", system);
+        Assert.Contains("empty predictions array", system);
         foreach (var document in CoreDocuments)
         {
             Assert.Contains($"## Source: {document}", system);

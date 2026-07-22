@@ -12,12 +12,14 @@ public sealed record AiTradeDecision
         string summary,
         AiTradeOrderDecision[] orders,
         int[]? cancelOrderIds = null,
-        AiBigInvestmentDecision? bigInvestment = null)
+        AiBigInvestmentDecision? bigInvestment = null,
+        AiTradePredictionDecision[]? predictions = null)
     {
         Summary = summary;
         Orders = orders;
         CancelOrderIds = cancelOrderIds ?? [];
         BigInvestment = bigInvestment;
+        Predictions = predictions ?? [];
     }
 
     [JsonPropertyName("summary")]
@@ -32,7 +34,18 @@ public sealed record AiTradeDecision
 
     [JsonPropertyName("bigInvestment")]
     public AiBigInvestmentDecision? BigInvestment { get; init; }
+
+    [JsonPropertyName("predictions")]
+    public AiTradePredictionDecision[] Predictions { get; init; }
 }
+
+public sealed record AiTradePredictionDecision(
+    [property: JsonPropertyName("companyId")] int CompanyId,
+    [property: JsonPropertyName("direction")] AiPredictionDirection Direction,
+    [property: JsonPropertyName("confidence")] decimal Confidence,
+    [property: JsonPropertyName("horizonCycles")] int HorizonCycles,
+    [property: JsonPropertyName("targetPrice")] decimal? TargetPrice,
+    [property: JsonPropertyName("reason")] string Reason);
 
 public sealed record AiBigInvestmentDecision(
     [property: JsonPropertyName("companyId")] int CompanyId,

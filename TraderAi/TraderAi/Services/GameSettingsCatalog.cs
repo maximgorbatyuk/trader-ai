@@ -81,7 +81,7 @@ public static class GameSettingsCatalog
             ["AiTrading"] =
             [
                 "Enabled", "ScanIntervalMilliseconds", "RequestTimeoutSeconds", "MaxConcurrentRequests",
-                "MaxOrdersPerDecision", "HistoryCycles", "RetryBaseDelaySeconds", "RetryMaxDelaySeconds",
+                "MaxOrdersPerDecision", "PredictionHorizonCycles", "MaxPredictionsPerDecision", "HistoryCycles", "RetryBaseDelaySeconds", "RetryMaxDelaySeconds",
                 "AuthErrorRetrySeconds", "SystemPromptTemplate", "FinalDecisionInstruction",
             ],
             ["RandomChanceRates"] = [],
@@ -178,6 +178,8 @@ public static class GameSettingsCatalog
         "AiTrading:RequestTimeoutSeconds",
         "AiTrading:MaxConcurrentRequests",
         "AiTrading:MaxOrdersPerDecision",
+        "AiTrading:PredictionHorizonCycles",
+        "AiTrading:MaxPredictionsPerDecision",
         "AiTrading:HistoryCycles",
         "AiTrading:RetryBaseDelaySeconds",
         "AiTrading:RetryMaxDelaySeconds",
@@ -243,6 +245,8 @@ public static class GameSettingsCatalog
             ["AiTrading:RequestTimeoutSeconds"] = "Sets the maximum duration of one provider request.",
             ["AiTrading:MaxConcurrentRequests"] = "Caps the number of AI provider requests in flight at the same time.",
             ["AiTrading:MaxOrdersPerDecision"] = "Caps the number of orders an AI trader may return in one decision.",
+            ["AiTrading:PredictionHorizonCycles"] = "Sets the required forecast horizon for every AI prediction.",
+            ["AiTrading:MaxPredictionsPerDecision"] = "Caps the number of forecasts an AI trader may return in one decision.",
             ["AiTrading:HistoryCycles"] = "Sets how much recent market history is included in an AI decision snapshot.",
             ["AiTrading:RetryBaseDelaySeconds"] = "Sets the initial delay before retrying a failed AI provider request.",
             ["AiTrading:RetryMaxDelaySeconds"] = "Caps the retry delay for repeated AI provider failures.",

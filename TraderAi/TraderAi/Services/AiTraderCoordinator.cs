@@ -302,7 +302,9 @@ public sealed class AiTraderCoordinator(
             snapshot.Market.CycleNumber,
             prompt.SystemMessageHash,
             prepared.RequestJson,
-            market?.CurrentRunId);
+            market?.CurrentRunId,
+            snapshot.Market.TradingDayNumber,
+            snapshot.Companies.ToDictionary(company => company.CompanyId, company => company.CurrentPrice));
 
         var callService = services.GetRequiredService<AiTraderCallService>();
 
@@ -321,6 +323,8 @@ public sealed class AiTraderCoordinator(
             execution = await callService.ExecuteAsync(
                 descriptor,
                 options.Value.MaxOrdersPerDecision,
+                options.Value.MaxPredictionsPerDecision,
+                options.Value.PredictionHorizonCycles,
                 async token =>
                 {
                     response = await client.SendAsync(prepared, apiKey, token);

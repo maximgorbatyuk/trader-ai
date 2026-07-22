@@ -207,6 +207,12 @@ public enum CompanyRiskRating
     ExtraRaisedExpectations,
 }
 
+public enum AiPredictionDirection
+{
+    Up,
+    Down,
+}
+
 public enum CrisisEventType
 {
     IndustryShock,

@@ -6,6 +6,8 @@ namespace TraderAi.Tests;
 public sealed class AiDecisionJsonTests
 {
     private const int MaxOrders = 10;
+    private const int MaxPredictions = 2;
+    private const int PredictionHorizon = 210;
 
     private const string ValidJson = """
     {
@@ -18,6 +20,125 @@ public sealed class AiDecisionJsonTests
       ]
     }
     """;
+
+    [Fact]
+    public void ValidPredictionParses()
+    {
+        var json = """
+        {
+          "summary": "Expect continued strength.",
+          "cancelOrderIds": [],
+          "bigInvestment": null,
+          "orders": [],
+          "predictions": [
+            { "companyId": 42, "direction": "Up", "confidence": 0.72, "horizonCycles": 210, "targetPrice": 125.50, "reason": "Positive demand and cash flow." }
+          ]
+        }
+        """;
+
+        Assert.True(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out var decision, out var error));
+        Assert.Null(error);
+        var prediction = Assert.Single(decision!.Predictions);
+        Assert.Equal(AiPredictionDirection.Up, prediction.Direction);
+        Assert.Equal(0.72m, prediction.Confidence);
+        Assert.Equal(210, prediction.HorizonCycles);
+        Assert.Equal(125.50m, prediction.TargetPrice);
+    }
+
+    [Fact]
+    public void ExplicitEmptyPredictionsArrayParses()
+    {
+        var json = """{ "summary": "No forecast.", "cancelOrderIds": [], "bigInvestment": null, "orders": [], "predictions": [] }""";
+
+        Assert.True(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out var decision, out var error));
+        Assert.Null(error);
+        Assert.Empty(decision!.Predictions);
+    }
+
+    [Fact]
+    public void MissingPredictionsFails()
+    {
+        var json = """{ "summary": "No forecast.", "cancelOrderIds": [], "bigInvestment": null, "orders": [] }""";
+
+        Assert.False(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out _, out var error));
+        Assert.Contains("predictions", error);
+    }
+
+    [Theory]
+    [InlineData("Sideways")]
+    [InlineData("up")]
+    public void UnknownPredictionDirectionFails(string direction)
+    {
+        var json = PredictionJson(direction: direction);
+        Assert.False(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out _, out var error));
+        Assert.NotNull(error);
+    }
+
+    [Theory]
+    [InlineData("0.49")]
+    [InlineData("1.01")]
+    public void PredictionConfidenceOutsideRangeFails(string confidence)
+    {
+        var json = PredictionJson(confidence: confidence);
+        Assert.False(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out _, out var error));
+        Assert.Contains("confidence", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(209)]
+    public void InvalidPredictionHorizonFails(int horizon)
+    {
+        var json = PredictionJson(horizon: horizon);
+        Assert.False(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out _, out var error));
+        Assert.Contains("horizon", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NonPositivePredictionTargetPriceFails()
+    {
+        var json = PredictionJson(targetPrice: "0");
+        Assert.False(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out _, out var error));
+        Assert.Contains("targetPrice", error);
+    }
+
+    [Fact]
+    public void DuplicateCompanyAndHorizonPredictionFails()
+    {
+        var prediction = """{ "companyId": 42, "direction": "Up", "confidence": 0.72, "horizonCycles": 210, "targetPrice": 125.50, "reason": "Demand." }""";
+        var json = $$"""{ "summary": "Forecast.", "cancelOrderIds": [], "bigInvestment": null, "orders": [], "predictions": [{{prediction}}, {{prediction}}] }""";
+
+        Assert.False(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out _, out var error));
+        Assert.Contains("unique", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PredictionCountAboveMaximumFails()
+    {
+        var predictions = string.Join(",", Enumerable.Range(1, MaxPredictions + 1).Select(companyId =>
+            $$"""{ "companyId": {{companyId}}, "direction": "Up", "confidence": 0.72, "horizonCycles": 210, "targetPrice": null, "reason": "Demand." }"""));
+        var json = $$"""{ "summary": "Forecast.", "cancelOrderIds": [], "bigInvestment": null, "orders": [], "predictions": [{{predictions}}] }""";
+
+        Assert.False(AiDecisionJson.TryParse(
+            json, MaxOrders, MaxPredictions, PredictionHorizon, out _, out var error));
+        Assert.Contains($"at most {MaxPredictions}", error);
+    }
+
+    private static string PredictionJson(
+        string direction = "Up",
+        string confidence = "0.72",
+        int horizon = PredictionHorizon,
+        string targetPrice = "125.50")
+        => $$"""{ "summary": "Forecast.", "cancelOrderIds": [], "bigInvestment": null, "orders": [], "predictions": [{ "companyId": 42, "direction": "{{direction}}", "confidence": {{confidence}}, "horizonCycles": {{horizon}}, "targetPrice": {{targetPrice}}, "reason": "Demand." }] }""";
 
     [Fact]
     public void ValidJsonParses()

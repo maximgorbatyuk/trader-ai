@@ -15,6 +15,18 @@ public sealed record AiProviderTestResponse(
     long? DurationMilliseconds,
     string? Error);
 
+public sealed record AiPredictionResponse(
+    long Id,
+    int CompanyId,
+    int SnapshotCycleNumber,
+    int SnapshotTradingDayNumber,
+    decimal BaselinePrice,
+    string Direction,
+    decimal Confidence,
+    int HorizonCycles,
+    decimal? TargetPrice,
+    string Reason);
+
 public sealed record AiTraderCallDetailResponse(
     long Id,
     string ProviderId,
@@ -37,4 +49,5 @@ public sealed record AiTraderCallDetailResponse(
     long? DurationMilliseconds,
     DateTime RequestedAt,
     DateTime? RespondedAt,
-    DateTime? AppliedAt);
+    DateTime? AppliedAt,
+    AiPredictionResponse[] Predictions);

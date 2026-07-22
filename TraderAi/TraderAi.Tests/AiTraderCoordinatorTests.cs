@@ -15,7 +15,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     private static readonly DateTimeOffset Now = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
 
     private static readonly string ValidDecision =
-        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"limitPrice\":100,\"reason\":\"r\"}]}";
+        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"limitPrice\":100,\"reason\":\"r\"}],\"predictions\":[]}";
 
     private readonly string databasePath;
     private readonly ServiceProvider provider;
@@ -450,7 +450,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
             await db.SaveChangesAsync();
         }
         var decision =
-            $"{{\"summary\":\"Fund Acme.\",\"cancelOrderIds\":[],\"bigInvestment\":{{\"companyId\":{seed.CompanyId},\"amount\":50000,\"reason\":\"growth\"}},\"orders\":[]}}";
+            $"{{\"summary\":\"Fund Acme.\",\"cancelOrderIds\":[],\"bigInvestment\":{{\"companyId\":{seed.CompanyId},\"amount\":50000,\"reason\":\"growth\"}},\"orders\":[],\"predictions\":[]}}";
         fakeClient.OnSend = _ => Task.FromResult(Success(decision));
         var coordinator = Coordinator();
 
