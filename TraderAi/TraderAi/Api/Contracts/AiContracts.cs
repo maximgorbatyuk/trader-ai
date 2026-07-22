@@ -54,3 +54,41 @@ public sealed record AiTraderCallDetailResponse(
     DateTime? RespondedAt,
     DateTime? AppliedAt,
     AiPredictionResponse[] Predictions);
+
+public sealed record AiPredictionMetricResponse(
+    double? Value,
+    double? Lower95,
+    double? Upper95,
+    string UncertaintyStatus);
+
+public sealed record AiPredictionCalibrationBinResponse(
+    decimal LowerConfidence,
+    decimal UpperConfidence,
+    int Count,
+    double MeanConfidence,
+    double ObservedFrequency);
+
+public sealed record AiProviderPredictionQualityResponse(
+    string ProviderId,
+    string ProviderLabel,
+    string Model,
+    int TotalPredictionCount,
+    int MaturePredictionCount,
+    int CommonWindowPredictionCount,
+    int ClusterCount,
+    string ClusteringUnit,
+    AiPredictionMetricResponse DirectionalAccuracy,
+    AiPredictionMetricResponse MeanBrierScore,
+    AiPredictionCalibrationBinResponse[] CalibrationBins,
+    int TargetErrorCount,
+    double? MeanAbsolutePercentageError,
+    int ExcludedImmatureCount,
+    int ExcludedSplitCrossingCount,
+    int ExcludedMissingPriceCount,
+    int? CommonStartCycle,
+    int? CommonEndCycle);
+
+public sealed record AiPredictionQualityResponse(
+    int? CommonStartCycle,
+    int? CommonEndCycle,
+    AiProviderPredictionQualityResponse[] Groups);

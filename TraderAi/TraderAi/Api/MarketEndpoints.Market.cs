@@ -69,6 +69,25 @@ public static partial class MarketEndpoints
                 : Results.Ok(await BuildMarketResponseAsync(market, dbContext, tradingClockService));
         });
 
+        app.MapGet("/market/ai-prediction-quality", async (
+            string? clusterBy,
+            AiPredictionEvaluationService evaluationService) =>
+        {
+            var clusterUnit = clusterBy?.Trim().ToLowerInvariant() switch
+            {
+                null or "" or "call" => AiPredictionClusterUnit.Call,
+                "tradingday" => AiPredictionClusterUnit.TradingDay,
+                _ => (AiPredictionClusterUnit?)null,
+            };
+            if (clusterUnit is null)
+            {
+                return Results.BadRequest(new { error = "clusterBy must be 'call' or 'tradingDay'." });
+            }
+
+            var report = await evaluationService.EvaluateAsync(clusterUnit.Value);
+            return Results.Ok(ToPredictionQualityResponse(report));
+        });
+
         app.MapGet("/cycles", async (AppDbContext dbContext) =>
         {
             var cycles = await dbContext.MarketCycles.OrderBy(cycle => cycle.CycleNumber).ToListAsync();
@@ -150,4 +169,36 @@ public static partial class MarketEndpoints
             return Results.Ok(response);
         });
     }
+
+    private static AiPredictionQualityResponse ToPredictionQualityResponse(AiPredictionQualityReport report)
+        => new(
+            report.CommonStartCycle,
+            report.CommonEndCycle,
+            report.Groups.Select(group => new AiProviderPredictionQualityResponse(
+                group.ProviderId,
+                group.ProviderLabel,
+                group.Model,
+                group.TotalPredictionCount,
+                group.MaturePredictionCount,
+                group.CommonWindowPredictionCount,
+                group.ClusterCount,
+                group.ClusteringUnit,
+                ToPredictionMetricResponse(group.DirectionalAccuracy),
+                ToPredictionMetricResponse(group.MeanBrierScore),
+                group.CalibrationBins.Select(bin => new AiPredictionCalibrationBinResponse(
+                    bin.LowerConfidence,
+                    bin.UpperConfidence,
+                    bin.Count,
+                    bin.MeanConfidence,
+                    bin.ObservedFrequency)).ToArray(),
+                group.TargetErrorCount,
+                group.MeanAbsolutePercentageError,
+                group.ExcludedImmatureCount,
+                group.ExcludedSplitCrossingCount,
+                group.ExcludedMissingPriceCount,
+                group.CommonStartCycle,
+                group.CommonEndCycle)).ToArray());
+
+    private static AiPredictionMetricResponse ToPredictionMetricResponse(AiPredictionMetric metric)
+        => new(metric.Value, metric.Lower95, metric.Upper95, metric.UncertaintyStatus);
 }

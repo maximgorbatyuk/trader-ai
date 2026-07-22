@@ -3686,6 +3686,134 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         });
     }
 
+    [Fact]
+    public async Task AiPredictionQualityValidatesClusteringAndReturnsCommonWindowMetrics()
+    {
+        await WithClientAsync(async (client, factoryInstance) =>
+        {
+            await client.PostAsync("/market/seed", null);
+
+            using var invalid = await client.GetAsync("/market/ai-prediction-quality?clusterBy=participant");
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+
+            using (var empty = JsonDocument.Parse(
+                       await client.GetStringAsync("/market/ai-prediction-quality?clusterBy=call")))
+            {
+                Assert.Empty(empty.RootElement.GetProperty("groups").EnumerateArray());
+                Assert.Equal(JsonValueKind.Null, empty.RootElement.GetProperty("commonStartCycle").ValueKind);
+            }
+
+            using (var scope = factoryInstance.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var currentCycle = await db.MarketCycles.SingleAsync(cycle => cycle.Id == market.CurrentCycleId);
+                var cycle2 = new MarketCycle
+                {
+                    MarketRunId = market.CurrentRunId,
+                    CycleNumber = 2,
+                    TradingDayId = currentCycle.TradingDayId,
+                    TradingCycleNumber = 2,
+                    Status = CycleStatus.Completed,
+                };
+                var cycle3 = new MarketCycle
+                {
+                    MarketRunId = market.CurrentRunId,
+                    CycleNumber = 3,
+                    TradingDayId = currentCycle.TradingDayId,
+                    TradingCycleNumber = 3,
+                    Status = CycleStatus.Completed,
+                };
+                db.AddRange(cycle2, cycle3);
+                await db.SaveChangesAsync();
+                market.CurrentCycleId = cycle3.Id;
+                var companyId = await db.Companies.Select(company => company.Id).FirstAsync();
+                db.PriceSnapshots.Add(new PriceSnapshot
+                {
+                    CompanyId = companyId,
+                    Price = 110m,
+                    CreatedInCycleId = cycle3.Id,
+                    CreatedAt = DateTime.UtcNow,
+                });
+
+                for (var index = 0; index < 5; index++)
+                {
+                    AddPredictionCall(
+                        db, market.CurrentRunId, cycle2, companyId, "glm", "GLM", "model-a", index + 1);
+                }
+
+                AddPredictionCall(
+                    db, market.CurrentRunId, cycle2, companyId, "minimax", "MiniMax", "model-b", 1);
+                await db.SaveChangesAsync();
+            }
+
+            using var byCall = JsonDocument.Parse(
+                await client.GetStringAsync("/market/ai-prediction-quality?clusterBy=call"));
+            Assert.Equal(2, byCall.RootElement.GetProperty("commonStartCycle").GetInt32());
+            Assert.Equal(2, byCall.RootElement.GetProperty("commonEndCycle").GetInt32());
+            var groups = byCall.RootElement.GetProperty("groups").EnumerateArray().ToList();
+            Assert.Equal(2, groups.Count);
+            var glm = Assert.Single(groups, group => group.GetProperty("providerId").GetString() == "glm");
+            Assert.Equal(5, glm.GetProperty("maturePredictionCount").GetInt32());
+            Assert.Equal(5, glm.GetProperty("commonWindowPredictionCount").GetInt32());
+            Assert.Equal(5, glm.GetProperty("clusterCount").GetInt32());
+            Assert.Equal("call", glm.GetProperty("clusteringUnit").GetString());
+            Assert.Equal("Available", glm.GetProperty("directionalAccuracy")
+                .GetProperty("uncertaintyStatus").GetString());
+            Assert.NotEmpty(glm.GetProperty("calibrationBins").EnumerateArray());
+            var minimax = Assert.Single(groups, group => group.GetProperty("providerId").GetString() == "minimax");
+            Assert.Equal("InsufficientClusters", minimax.GetProperty("directionalAccuracy")
+                .GetProperty("uncertaintyStatus").GetString());
+
+            using var byDay = JsonDocument.Parse(
+                await client.GetStringAsync("/market/ai-prediction-quality?clusterBy=tradingDay"));
+            Assert.All(byDay.RootElement.GetProperty("groups").EnumerateArray(), group =>
+                Assert.Equal("tradingDay", group.GetProperty("clusteringUnit").GetString()));
+        });
+    }
+
+    private static void AddPredictionCall(
+        AppDbContext db,
+        int marketRunId,
+        MarketCycle snapshotCycle,
+        int companyId,
+        string providerId,
+        string providerLabel,
+        string model,
+        int tradingDayNumber)
+    {
+        var call = new AiTraderCall
+        {
+            MarketRunId = marketRunId,
+            ParticipantId = tradingDayNumber,
+            ParticipantName = providerLabel,
+            ProviderId = providerId,
+            ProviderLabel = providerLabel,
+            Model = model,
+            SnapshotCycleId = snapshotCycle.Id,
+            SnapshotCycleNumber = snapshotCycle.CycleNumber,
+            PromptHash = "hash",
+            RequestJson = "{}",
+            Status = AiTraderCallStatus.Completed,
+            RequestedAt = DateTime.UtcNow,
+        };
+        call.Predictions.Add(new AiPrediction
+        {
+            MarketRunId = marketRunId,
+            ParticipantId = tradingDayNumber,
+            CompanyId = companyId,
+            SnapshotCycleNumber = snapshotCycle.CycleNumber,
+            SnapshotTradingDayNumber = tradingDayNumber,
+            BaselinePrice = 100m,
+            Direction = AiPredictionDirection.Up,
+            Confidence = 0.8m,
+            HorizonCycles = 1,
+            TargetPrice = 105m,
+            Reason = "Demand.",
+        });
+        db.AiTraderCalls.Add(call);
+    }
+
     private static async Task<int> FirstIndividualIdAsync(WebApplicationFactory<Program> factoryInstance)
     {
         using var scope = factoryInstance.Services.CreateScope();
