@@ -317,7 +317,7 @@ public sealed class AiTraderCoordinator(
 
         AiProviderResponse? response = null;
         AiTraderCallExecution execution;
-        var invalidJsonRetriesRemaining = Math.Max(0, options.Value.MaxInvalidJsonRetries);
+        var invalidJsonRetriesRemaining = Math.Max(0, provider.MaxInvalidJsonRetries);
         while (true)
         {
             execution = await callService.ExecuteAsync(
@@ -397,7 +397,7 @@ public sealed class AiTraderCoordinator(
             return execution.Status;
         }
 
-        HandleFailure(participantId, cycleNumber, execution, response);
+        HandleFailure(participantId, cycleNumber, provider, execution, response);
         return execution.Status;
     }
 
@@ -466,7 +466,12 @@ public sealed class AiTraderCoordinator(
         _ => "Big investment rejected.",
     };
 
-    private void HandleFailure(int participantId, int cycleNumber, AiTraderCallExecution execution, AiProviderResponse? response)
+    private void HandleFailure(
+        int participantId,
+        int cycleNumber,
+        AiProviderDescriptor provider,
+        AiTraderCallExecution execution,
+        AiProviderResponse? response)
     {
         var now = timeProvider.GetUtcNow();
         var schedule = new ParticipantSchedule();
@@ -480,8 +485,16 @@ public sealed class AiTraderCoordinator(
             case AiTraderCallStatus.HttpError:
             case AiTraderCallStatus.TimedOut:
                 schedule.Attempts = NextAttempts(participantId);
-                schedule.NextRetryAt = ComputeRetry(now, schedule.Attempts, response?.RetryAfter);
-                SetError(participantId, "Provider call failed; will retry.", schedule.NextRetryAt);
+                if (schedule.Attempts <= provider.MaxTransportRetries)
+                {
+                    schedule.NextRetryAt = ComputeRetry(now, schedule.Attempts, response?.RetryAfter);
+                    SetError(participantId, "Provider call failed; will retry.", schedule.NextRetryAt);
+                }
+                else
+                {
+                    schedule.LastCycleNumber = cycleNumber;
+                    SetError(participantId, "Provider retry limit reached for this decision cycle.", null);
+                }
                 break;
             case AiTraderCallStatus.Cancelled:
                 // A configuration edit cancelled the call; allow a fresh attempt immediately.

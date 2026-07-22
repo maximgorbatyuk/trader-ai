@@ -95,7 +95,8 @@ public sealed record PreparedAiProviderRequest(
     string ProviderLabel,
     string Model,
     Uri Endpoint,
-    string RequestJson);
+    string RequestJson,
+    int RequestTimeoutSeconds = 300);
 
 public enum AiProviderCallOutcome
 {

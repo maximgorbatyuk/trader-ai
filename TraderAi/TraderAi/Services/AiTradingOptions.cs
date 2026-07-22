@@ -38,6 +38,8 @@ public sealed class AiTradingOptions
     // times within the cycle recovers most of them because provider sampling usually returns valid JSON on retry.
     public int MaxInvalidJsonRetries { get; set; } = 1;
 
+    public int MaxTransportRetries { get; set; } = 1;
+
     public int HistoryCycles { get; set; } = 30;
 
     // Diagnostic toggle: when true, the coordinator logs a per-section size breakdown of each AI snapshot and the
@@ -98,4 +100,12 @@ public sealed class AiProviderOptions
     public string ApiKey { get; set; } = string.Empty;
 
     public List<string> Models { get; set; } = new();
+
+    public int? RequestTimeoutSeconds { get; set; }
+
+    public int? MaxResponseTokens { get; set; }
+
+    public int? MaxInvalidJsonRetries { get; set; }
+
+    public int? MaxTransportRetries { get; set; }
 }

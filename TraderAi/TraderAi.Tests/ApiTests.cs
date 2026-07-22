@@ -126,6 +126,19 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
                 setting.GetProperty("key").GetString() == "AiTrading:MaxPredictionsPerDecision");
             Assert.Equal("Integer", maxPredictions.GetProperty("valueType").GetString());
             Assert.Equal(10, maxPredictions.GetProperty("value").GetInt32());
+            foreach (var key in new[]
+            {
+                "RequestTimeoutSeconds", "MaxResponseTokens", "MaxInvalidJsonRetries", "MaxTransportRetries",
+            })
+            {
+                var providerLimit = Assert.Single(settings!, setting =>
+                    setting.GetProperty("key").GetString() == $"AiTrading:Providers:glm:{key}");
+                Assert.Equal("Integer", providerLimit.GetProperty("valueType").GetString());
+            }
+            var providerApiKey = Assert.Single(settings!, setting =>
+                setting.GetProperty("key").GetString() == "AiTrading:Providers:glm:ApiKey");
+            Assert.Equal(string.Empty, providerApiKey.GetProperty("value").GetString());
+            Assert.True(providerApiKey.TryGetProperty("hasValue", out _));
             Assert.DoesNotContain(settings!, setting =>
                 setting.GetProperty("key").GetString() == "Archive:RetentionCycles");
         }

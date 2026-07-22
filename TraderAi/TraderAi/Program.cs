@@ -271,6 +271,9 @@ static bool ValidateAiTrading(AiTradingOptions options)
 {
     if (options.ScanIntervalMilliseconds <= 0
         || options.RequestTimeoutSeconds <= 0
+        || options.MaxResponseTokens < 0
+        || options.MaxInvalidJsonRetries < 0
+        || options.MaxTransportRetries < 0
         || options.MaxConcurrentRequests <= 0
         || options.MaxOrdersPerDecision <= 0
         || options.HistoryCycles <= 0
@@ -285,6 +288,10 @@ static bool ValidateAiTrading(AiTradingOptions options)
     {
         if (string.IsNullOrWhiteSpace(provider.DisplayName)
             || provider.Models.Count == 0
+            || provider.RequestTimeoutSeconds is <= 0
+            || provider.MaxResponseTokens is < 0
+            || provider.MaxInvalidJsonRetries is < 0
+            || provider.MaxTransportRetries is < 0
             || !Uri.TryCreate(provider.Endpoint, UriKind.Absolute, out var endpoint)
             || endpoint.Scheme != Uri.UriSchemeHttps)
         {

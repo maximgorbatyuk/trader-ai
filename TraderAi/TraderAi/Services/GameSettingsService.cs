@@ -347,6 +347,9 @@ public sealed class GameSettingsService(
         if (definitions.Any(definition => definition.Key.StartsWith("AiTrading:", StringComparison.Ordinal))
             && (ai.ScanIntervalMilliseconds <= 0
             || ai.RequestTimeoutSeconds <= 0
+            || ai.MaxResponseTokens < 0
+            || ai.MaxInvalidJsonRetries < 0
+            || ai.MaxTransportRetries < 0
             || ai.MaxConcurrentRequests <= 0
             || ai.MaxOrdersPerDecision <= 0
             || ai.HistoryCycles <= 0
@@ -358,6 +361,10 @@ public sealed class GameSettingsService(
                 string.IsNullOrWhiteSpace(provider.DisplayName)
                 || provider.Models.Count == 0
                 || provider.Models.Any(string.IsNullOrWhiteSpace)
+                || provider.RequestTimeoutSeconds is <= 0
+                || provider.MaxResponseTokens is < 0
+                || provider.MaxInvalidJsonRetries is < 0
+                || provider.MaxTransportRetries is < 0
                 || !Uri.TryCreate(provider.Endpoint, UriKind.Absolute, out var endpoint)
                 || endpoint.Scheme != Uri.UriSchemeHttps)))
         {

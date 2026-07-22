@@ -215,6 +215,54 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task ProviderInvalidJsonRetryOverrideWinsOverTheGlobalLimit()
+    {
+        var seed = await SeedMarketAsync();
+        Settings().MaxInvalidJsonRetries = 0;
+        Settings().Providers["glm"].MaxInvalidJsonRetries = 1;
+        var valid = ValidDecision.Replace("COMPANY", seed.CompanyId.ToString());
+        var calls = 0;
+        fakeClient.OnSend = _ => Task.FromResult(Success(++calls == 1
+            ? "{\"summary\":\"x\",\"orders\":}"
+            : valid));
+
+        var status = await Coordinator().ProcessParticipantAsync(
+            seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+
+        Assert.Equal(AiTraderCallStatus.Completed, status);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public async Task ProviderTransportRetryOverrideBoundsSameCycleBackoff()
+    {
+        var seed = await SeedMarketAsync();
+        Settings().MaxTransportRetries = 0;
+        Settings().Providers["glm"].MaxTransportRetries = 1;
+        fakeClient.OnSend = _ => Task.FromResult(HttpError(500));
+        var coordinator = Coordinator();
+
+        await coordinator.ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+        Assert.NotNull(Runtime().Get(seed.ParticipantId).NextRetryAt);
+
+        await coordinator.ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+
+        Assert.Null(Runtime().Get(seed.ParticipantId).NextRetryAt);
+    }
+
+    [Fact]
+    public async Task LongerProviderRetryAfterControlsTheBackoffWindow()
+    {
+        var seed = await SeedMarketAsync();
+        Settings().Providers["glm"].MaxTransportRetries = 1;
+        fakeClient.OnSend = _ => Task.FromResult(HttpError(429, TimeSpan.FromSeconds(90)));
+
+        await Coordinator().ProcessParticipantAsync(seed.ParticipantId, seed.CycleNumber, CancellationToken.None);
+
+        Assert.Equal(Now.AddSeconds(90).UtcDateTime, Runtime().Get(seed.ParticipantId).NextRetryAt);
+    }
+
+    [Fact]
     public async Task InvalidJsonRetriesAreBoundedThenSurfaceTheError()
     {
         var seed = await SeedMarketAsync();
@@ -637,8 +685,8 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     private static AiProviderResponse Success(string content)
         => new(AiProviderCallOutcome.Success, 200, content, content, 1, 1, 2, null, null);
 
-    private static AiProviderResponse HttpError(int status)
-        => new(AiProviderCallOutcome.HttpError, status, "error body", null, null, null, null, null, "http error");
+    private static AiProviderResponse HttpError(int status, TimeSpan? retryAfter = null)
+        => new(AiProviderCallOutcome.HttpError, status, "error body", null, null, null, null, retryAfter, "http error");
 
     private static string CreateTempDocs()
     {
