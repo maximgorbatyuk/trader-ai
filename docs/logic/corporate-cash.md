@@ -6,7 +6,7 @@ Each listed company has its own issuer cash balance and an append-only movement 
 
 - A newly seeded or newly listed company starts with zero issuer cash.
 - Selling the company's unsold float is primary issuance. The buyer pays on the trade date, but the issuer receives the proceeds when the trade settles on T+1.
-- If issuer float is strictly below 10% of issued shares, deterministic demand-paced issuance can add a block at the current price. It triggers only for unmet executable Individual and AI Agent buy demand after compatible resting sell supply is shadow-matched with normal price-time priority and self-cross protection; Player and Collective Fund demand does not trigger it.
+- If issuer float is below the configured scarcity threshold, deterministic demand-paced issuance can add a block at the current price. It triggers only for unmet executable Individual and AI Agent buy demand after compatible resting sell supply is shadow-matched with normal price-time priority and self-cross protection; Player and Collective Fund demand does not trigger it. The canonical trigger, cap, and matching rules are in [Share price formation](../rules/share-price-formation.md).
 - Issuance happens at most once per company per trading day. Its quantity is the smaller of unmet demand and 25% of issued shares rounded up, and it is deferred while the security is in Limit State, Trading Pause, or Reopening. The issuer order then uses ordinary matching and T+1 settlement.
 - A secondary-market trade transfers value between participants and does not change issuer cash.
 - A big investment credits the company immediately when a participant or fund buys a block of newly minted shares at the current price. See [Big investment](big-investment.md).

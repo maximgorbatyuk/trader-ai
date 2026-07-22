@@ -23,7 +23,7 @@ When a demo market is seeded, each company receives an initial price and issued 
 
 Company-originated float has no participant seller. When a trader buys from that float, the buyer receives shares and pays cash, no trader receives the proceeds, and the issuer receives the primary proceeds on T+1 settlement.
 
-When unsold issuer float is strictly below 10% of issued shares, the company can answer executable unmet buy demand from active, non-bankrupt Individuals and AI Agents. Before issuing, it shadow-matches compatible resting sell supply with the same price-time and self-cross rules as normal matching; Player and Collective Fund demand does not trigger new supply. The company creates at most one demand-paced replenishment offer per trading day, and newly issued quantity is capped at the smaller of remaining demand and 25% of issued shares rounded up.
+When unsold issuer float is below the configured scarcity threshold — 20% of issued shares by default — the company can answer executable unmet buy demand from active, non-bankrupt Individuals and AI Agents. Before issuing, it shadow-matches compatible resting sell supply with the same price-time and self-cross rules as normal matching; Player and Collective Fund demand does not trigger new supply. The company creates at most one demand-paced replenishment offer per trading day, and newly issued quantity is capped at the smaller of remaining demand and 25% of issued shares rounded up.
 
 An open replenishment offer that moves outside the active price band is cancelled without touching the company's initial float offer. When eligible unmet demand next appears, the replacement offer is created at the exact current price and uses already issued but unlisted float before expanding the issued share count. The offer uses ordinary matching, so absorbed participant cash reaches issuer cash through normal T+1 settlement. Replenishment is deferred while the company is in Limit State, Trading Pause, or Reopening.
 
@@ -107,6 +107,18 @@ A science investigation is a positive sector event. It raises affected companies
 
 Auditors review companies during the pre-match window. A severe finding can directly drop a company's price and trigger buyer order revisions before that cycle's automated decisions and matching. An issue-free review can instead raise expectations, lift the price, and cancel eligible participant sell orders so owners can re-form asks around the new level; player and bankrupt-owner orders remain untouched.
 
+### Big Investments
+
+A big-investment deal records the unchanged per-share deal price against the enlarged share supply. The attached raised-expectations rating then separately requests an 8% price increase. LULD can clamp the realized move, and this rating impact preserves resting orders rather than cancelling stale orders. See [Big investment](../logic/big-investment.md).
+
+### Concentration Control
+
+Concentration control compares each live company with total live-market capitalization. When a company exceeds the configured share — 20% by default — the market requests a 25% price reduction by default. The check can apply again in later cycles while the company remains too concentrated. LULD can clamp each realized move, and eligible ordinary buy orders are cancelled so stale demand does not immediately trade against the reduced price.
+
+### Lifecycle Repricing
+
+A company that meets lifecycle failure conditions but represents at least 0.5% of total live-market capitalization is protected from delisting. The market instead requests a 60% price reduction. LULD can clamp the realized move, and eligible ordinary buy orders are cancelled through the same downward-impact behavior used for other shocks. Company age, market age, and recent big-investment protection determine whether this lifecycle action is eligible; see [Company](../roles/company.md).
+
 ### Stock Splits And Reverse Splits
 
 When a company's per-share price grows too high, a stock split can re-denominate the shares. The split increases share counts and lowers the per-share price proportionally, preserving each holder's total value and the company's total market value.
@@ -119,7 +131,7 @@ The adjusted price is recorded as a new price point. The unsold float and curren
 
 Demand-paced primary issuance does not directly write a new market price. It increases issued supply and lists the new float at the current price, then lets ordinary matching determine whether demand absorbs it.
 
-Free-share emission also does not directly write a new market price. It increases issued supply and grants new shares to eligible traders at zero cost, then lets normal trading absorb the added supply.
+Free-share emission also does not directly write a new market price. It increases issued supply and grants settled shares to eligible traders at zero cost without placing an executable zero-price order in the book. The larger supply and recipients' later sell decisions can influence price only through subsequent normal trading.
 
 Dividends also do not directly set price. They transfer available issuer cash to shareholders when a payout window is due. That extra participant cash can influence later orders, but no price point is written by the dividend itself.
 
