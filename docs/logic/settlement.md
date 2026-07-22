@@ -14,6 +14,16 @@ An executed trade changes the participant's economic cash and share position imm
 - Settlement cannot create a negative settled share position. A missing participant, company, or holding causes the cycle transaction to fail instead of silently losing an obligation.
 - The current model has no failed-delivery workflow, clearing member, or settlement penalty. Short selling and stock borrow are planned for later and are not implemented.
 
+## Realized sale performance
+
+Every new fill with a participant seller records the seller's weighted average cost immediately before the holding is reduced. The fill's cost basis is that average cost multiplied by the sold quantity.
+
+- Gross realized profit or loss is sale proceeds minus seller cost basis.
+- Net realized profit or loss is gross realized profit or loss minus the seller's direct trade fee and any collective-fund manager fee charged on that sale.
+- Margin-debit repayment, margin interest, loan interest, and other financing costs remain separate cash or liability evidence. They are not included in trade-level net realized profit or loss.
+- Issuer sales have no participant seller basis or realized profit fields.
+- Older fills remain without these values when the exact at-sale basis was not recorded; later holdings are not used to fabricate historical performance.
+
 ## Where to see it
 
 - A trader detail page shows **Settled cash** and **Pending cash** in **Bank account**. Its holdings table separates **Quantity**, **Settled**, and **Pending** shares.
