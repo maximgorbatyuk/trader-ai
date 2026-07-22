@@ -13,6 +13,9 @@ public sealed class AiProviderClientTests
     private static readonly AiProviderDescriptor MiniMax =
         new("minimax", "MiniMax", new Uri("https://minimax.test/v1/chat/completions"), new[] { "MiniMax-M2" });
 
+    private static readonly AiProviderDescriptor Kimi =
+        new("kimi", "Kimi", new Uri("https://kimi.test/v1/chat/completions"), new[] { "kimi-k3", "kimi-k2.6" });
+
     [Fact]
     public void CatalogCombinesProviderOverridesWithGlobalFallbacksWithoutExposingTheApiKey()
     {
@@ -85,6 +88,25 @@ public sealed class AiProviderClientTests
 
         Assert.Equal(MiniMax.Endpoint, prepared.Endpoint);
         Assert.DoesNotContain("thinking", prepared.RequestJson);
+    }
+
+    [Fact]
+    public void PreparedKimiK3RequestRequestsMaxReasoningEffort()
+    {
+        var client = Client(out _);
+        var prepared = client.Prepare(Kimi, "kimi-k3", "system message", "user message");
+
+        Assert.Equal(Kimi.Endpoint, prepared.Endpoint);
+        Assert.Contains("\"reasoning_effort\":\"max\"", prepared.RequestJson);
+    }
+
+    [Fact]
+    public void PreparedKimiRequestOmitsReasoningEffortForModelsWithoutThinkingEffort()
+    {
+        var client = Client(out _);
+        var prepared = client.Prepare(Kimi, "kimi-k2.6", "system message", "user message");
+
+        Assert.DoesNotContain("reasoning_effort", prepared.RequestJson);
     }
 
     [Fact]

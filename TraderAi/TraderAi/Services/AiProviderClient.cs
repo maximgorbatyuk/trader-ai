@@ -55,6 +55,12 @@ public sealed class AiProviderClient(IHttpClientFactory httpClientFactory)
             payload["thinking"] = new { type = "disabled" };
         }
 
+        // Only kimi-k3 accepts reasoning_effort; sending it explicitly records the chosen effort in the audit request.
+        if (provider.Id == "kimi" && model == "kimi-k3")
+        {
+            payload["reasoning_effort"] = "max";
+        }
+
         var requestJson = JsonSerializer.Serialize(payload, SerializerOptions);
         return new PreparedAiProviderRequest(
             provider.Id, provider.Label, model, provider.Endpoint, requestJson, provider.RequestTimeoutSeconds);
