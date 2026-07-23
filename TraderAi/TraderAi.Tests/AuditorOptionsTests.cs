@@ -20,6 +20,10 @@ public sealed class AuditorOptionsTests
         Assert.Equal(2, Value<int>(options, "RaisedExpectationsThreshold"));
         Assert.Equal(-2, Value<int>(options, "LowRiskThreshold"));
         Assert.Equal(-5, Value<int>(options, "HighRiskThreshold"));
+        Assert.Equal(-20, Value<int>(options, "MinimumTotalScore"));
+        Assert.Equal(20, Value<int>(options, "MaximumTotalScore"));
+        Assert.Equal(-4, Value<int>(options, "MinimumDenominationScore"));
+        Assert.Equal(2, Value<int>(options, "MaximumDenominationScore"));
         Assert.Equal(0.05m, Value<decimal>(options, "ModerateDecisionPull"));
         Assert.Equal(0.10m, Value<decimal>(options, "StrongDecisionPull"));
     }
@@ -46,6 +50,18 @@ public sealed class AuditorOptionsTests
         Assert.Equal(-1, Value<int>(options, "DividendUncoveredScore"));
         Assert.Equal(1, Value<int>(options, "IndustryRisingScore"));
         Assert.Equal(-1, Value<int>(options, "IndustryFallingScore"));
+        Assert.Equal(2, Value<int>(options, "HighProfitabilityScore"));
+        Assert.Equal(0, Value<int>(options, "MediumProfitabilityScore"));
+        Assert.Equal(-2, Value<int>(options, "LowProfitabilityScore"));
+        Assert.Equal(1, Value<int>(options, "LowVolatilityScore"));
+        Assert.Equal(0, Value<int>(options, "MediumVolatilityScore"));
+        Assert.Equal(-2, Value<int>(options, "HighVolatilityScore"));
+        Assert.Equal(2, Value<int>(options, "LowClosureRiskScore"));
+        Assert.Equal(0, Value<int>(options, "MediumClosureRiskScore"));
+        Assert.Equal(-3, Value<int>(options, "HighClosureRiskScore"));
+        Assert.Equal(2, Value<int>(options, "PositiveManagementOutlookScore"));
+        Assert.Equal(0, Value<int>(options, "NeutralManagementOutlookScore"));
+        Assert.Equal(-2, Value<int>(options, "NegativeManagementOutlookScore"));
     }
 
     [Theory]
@@ -55,6 +71,10 @@ public sealed class AuditorOptionsTests
     [InlineData("ModerateFreeShareDilutionPercent", -1)]
     [InlineData("RaisedExpectationsThreshold", 6)]
     [InlineData("LowRiskThreshold", -6)]
+    [InlineData("MinimumTotalScore", -101)]
+    [InlineData("MaximumTotalScore", 101)]
+    [InlineData("MinimumDenominationScore", 3)]
+    [InlineData("HighProfitabilityScore", 101)]
     [InlineData("ModerateDecisionPull", -0.01)]
     [InlineData("StrongDecisionPull", 1.01)]
     public void InvalidRangesOrOrderingAreRejected(string propertyName, double value)
@@ -72,6 +92,22 @@ public sealed class AuditorOptionsTests
         var isValid = typeof(AuditorOptions).GetMethod("IsValid");
         Assert.NotNull(isValid);
         Assert.False(Assert.IsType<bool>(isValid.Invoke(options, null)));
+    }
+
+    [Theory]
+    [InlineData("HighRiskThreshold", -1)]
+    [InlineData("LowRiskThreshold", 2)]
+    [InlineData("RaisedExpectationsThreshold", 5)]
+    [InlineData("MinimumTotalScore", -4)]
+    [InlineData("MaximumTotalScore", 4)]
+    public void StatusThresholdsMustRemainStrictlyOrderedInsideTotalScoreBounds(
+        string propertyName,
+        int value)
+    {
+        var options = new AuditorOptions();
+        typeof(AuditorOptions).GetProperty(propertyName)!.SetValue(options, value);
+
+        Assert.False(options.IsValid());
     }
 
     [Fact]

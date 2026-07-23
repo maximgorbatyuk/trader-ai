@@ -284,7 +284,7 @@ public sealed class GameSettingsService(
         var auditor = candidate.Configuration.GetSection(AuditorOptions.SectionName).Get<AuditorOptions>() ?? new();
         if (!auditor.IsValid())
         {
-            errors["Auditor"] = ["Audit intervals, metric boundaries, score thresholds, and decision pulls must form valid ordered ranges."];
+            errors["Auditor"] = ["Audit intervals, metric boundaries, factor scores, score clamps, status thresholds, and decision pulls must form valid ordered ranges."];
         }
 
         var companyFinancial = candidate.Configuration.GetSection(CompanyFinancialOptions.SectionName)

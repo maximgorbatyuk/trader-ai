@@ -54,6 +54,38 @@ public sealed class AuditorOptions
 
     public int IndustryFallingScore { get; set; } = -1;
 
+    public int HighProfitabilityScore { get; set; } = 2;
+
+    public int MediumProfitabilityScore { get; set; }
+
+    public int LowProfitabilityScore { get; set; } = -2;
+
+    public int LowVolatilityScore { get; set; } = 1;
+
+    public int MediumVolatilityScore { get; set; }
+
+    public int HighVolatilityScore { get; set; } = -2;
+
+    public int LowClosureRiskScore { get; set; } = 2;
+
+    public int MediumClosureRiskScore { get; set; }
+
+    public int HighClosureRiskScore { get; set; } = -3;
+
+    public int PositiveManagementOutlookScore { get; set; } = 2;
+
+    public int NeutralManagementOutlookScore { get; set; }
+
+    public int NegativeManagementOutlookScore { get; set; } = -2;
+
+    public int MinimumDenominationScore { get; set; } = -4;
+
+    public int MaximumDenominationScore { get; set; } = 2;
+
+    public int MinimumTotalScore { get; set; } = -20;
+
+    public int MaximumTotalScore { get; set; } = 20;
+
     public int ExtraRaisedExpectationsThreshold { get; set; } = 5;
 
     public int RaisedExpectationsThreshold { get; set; } = 2;
@@ -76,10 +108,69 @@ public sealed class AuditorOptions
             && StrongCycleJumpPercent <= 100m
             && ModerateFreeShareDilutionPercent is >= 0m and <= 100m
             && IndustryDirectionDeadband >= 0m
+            && ScoresAreValid()
+            && LowProfitabilityScore <= MediumProfitabilityScore
+            && MediumProfitabilityScore <= HighProfitabilityScore
+            && HighVolatilityScore <= MediumVolatilityScore
+            && MediumVolatilityScore <= LowVolatilityScore
+            && HighClosureRiskScore <= MediumClosureRiskScore
+            && MediumClosureRiskScore <= LowClosureRiskScore
+            && NegativeManagementOutlookScore <= NeutralManagementOutlookScore
+            && NeutralManagementOutlookScore <= PositiveManagementOutlookScore
+            && MinimumDenominationScore <= MaximumDenominationScore
+            && MinimumTotalScore < MaximumTotalScore
+            && MinimumTotalScore <= HighRiskThreshold
             && HighRiskThreshold < LowRiskThreshold
             && LowRiskThreshold < RaisedExpectationsThreshold
             && RaisedExpectationsThreshold < ExtraRaisedExpectationsThreshold
+            && ExtraRaisedExpectationsThreshold <= MaximumTotalScore
             && ModerateDecisionPull is >= 0m and <= 1m
             && StrongDecisionPull is >= 0m and <= 1m
             && ModerateDecisionPull <= StrongDecisionPull;
+
+    private bool ScoresAreValid()
+    {
+        int[] scores =
+        [
+            StrongPositiveReturnScore,
+            ModeratePositiveReturnScore,
+            ModerateNegativeReturnScore,
+            StrongNegativeReturnScore,
+            ModerateCycleJumpScore,
+            StrongCycleJumpScore,
+            ModerateFreeShareEmissionScore,
+            StrongFreeShareEmissionScore,
+            StockSplitScore,
+            ReverseSplitScore,
+            DividendPaidScore,
+            DividendReducedScore,
+            DividendSkippedScore,
+            DividendCoveredScore,
+            DividendUncoveredScore,
+            IndustryRisingScore,
+            IndustryFallingScore,
+            HighProfitabilityScore,
+            MediumProfitabilityScore,
+            LowProfitabilityScore,
+            LowVolatilityScore,
+            MediumVolatilityScore,
+            HighVolatilityScore,
+            LowClosureRiskScore,
+            MediumClosureRiskScore,
+            HighClosureRiskScore,
+            PositiveManagementOutlookScore,
+            NeutralManagementOutlookScore,
+            NegativeManagementOutlookScore,
+            MinimumDenominationScore,
+            MaximumDenominationScore,
+            MinimumTotalScore,
+            MaximumTotalScore,
+            ExtraRaisedExpectationsThreshold,
+            RaisedExpectationsThreshold,
+            LowRiskThreshold,
+            HighRiskThreshold,
+        ];
+
+        return scores.All(score => score is >= -100 and <= 100);
+    }
 }

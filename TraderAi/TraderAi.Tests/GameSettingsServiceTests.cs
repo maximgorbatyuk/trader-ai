@@ -17,6 +17,7 @@ public sealed class GameSettingsServiceTests
         var configuration = Configuration(
             ("Margin:InitialMarginRate", "0.50"),
             ("Auditor:AuditIntervalTradingDays", "2"),
+            ("Auditor:HighProfitabilityScore", "2"),
             ("CompanyFinancial:StabilityWindowSnapshots", "6"),
             ("CompanyFinancial:ProfitabilityNetMarginWeight", "0.30"),
             ("RandomChanceRates:EventTriggerChances:NoSellOrderBuyChance", "0.80"),
@@ -46,6 +47,11 @@ public sealed class GameSettingsServiceTests
             definition => definition.Key == "Auditor:AuditIntervalTradingDays");
         Assert.Equal(GameSettingValueType.Integer, auditInterval.ValueType);
         Assert.Contains("trading days", auditInterval.Description, StringComparison.OrdinalIgnoreCase);
+        var profitabilityScore = Assert.Single(
+            definitions,
+            definition => definition.Key == "Auditor:HighProfitabilityScore");
+        Assert.Equal(GameSettingValueType.Integer, profitabilityScore.ValueType);
+        Assert.Contains("profitability", profitabilityScore.Description, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains(
             definitions,
@@ -303,6 +309,45 @@ public sealed class GameSettingsServiceTests
             "6",
             (await verification.GameSettings.SingleAsync(
                 setting => setting.Key == "CompanyFinancial:StabilityWindowSnapshots")).ValueJson);
+    }
+
+    [Fact]
+    public async Task InvalidAuditScoreBoundsAreRejectedWithoutPartialWrites()
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        IDbContextFactory<AppDbContext> factory = new TestDbContextFactory(dbOptions);
+        await using (var context = await factory.CreateDbContextAsync())
+        {
+            await context.Database.EnsureCreatedAsync();
+        }
+
+        var service = new GameSettingsService(factory, Configuration(
+            ("Auditor:MinimumTotalScore", "-20"),
+            ("Auditor:MaximumTotalScore", "20"),
+            ("Auditor:HighRiskThreshold", "-5"),
+            ("Auditor:AuditIntervalTradingDays", "2")));
+        await service.InitializeAsync();
+
+        using var invalidMinimum = JsonDocument.Parse("-4");
+        using var validInterval = JsonDocument.Parse("4");
+        var exception = await Assert.ThrowsAsync<GameSettingsValidationException>(() =>
+            service.UpdateAsync(new Dictionary<string, JsonElement>
+            {
+                ["Auditor:MinimumTotalScore"] = invalidMinimum.RootElement.Clone(),
+                ["Auditor:AuditIntervalTradingDays"] = validInterval.RootElement.Clone(),
+            }));
+
+        Assert.True(exception.Errors.ContainsKey("Auditor"));
+        Assert.Equal(
+            2,
+            service.GetOptions<AuditorOptions>(AuditorOptions.SectionName).AuditIntervalTradingDays);
+        await using var verification = await factory.CreateDbContextAsync();
+        Assert.Equal(
+            "2",
+            (await verification.GameSettings.SingleAsync(
+                setting => setting.Key == "Auditor:AuditIntervalTradingDays")).ValueJson);
     }
 
     [Fact]
