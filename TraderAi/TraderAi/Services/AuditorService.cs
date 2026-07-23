@@ -5,483 +5,671 @@ using TraderAi.Models;
 
 namespace TraderAi.Services;
 
-// Weighted selection keeps large companies prominent without starving small ones, while the cooldown prevents
-// repeated reviews. Extra outcomes share one roll: the negative issue band is fixed, but the positive extra-raise
-// band narrows as a company's share of total market capitalisation rises, so a market giant is rarely handed an
-// exceptional raise. Price changes share MarketImpactService, and the ordinary positive roll remains gated to
-// preserve seeded sequences.
-public sealed class AuditorService(
-    AppDbContext dbContext,
-    IOptions<AuditorOptions> options,
-    Random random,
-    MarketImpactService marketImpact)
+// Audits are forward-looking signals built from completed trading days. They intentionally stage only immutable
+// ratings and evidence, leaving price discovery and resting orders to the trading system.
+public sealed class AuditorService
 {
-    // Roughly this fraction of companies is reviewed each cycle; the seeded auditor count is sized from it.
     private const double ReviewFraction = 0.05;
 
-    // A rated company cannot be reviewed again until this many cycles have passed.
-    private const int SafePeriodCycles = 15;
+    private readonly AppDbContext dbContext;
+    private readonly AuditorOptions options;
+    private readonly CompanyAuditScorer scorer;
 
-    // The price trend is measured across this many cycles; a per-cycle move at or beyond the threshold is "big".
-    private const int TrendWindowCycles = 10;
-    private const double BigMovePerCycleThreshold = 0.05;
-
-    // Extra verdicts use the same magnitude in opposite directions.
-    private const decimal MinExtraImpactPercent = 10m;
-    private const decimal MaxExtraImpactPercent = 20m;
-
-    private const decimal MinRaisePercent = 5m;
-    private const decimal MaxRaisePercent = 15m;
-
-    // A near-monopoly still keeps a small shot at an extra raise, mirroring the capitalisation selection floor.
-    private const double MinExtraRaiseFactor = 0.1;
-
-    // Buyers revise their bids when a company is flagged: a base cancel chance nudged by the owner's risk profile
-    // and temperament.
-    private const double LowRiskCancelDelta = 0.15;
-    private const double HighRiskCancelDelta = -0.15;
-    private const double ConservativeCancelDelta = 0.15;
-
-    // These preserve the legacy service until its deterministic replacement lands in the scheduled refactor.
-    private const double StableExtraOutcomeChance = 0.02;
-    private const double BigMoveExtraOutcomeChance = 0.10;
-    private const double CrisisExtraOutcomeMultiplier = 3.0;
-    private const double RaisedExpectationsChance = 0.08;
-    private const double HighRiskBuyRevisionChance = 0.50;
-    private const double ExtraRiskBuyRevisionChance = 0.70;
-
-    public double LegacyRaisedExpectationsChance { get; init; } = RaisedExpectationsChance;
-
-    public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
+    public AuditorService(
+        AppDbContext dbContext,
+        IOptions<AuditorOptions> options)
     {
-        if (!options.Value.Enabled)
+        ArgumentNullException.ThrowIfNull(dbContext);
+        ArgumentNullException.ThrowIfNull(options);
+        if (!options.Value.IsValid())
+        {
+            throw new ArgumentException("Auditor options are invalid.", nameof(options));
+        }
+
+        this.dbContext = dbContext;
+        this.options = options.Value;
+        scorer = new CompanyAuditScorer(options);
+    }
+
+    public async Task ProcessForCycleAsync(
+        int currentCycleId,
+        int currentCycleNumber,
+        DateTime now)
+    {
+        if (!options.Enabled)
         {
             return;
         }
 
-        await EnsureAuditorsExistAsync(now);
+        var cycles = await (
+            from cycle in dbContext.MarketCycles.AsNoTracking()
+            join day in dbContext.TradingDays.AsNoTracking() on cycle.TradingDayId equals day.Id
+            select new CyclePoint(
+                cycle.Id,
+                cycle.CycleNumber,
+                cycle.TradingCycleNumber,
+                cycle.MarketRunId,
+                day.DayNumber))
+            .ToListAsync();
+        var currentCycle = cycles.SingleOrDefault(cycle => cycle.Id == currentCycleId);
+        if (currentCycle is null
+            || currentCycle.CycleNumber != currentCycleNumber
+            || currentCycle.TradingCycleNumber != 1)
+        {
+            return;
+        }
 
-        var auditors = await dbContext.Auditors.OrderBy(auditor => auditor.Id).ToListAsync();
+        var cycleById = cycles.ToDictionary(cycle => cycle.Id);
         var companies = await dbContext.Companies
             .Where(company => company.ClosedInCycleId == null)
-            .ToDictionaryAsync(company => company.Id);
-        if (auditors.Count == 0 || companies.Count == 0)
+            .OrderBy(company => company.Id)
+            .ToListAsync();
+        if (companies.Count == 0)
         {
             return;
         }
 
-        var cycleNumbersById = await dbContext.CycleNumbersByIdAsync();
-
-        var snapshotsByCompany = (await dbContext.PriceSnapshots
-                .OrderBy(snapshot => snapshot.Id)
-                .Select(snapshot => new { snapshot.CompanyId, snapshot.CreatedInCycleId, snapshot.Price })
+        var companyIds = companies.Select(company => company.Id).ToArray();
+        var latestEffectiveDayByCompany = (await dbContext.CompanyAuditEvidence
+                .AsNoTracking()
+                .Where(evidence => companyIds.Contains(evidence.CompanyId))
+                .Select(evidence => new
+                {
+                    evidence.CompanyId,
+                    evidence.EffectiveTradingDayNumber,
+                })
                 .ToListAsync())
+            .GroupBy(evidence => evidence.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Max(evidence => evidence.EffectiveTradingDayNumber));
+
+        var due = companies
+            .Select(company =>
+            {
+                var listingDay = company.CreatedInCycleId is int listingCycleId
+                    && cycleById.TryGetValue(listingCycleId, out var listingCycle)
+                        ? listingCycle.TradingDayNumber
+                        : 1;
+                var previousEffectiveDay = latestEffectiveDayByCompany.GetValueOrDefault(company.Id);
+                var dueFromDay = previousEffectiveDay > 0 ? previousEffectiveDay : listingDay;
+                return new DueCompany(
+                    company,
+                    previousEffectiveDay > 0 ? previousEffectiveDay : listingDay,
+                    currentCycle.TradingDayNumber - 1,
+                    currentCycle.TradingDayNumber,
+                    dueFromDay + options.AuditIntervalTradingDays);
+            })
+            .Where(candidate =>
+                candidate.EffectiveTradingDayNumber >= candidate.DueTradingDayNumber
+                && candidate.EvaluationEndTradingDayNumber >= candidate.EvaluationStartTradingDayNumber)
+            .OrderBy(candidate => candidate.Company.Id)
+            .ToArray();
+        if (due.Length == 0)
+        {
+            return;
+        }
+
+        await EnsureAuditorsExistAsync(companies.Count, now);
+        var auditors = await dbContext.Auditors
+            .OrderBy(auditor => auditor.Id)
+            .ToListAsync();
+        if (auditors.Count == 0)
+        {
+            return;
+        }
+
+        var dueCompanyIds = due.Select(candidate => candidate.Company.Id).ToArray();
+        var dueIndustryIds = due
+            .Select(candidate => candidate.Company.IndustryId)
+            .Distinct()
+            .ToArray();
+        var minimumStartDay = due.Min(candidate => candidate.EvaluationStartTradingDayNumber);
+        var maximumEndDay = due.Max(candidate => candidate.EvaluationEndTradingDayNumber);
+
+        var livePrices = await dbContext.PriceSnapshots
+            .AsNoTracking()
+            .Where(snapshot => dueCompanyIds.Contains(snapshot.CompanyId))
+            .Select(snapshot => new
+            {
+                snapshot.Id,
+                snapshot.CompanyId,
+                snapshot.Price,
+                snapshot.Capitalization,
+                snapshot.CreatedInCycleId,
+            })
+            .ToListAsync();
+        var archivedPrices = await dbContext.PriceSnapshotArchives
+            .AsNoTracking()
+            .Where(snapshot => dueCompanyIds.Contains(snapshot.CompanyId))
+            .Select(snapshot => new
+            {
+                snapshot.Id,
+                snapshot.CompanyId,
+                snapshot.Price,
+                snapshot.Capitalization,
+                snapshot.CreatedInCycleId,
+            })
+            .ToListAsync();
+        var pricesByCompany = livePrices
+            .Concat(archivedPrices)
+            .Where(snapshot =>
+                cycleById.TryGetValue(snapshot.CreatedInCycleId, out var cycle)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.TradingDayNumber >= minimumStartDay
+                && cycle.TradingDayNumber <= maximumEndDay)
+            .Select(snapshot =>
+            {
+                var cycle = cycleById[snapshot.CreatedInCycleId];
+                return new PricePoint(
+                    snapshot.Id,
+                    snapshot.CompanyId,
+                    snapshot.Price,
+                    snapshot.Capitalization,
+                    cycle.CycleNumber,
+                    cycle.TradingDayNumber);
+            })
             .GroupBy(snapshot => snapshot.CompanyId)
             .ToDictionary(
                 group => group.Key,
                 group => group
-                    .Select(snapshot => (
-                        CycleNumber: cycleNumbersById.GetValueOrDefault(snapshot.CreatedInCycleId),
-                        snapshot.Price))
-                    .ToList());
+                    .OrderBy(snapshot => snapshot.TradingDayNumber)
+                    .ThenBy(snapshot => snapshot.CycleNumber)
+                    .ThenBy(snapshot => snapshot.Id)
+                    .ToArray());
 
-        var ratingRows = await dbContext.CompanyRatings
-            .Select(rating => new { rating.Id, rating.CompanyId, rating.Rating, rating.CreatedInCycleId })
+        var denominationEvents = await dbContext.StockDenominationEvents
+            .AsNoTracking()
+            .Where(denominationEvent => dueCompanyIds.Contains(denominationEvent.CompanyId))
+            .OrderBy(denominationEvent => denominationEvent.EffectiveInCycleNumber)
+            .ThenBy(denominationEvent => denominationEvent.Id)
             .ToListAsync();
-        var latestRatingCycleByCompany = ratingRows
-            .GroupBy(rating => rating.CompanyId)
+        var denominationByCompany = denominationEvents
+            .Where(denominationEvent =>
+                cycleById.TryGetValue(denominationEvent.EffectiveInCycleId, out var cycle)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.TradingDayNumber >= minimumStartDay
+                && cycle.TradingDayNumber <= maximumEndDay)
+            .GroupBy(denominationEvent => denominationEvent.CompanyId)
             .ToDictionary(
                 group => group.Key,
-                group => group.Max(rating => cycleNumbersById.GetValueOrDefault(rating.CreatedInCycleId)));
-        var extraRaiseEligibleCompanyIds = ratingRows
-            .GroupBy(rating => rating.CompanyId)
-            .Where(group =>
+                group => group.ToArray());
+
+        var emissions = await dbContext.ShareEmissions
+            .AsNoTracking()
+            .Where(emission => dueCompanyIds.Contains(emission.CompanyId))
+            .OrderBy(emission => emission.CreatedInCycleId)
+            .ThenBy(emission => emission.Id)
+            .ToListAsync();
+        var emissionsByCompany = emissions
+            .Where(emission =>
+                cycleById.TryGetValue(emission.CreatedInCycleId, out var cycle)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.TradingDayNumber >= minimumStartDay
+                && cycle.TradingDayNumber <= maximumEndDay)
+            .GroupBy(emission => emission.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToArray());
+
+        var investments = await dbContext.CompanyInvestments
+            .AsNoTracking()
+            .Where(investment => dueCompanyIds.Contains(investment.CompanyId))
+            .OrderBy(investment => investment.CreatedInCycleId)
+            .ThenBy(investment => investment.Id)
+            .ToListAsync();
+        var investmentsByCompany = investments
+            .Where(investment =>
+                cycleById.TryGetValue(investment.CreatedInCycleId, out var cycle)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.TradingDayNumber >= minimumStartDay
+                && cycle.TradingDayNumber <= maximumEndDay)
+            .GroupBy(investment => investment.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToArray());
+
+        var dividends = await dbContext.CompanyDividendEvents
+            .AsNoTracking()
+            .Where(dividendEvent =>
+                dueCompanyIds.Contains(dividendEvent.CompanyId)
+                && dividendEvent.TradingDayNumber <= maximumEndDay)
+            .OrderBy(dividendEvent => dividendEvent.TradingDayNumber)
+            .ThenBy(dividendEvent => dividendEvent.Id)
+            .ToListAsync();
+        var dividendsByCompany = dividends
+            .GroupBy(dividendEvent => dividendEvent.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToArray());
+
+        var financialSnapshots = await dbContext.CompanyFinancialSnapshots
+            .AsNoTracking()
+            .Where(snapshot =>
+                dueCompanyIds.Contains(snapshot.CompanyId)
+                && snapshot.TradingDayNumber >= minimumStartDay
+                && snapshot.TradingDayNumber <= maximumEndDay)
+            .ToListAsync();
+        var financialsByCompany = financialSnapshots
+            .GroupBy(snapshot => snapshot.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToArray());
+
+        var liveSentiment = await dbContext.SectorSentimentSnapshots
+            .AsNoTracking()
+            .Where(snapshot => dueIndustryIds.Contains(snapshot.IndustryId))
+            .Select(snapshot => new
             {
-                var recent = group.OrderByDescending(rating => rating.Id).Take(5).Select(rating => rating.Rating).ToList();
-                return recent.Contains(CompanyRiskRating.RaisedExpectations)
-                    && !recent.Contains(CompanyRiskRating.Extra);
+                snapshot.Id,
+                snapshot.IndustryId,
+                snapshot.SentimentValue,
+                snapshot.CreatedInCycleId,
             })
-            .Select(group => group.Key)
-            .ToHashSet();
+            .ToListAsync();
+        var archivedSentiment = await dbContext.SectorSentimentSnapshotArchives
+            .AsNoTracking()
+            .Where(snapshot => dueIndustryIds.Contains(snapshot.IndustryId))
+            .Select(snapshot => new
+            {
+                snapshot.Id,
+                snapshot.IndustryId,
+                snapshot.SentimentValue,
+                snapshot.CreatedInCycleId,
+            })
+            .ToListAsync();
+        var sentimentByIndustry = liveSentiment
+            .Concat(archivedSentiment)
+            .Where(snapshot =>
+                cycleById.TryGetValue(snapshot.CreatedInCycleId, out var cycle)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.TradingDayNumber >= minimumStartDay
+                && cycle.TradingDayNumber <= maximumEndDay)
+            .Select(snapshot =>
+            {
+                var cycle = cycleById[snapshot.CreatedInCycleId];
+                return new SentimentPoint(
+                    snapshot.Id,
+                    snapshot.IndustryId,
+                    snapshot.SentimentValue,
+                    cycle.CycleNumber,
+                    cycle.TradingDayNumber);
+            })
+            .GroupBy(snapshot => snapshot.IndustryId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(snapshot => snapshot.TradingDayNumber)
+                    .ThenBy(snapshot => snapshot.CycleNumber)
+                    .ThenBy(snapshot => snapshot.Id)
+                    .ToArray());
 
-        var capByCompany = companies.Values.ToDictionary(
-            company => company.Id,
-            company => (double)LatestPrice(snapshotsByCompany.GetValueOrDefault(company.Id)) * company.IssuedSharesCount);
-        var totalMarketCap = capByCompany.Values.Sum();
-
-        // The bigger a company's slice of total market capitalisation, the more its extra-raise band is trimmed.
-        double ExtraRaiseCapFactor(int companyId)
+        var auditorOffset = (currentCycle.TradingDayNumber - 1) % auditors.Count;
+        for (var index = 0; index < due.Length; index++)
         {
-            if (totalMarketCap <= 0.0)
+            var candidate = due[index];
+            var companyId = candidate.Company.Id;
+            var priceWindow = Window(
+                pricesByCompany.GetValueOrDefault(companyId),
+                candidate.EvaluationStartTradingDayNumber,
+                candidate.EvaluationEndTradingDayNumber);
+            var denominationWindow = Window(
+                denominationByCompany.GetValueOrDefault(companyId),
+                cycleById,
+                candidate.EvaluationStartTradingDayNumber,
+                candidate.EvaluationEndTradingDayNumber,
+                denominationEvent => denominationEvent.EffectiveInCycleId);
+            var emissionWindow = Window(
+                emissionsByCompany.GetValueOrDefault(companyId),
+                cycleById,
+                candidate.EvaluationStartTradingDayNumber,
+                candidate.EvaluationEndTradingDayNumber,
+                emission => emission.CreatedInCycleId);
+            var investmentWindow = Window(
+                investmentsByCompany.GetValueOrDefault(companyId),
+                cycleById,
+                candidate.EvaluationStartTradingDayNumber,
+                candidate.EvaluationEndTradingDayNumber,
+                investment => investment.CreatedInCycleId);
+            var financial = financialsByCompany.GetValueOrDefault(companyId)?
+                .Where(snapshot =>
+                    snapshot.TradingDayNumber >= candidate.EvaluationStartTradingDayNumber
+                    && snapshot.TradingDayNumber <= candidate.EvaluationEndTradingDayNumber)
+                .OrderByDescending(snapshot => snapshot.TradingDayNumber)
+                .ThenByDescending(snapshot => snapshot.Moment)
+                .ThenByDescending(snapshot => cycleById.GetValueOrDefault(snapshot.CreatedInCycleId)?.CycleNumber ?? 0)
+                .ThenByDescending(snapshot => snapshot.Id)
+                .FirstOrDefault();
+            var latestDividend = dividendsByCompany.GetValueOrDefault(companyId)?
+                .Where(dividendEvent =>
+                    dividendEvent.TradingDayNumber <= candidate.EvaluationEndTradingDayNumber)
+                .OrderByDescending(dividendEvent => dividendEvent.TradingDayNumber)
+                .ThenByDescending(dividendEvent => dividendEvent.Id)
+                .FirstOrDefault();
+            var sentimentWindow = Window(
+                sentimentByIndustry.GetValueOrDefault(candidate.Company.IndustryId),
+                candidate.EvaluationStartTradingDayNumber,
+                candidate.EvaluationEndTradingDayNumber);
+
+            var priceEvidence = PriceEvidenceFor(priceWindow, denominationWindow);
+            var openingIssuedShares = OpeningIssuedShares(
+                candidate.Company.IssuedSharesCount,
+                priceWindow,
+                denominationWindow,
+                emissionWindow,
+                investmentWindow,
+                cycleById);
+            var emittedShares = emissionWindow.Sum(emission => emission.SharesEmitted);
+            var dilutionPercent = openingIssuedShares > 0
+                ? Round6(100m * emittedShares / openingIssuedShares)
+                : 0m;
+            var industryEvidence = IndustryEvidenceFor(sentimentWindow);
+            var modeledMaximumDividend = financial?.ExpectedDividendPool ?? 0m;
+            var dividendCoverageRatio = financial?.DividendCoverageRatio ?? 0m;
+
+            var scoring = scorer.Score(new CompanyAuditScoringInput(
+                priceEvidence.AdjustedReturnPercent,
+                priceEvidence.MaximumAdjustedCycleMovePercent,
+                dilutionPercent,
+                denominationWindow.Count(denominationEvent =>
+                    denominationEvent.ActionType == StockDenominationActionType.Split),
+                denominationWindow.Count(denominationEvent =>
+                    denominationEvent.ActionType == StockDenominationActionType.ReverseSplit),
+                latestDividend?.FundingOutcome,
+                modeledMaximumDividend,
+                dividendCoverageRatio,
+                industryEvidence.Trend,
+                financial?.ProfitabilityLevel ?? CompanyMetricLevel.Medium,
+                financial?.FinancialVolatilityLevel ?? CompanyMetricLevel.Medium,
+                financial?.ClosureRiskLevel ?? CompanyMetricLevel.Medium,
+                financial?.ManagementOutlook ?? ManagementOutlook.Neutral,
+                financial?.ManagementConfidenceScore ?? 0m,
+                financial?.OperatingCashFlow ?? 0m));
+
+            var rating = new CompanyRating
             {
-                return 1.0;
-            }
-
-            var share = capByCompany.GetValueOrDefault(companyId) / totalMarketCap;
-            return Math.Clamp(1.0 - share, MinExtraRaiseFactor, 1.0);
-        }
-
-        var picked = new HashSet<int>();
-
-        foreach (var auditor in auditors)
-        {
-            var eligible = companies.Values
-                .Where(company => !picked.Contains(company.Id)
-                    && IsEligible(company.Id, currentCycleNumber, latestRatingCycleByCompany))
-                .OrderBy(company => company.Id)
-                .ToList();
-
-            if (eligible.Count == 0)
-            {
-                continue;
-            }
-
-            var company = PickWeightedByCapitalization(eligible, snapshotsByCompany);
-            picked.Add(company.Id);
-
-            var stable = IsStable(snapshotsByCompany.GetValueOrDefault(company.Id), currentCycleNumber);
-            var extraOutcomeChance = stable ? StableExtraOutcomeChance : BigMoveExtraOutcomeChance;
-            if (activeCrisis is not null)
-            {
-                extraOutcomeChance = Math.Min(
-                    1.0,
-                    extraOutcomeChance * CrisisExtraOutcomeMultiplier);
-            }
-
-            var extraOutcomeRoll = random.NextDouble();
-            var issueFound = extraOutcomeRoll < extraOutcomeChance;
-            var extraRaiseFound = !issueFound
-                && extraRaiseEligibleCompanyIds.Contains(company.Id)
-                && extraOutcomeRoll < extraOutcomeChance * (1 + ExtraRaiseCapFactor(company.Id));
-
-            CompanyRiskRating rating;
-            decimal? impactPercent = null;
-
-            if (issueFound)
-            {
-                rating = CompanyRiskRating.Extra;
-                impactPercent = Round(MinExtraImpactPercent
-                    + ((decimal)random.NextDouble() * (MaxExtraImpactPercent - MinExtraImpactPercent)));
-
-                // cancelStaleOrders: false — the personality-weighted revision below replaces the blanket cancel.
-                await marketImpact.ApplyImpactAsync(
-                    NewsImpactDirection.Decrease, [company.Id], impactPercent.Value, currentCycleId, now, cancelStaleOrders: false);
-
-                await ReviseBuyOrdersAsync(company.Id, ExtraRiskBuyRevisionChance, currentCycleId, now);
-
-                var (title, content) = DemoAuditContent.Issue(company.Name, random);
-                dbContext.NewsPosts.Add(new NewsPost
-                {
-                    Title = title,
-                    Content = content,
-                    PublishedInCycleId = currentCycleId,
-                    ImpactAppliedInCycleId = currentCycleId,
-                    PublishedAt = now,
-                    Scope = NewsImpactScope.Company,
-                    Direction = NewsImpactDirection.Decrease,
-                    ImpactPercent = impactPercent,
-                    TargetCompanyId = company.Id,
-                });
-            }
-            else if (extraRaiseFound
-                || (LegacyRaisedExpectationsChance > 0d
-                    && random.NextDouble() < LegacyRaisedExpectationsChance))
-            {
-                rating = extraRaiseFound
-                    ? CompanyRiskRating.ExtraRaisedExpectations
-                    : CompanyRiskRating.RaisedExpectations;
-                var minImpactPercent = extraRaiseFound ? MinExtraImpactPercent : MinRaisePercent;
-                var maxImpactPercent = extraRaiseFound ? MaxExtraImpactPercent : MaxRaisePercent;
-                impactPercent = Round(minImpactPercent
-                    + ((decimal)random.NextDouble() * (maxImpactPercent - minImpactPercent)));
-
-                await marketImpact.ApplyImpactAsync(
-                    NewsImpactDirection.Increase,
-                    [company.Id],
-                    impactPercent.Value,
-                    currentCycleId,
-                    now,
-                    cancelStaleOrders: false);
-
-                await ReviseSellOrdersAsync(company.Id, now);
-
-                var (title, content) = extraRaiseFound
-                    ? DemoAuditContent.ExtraRaisedExpectations(company.Name, random)
-                    : DemoAuditContent.RaisedExpectations(company.Name, random);
-                dbContext.NewsPosts.Add(new NewsPost
-                {
-                    Title = title,
-                    Content = content,
-                    PublishedInCycleId = currentCycleId,
-                    ImpactAppliedInCycleId = currentCycleId,
-                    PublishedAt = now,
-                    Scope = NewsImpactScope.Company,
-                    Direction = NewsImpactDirection.Increase,
-                    ImpactPercent = impactPercent,
-                    TargetCompanyId = company.Id,
-                });
-            }
-            else if (!stable)
-            {
-                rating = CompanyRiskRating.High;
-
-                await ReviseBuyOrdersAsync(company.Id, HighRiskBuyRevisionChance, currentCycleId, now);
-
-                var (title, content) = DemoAuditContent.HighRisk(company.Name, random);
-                dbContext.NewsPosts.Add(new NewsPost
-                {
-                    Title = title,
-                    Content = content,
-                    PublishedInCycleId = currentCycleId,
-                    PublishedAt = now,
-                    Scope = NewsImpactScope.None,
-                });
-            }
-            else
-            {
-                rating = CompanyRiskRating.Low;
-            }
-
-            dbContext.CompanyRatings.Add(new CompanyRating
-            {
-                CompanyId = company.Id,
-                AuditorId = auditor.Id,
-                Rating = rating,
-                ImpactPercent = impactPercent,
+                CompanyId = companyId,
+                AuditorId = auditors[(auditorOffset + index) % auditors.Count].Id,
+                Rating = scoring.Rating,
+                ImpactPercent = null,
                 CreatedInCycleId = currentCycleId,
                 CreatedAt = now,
-            });
-
-            // A risky verdict uncovered while a crisis is active joins that crisis's timeline.
-            if (activeCrisis is not null && rating is CompanyRiskRating.High or CompanyRiskRating.Extra)
+            };
+            dbContext.CompanyRatings.Add(rating);
+            rating.Evidence = new CompanyAuditEvidence
             {
-                dbContext.CrisisEvents.Add(new CrisisEvent
-                {
-                    CrisisId = activeCrisis.Id,
-                    Type = CrisisEventType.AuditorRating,
-                    Description = $"{company.Name} rated {rating} risk",
-                    CompanyId = company.Id,
-                    ImpactPercent = impactPercent,
-                    CreatedInCycleId = currentCycleId,
-                    CreatedInCycleNumber = currentCycleNumber,
-                    CreatedAt = now,
-                });
-            }
+                CompanyRating = rating,
+                CompanyId = companyId,
+                CompanyFinancialSnapshotId = financial?.Id,
+                EvaluationStartTradingDayNumber = candidate.EvaluationStartTradingDayNumber,
+                EvaluationEndTradingDayNumber = candidate.EvaluationEndTradingDayNumber,
+                EffectiveTradingDayNumber = candidate.EffectiveTradingDayNumber,
+                TotalScore = scoring.TotalScore,
+                AdjustedReturnScore = scoring.AdjustedReturnScore,
+                CycleJumpScore = scoring.CycleJumpScore,
+                FreeShareEmissionScore = scoring.FreeShareEmissionScore,
+                DenominationScore = scoring.DenominationScore,
+                DividendOutcomeScore = scoring.DividendOutcomeScore,
+                DividendCoverageScore = scoring.DividendCoverageScore,
+                IndustryScore = scoring.IndustryScore,
+                ProfitabilityFactorScore = scoring.ProfitabilityFactorScore,
+                StabilityFactorScore = scoring.StabilityFactorScore,
+                ClosureRiskFactorScore = scoring.ClosureRiskFactorScore,
+                ManagementOutlookFactorScore = scoring.ManagementOutlookFactorScore,
+                StartPrice = priceEvidence.StartPrice,
+                EndPrice = priceEvidence.EndPrice,
+                AdjustedReturnPercent = priceEvidence.AdjustedReturnPercent,
+                MaximumAdjustedCycleMovePercent = priceEvidence.MaximumAdjustedCycleMovePercent,
+                OpeningIssuedShares = openingIssuedShares,
+                EmittedShares = emittedShares,
+                FreeShareDilutionPercent = dilutionPercent,
+                StockSplitCount = denominationWindow.Count(denominationEvent =>
+                    denominationEvent.ActionType == StockDenominationActionType.Split),
+                ReverseSplitCount = denominationWindow.Count(denominationEvent =>
+                    denominationEvent.ActionType == StockDenominationActionType.ReverseSplit),
+                LatestDividendEventId = latestDividend?.Id,
+                IssuerCash = candidate.Company.CashBalance,
+                ModeledMaximumDividend = modeledMaximumDividend,
+                DividendCoverageRatio = dividendCoverageRatio,
+                OpeningIndustrySentiment = industryEvidence.Opening,
+                ClosingIndustrySentiment = industryEvidence.Closing,
+                IndustryTrend = industryEvidence.Trend,
+            };
         }
     }
 
-    private async Task EnsureAuditorsExistAsync(DateTime now)
+    public static int AuditorCountFor(int companyCount) =>
+        Math.Max(1, (int)Math.Ceiling(companyCount * ReviewFraction));
+
+    private async Task EnsureAuditorsExistAsync(int companyCount, DateTime now)
     {
         if (await dbContext.Auditors.AnyAsync())
         {
             return;
         }
 
-        var companyCount = await dbContext.Companies.CountAsync(company => company.ClosedInCycleId == null);
-        if (companyCount == 0)
-        {
-            return;
-        }
-
         foreach (var (name, description) in DemoAuditorProfiles.Take(AuditorCountFor(companyCount)))
         {
-            dbContext.Auditors.Add(new Auditor { Name = name, Description = description, CreatedAt = now });
+            dbContext.Auditors.Add(new Auditor
+            {
+                Name = name,
+                Description = description,
+                CreatedAt = now,
+            });
         }
 
-        // Saved here so the freshly minted auditors have ids the rating rows can reference this same cycle.
+        // Ratings store scalar auditor ids, so deterministic backfill is flushed once before the batch is staged.
         await dbContext.SaveChangesAsync();
     }
 
-    // The seeded/backfilled auditor count: enough for roughly ReviewFraction of companies to be reviewed each
-    // cycle, since each auditor reviews one company per cycle.
-    public static int AuditorCountFor(int companyCount) =>
-        Math.Max(1, (int)Math.Ceiling(companyCount * ReviewFraction));
-
-    private static bool IsEligible(
-        int companyId,
-        int currentCycleNumber,
-        IReadOnlyDictionary<int, int> latestRatingCycleByCompany) =>
-        !latestRatingCycleByCompany.TryGetValue(companyId, out var ratedAtCycle)
-        || currentCycleNumber - ratedAtCycle >= SafePeriodCycles;
-
-    private Company PickWeightedByCapitalization(
-        IReadOnlyList<Company> eligible,
-        IReadOnlyDictionary<int, List<(int CycleNumber, decimal Price)>> snapshotsByCompany)
+    private (int? Opening, int? Closing, IndustryTrend Trend) IndustryEvidenceFor(
+        IReadOnlyList<SentimentPoint> window)
     {
-        var floor = 1.0 / eligible.Count;
-        var caps = new double[eligible.Count];
-        var totalCap = 0.0;
-        for (var index = 0; index < eligible.Count; index++)
+        if (window.Count == 0)
         {
-            var latest = LatestPrice(snapshotsByCompany.GetValueOrDefault(eligible[index].Id));
-            caps[index] = (double)latest * eligible[index].IssuedSharesCount;
-            totalCap += caps[index];
+            return (null, null, IndustryTrend.Plateau);
         }
 
-        var weights = new double[eligible.Count];
-        var totalWeight = 0.0;
-        for (var index = 0; index < eligible.Count; index++)
-        {
-            var proportion = totalCap > 0 ? caps[index] / totalCap : 0.0;
-            weights[index] = Math.Max(proportion, floor);
-            totalWeight += weights[index];
-        }
-
-        var roll = random.NextDouble() * totalWeight;
-        var cumulative = 0.0;
-        for (var index = 0; index < eligible.Count; index++)
-        {
-            cumulative += weights[index];
-            if (roll < cumulative)
-            {
-                return eligible[index];
-            }
-        }
-
-        return eligible[^1];
+        var opening = window[0].SentimentValue;
+        var closing = window[^1].SentimentValue;
+        var change = closing - opening;
+        var trend = change >= options.IndustryDirectionDeadband
+            ? IndustryTrend.Rising
+            : change <= -options.IndustryDirectionDeadband
+                ? IndustryTrend.Falling
+                : IndustryTrend.Plateau;
+        return (opening, closing, trend);
     }
 
-    // Stable unless the per-cycle compound price move over the trend window meets the big-move threshold in
-    // either direction. Too little history, or a non-positive price to compare, counts as stable.
-    private static bool IsStable(List<(int CycleNumber, decimal Price)>? snapshots, int currentCycleNumber)
+    private static PriceEvidence PriceEvidenceFor(
+        IReadOnlyList<PricePoint> prices,
+        IReadOnlyList<StockDenominationEvent> denominationEvents)
     {
-        if (snapshots is not { Count: > 0 })
+        if (prices.Count == 0)
         {
-            return true;
+            return new PriceEvidence(0m, 0m, 0m, 0m);
         }
 
-        var latest = snapshots[^1].Price;
-        if (latest <= 0m)
+        var startPrice = prices[0].Price;
+        var endPrice = prices[^1].Price;
+        var adjustedReturn = 0m;
+        if (startPrice > 0m)
         {
-            return true;
-        }
-
-        var targetCycle = currentCycleNumber - TrendWindowCycles;
-        var oldPrice = snapshots[0].Price;
-        var oldCycle = snapshots[0].CycleNumber;
-        foreach (var (cycleNumber, price) in snapshots)
-        {
-            if (cycleNumber > targetCycle)
+            var adjustedFactor = endPrice / startPrice;
+            foreach (var denominationEvent in denominationEvents)
             {
-                break;
+                if (denominationEvent.PriceAfter > 0m)
+                {
+                    adjustedFactor *= denominationEvent.PriceBefore / denominationEvent.PriceAfter;
+                }
             }
 
-            oldPrice = price;
-            oldCycle = cycleNumber;
+            adjustedReturn = Round6((adjustedFactor - 1m) * 100m);
         }
 
-        if (oldPrice <= 0m)
+        var maximumMove = 0m;
+        for (var index = 1; index < prices.Count; index++)
         {
-            return true;
-        }
-
-        var span = Math.Max(1, currentCycleNumber - oldCycle);
-        var perCycleRate = Math.Pow((double)(latest / oldPrice), 1.0 / span) - 1.0;
-        return Math.Abs(perCycleRate) < BigMovePerCycleThreshold;
-    }
-
-    private async Task ReviseBuyOrdersAsync(int companyId, double baseChance, int currentCycleId, DateTime now)
-    {
-        var orders = await dbContext.Orders
-            .Where(order => order.ParticipantId != null
-                && order.CompanyId == companyId
-                && order.Type == OrderType.Buy
-                && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
-            .OrderBy(order => order.Id)
-            .ToListAsync();
-
-        if (orders.Count == 0)
-        {
-            return;
-        }
-
-        var ownerIds = orders.Select(order => order.ParticipantId!.Value).Distinct().ToList();
-        var ownersById = await dbContext.Participants
-            .Where(participant => ownerIds.Contains(participant.Id))
-            .ToDictionaryAsync(participant => participant.Id);
-
-        foreach (var order in orders)
-        {
-            var owner = ownersById[order.ParticipantId!.Value];
-
-            // The market never auto-cancels the human player, and a bankrupt trader's orders belong to the
-            // bankruptcy service; neither draws a roll.
-            if (owner.Type == ParticipantType.Player || owner.IsBankrupt)
+            var previous = prices[index - 1];
+            var current = prices[index];
+            if (previous.Price <= 0m
+                || IsDenominationBoundary(previous, current, denominationEvents))
             {
                 continue;
             }
 
-            var chance = Math.Clamp(baseChance + CancelDelta(owner), 0.0, 1.0);
-            if (random.NextDouble() >= chance)
-            {
-                continue;
-            }
-
-            CancelBuy(order, owner, currentCycleId, now);
+            var move = Math.Abs((current.Price / previous.Price - 1m) * 100m);
+            maximumMove = Math.Max(maximumMove, move);
         }
+
+        return new PriceEvidence(
+            startPrice,
+            endPrice,
+            adjustedReturn,
+            Round6(maximumMove));
     }
 
-    private async Task ReviseSellOrdersAsync(int companyId, DateTime now)
+    private static bool IsDenominationBoundary(
+        PricePoint previous,
+        PricePoint current,
+        IReadOnlyList<StockDenominationEvent> denominationEvents) =>
+        denominationEvents.Any(denominationEvent =>
+            (denominationEvent.EffectiveInCycleNumber > previous.CycleNumber
+                && denominationEvent.EffectiveInCycleNumber <= current.CycleNumber)
+            || (denominationEvent.EffectiveInCycleNumber == current.CycleNumber
+                && previous.Price == denominationEvent.PriceBefore
+                && current.Price == denominationEvent.PriceAfter));
+
+    private static int OpeningIssuedShares(
+        int currentIssuedShares,
+        IReadOnlyList<PricePoint> prices,
+        IReadOnlyList<StockDenominationEvent> denominationEvents,
+        IReadOnlyList<ShareEmission> emissions,
+        IReadOnlyList<CompanyInvestment> investments,
+        IReadOnlyDictionary<int, CyclePoint> cycleById)
     {
-        var orders = await dbContext.Orders
-            .Where(order => order.ParticipantId != null
-                && order.CompanyId == companyId
-                && order.Type == OrderType.Sell
-                && (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled))
-            .OrderBy(order => order.Id)
-            .ToListAsync();
-        if (orders.Count == 0)
+        var capitalizedOpening = prices.FirstOrDefault();
+        if (capitalizedOpening is not null)
         {
-            return;
-        }
-
-        var ownerIds = orders.Select(order => order.ParticipantId!.Value).Distinct().ToList();
-        var ownersById = await dbContext.Participants
-            .Where(participant => ownerIds.Contains(participant.Id))
-            .ToDictionaryAsync(participant => participant.Id);
-
-        foreach (var order in orders)
-        {
-            var owner = ownersById[order.ParticipantId!.Value];
-            if (owner.Type == ParticipantType.Player || owner.IsBankrupt)
+            var shares = capitalizedOpening.Price > 0m
+                && capitalizedOpening.Capitalization > 0m
+                    ? capitalizedOpening.Capitalization.Value / capitalizedOpening.Price
+                    : 0m;
+            if (shares is > 0m and <= int.MaxValue)
             {
-                continue;
+                return decimal.ToInt32(decimal.Round(
+                    shares,
+                    0,
+                    MidpointRounding.AwayFromZero));
             }
-
-            order.Status = OrderStatus.Cancelled;
-            order.UpdatedAt = now;
         }
-    }
 
-    private static double CancelDelta(Participant owner) =>
-        (owner.RiskProfile == RiskProfile.Low ? LowRiskCancelDelta : 0.0)
-        + (owner.RiskProfile == RiskProfile.High ? HighRiskCancelDelta : 0.0)
-        + (owner.Temperament == Temperament.Conservative ? ConservativeCancelDelta : 0.0);
-
-    private void CancelBuy(Order order, Participant owner, int currentCycleId, DateTime now)
-    {
-        if (order.ReservedCashAmount > 0m)
+        var changes = denominationEvents
+            .Select(denominationEvent => new SupplyChange(
+                denominationEvent.EffectiveInCycleNumber,
+                denominationEvent.Id,
+                denominationEvent.IssuedSharesBefore,
+                0))
+            .Concat(emissions.Select(emission => new SupplyChange(
+                cycleById.GetValueOrDefault(emission.CreatedInCycleId)?.CycleNumber ?? 0,
+                emission.Id,
+                null,
+                emission.SharesEmitted)))
+            .Concat(investments.Select(investment => new SupplyChange(
+                cycleById.GetValueOrDefault(investment.CreatedInCycleId)?.CycleNumber ?? 0,
+                investment.Id,
+                null,
+                investment.SharesIssued)))
+            .OrderByDescending(change => change.CycleNumber)
+            .ThenByDescending(change => change.Id)
+            .ToArray();
+        var reconstructed = currentIssuedShares;
+        foreach (var change in changes)
         {
-            owner.ReservedBalance -= order.ReservedCashAmount;
-            dbContext.MoneyTransactions.Add(new MoneyTransaction
-            {
-                ParticipantId = owner.Id,
-                Type = MoneyTransactionType.Release,
-                Amount = order.ReservedCashAmount,
-                RelatedOrderId = order.Id,
-                Description = "Reserved cash released on buy order cancel",
-                CreatedInCycleId = currentCycleId,
-                CreatedAt = now,
-            });
-            order.ReservedCashAmount = 0m;
+            reconstructed = change.IssuedSharesBefore
+                ?? Math.Max(0, reconstructed - change.SharesIssued);
         }
 
-        order.Status = OrderStatus.Cancelled;
-        order.UpdatedAt = now;
+        return reconstructed;
     }
 
-    private static decimal LatestPrice(List<(int CycleNumber, decimal Price)>? snapshots) =>
-        snapshots is { Count: > 0 } ? snapshots[^1].Price : 0m;
+    private static T[] Window<T>(
+        IReadOnlyList<T>? rows,
+        IReadOnlyDictionary<int, CyclePoint> cycleById,
+        int startDay,
+        int endDay,
+        Func<T, int> cycleId) =>
+        rows?
+            .Where(row =>
+                cycleById.TryGetValue(cycleId(row), out var cycle)
+                && cycle.TradingDayNumber >= startDay
+                && cycle.TradingDayNumber <= endDay)
+            .ToArray()
+        ?? [];
 
-    private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+    private static PricePoint[] Window(
+        IReadOnlyList<PricePoint>? rows,
+        int startDay,
+        int endDay) =>
+        rows?
+            .Where(row =>
+                row.TradingDayNumber >= startDay
+                && row.TradingDayNumber <= endDay)
+            .ToArray()
+        ?? [];
+
+    private static SentimentPoint[] Window(
+        IReadOnlyList<SentimentPoint>? rows,
+        int startDay,
+        int endDay) =>
+        rows?
+            .Where(row =>
+                row.TradingDayNumber >= startDay
+                && row.TradingDayNumber <= endDay)
+            .ToArray()
+        ?? [];
+
+    private static decimal Round6(decimal value) =>
+        Math.Round(value, 6, MidpointRounding.AwayFromZero);
+
+    private sealed record CyclePoint(
+        int Id,
+        int CycleNumber,
+        int TradingCycleNumber,
+        int MarketRunId,
+        int TradingDayNumber);
+
+    private sealed record DueCompany(
+        Company Company,
+        int EvaluationStartTradingDayNumber,
+        int EvaluationEndTradingDayNumber,
+        int EffectiveTradingDayNumber,
+        int DueTradingDayNumber);
+
+    private sealed record PricePoint(
+        int Id,
+        int CompanyId,
+        decimal Price,
+        decimal? Capitalization,
+        int CycleNumber,
+        int TradingDayNumber);
+
+    private sealed record SentimentPoint(
+        int Id,
+        int IndustryId,
+        int SentimentValue,
+        int CycleNumber,
+        int TradingDayNumber);
+
+    private sealed record PriceEvidence(
+        decimal StartPrice,
+        decimal EndPrice,
+        decimal AdjustedReturnPercent,
+        decimal MaximumAdjustedCycleMovePercent);
+
+    private sealed record SupplyChange(
+        int CycleNumber,
+        int Id,
+        int? IssuedSharesBefore,
+        int SharesIssued);
 }

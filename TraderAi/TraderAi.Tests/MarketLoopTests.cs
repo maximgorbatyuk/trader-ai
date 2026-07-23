@@ -392,6 +392,28 @@ public sealed class MarketLoopTests : IDisposable
             seed.Day.DayNumber,
             DateTime.UtcNow);
         await observedContext.SaveChangesAsync();
+        var auditDay = new TradingDay
+        {
+            DayNumber = 3,
+            State = TradingSessionState.Trading,
+            OpenedInCycleId = 0,
+        };
+        observedContext.TradingDays.Add(auditDay);
+        await observedContext.SaveChangesAsync();
+        var auditCycle = new MarketCycle
+        {
+            CycleNumber = 3,
+            TradingDayId = auditDay.Id,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Running,
+            StartedAt = DateTime.UtcNow,
+        };
+        observedContext.MarketCycles.Add(auditCycle);
+        await observedContext.SaveChangesAsync();
+        auditDay.OpenedInCycleId = auditCycle.Id;
+        seed.Market.CurrentCycleId = auditCycle.Id;
+        seed.Market.CurrentTradingDayId = auditDay.Id;
+        await observedContext.SaveChangesAsync();
         observer.Clear();
         var lifecycle = new CompanyLifecycleService(
             observedContext,
@@ -402,9 +424,7 @@ public sealed class MarketLoopTests : IDisposable
             financialService);
         var auditor = new AuditorService(
             observedContext,
-            Options.Create(new AuditorOptions { Enabled = true }),
-            new ConstantRandom(0.5d),
-            new MarketImpactService(observedContext));
+            Options.Create(new AuditorOptions { Enabled = true }));
         var service = new MarketService(
             observedContext,
             new MatchingEngine(observedContext),

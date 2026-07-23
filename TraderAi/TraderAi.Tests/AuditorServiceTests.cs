@@ -7,682 +7,647 @@ using TraderAi.Services;
 
 namespace TraderAi.Tests;
 
-// Drives the auditor with a scripted Random so company selection, verdict rolls, impact sizes, and buy-order
-// revisions are forced. Backfilling auditors draws nothing, and a disabled positive path preserves the legacy
-// draw sequence for focused tests.
 public sealed class AuditorServiceTests : IDisposable
 {
     private readonly SqliteConnection connection;
     private readonly AppDbContext context;
-    private int industryId;
+    private readonly Dictionary<int, TradingDay> days = [];
+    private readonly Industry industry;
 
     public AuditorServiceTests()
     {
         connection = new SqliteConnection("DataSource=:memory:");
         connection.Open();
 
-        var options = new DbContextOptionsBuilder<AppDbContext>()
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>()
             .UseSqlite(connection)
             .Options;
-
-        context = new AppDbContext(options);
+        context = new AppDbContext(dbOptions);
         context.Database.EnsureCreated();
-    }
 
-    private AuditorService Service(bool enabled, Random random, double raiseExpectationsChance = 0d)
-    {
-        return new(
-            context,
-            Options.Create(new AuditorOptions { Enabled = enabled }),
-            random,
-            new MarketImpactService(context))
+        industry = new Industry
         {
-            LegacyRaisedExpectationsChance = raiseExpectationsChance,
+            Name = "Audit Industry",
+            SentimentValue = 500,
+            SentimentVolatility = 0.1m,
+            SectorBeta = 1m,
         };
-    }
-
-    private NewsService DeferredNews() =>
-        new(
-            context,
-            new MarketCycleLock(),
-            Options.Create(new NewsOptions()),
-            Options.Create(new RandomChanceRatesOptions()),
-            new MarketImpactService(context),
-            new Random(1));
-
-    [Theory]
-    [InlineData(100, 5)]
-    [InlineData(40, 2)]
-    [InlineData(3, 1)]
-    [InlineData(1, 1)]
-    public void AuditorCountIsFivePercentRoundedUp(int companyCount, int expected) =>
-        Assert.Equal(expected, AuditorService.AuditorCountFor(companyCount));
-
-    [Fact]
-    public async Task DisabledDoesNotRateOrCreateAuditors()
-    {
-        var cycle = await AddCycleAsync(20);
-        await SetupMarketAsync(cycle);
-        await AddCompanyAsync();
-
-        await Service(enabled: false, new ScriptedRandom([], []))
-            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        Assert.Equal(0, await context.Auditors.CountAsync());
-        Assert.Equal(0, await context.CompanyRatings.CountAsync());
+        context.Industries.Add(industry);
+        context.SaveChanges();
     }
 
     [Fact]
-    public async Task BackfillsAuditorsWhenNoneExistDrawingNothingForCreation()
+    public async Task SeededCompanyUsesOpeningCycleAndTwoDayCadence()
     {
-        var cycle = await AddCycleAsync(20);
-        await SetupMarketAsync(cycle);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, cycle);
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3Opening = await AddCycleAsync(3, 1);
+        var day3Later = await AddCycleAsync(3, 2);
+        var day4 = await AddCycleAsync(4, 1);
+        var day5 = await AddCycleAsync(5, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 100m, day2);
+        await AddPriceAsync(company, 100m, day4);
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        await AddFinancialAsync(company, day4, CompanyFinancialSnapshotMoment.Midday);
 
-        // Three companies would need one auditor; here a single company still needs one. The two draws are the
-        // company pick and a stable-issue roll that misses, so no auditor-creation draw is consumed.
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.9d], []))
-            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
+        await ProcessAsync(day2);
+        await ProcessAsync(day3Later);
+        Assert.Empty(await context.CompanyRatings.AsNoTracking().ToListAsync());
 
-        Assert.Equal(1, await context.Auditors.CountAsync());
-        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
-        Assert.Equal(CompanyRiskRating.Low, rating.Rating);
+        await ProcessAsync(day3Opening);
+        await ProcessAsync(day3Opening);
+        await ProcessAsync(day4);
+        Assert.Single(await context.CompanyRatings.AsNoTracking().ToListAsync());
+
+        await ProcessAsync(day5);
+        var evidence = await context.CompanyAuditEvidence
+            .AsNoTracking()
+            .OrderBy(row => row.EffectiveTradingDayNumber)
+            .ToListAsync();
+        Assert.Equal(2, evidence.Count);
+        Assert.Equal((1, 2, 3), (
+            evidence[0].EvaluationStartTradingDayNumber,
+            evidence[0].EvaluationEndTradingDayNumber,
+            evidence[0].EffectiveTradingDayNumber));
+        Assert.Equal((3, 4, 5), (
+            evidence[1].EvaluationStartTradingDayNumber,
+            evidence[1].EvaluationEndTradingDayNumber,
+            evidence[1].EffectiveTradingDayNumber));
     }
 
     [Fact]
-    public async Task StablePriceYieldsLowRatingWithNoNewsOrPriceMove()
+    public async Task ConfiguredOneDayIntervalAuditsOnFollowingDay()
     {
-        var cycle = await AddCycleAsync(20);
-        await SetupMarketAsync(cycle);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, cycle);
-        var auditor = await AddAuditorAsync();
+        var day4 = await AddCycleAsync(4, 1);
+        var day5 = await AddCycleAsync(5, 1);
+        var company = await AddCompanyAsync(day4);
+        await AddPriceAsync(company, 100m, day4);
+        await AddFinancialAsync(company, day4, CompanyFinancialSnapshotMoment.Seed);
 
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.9d], []))
-            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
+        await ProcessAsync(day5, interval: 1);
 
-        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
-        Assert.Equal(CompanyRiskRating.Low, rating.Rating);
-        Assert.Equal(auditor.Id, rating.AuditorId);
-        Assert.Null(rating.ImpactPercent);
-        Assert.Equal(0, await context.NewsPosts.CountAsync());
-        Assert.Equal(1, await context.PriceSnapshots.CountAsync(snapshot => snapshot.CompanyId == company.Id));
+        var evidence = await context.CompanyAuditEvidence.AsNoTracking().SingleAsync();
+        Assert.Equal((4, 4, 5), (
+            evidence.EvaluationStartTradingDayNumber,
+            evidence.EvaluationEndTradingDayNumber,
+            evidence.EffectiveTradingDayNumber));
     }
 
     [Fact]
-    public async Task BigPriceMoveYieldsHighRatingRevisesBuysAndPostsImpactFreeNews()
+    public async Task AllDueLiveCompaniesAreAssignedDeterministicallyAndBalanced()
     {
-        var older = await AddCycleAsync(10);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync();
-        // ~7.2% per cycle over ten cycles — comfortably past the 5% big-move line.
-        await AddSnapshotAsync(company.Id, price: 100m, older);
-        await AddSnapshotAsync(company.Id, price: 200m, current);
-        await AddAuditorAsync();
-        var buyer = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 500m);
-        var buy = await AddBuyOrderAsync(buyer.Id, company.Id, quantity: 5, price: 100m, reserved: 500m, current);
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var first = await AddCompanyAsync(day1, "A");
+        var second = await AddCompanyAsync(day1, "B");
+        var third = await AddCompanyAsync(day1, "C");
+        var closed = await AddCompanyAsync(day1, "Closed");
+        closed.ClosedInCycleId = day2.Id;
+        var notDue = await AddCompanyAsync(day2, "New listing");
+        var auditor1 = await AddAuditorAsync("First");
+        var auditor2 = await AddAuditorAsync("Second");
 
-        // pick, issue roll misses (>= 0.10), cancel roll hits (< 0.50); one int for the headline.
-        await Service(enabled: true, new ScriptedRandom([0.9d, 0.9d, 0.1d], [0]))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        foreach (var company in new[] { first, second, third, closed, notDue })
+        {
+            await AddPriceAsync(company, 100m, day1);
+            await AddPriceAsync(company, 100m, day2);
+            await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        }
         await context.SaveChangesAsync();
 
-        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
-        Assert.Equal(CompanyRiskRating.High, rating.Rating);
-        Assert.Null(rating.ImpactPercent);
+        await ProcessAsync(day3);
 
-        var refreshedBuy = await context.Orders.AsNoTracking().FirstAsync(order => order.Id == buy.Id);
-        Assert.Equal(OrderStatus.Cancelled, refreshedBuy.Status);
-        Assert.Equal(0m, refreshedBuy.ReservedCashAmount);
-        var refreshedBuyer = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == buyer.Id);
-        Assert.Equal(0m, refreshedBuyer.ReservedBalance);
-
-        var news = await context.NewsPosts.AsNoTracking().SingleAsync();
-        Assert.Equal(NewsImpactScope.None, news.Scope);
-        // A big move but no discovered issue leaves the price untouched.
-        Assert.Equal(0, await context.PriceSnapshots.CountAsync(snapshot => snapshot.CompanyId == company.Id
-            && snapshot.CreatedInCycleId == current.Id && snapshot.Price != 200m));
-    }
-
-    [Fact]
-    public async Task DiscoveredIssueYieldsExtraDropsPriceAndPostsCompanyNews()
-    {
-        var older = await AddCycleAsync(10);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync(issuedShares: 1000);
-        await AddSnapshotAsync(company.Id, price: 100m, older);
-        await AddSnapshotAsync(company.Id, price: 200m, current);
-        await AddAuditorAsync();
-        var buyer = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 500m);
-        var buy = await AddBuyOrderAsync(buyer.Id, company.Id, quantity: 5, price: 100m, reserved: 500m, current);
-
-        // pick, issue roll hits (< 0.10), drop size 0.5 → 15%, cancel roll hits (< 0.70); one int for the headline.
-        await Service(enabled: true, new ScriptedRandom([0.9d, 0.05d, 0.5d, 0.1d], [0]))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
-        Assert.Equal(CompanyRiskRating.Extra, rating.Rating);
-        Assert.Equal(15m, rating.ImpactPercent);
-
-        // A fresh snapshot 15% below the last price of 200.
-        var latest = await context.PriceSnapshots.AsNoTracking()
-            .Where(snapshot => snapshot.CompanyId == company.Id)
-            .OrderByDescending(snapshot => snapshot.Id)
-            .FirstAsync();
-        Assert.Equal(170m, latest.Price);
-
-        var news = await context.NewsPosts.AsNoTracking().SingleAsync();
-        Assert.Equal(NewsImpactScope.Company, news.Scope);
-        Assert.Equal(NewsImpactDirection.Decrease, news.Direction);
-        Assert.Equal(15m, news.ImpactPercent);
-        Assert.Equal(company.Id, news.TargetCompanyId);
-        Assert.Equal(current.Id, news.ImpactAppliedInCycleId);
-
-        var snapshotsBeforeApply = await context.PriceSnapshots.CountAsync(snapshot => snapshot.CompanyId == company.Id);
-        Assert.Equal(0, await DeferredNews().ApplyPendingImpactsForCycleAsync(current, DateTime.UtcNow));
-        await context.SaveChangesAsync();
-        Assert.Equal(snapshotsBeforeApply, await context.PriceSnapshots.CountAsync(snapshot => snapshot.CompanyId == company.Id));
-        Assert.Equal(170m, (await context.PriceSnapshots.AsNoTracking()
-            .Where(snapshot => snapshot.CompanyId == company.Id)
-            .OrderByDescending(snapshot => snapshot.Id)
-            .FirstAsync()).Price);
-
-        var refreshedBuy = await context.Orders.AsNoTracking().FirstAsync(order => order.Id == buy.Id);
-        Assert.Equal(OrderStatus.Cancelled, refreshedBuy.Status);
-    }
-
-    [Fact]
-    public async Task EligibleHistoryYieldsExtraRaisedExpectationsWithPositiveImpact()
-    {
-        var ratedAt = await AddCycleAsync(1);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync(issuedShares: 1000);
-        await AddSnapshotAsync(company.Id, price: 100m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
-        await AddCapitalizationBallastAsync(current, auditor.Id);
-        var seller = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 0m);
-        var sell = await AddSellOrderAsync(seller.Id, company.Id, quantity: 5, filledQuantity: 0, price: 100m, current);
-
-        // Pick, then 0.03 falls in the stable Extra Raise band [0.02, 0.04); midpoint impact lifts 15%.
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d, 0.5d], [0]))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        var rating = await context.CompanyRatings.AsNoTracking()
-            .OrderByDescending(row => row.Id)
-            .FirstAsync();
-        Assert.Equal(CompanyRiskRating.ExtraRaisedExpectations, rating.Rating);
-        Assert.Equal(15m, rating.ImpactPercent);
-
-        var latest = await context.PriceSnapshots.AsNoTracking()
-            .Where(snapshot => snapshot.CompanyId == company.Id)
-            .OrderByDescending(snapshot => snapshot.Id)
-            .FirstAsync();
-        Assert.Equal(115m, latest.Price);
-
-        var news = await context.NewsPosts.AsNoTracking().SingleAsync();
-        Assert.Equal(NewsImpactScope.Company, news.Scope);
-        Assert.Equal(NewsImpactDirection.Increase, news.Direction);
-        Assert.Equal(15m, news.ImpactPercent);
-        Assert.Equal(company.Id, news.TargetCompanyId);
-        Assert.Equal(current.Id, news.ImpactAppliedInCycleId);
-        Assert.StartsWith("Exceptional audit", news.Title);
+        var ratings = await context.CompanyRatings
+            .AsNoTracking()
+            .OrderBy(rating => rating.CompanyId)
+            .ToListAsync();
+        Assert.Equal([first.Id, second.Id, third.Id], ratings.Select(rating => rating.CompanyId));
         Assert.Equal(
-            OrderStatus.Cancelled,
-            (await context.Orders.AsNoTracking().SingleAsync(order => order.Id == sell.Id)).Status);
+            [auditor1.Id, auditor2.Id, auditor1.Id],
+            ratings.Select(rating => rating.AuditorId));
     }
 
     [Fact]
-    public async Task HighMarketShareSuppressesExtraRaisedExpectations()
+    public async Task NewListingUsesItsOwnListingDayCadence()
     {
-        var ratedAt = await AddCycleAsync(1);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync(issuedShares: 1000);
-        await AddSnapshotAsync(company.Id, price: 100m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var day4 = await AddCycleAsync(4, 1);
+        var company = await AddCompanyAsync(day2);
+        await AddPriceAsync(company, 100m, day2);
+        await AddPriceAsync(company, 102m, day3);
+        await AddFinancialAsync(company, day3, CompanyFinancialSnapshotMoment.Midday);
 
-        // The lone live company is 100% of market capitalisation, flooring the raise factor to 0.1: the stable
-        // Extra Raise band collapses to [0.02, 0.022), so a 0.03 roll that would hit the old [0.02, 0.04) misses.
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d], []))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
+        await ProcessAsync(day3);
+        Assert.Empty(await context.CompanyRatings.AsNoTracking().ToListAsync());
 
-        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
-        Assert.Equal(CompanyRiskRating.Low, latest.Rating);
+        await ProcessAsync(day4);
+        var evidence = await context.CompanyAuditEvidence.AsNoTracking().SingleAsync();
+        Assert.Equal((2, 3, 4), (
+            evidence.EvaluationStartTradingDayNumber,
+            evidence.EvaluationEndTradingDayNumber,
+            evidence.EffectiveTradingDayNumber));
+    }
+
+    [Fact]
+    public async Task AuditDoesNotMutatePricesOrdersCashOrCreateMarketImpact()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 70m, day2);
+        await AddFinancialAsync(
+            company,
+            day2,
+            CompanyFinancialSnapshotMoment.Midday,
+            profitability: CompanyMetricLevel.Low,
+            volatility: CompanyMetricLevel.High,
+            closureRisk: CompanyMetricLevel.High,
+            outlook: ManagementOutlook.Negative,
+            confidence: 100m,
+            operatingCashFlow: -100m);
+        var trader = await AddTraderAsync();
+        var order = await AddOrderAsync(trader, company, day2);
+        var priceCount = await context.PriceSnapshots.CountAsync();
+        var issuerCash = company.CashBalance;
+
+        await ProcessAsync(day3);
+
+        Assert.Equal(priceCount, await context.PriceSnapshots.CountAsync());
         Assert.Equal(0, await context.NewsPosts.CountAsync());
-    }
-
-    [Fact]
-    public async Task ExtraInLatestFiveBlocksExtraRaisedExpectations()
-    {
-        var ratedAt = await AddCycleAsync(1);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingsAsync(
-            company.Id,
-            auditor.Id,
-            ratedAt,
-            CompanyRiskRating.RaisedExpectations,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.Extra);
-
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d], []))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
-        Assert.Equal(CompanyRiskRating.Low, latest.Rating);
-        Assert.Equal(0, await context.NewsPosts.CountAsync());
-    }
-
-    [Fact]
-    public async Task NoRaisedExpectationsInLatestFiveBlocksExtraRaisedExpectations()
-    {
-        var ratedAt = await AddCycleAsync(1);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingsAsync(
-            company.Id,
-            auditor.Id,
-            ratedAt,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.High,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.High,
-            CompanyRiskRating.Low);
-
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d], []))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
-        Assert.Equal(CompanyRiskRating.Low, latest.Rating);
-        Assert.Equal(0, await context.NewsPosts.CountAsync());
-    }
-
-    [Fact]
-    public async Task ExtraRaisedExpectationsDoesNotRenewItsOwnEligibility()
-    {
-        var ratedAt = await AddCycleAsync(1);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingsAsync(
-            company.Id,
-            auditor.Id,
-            ratedAt,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.ExtraRaisedExpectations,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.High,
-            CompanyRiskRating.Low);
-
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d], []))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
-        Assert.Equal(CompanyRiskRating.Low, latest.Rating);
-    }
-
-    [Fact]
-    public async Task ExtraOlderThanLatestFiveDoesNotBlockExtraRaisedExpectations()
-    {
-        var ratedAt = await AddCycleAsync(1);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingsAsync(
-            company.Id,
-            auditor.Id,
-            ratedAt,
-            CompanyRiskRating.Extra,
-            CompanyRiskRating.RaisedExpectations,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.Low);
-        await AddCapitalizationBallastAsync(current, auditor.Id);
-
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d, 0.5d], [0]))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
-        Assert.Equal(CompanyRiskRating.ExtraRaisedExpectations, latest.Rating);
-    }
-
-    [Fact]
-    public async Task RaisedExpectationsOlderThanLatestFiveDoesNotEnableExtraRaisedExpectations()
-    {
-        var ratedAt = await AddCycleAsync(1);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingsAsync(
-            company.Id,
-            auditor.Id,
-            ratedAt,
-            CompanyRiskRating.RaisedExpectations,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.High,
-            CompanyRiskRating.Low,
-            CompanyRiskRating.High,
-            CompanyRiskRating.Low);
-
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.03d], []))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
-        Assert.Equal(CompanyRiskRating.Low, latest.Rating);
-    }
-
-    [Fact]
-    public async Task BigMoveUsesTenPercentExtraRaisedExpectationsBand()
-    {
-        var ratedAt = await AddCycleAsync(1);
-        var older = await AddCycleAsync(10);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, older);
-        await AddSnapshotAsync(company.Id, price: 200m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
-        await AddCapitalizationBallastAsync(current, auditor.Id);
-
-        // The Extra Raise band follows the 10% Extra-risk band: [0.10, 0.20).
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.15d, 0.5d], [0]))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
-        Assert.Equal(CompanyRiskRating.ExtraRaisedExpectations, latest.Rating);
-        Assert.Equal(15m, latest.ImpactPercent);
-    }
-
-    [Fact]
-    public async Task CrisisMultiplierExpandsExtraRaisedExpectationsBand()
-    {
-        var ratedAt = await AddCycleAsync(1);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.RaisedExpectations, ratedAt);
-        await AddCapitalizationBallastAsync(current, auditor.Id);
-        var crisis = await AddCrisisAsync(current);
-
-        // Crisis triples the stable band from 2% to 6%, so Extra Raise occupies [0.06, 0.12).
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.08d, 0.5d], [0]))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow, crisis);
-        await context.SaveChangesAsync();
-
-        var latest = await context.CompanyRatings.AsNoTracking().OrderByDescending(row => row.Id).FirstAsync();
-        Assert.Equal(CompanyRiskRating.ExtraRaisedExpectations, latest.Rating);
-        Assert.Empty(await context.CrisisEvents.AsNoTracking().ToListAsync());
-    }
-
-    [Fact]
-    public async Task RaisedExpectationsLiftsPriceAndCancelsOnlyEligibleSellOrders()
-    {
-        var cycle = await AddCycleAsync(20);
-        await SetupMarketAsync(cycle);
-        var company = await AddCompanyAsync(issuedShares: 1000);
-        await AddSnapshotAsync(company.Id, price: 100m, cycle);
-        await AddAuditorAsync();
-        var crisis = await AddCrisisAsync(cycle);
-
-        var ordinary = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 0m);
-        var player = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 0m);
-        player.Type = ParticipantType.Player;
-        var bankrupt = await AddTraderAsync(Temperament.Balanced, RiskProfile.Medium, reserved: 0m);
-        bankrupt.IsBankrupt = true;
-        await context.SaveChangesAsync();
-
-        var ordinarySell = await AddSellOrderAsync(
-            ordinary.Id, company.Id, quantity: 5, filledQuantity: 2, price: 100m, cycle);
-        var playerSell = await AddSellOrderAsync(
-            player.Id, company.Id, quantity: 5, filledQuantity: 0, price: 100m, cycle);
-        var bankruptSell = await AddSellOrderAsync(
-            bankrupt.Id, company.Id, quantity: 5, filledQuantity: 0, price: 100m, cycle);
-
-        // pick, issue miss, positive roll hit, lift midpoint → 10%; one int for the headline.
-        await Service(
-                enabled: true,
-                new ScriptedRandom([0.5d, 0.9d, 0.05d, 0.5d], [0]),
-                raiseExpectationsChance: 0.08d)
-            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
-        await context.SaveChangesAsync();
-
-        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
-        Assert.Equal(CompanyRiskRating.RaisedExpectations, rating.Rating);
-        Assert.Equal(10m, rating.ImpactPercent);
-
-        var latest = await context.PriceSnapshots.AsNoTracking()
-            .Where(snapshot => snapshot.CompanyId == company.Id)
-            .OrderByDescending(snapshot => snapshot.Id)
-            .FirstAsync();
-        Assert.Equal(110m, latest.Price);
-
-        Assert.Equal(OrderStatus.Cancelled, (await context.Orders.AsNoTracking().SingleAsync(order => order.Id == ordinarySell.Id)).Status);
-        Assert.Equal(OrderStatus.Open, (await context.Orders.AsNoTracking().SingleAsync(order => order.Id == playerSell.Id)).Status);
-        Assert.Equal(OrderStatus.Open, (await context.Orders.AsNoTracking().SingleAsync(order => order.Id == bankruptSell.Id)).Status);
-
-        var news = await context.NewsPosts.AsNoTracking().SingleAsync();
-        Assert.Equal(NewsImpactScope.Company, news.Scope);
-        Assert.Equal(NewsImpactDirection.Increase, news.Direction);
-        Assert.Equal(10m, news.ImpactPercent);
-        Assert.Equal(company.Id, news.TargetCompanyId);
-        Assert.Equal(cycle.Id, news.ImpactAppliedInCycleId);
-        Assert.Empty(await context.CrisisEvents.AsNoTracking().ToListAsync());
-    }
-
-    [Fact]
-    public async Task ActiveCrisisTriplesIssueDiscoveryAndLogsToTimeline()
-    {
-        var cycle = await AddCycleAsync(20);
-        await SetupMarketAsync(cycle);
-        var company = await AddCompanyAsync(issuedShares: 1000);
-        await AddSnapshotAsync(company.Id, price: 100m, cycle);
-        await AddAuditorAsync();
-        var crisis = await AddCrisisAsync(cycle);
-
-        // A stable company's issue chance is 0.02, tripled to 0.06 by the crisis; a 0.05 roll now hits.
-        // pick 0.5, issue 0.05 (hit), drop size 0.5 → 15%; one int for the headline.
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.05d, 0.5d], [0]))
-            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow, crisis);
-        await context.SaveChangesAsync();
-
-        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
-        Assert.Equal(CompanyRiskRating.Extra, rating.Rating);
-
-        var timelineEvent = await context.CrisisEvents.AsNoTracking()
-            .SingleAsync(row => row.Type == CrisisEventType.AuditorRating);
-        Assert.Equal(crisis.Id, timelineEvent.CrisisId);
-        Assert.Equal(company.Id, timelineEvent.CompanyId);
-    }
-
-    [Fact]
-    public async Task WithoutACrisisTheSameRollLeavesAStableCompanyLowAndLogsNothing()
-    {
-        var cycle = await AddCycleAsync(20);
-        await SetupMarketAsync(cycle);
-        var company = await AddCompanyAsync(issuedShares: 1000);
-        await AddSnapshotAsync(company.Id, price: 100m, cycle);
-        await AddAuditorAsync();
-
-        // No crisis: the base 0.02 chance is not cleared by a 0.05 roll, so the verdict stays Low.
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.05d], []))
-            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
-
-        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
-        Assert.Equal(CompanyRiskRating.Low, rating.Rating);
         Assert.Equal(0, await context.CrisisEvents.CountAsync());
+        Assert.Equal(issuerCash, (await context.Companies.AsNoTracking().SingleAsync()).CashBalance);
+        var unchangedOrder = await context.Orders.AsNoTracking().SingleAsync(row => row.Id == order.Id);
+        Assert.Equal(OrderStatus.Open, unchangedOrder.Status);
+        Assert.Equal(500m, unchangedOrder.ReservedCashAmount);
+        Assert.Null((await context.CompanyRatings.AsNoTracking().SingleAsync()).ImpactPercent);
+        Assert.DoesNotContain(
+            typeof(Random),
+            typeof(AuditorService).GetConstructors().Single().GetParameters().Select(parameter => parameter.ParameterType));
     }
 
     [Fact]
-    public async Task RatedCompanyIsNotReviewedAgainWithinTheSafePeriod()
+    public async Task AdjustedReturnNeutralizesSplitAndReverseSplitBoundaries()
     {
-        var ratedAt = await AddCycleAsync(10);
-        var current = await AddCycleAsync(20);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.Low, ratedAt);
+        var day1Start = await AddCycleAsync(1, 1, 1);
+        var day1Rise = await AddCycleAsync(1, 2, 2);
+        var day1Split = await AddCycleAsync(1, 3, 3);
+        var day2Merge = await AddCycleAsync(2, 1, 4);
+        var day2End = await AddCycleAsync(2, 2, 5);
+        var day3 = await AddCycleAsync(3, 1, 6);
+        var company = await AddCompanyAsync(day1Start, issuedShares: 1000);
+        await AddPriceAsync(company, 100m, day1Start, capitalization: 100_000m);
+        await AddPriceAsync(company, 120m, day1Rise, capitalization: 120_000m);
+        await AddDenominationAsync(
+            company,
+            day1Split,
+            StockDenominationActionType.Split,
+            ratio: 4,
+            sharesBefore: 1000,
+            sharesAfter: 4000,
+            priceBefore: 120m,
+            priceAfter: 30m);
+        await AddPriceAsync(company, 30m, day1Split, capitalization: 120_000m);
+        await AddDenominationAsync(
+            company,
+            day2Merge,
+            StockDenominationActionType.ReverseSplit,
+            ratio: 4,
+            sharesBefore: 4000,
+            sharesAfter: 1000,
+            priceBefore: 30m,
+            priceAfter: 120m);
+        await AddPriceAsync(company, 120m, day2Merge, capitalization: 120_000m);
+        await AddPriceAsync(company, 132m, day2End, capitalization: 132_000m);
+        await AddFinancialAsync(company, day2End, CompanyFinancialSnapshotMoment.Midday);
 
-        // Only five cycles have passed (< 15), so the sole company is ineligible and the auditor draws nothing.
-        await Service(enabled: true, new ScriptedRandom([], []))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
+        await ProcessAsync(day3);
 
-        Assert.Equal(1, await context.CompanyRatings.CountAsync());
+        var evidence = await context.CompanyAuditEvidence.AsNoTracking().SingleAsync();
+        Assert.Equal(32m, evidence.AdjustedReturnPercent);
+        Assert.Equal(20m, evidence.MaximumAdjustedCycleMovePercent);
+        Assert.Equal(1, evidence.StockSplitCount);
+        Assert.Equal(1, evidence.ReverseSplitCount);
     }
 
     [Fact]
-    public async Task SafePeriodExpiresAfterFifteenCycles()
+    public async Task FreeEmissionUsesOpeningSupplyAndExcludesOtherIssuance()
     {
-        var ratedAt = await AddCycleAsync(10);
-        var current = await AddCycleAsync(25);
-        await SetupMarketAsync(current);
-        var company = await AddCompanyAsync();
-        await AddSnapshotAsync(company.Id, price: 100m, current);
-        var auditor = await AddAuditorAsync();
-        await AddRatingAsync(company.Id, auditor.Id, CompanyRiskRating.Low, ratedAt);
-
-        // Fifteen cycles on, the company is eligible again: pick then a stable-miss roll produce a second rating.
-        await Service(enabled: true, new ScriptedRandom([0.5d, 0.9d], []))
-            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1, issuedShares: 1150);
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 100m, day2, capitalization: 115_000m);
+        context.ShareEmissions.Add(new ShareEmission
+        {
+            CompanyId = company.Id,
+            SharesEmitted = 50,
+            RecipientCount = 1,
+            CreatedInCycleId = day2.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+        var investor = await AddTraderAsync();
+        context.CompanyInvestments.Add(new CompanyInvestment
+        {
+            CompanyId = company.Id,
+            InvestorParticipantId = investor.Id,
+            DealValue = 10_000m,
+            SharesIssued = 100,
+            SharesBeforeDeal = 1050,
+            CapitalizationBeforeDeal = 105_000m,
+            FinalCapitalization = 115_000m,
+            InvestorSharePercent = 10m,
+            TradingDayNumber = 2,
+            CreatedInCycleId = day2.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
         await context.SaveChangesAsync();
 
-        Assert.Equal(2, await context.CompanyRatings.CountAsync());
+        await ProcessAsync(day3);
+
+        var evidence = await context.CompanyAuditEvidence.AsNoTracking().SingleAsync();
+        Assert.Equal(1000, evidence.OpeningIssuedShares);
+        Assert.Equal(50, evidence.EmittedShares);
+        Assert.Equal(5m, evidence.FreeShareDilutionPercent);
     }
 
     [Fact]
-    public async Task CapitalizationFloorLetsASmallCompanyBeSelected()
+    public async Task AuditUsesLatestCompletedWindowFinancialsAndActualDividend()
     {
-        var cycle = await AddCycleAsync(20);
-        await SetupMarketAsync(cycle);
-        // Lower id first so it sits at index 0; its floor weight (0.5) gives it a selectable slice despite a
-        // near-zero capitalisation next to the giant.
-        var tiny = await AddCompanyAsync(issuedShares: 1);
-        var giant = await AddCompanyAsync(issuedShares: 1_000_000);
-        await AddSnapshotAsync(tiny.Id, price: 1m, cycle);
-        await AddSnapshotAsync(giant.Id, price: 10_000m, cycle);
-        await AddAuditorAsync();
+        var day1 = await AddCycleAsync(1, 1);
+        var day2Opening = await AddCycleAsync(2, 1);
+        var day2Midday = await AddCycleAsync(2, 2);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 100m, day2Midday);
+        await AddFinancialAsync(
+            company,
+            day2Opening,
+            CompanyFinancialSnapshotMoment.DayOpening,
+            expectedPool: 80m,
+            coverage: 1.5m);
+        var completed = await AddFinancialAsync(
+            company,
+            day2Midday,
+            CompanyFinancialSnapshotMoment.Midday,
+            expectedPool: 200m,
+            coverage: 0.75m,
+            profitability: CompanyMetricLevel.High,
+            volatility: CompanyMetricLevel.Low,
+            closureRisk: CompanyMetricLevel.Low,
+            outlook: ManagementOutlook.Positive,
+            confidence: 80m,
+            operatingCashFlow: 500m);
+        var dividend = await AddDividendAsync(company, day2Midday, 2, DividendFundingOutcome.Reduced);
+        await AddFinancialAsync(
+            company,
+            day3,
+            CompanyFinancialSnapshotMoment.DayOpening,
+            expectedPool: 500m,
+            coverage: 4m,
+            profitability: CompanyMetricLevel.Low,
+            volatility: CompanyMetricLevel.High,
+            closureRisk: CompanyMetricLevel.High,
+            outlook: ManagementOutlook.Negative,
+            confidence: 100m,
+            operatingCashFlow: -500m);
+        await AddDividendAsync(company, day3, 3, DividendFundingOutcome.Paid);
 
-        // roll = 0.1 * totalWeight (1.5) = 0.15, inside the tiny company's 0.5 slice; stable-miss roll follows.
-        await Service(enabled: true, new ScriptedRandom([0.1d, 0.9d], []))
-            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
-        await context.SaveChangesAsync();
+        await ProcessAsync(day3);
 
-        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
-        Assert.Equal(tiny.Id, rating.CompanyId);
+        var evidence = await context.CompanyAuditEvidence.AsNoTracking().SingleAsync();
+        Assert.Equal(completed.Id, evidence.CompanyFinancialSnapshotId);
+        Assert.Equal(dividend.Id, evidence.LatestDividendEventId);
+        Assert.Equal(200m, evidence.ModeledMaximumDividend);
+        Assert.Equal(0.75m, evidence.DividendCoverageRatio);
+        Assert.Equal(2, evidence.ProfitabilityFactorScore);
+        Assert.Equal(1, evidence.StabilityFactorScore);
+        Assert.Equal(2, evidence.ClosureRiskFactorScore);
+        Assert.Equal(2, evidence.ManagementOutlookFactorScore);
     }
 
-    private async Task<MarketCycle> AddCycleAsync(int number)
+    [Fact]
+    public async Task LatestDividendBeforeLaterWindowRemainsEvidence()
     {
-        var cycle = new MarketCycle { CycleNumber = number, Status = CycleStatus.Running, StartedAt = DateTime.UtcNow };
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var day4 = await AddCycleAsync(4, 1);
+        var day5 = await AddCycleAsync(5, 1);
+        var company = await AddCompanyAsync(day1);
+        foreach (var cycle in new[] { day1, day2, day3, day4 })
+        {
+            await AddPriceAsync(company, 100m, cycle);
+        }
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        await AddFinancialAsync(company, day4, CompanyFinancialSnapshotMoment.Midday);
+        var dividend = await AddDividendAsync(company, day2, 2, DividendFundingOutcome.Paid);
+
+        await ProcessAsync(day3);
+        await ProcessAsync(day5);
+
+        var latest = await context.CompanyAuditEvidence
+            .AsNoTracking()
+            .OrderByDescending(evidence => evidence.EffectiveTradingDayNumber)
+            .FirstAsync();
+        Assert.Equal((3, 4), (
+            latest.EvaluationStartTradingDayNumber,
+            latest.EvaluationEndTradingDayNumber));
+        Assert.Equal(dividend.Id, latest.LatestDividendEventId);
+    }
+
+    [Fact]
+    public async Task ArchivedAndLiveHistoryProducePriceAndIndustryEvidence()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddArchivedPriceAsync(company, 100m, day1, capitalization: 100_000m);
+        await AddPriceAsync(company, 105m, day2, capitalization: 105_000m);
+        context.SectorSentimentSnapshotArchives.Add(new SectorSentimentSnapshotArchive
+        {
+            IndustryId = industry.Id,
+            SentimentValue = 100,
+            CreatedInCycleId = day1.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+        context.SectorSentimentSnapshots.Add(new SectorSentimentSnapshot
+        {
+            IndustryId = industry.Id,
+            SentimentValue = 115,
+            CreatedInCycleId = day2.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        await context.SaveChangesAsync();
+
+        await ProcessAsync(day3);
+
+        var evidence = await context.CompanyAuditEvidence.AsNoTracking().SingleAsync();
+        Assert.Equal(100m, evidence.StartPrice);
+        Assert.Equal(105m, evidence.EndPrice);
+        Assert.Equal(5m, evidence.AdjustedReturnPercent);
+        Assert.Equal(100, evidence.OpeningIndustrySentiment);
+        Assert.Equal(115, evidence.ClosingIndustrySentiment);
+        Assert.Equal(IndustryTrend.Rising, evidence.IndustryTrend);
+        Assert.Equal(1, evidence.IndustryScore);
+    }
+
+    [Fact]
+    public async Task MissingAuditorsAreCreatedDeterministicallyWithoutRandomDependency()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 100m, day2);
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+
+        await ProcessAsync(day3);
+
+        Assert.Single(await context.Auditors.AsNoTracking().ToListAsync());
+        Assert.Equal(
+            (await context.Auditors.AsNoTracking().SingleAsync()).Id,
+            (await context.CompanyRatings.AsNoTracking().SingleAsync()).AuditorId);
+    }
+
+    private AuditorService Service(bool enabled = true, int interval = 2) =>
+        new(context, Options.Create(new AuditorOptions
+        {
+            Enabled = enabled,
+            AuditIntervalTradingDays = interval,
+        }));
+
+    private async Task ProcessAsync(MarketCycle cycle, int interval = 2)
+    {
+        await Service(interval: interval).ProcessForCycleAsync(
+            cycle.Id,
+            cycle.CycleNumber,
+            DateTime.UtcNow);
+        await context.SaveChangesAsync();
+    }
+
+    private async Task<MarketCycle> AddCycleAsync(
+        int dayNumber,
+        int tradingCycleNumber,
+        int? cycleNumber = null)
+    {
+        if (!days.TryGetValue(dayNumber, out var day))
+        {
+            day = new TradingDay
+            {
+                DayNumber = dayNumber,
+                State = TradingSessionState.Trading,
+                OpenedInCycleId = 0,
+            };
+            days.Add(dayNumber, day);
+            context.TradingDays.Add(day);
+            await context.SaveChangesAsync();
+        }
+
+        var cycle = new MarketCycle
+        {
+            CycleNumber = cycleNumber ?? dayNumber * 100 + tradingCycleNumber,
+            TradingDayId = day.Id,
+            TradingCycleNumber = tradingCycleNumber,
+            Status = CycleStatus.Running,
+            StartedAt = DateTime.UtcNow,
+        };
         context.MarketCycles.Add(cycle);
         await context.SaveChangesAsync();
         return cycle;
     }
 
-    private async Task SetupMarketAsync(MarketCycle currentCycle)
+    private async Task<Company> AddCompanyAsync(
+        MarketCycle listingCycle,
+        string? name = null,
+        int issuedShares = 1000)
     {
-        var now = DateTime.UtcNow;
-        var industry = new Industry { Name = "Tech", SentimentValue = 500, SectorBeta = 0.5m };
-        context.Industries.Add(industry);
-        await context.SaveChangesAsync();
-        industryId = industry.Id;
-
-        context.Markets.Add(new Market
-        {
-            Name = "Demo Market",
-            Status = MarketStatus.Running,
-            CurrentCycleId = currentCycle.Id,
-            CreatedAt = now,
-            UpdatedAt = now,
-        });
-        await context.SaveChangesAsync();
-    }
-
-    private async Task<Company> AddCompanyAsync(int issuedShares = 1000)
-    {
-        var now = DateTime.UtcNow;
         var company = new Company
         {
-            Name = $"Acme {Guid.NewGuid():N}",
-            IndustryId = industryId,
+            Name = name ?? $"Company {Guid.NewGuid():N}",
+            IndustryId = industry.Id,
             IssuedSharesCount = issuedShares,
-            CreatedAt = now,
-            UpdatedAt = now,
+            CashBalance = 1000m,
+            CreatedInCycleId = listingCycle.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
         };
         context.Companies.Add(company);
         await context.SaveChangesAsync();
         return company;
     }
 
-    private async Task AddSnapshotAsync(int companyId, decimal price, MarketCycle cycle)
+    private async Task<Auditor> AddAuditorAsync(string name)
+    {
+        var auditor = new Auditor
+        {
+            Name = name,
+            Description = "Test auditor",
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.Auditors.Add(auditor);
+        await context.SaveChangesAsync();
+        return auditor;
+    }
+
+    private async Task AddPriceAsync(
+        Company company,
+        decimal price,
+        MarketCycle cycle,
+        decimal? capitalization = null)
     {
         context.PriceSnapshots.Add(new PriceSnapshot
         {
-            CompanyId = companyId,
+            CompanyId = company.Id,
             Price = price,
+            Capitalization = capitalization,
             CreatedInCycleId = cycle.Id,
             CreatedAt = DateTime.UtcNow,
         });
         await context.SaveChangesAsync();
     }
 
-    private async Task<Auditor> AddAuditorAsync()
+    private async Task AddArchivedPriceAsync(
+        Company company,
+        decimal price,
+        MarketCycle cycle,
+        decimal? capitalization = null)
     {
-        var auditor = new Auditor { Name = "Meridian Ratings", Description = "Test auditor", CreatedAt = DateTime.UtcNow };
-        context.Auditors.Add(auditor);
+        context.PriceSnapshotArchives.Add(new PriceSnapshotArchive
+        {
+            CompanyId = company.Id,
+            Price = price,
+            Capitalization = capitalization,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
         await context.SaveChangesAsync();
-        return auditor;
     }
 
-    private async Task<Participant> AddTraderAsync(Temperament temperament, RiskProfile riskProfile, decimal reserved)
+    private async Task<CompanyFinancialSnapshot> AddFinancialAsync(
+        Company company,
+        MarketCycle cycle,
+        CompanyFinancialSnapshotMoment moment,
+        decimal expectedPool = 100m,
+        decimal coverage = 2m,
+        CompanyMetricLevel profitability = CompanyMetricLevel.Medium,
+        CompanyMetricLevel volatility = CompanyMetricLevel.Medium,
+        CompanyMetricLevel closureRisk = CompanyMetricLevel.Medium,
+        ManagementOutlook outlook = ManagementOutlook.Neutral,
+        decimal confidence = 50m,
+        decimal operatingCashFlow = 100m)
+    {
+        var dayNumber = days.Values.Single(day => day.Id == cycle.TradingDayId).DayNumber;
+        var snapshot = new CompanyFinancialSnapshot
+        {
+            CompanyId = company.Id,
+            CreatedInCycleId = cycle.Id,
+            TradingDayNumber = dayNumber,
+            Moment = moment,
+            CreatedAt = DateTime.UtcNow,
+            Revenue = 1000m,
+            NetProfit = 100m,
+            OperatingCashFlow = operatingCashFlow,
+            TotalAssets = 2000m,
+            TotalLiabilities = 500m,
+            TotalDebt = 250m,
+            ExpectedDividendPerShare = expectedPool / company.IssuedSharesCount,
+            ExpectedDividendPool = expectedPool,
+            DividendCoverageRatio = coverage,
+            BusinessRiskScore = 50m,
+            ManagementRevenueForecast = 1000m,
+            ManagementProfitForecast = 100m,
+            ManagementOperatingCashFlowForecast = operatingCashFlow,
+            ManagementOutlook = outlook,
+            ManagementConfidenceScore = confidence,
+            ProfitabilityScore = 50m,
+            ProfitabilityLevel = profitability,
+            StabilityScore = 50m,
+            FinancialVolatilityLevel = volatility,
+            ClosureRiskScore = 50m,
+            ClosureRiskLevel = closureRisk,
+        };
+        context.CompanyFinancialSnapshots.Add(snapshot);
+        await context.SaveChangesAsync();
+        return snapshot;
+    }
+
+    private async Task<CompanyDividendEvent> AddDividendAsync(
+        Company company,
+        MarketCycle cycle,
+        int tradingDayNumber,
+        DividendFundingOutcome outcome)
+    {
+        var dividend = new CompanyDividendEvent
+        {
+            CompanyId = company.Id,
+            DeclaredAmount = 100m,
+            FundedAmount = outcome switch
+            {
+                DividendFundingOutcome.Paid => 100m,
+                DividendFundingOutcome.Reduced => 50m,
+                DividendFundingOutcome.Skipped => 0m,
+                _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
+            },
+            FundingOutcome = outcome,
+            IssuerCashBeforeFunding = 50m,
+            CreatedInCycleId = cycle.Id,
+            TradingDayNumber = tradingDayNumber,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.CompanyDividendEvents.Add(dividend);
+        await context.SaveChangesAsync();
+        return dividend;
+    }
+
+    private async Task AddDenominationAsync(
+        Company company,
+        MarketCycle cycle,
+        StockDenominationActionType action,
+        int ratio,
+        int sharesBefore,
+        int sharesAfter,
+        decimal priceBefore,
+        decimal priceAfter)
+    {
+        context.StockDenominationEvents.Add(new StockDenominationEvent
+        {
+            CompanyId = company.Id,
+            ActionType = action,
+            Ratio = ratio,
+            IssuedSharesBefore = sharesBefore,
+            IssuedSharesAfter = sharesAfter,
+            PriceBefore = priceBefore,
+            PriceAfter = priceAfter,
+            EffectiveInCycleId = cycle.Id,
+            EffectiveInCycleNumber = cycle.CycleNumber,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+    }
+
+    private async Task<Participant> AddTraderAsync()
     {
         var trader = new Participant
         {
-            Name = "Trader",
+            Name = $"Trader {Guid.NewGuid():N}",
             Type = ParticipantType.Individual,
-            Temperament = temperament,
-            RiskProfile = riskProfile,
+            Temperament = Temperament.Balanced,
+            RiskProfile = RiskProfile.Medium,
             InitialBalance = 10_000m,
             CurrentBalance = 10_000m,
-            ReservedBalance = reserved,
+            ReservedBalance = 500m,
             IsActive = true,
         };
         context.Participants.Add(trader);
@@ -690,122 +655,32 @@ public sealed class AuditorServiceTests : IDisposable
         return trader;
     }
 
-    private async Task<Order> AddBuyOrderAsync(int participantId, int companyId, int quantity, decimal price, decimal reserved, MarketCycle cycle)
-    {
-        var now = DateTime.UtcNow;
-        var order = new Order
-        {
-            ParticipantId = participantId,
-            CompanyId = companyId,
-            Type = OrderType.Buy,
-            Status = OrderStatus.Open,
-            Quantity = quantity,
-            FilledQuantity = 0,
-            LimitPrice = price,
-            ReservedCashAmount = reserved,
-            CreatedInCycleId = cycle.Id,
-            CreatedAt = now,
-            UpdatedAt = now,
-        };
-        context.Orders.Add(order);
-        await context.SaveChangesAsync();
-        return order;
-    }
-
-    private async Task<Order> AddSellOrderAsync(
-        int participantId,
-        int companyId,
-        int quantity,
-        int filledQuantity,
-        decimal price,
+    private async Task<Order> AddOrderAsync(
+        Participant trader,
+        Company company,
         MarketCycle cycle)
     {
-        var now = DateTime.UtcNow;
         var order = new Order
         {
-            ParticipantId = participantId,
-            CompanyId = companyId,
-            Type = OrderType.Sell,
-            Status = filledQuantity > 0 ? OrderStatus.PartiallyFilled : OrderStatus.Open,
-            Quantity = quantity,
-            FilledQuantity = filledQuantity,
-            LimitPrice = price,
+            ParticipantId = trader.Id,
+            CompanyId = company.Id,
+            Type = OrderType.Buy,
+            Status = OrderStatus.Open,
+            Quantity = 5,
+            LimitPrice = 100m,
+            ReservedCashAmount = 500m,
             CreatedInCycleId = cycle.Id,
-            CreatedAt = now,
-            UpdatedAt = now,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
         };
         context.Orders.Add(order);
         await context.SaveChangesAsync();
         return order;
-    }
-
-    private async Task<Crisis> AddCrisisAsync(MarketCycle cycle)
-    {
-        var crisis = new Crisis
-        {
-            Title = "Shock",
-            Content = "Body",
-            Scope = CrisisScope.Global,
-            TriggeredInCycleId = cycle.Id,
-            TriggeredInCycleNumber = cycle.CycleNumber,
-            DurationCycles = 20,
-            TriggeredAt = DateTime.UtcNow,
-        };
-        context.Crises.Add(crisis);
-        await context.SaveChangesAsync();
-        return crisis;
-    }
-
-    private async Task AddRatingAsync(int companyId, int auditorId, CompanyRiskRating rating, MarketCycle cycle)
-    {
-        context.CompanyRatings.Add(new CompanyRating
-        {
-            CompanyId = companyId,
-            AuditorId = auditorId,
-            Rating = rating,
-            CreatedInCycleId = cycle.Id,
-            CreatedAt = DateTime.UtcNow,
-        });
-        await context.SaveChangesAsync();
-    }
-
-    private async Task AddRatingsAsync(
-        int companyId,
-        int auditorId,
-        MarketCycle cycle,
-        params CompanyRiskRating[] ratings)
-    {
-        foreach (var rating in ratings)
-        {
-            await AddRatingAsync(companyId, auditorId, rating, cycle);
-        }
-    }
-
-    // Dominates total market capitalisation but is already rated this cycle, so it stays out of the pick while
-    // making the reviewed company's capitalisation share — and thus its extra-raise suppression — negligible.
-    private async Task AddCapitalizationBallastAsync(MarketCycle currentCycle, int auditorId)
-    {
-        var ballast = await AddCompanyAsync(issuedShares: 10_000_000);
-        await AddSnapshotAsync(ballast.Id, price: 100m, currentCycle);
-        await AddRatingAsync(ballast.Id, auditorId, CompanyRiskRating.Low, currentCycle);
     }
 
     public void Dispose()
     {
         context.Dispose();
         connection.Dispose();
-    }
-
-    // Returns queued draws so every random branch is forced; throws if drawn past the script.
-    private sealed class ScriptedRandom(double[] doubles, int[] ints) : Random
-    {
-        private readonly Queue<double> doubles = new(doubles);
-        private readonly Queue<int> ints = new(ints);
-
-        public override double NextDouble() => doubles.Dequeue();
-
-        public override int Next(int maxValue) => ints.Dequeue();
-
-        public override int Next(int minValue, int maxValue) => ints.Dequeue();
     }
 }

@@ -1365,11 +1365,11 @@ public sealed class MarketService(
             await dbContext.SaveChangesAsync();
         }
 
-        // Auditors run last so bankruptcy, funds, and exits read pre-audit prices; this cycle's decisions and
-        // matching then react to the fresh ratings, any price correction, and the bids that were pulled.
+        // Auditors run last so this cycle's automated decisions can observe the completed-day signal while
+        // prices and resting orders remain inputs to ordinary price discovery.
         if (auditorService is not null)
         {
-            await auditorService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow, activeCrisis);
+            await auditorService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
             await dbContext.SaveChangesAsync();
         }
     }

@@ -1,8 +1,7 @@
 namespace TraderAi.Models;
 
-// An independent rating agency that reviews one company per cycle and records a risk verdict. It never trades,
-// holds shares, or carries a balance, so it is its own entity rather than a Participant. Its verdicts drive the
-// company risk rating shown on the company page and can trigger a news-driven price correction.
+// An independent rating agency that records evidence-backed company outlooks without trading or holding assets.
+// It remains separate from Participant so scheduling cannot accidentally give it balances, positions, or debt.
 public sealed class Auditor
 {
     public int Id { get; set; }
