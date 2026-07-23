@@ -57,6 +57,8 @@ builder.Services.AddScoped<CollectiveFundService>();
 builder.Services.AddScoped<MarketExitService>();
 builder.Services.AddScoped<StockSplitService>();
 builder.Services.AddScoped<AuditorService>();
+builder.Services.AddScoped<CompanyFinancialScorer>();
+builder.Services.AddScoped<CompanyFinancialService>();
 builder.Services.AddScoped<ShareEmissionService>();
 builder.Services.AddScoped<PrimaryIssuanceService>();
 builder.Services.AddScoped<BigInvestmentService>();
