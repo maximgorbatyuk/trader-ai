@@ -255,7 +255,7 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
-    public async Task SettingsUpdateRejectsAuditorExtraOutcomeChanceAboveHalfWithALowMultiplier()
+    public async Task SettingsUpdateRejectsInvalidAuditorThresholdOrdering()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
         var databasePath = Path.Combine(databaseDirectory, "app.db");
@@ -270,14 +270,13 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
             {
                 values = new Dictionary<string, object>
                 {
-                    ["RandomChanceRates:EventTriggerChances:AuditorIssueOnBigMove"] = 0.75,
-                    ["RandomChanceRates:ChanceModifiers:CrisisAuditorIssueMultiplier"] = 0.5,
+                    ["Auditor:ModerateAdjustedReturnPercent"] = 11m,
                 },
             });
 
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
             var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-            Assert.True(body.GetProperty("errors").TryGetProperty("RandomChanceRates", out _));
+            Assert.True(body.GetProperty("errors").TryGetProperty("Auditor", out _));
         }
         finally
         {
@@ -376,7 +375,7 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
-    public void StartupRejectsAuditorExtraOutcomeChanceAboveFiftyPercent()
+    public void StartupRejectsInvalidAuditorDecisionPull()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
         var databasePath = Path.Combine(databaseDirectory, "app.db");
@@ -387,12 +386,11 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
             using var configuredFactory = factory.WithWebHostBuilder(builder =>
             {
                 builder.UseSetting("ConnectionStrings:DefaultConnection", $"Data Source={databasePath}");
-                builder.UseSetting("RandomChanceRates:EventTriggerChances:AuditorIssueOnBigMove", "0.20");
-                builder.UseSetting("RandomChanceRates:ChanceModifiers:CrisisAuditorIssueMultiplier", "3.0");
+                builder.UseSetting("Auditor:StrongDecisionPull", "1.10");
             });
 
             var exception = Assert.Throws<OptionsValidationException>(() => configuredFactory.CreateClient());
-            Assert.Contains("50%", exception.Message);
+            Assert.Contains("Auditor", exception.Message);
             Assert.False(File.Exists(databasePath));
         }
         finally

@@ -31,14 +31,14 @@ public sealed class AuditorServiceTests : IDisposable
 
     private AuditorService Service(bool enabled, Random random, double raiseExpectationsChance = 0d)
     {
-        var chanceRates = new RandomChanceRatesOptions();
-        chanceRates.EventTriggerChances.AuditorRaiseExpectationsChance = raiseExpectationsChance;
         return new(
             context,
             Options.Create(new AuditorOptions { Enabled = enabled }),
-            Options.Create(chanceRates),
             random,
-            new MarketImpactService(context));
+            new MarketImpactService(context))
+        {
+            LegacyRaisedExpectationsChance = raiseExpectationsChance,
+        };
     }
 
     private NewsService DeferredNews() =>

@@ -13,7 +13,6 @@ namespace TraderAi.Services;
 public sealed class AuditorService(
     AppDbContext dbContext,
     IOptions<AuditorOptions> options,
-    IOptions<RandomChanceRatesOptions> chanceRates,
     Random random,
     MarketImpactService marketImpact)
 {
@@ -42,6 +41,16 @@ public sealed class AuditorService(
     private const double LowRiskCancelDelta = 0.15;
     private const double HighRiskCancelDelta = -0.15;
     private const double ConservativeCancelDelta = 0.15;
+
+    // These preserve the legacy service until its deterministic replacement lands in the scheduled refactor.
+    private const double StableExtraOutcomeChance = 0.02;
+    private const double BigMoveExtraOutcomeChance = 0.10;
+    private const double CrisisExtraOutcomeMultiplier = 3.0;
+    private const double RaisedExpectationsChance = 0.08;
+    private const double HighRiskBuyRevisionChance = 0.50;
+    private const double ExtraRiskBuyRevisionChance = 0.70;
+
+    public double LegacyRaisedExpectationsChance { get; init; } = RaisedExpectationsChance;
 
     public async Task ProcessForCycleAsync(int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis = null)
     {
@@ -131,13 +140,12 @@ public sealed class AuditorService(
             picked.Add(company.Id);
 
             var stable = IsStable(snapshotsByCompany.GetValueOrDefault(company.Id), currentCycleNumber);
-            var triggers = chanceRates.Value.EventTriggerChances;
-            var extraOutcomeChance = stable ? triggers.AuditorIssueOnStable : triggers.AuditorIssueOnBigMove;
+            var extraOutcomeChance = stable ? StableExtraOutcomeChance : BigMoveExtraOutcomeChance;
             if (activeCrisis is not null)
             {
                 extraOutcomeChance = Math.Min(
                     1.0,
-                    extraOutcomeChance * chanceRates.Value.ChanceModifiers.CrisisAuditorIssueMultiplier);
+                    extraOutcomeChance * CrisisExtraOutcomeMultiplier);
             }
 
             var extraOutcomeRoll = random.NextDouble();
@@ -159,7 +167,7 @@ public sealed class AuditorService(
                 await marketImpact.ApplyImpactAsync(
                     NewsImpactDirection.Decrease, [company.Id], impactPercent.Value, currentCycleId, now, cancelStaleOrders: false);
 
-                await ReviseBuyOrdersAsync(company.Id, chanceRates.Value.EventTriggerChances.AuditorExtraRatingBuyRevision, currentCycleId, now);
+                await ReviseBuyOrdersAsync(company.Id, ExtraRiskBuyRevisionChance, currentCycleId, now);
 
                 var (title, content) = DemoAuditContent.Issue(company.Name, random);
                 dbContext.NewsPosts.Add(new NewsPost
@@ -176,8 +184,8 @@ public sealed class AuditorService(
                 });
             }
             else if (extraRaiseFound
-                || (triggers.AuditorRaiseExpectationsChance > 0d
-                    && random.NextDouble() < triggers.AuditorRaiseExpectationsChance))
+                || (LegacyRaisedExpectationsChance > 0d
+                    && random.NextDouble() < LegacyRaisedExpectationsChance))
             {
                 rating = extraRaiseFound
                     ? CompanyRiskRating.ExtraRaisedExpectations
@@ -217,7 +225,7 @@ public sealed class AuditorService(
             {
                 rating = CompanyRiskRating.High;
 
-                await ReviseBuyOrdersAsync(company.Id, chanceRates.Value.EventTriggerChances.AuditorHighRatingBuyRevision, currentCycleId, now);
+                await ReviseBuyOrdersAsync(company.Id, HighRiskBuyRevisionChance, currentCycleId, now);
 
                 var (title, content) = DemoAuditContent.HighRisk(company.Name, random);
                 dbContext.NewsPosts.Add(new NewsPost

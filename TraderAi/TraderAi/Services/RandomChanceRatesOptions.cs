@@ -49,21 +49,6 @@ public sealed class EventTriggerChances
     // New-company appearance chance once the company count is healthy.
     public double CompanyAppearanceLow { get; set; } = 0.01;
 
-    // Chance of each symmetric Extra outcome after a big recent price move.
-    public double AuditorIssueOnBigMove { get; set; } = 0.10;
-
-    // Chance of each symmetric Extra outcome when auditing a price-stable company.
-    public double AuditorIssueOnStable { get; set; } = 0.02;
-
-    // Chance an issue-free audit raises expectations instead of issuing the ordinary risk verdict.
-    public double AuditorRaiseExpectationsChance { get; set; } = 0.08;
-
-    // Base chance a trader revises a buy after a High rating, before personality deltas.
-    public double AuditorHighRatingBuyRevision { get; set; } = 0.50;
-
-    // Base chance a trader revises a buy after an Extra rating, before personality deltas.
-    public double AuditorExtraRatingBuyRevision { get; set; } = 0.70;
-
     // Base per-cycle quit chance for a cash-starved trader.
     public double ExitStarvationBase { get; set; } = 0.25;
 
@@ -125,9 +110,6 @@ public sealed class ChanceModifiers
 {
     // Multiplies every trader's bankruptcy chance while a crisis is active.
     public double CrisisBankruptcyMultiplier { get; set; } = 2.0;
-
-    // Multiplies both symmetric auditor Extra-outcome chances while a crisis is active.
-    public double CrisisAuditorIssueMultiplier { get; set; } = 3.0;
 
     // Scales every trader's quit chance during a global crisis.
     public double GlobalCrisisExitMultiplier { get; set; } = 5.0;

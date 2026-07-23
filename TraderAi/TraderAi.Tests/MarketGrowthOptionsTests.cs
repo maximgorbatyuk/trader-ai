@@ -19,7 +19,6 @@ public sealed class MarketGrowthOptionsTests
         Assert.Equal(0.015m, random.RandomMagnitudeBands.DividendRateMax);
         Assert.Equal(0.02, random.RandomMagnitudeBands.PrimaryIssuanceRateMin);
         Assert.Equal(0.20, random.RandomMagnitudeBands.PrimaryIssuanceRateMax);
-        Assert.Equal(0.08, random.EventTriggerChances.AuditorRaiseExpectationsChance);
         Assert.Equal(0.50, random.EventTriggerChances.BigInvestmentMax);
     }
 }

@@ -86,7 +86,10 @@ builder.Services.Configure<BankruptcyOptions>(builder.Configuration.GetSection(B
 builder.Services.Configure<CollectiveFundOptions>(builder.Configuration.GetSection(CollectiveFundOptions.SectionName));
 builder.Services.Configure<MarketExitOptions>(builder.Configuration.GetSection(MarketExitOptions.SectionName));
 builder.Services.Configure<StockSplitOptions>(builder.Configuration.GetSection(StockSplitOptions.SectionName));
-builder.Services.Configure<AuditorOptions>(builder.Configuration.GetSection(AuditorOptions.SectionName));
+builder.Services.AddOptions<AuditorOptions>()
+    .Bind(builder.Configuration.GetSection(AuditorOptions.SectionName))
+    .Validate(options => options.IsValid(), "Auditor intervals, thresholds, and decision pulls are invalid.")
+    .ValidateOnStart();
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
 builder.Services.Configure<BigInvestmentOptions>(builder.Configuration.GetSection(BigInvestmentOptions.SectionName));
 builder.Services.AddOptions<PrimaryIssuanceOptions>()
@@ -121,20 +124,7 @@ builder.Services.AddScoped<AiPredictionEvaluationService>();
 builder.Services.AddHostedService<AiTraderCoordinator>();
 builder.Services.AddOptions<RandomChanceRatesOptions>()
     .Bind(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName))
-    .Validate(options =>
-    {
-        var stableChance = options.EventTriggerChances.AuditorIssueOnStable;
-        var bigMoveChance = options.EventTriggerChances.AuditorIssueOnBigMove;
-        var crisisMultiplier = options.ChanceModifiers.CrisisAuditorIssueMultiplier;
-        return double.IsFinite(stableChance)
-            && double.IsFinite(bigMoveChance)
-            && double.IsFinite(crisisMultiplier)
-            && stableChance is >= 0d and <= 0.5d
-            && bigMoveChance is >= 0d and <= 0.5d
-            && crisisMultiplier >= 0d
-            && stableChance * crisisMultiplier <= 0.5d
-            && bigMoveChance * crisisMultiplier <= 0.5d;
-    }, "Auditor Extra outcome chances, including crisis adjustment, must remain between 0% and 50% to preserve symmetry.")
+    .Validate(RandomChanceRatesAreValid, "Random probabilities and modifiers are invalid.")
     .ValidateOnStart();
 builder.Services.AddHostedService<MarketLoopService>();
 
@@ -194,6 +184,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var app = builder.Build();
 
+ValidateDefaultAuditorOptions(builder.Configuration);
 ValidateDefaultRandomChanceRates(builder.Configuration);
 
 using (var scope = app.Services.CreateScope())
@@ -316,17 +307,7 @@ static void ValidateDefaultRandomChanceRates(IConfiguration configuration)
 {
     var options = configuration.GetSection(RandomChanceRatesOptions.SectionName)
         .Get<RandomChanceRatesOptions>() ?? new RandomChanceRatesOptions();
-    var stableChance = options.EventTriggerChances.AuditorIssueOnStable;
-    var bigMoveChance = options.EventTriggerChances.AuditorIssueOnBigMove;
-    var crisisMultiplier = options.ChanceModifiers.CrisisAuditorIssueMultiplier;
-    if (double.IsFinite(stableChance)
-        && double.IsFinite(bigMoveChance)
-        && double.IsFinite(crisisMultiplier)
-        && stableChance is >= 0d and <= 0.5d
-        && bigMoveChance is >= 0d and <= 0.5d
-        && crisisMultiplier >= 0d
-        && stableChance * crisisMultiplier <= 0.5d
-        && bigMoveChance * crisisMultiplier <= 0.5d)
+    if (RandomChanceRatesAreValid(options))
     {
         return;
     }
@@ -334,7 +315,41 @@ static void ValidateDefaultRandomChanceRates(IConfiguration configuration)
     throw new OptionsValidationException(
         Options.DefaultName,
         typeof(RandomChanceRatesOptions),
-        ["Auditor Extra outcome chances, including crisis adjustment, must remain between 0% and 50% to preserve symmetry."]);
+        ["Random probabilities and modifiers are invalid."]);
+}
+
+static void ValidateDefaultAuditorOptions(IConfiguration configuration)
+{
+    var options = configuration.GetSection(AuditorOptions.SectionName)
+        .Get<AuditorOptions>() ?? new AuditorOptions();
+    if (options.IsValid())
+    {
+        return;
+    }
+
+    throw new OptionsValidationException(
+        Options.DefaultName,
+        typeof(AuditorOptions),
+        ["Auditor intervals, thresholds, and decision pulls are invalid."]);
+}
+
+static bool RandomChanceRatesAreValid(RandomChanceRatesOptions options)
+{
+    var probabilities = options.EventTriggerChances.GetType().GetProperties()
+        .Select(property => property.GetValue(options.EventTriggerChances))
+        .Select(value => value switch
+        {
+            double doubleValue => doubleValue,
+            decimal decimalValue => (double)decimalValue,
+            _ => double.NaN,
+        });
+    var modifiers = options.ChanceModifiers.GetType().GetProperties()
+        .Select(property => property.GetValue(options.ChanceModifiers))
+        .OfType<double>();
+
+    return probabilities.All(probability => double.IsFinite(probability) && probability is >= 0d and <= 1d)
+        && modifiers.All(modifier => double.IsFinite(modifier) && modifier >= 0d)
+        && options.EventTriggerChances.BigInvestmentMax <= EventTriggerChances.BigInvestmentHardMax;
 }
 
 static bool SqliteDatabaseExists(string connectionString)

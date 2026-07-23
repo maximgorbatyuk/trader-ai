@@ -281,6 +281,12 @@ public sealed class GameSettingsService(
             errors["Settlement"] = ["Settlement lag cannot be negative."];
         }
 
+        var auditor = candidate.Configuration.GetSection(AuditorOptions.SectionName).Get<AuditorOptions>() ?? new();
+        if (!auditor.IsValid())
+        {
+            errors["Auditor"] = ["Audit intervals, metric boundaries, score thresholds, and decision pulls must form valid ordered ranges."];
+        }
+
         var news = candidate.Configuration.GetSection(NewsOptions.SectionName).Get<NewsOptions>() ?? new();
         if (news.CyclesBetweenPosts <= 0)
         {
@@ -384,18 +390,11 @@ public sealed class GameSettingsService(
         var modifiers = random.ChanceModifiers.GetType().GetProperties()
             .Select(property => property.GetValue(random.ChanceModifiers))
             .OfType<double>();
-        var stableChance = random.EventTriggerChances.AuditorIssueOnStable;
-        var bigMoveChance = random.EventTriggerChances.AuditorIssueOnBigMove;
-        var crisisMultiplier = random.ChanceModifiers.CrisisAuditorIssueMultiplier;
         if (probabilities.Any(probability => !double.IsFinite(probability) || probability is < 0d or > 1d)
             || modifiers.Any(modifier => !double.IsFinite(modifier) || modifier < 0d)
-            || stableChance > 0.5d
-            || bigMoveChance > 0.5d
-            || stableChance * crisisMultiplier > 0.5d
-            || bigMoveChance * crisisMultiplier > 0.5d
             || random.EventTriggerChances.BigInvestmentMax > EventTriggerChances.BigInvestmentHardMax)
         {
-            errors["RandomChanceRates"] = ["Event probabilities must remain between 0 and 1, modifiers must be non-negative, and adjusted auditor outcomes and Extra-raised investment chances cannot exceed 50%."];
+            errors["RandomChanceRates"] = ["Event probabilities must remain between 0 and 1, modifiers must be non-negative, and Extra-raised investment chances cannot exceed 50%."];
         }
 
         var bands = random.RandomMagnitudeBands;

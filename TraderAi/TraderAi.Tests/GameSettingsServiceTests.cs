@@ -16,6 +16,7 @@ public sealed class GameSettingsServiceTests
     {
         var configuration = Configuration(
             ("Margin:InitialMarginRate", "0.50"),
+            ("Auditor:AuditIntervalTradingDays", "2"),
             ("RandomChanceRates:EventTriggerChances:NoSellOrderBuyChance", "0.80"),
             ("AutomatedTrading:PassiveBuyPremiumMinPercent", "1"),
             ("AutomatedTrading:PassiveBuyPremiumMaxPercent", "15"),
@@ -35,6 +36,12 @@ public sealed class GameSettingsServiceTests
             definition => definition.Key == "RandomChanceRates:EventTriggerChances:NoSellOrderBuyChance");
         Assert.Equal(GameSettingValueType.Decimal, noSellOrderBuyChance.ValueType);
         Assert.Contains("sell", noSellOrderBuyChance.Description, StringComparison.OrdinalIgnoreCase);
+
+        var auditInterval = Assert.Single(
+            definitions,
+            definition => definition.Key == "Auditor:AuditIntervalTradingDays");
+        Assert.Equal(GameSettingValueType.Integer, auditInterval.ValueType);
+        Assert.Contains("trading days", auditInterval.Description, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains(
             definitions,
