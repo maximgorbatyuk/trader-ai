@@ -917,6 +917,239 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         Assert.True(staged.DividendCoverageRatio >= 1.20m);
     }
 
+    [Theory]
+    [InlineData(2_000, "0.0025")]
+    [InlineData(500, "0.01")]
+    [InlineData(1_500, "0.003333")]
+    public async Task ShareCountChangeRedenominatesPerShareWithoutChangingDividendPool(
+        int currentIssuedShares,
+        string expectedPerShareText)
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync(issuedShares: 1_000);
+        await AddSnapshotAsync(
+            company,
+            seedCycle,
+            dayNumber: 1,
+            configure: snapshot =>
+            {
+                snapshot.ExpectedDividendPerShare = 0.005m;
+                snapshot.ExpectedDividendPool = 5m;
+                snapshot.DividendCoverageRatio = 2.4m;
+            });
+        company.IssuedSharesCount = currentIssuedShares;
+        await context.SaveChangesAsync();
+
+        await Service(new ScriptedRandom(
+                new[] { 0.5d }.Concat(Enumerable.Repeat(0.99d, 12))))
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.Equal(5m, staged.ExpectedDividendPool);
+        Assert.Equal(
+            decimal.Parse(expectedPerShareText, System.Globalization.CultureInfo.InvariantCulture),
+            staged.ExpectedDividendPerShare);
+        Assert.Equal(CompanyFinancialMetric.None, staged.ChangedMetrics);
+    }
+
+    [Fact]
+    public async Task ShareCountChangeStillAppliesDividendEconomicCaps()
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync(issuedShares: 1_000);
+        await AddSnapshotAsync(
+            company,
+            seedCycle,
+            dayNumber: 1,
+            configure: snapshot =>
+            {
+                snapshot.ExpectedDividendPerShare = 0.10m;
+                snapshot.ExpectedDividendPool = 100m;
+                snapshot.DividendCoverageRatio = 0.12m;
+            });
+        company.IssuedSharesCount = 2_000;
+        await context.SaveChangesAsync();
+
+        await Service(new ScriptedRandom(
+                new[] { 0.5d }.Concat(Enumerable.Repeat(0.99d, 12))))
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.Equal(6m, staged.ExpectedDividendPool);
+        Assert.Equal(0.003m, staged.ExpectedDividendPerShare);
+        Assert.Equal(CompanyFinancialMetric.None, staged.ChangedMetrics);
+    }
+
+    [Theory]
+    [InlineData(1_000, 0d, "0.01")]
+    [InlineData(10_000, 0d, "0.01")]
+    [InlineData(10_000, 0.99d, "0")]
+    public async Task SelectedDividendCanRecoverFromZeroWithoutLosingDrawDiscipline(
+        int issuedShares,
+        double directionRoll,
+        string expectedPoolText)
+    {
+        var dayOneCycle = await AddCycleAsync(dayNumber: 1, tradingCycleNumber: 2);
+        var dayTwo = await AddTradingDayAsync(2);
+        var recoveredCycle = await AddCycleAsync(dayTwo, tradingCycleNumber: 2);
+        var middayCycle = await AddCycleAsync(dayTwo, MiddayTradingCycleNumber);
+        var company = await AddCompanyAsync(issuedShares: issuedShares);
+        await AddSnapshotAsync(
+            company,
+            dayOneCycle,
+            dayNumber: 1,
+            configure: snapshot =>
+            {
+                snapshot.NetProfit = -10m;
+                snapshot.OperatingCashFlow = -10m;
+                snapshot.ExpectedDividendPerShare = 0m;
+                snapshot.ExpectedDividendPool = 0m;
+                snapshot.DividendCoverageRatio = 0m;
+                snapshot.ManagementProfitForecast = -10m;
+                snapshot.ManagementOperatingCashFlowForecast = -10m;
+            });
+        await AddSnapshotAsync(
+            company,
+            recoveredCycle,
+            dayNumber: 2,
+            configure: snapshot =>
+            {
+                snapshot.NetProfit = 10m;
+                snapshot.OperatingCashFlow = 12m;
+                snapshot.ExpectedDividendPerShare = 0m;
+                snapshot.ExpectedDividendPool = 0m;
+                snapshot.DividendCoverageRatio = 0m;
+            });
+        var draws = new List<double> { 0.5d };
+        draws.AddRange(Enumerable.Repeat(0.99d, 6));
+        draws.AddRange([0d, directionRoll, 0d]);
+        draws.AddRange(Enumerable.Repeat(0.99d, 5));
+        var random = new ScriptedRandom(draws);
+
+        await Service(random).ProcessForCycleAsync(middayCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.Equal(
+            decimal.Parse(expectedPoolText, System.Globalization.CultureInfo.InvariantCulture),
+            staged.ExpectedDividendPool);
+        Assert.Equal(
+            CompanyFinancialMetric.ExpectedDividendPerShare,
+            staged.ChangedMetrics);
+        Assert.Equal(0, random.Remaining);
+    }
+
+    [Fact]
+    public async Task ScriptedDrawSegmentsAreAssignedByAscendingCompanyId()
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var lowerIdCompany = await AddCompanyAsync();
+        var higherIdCompany = await AddCompanyAsync();
+        await AddSnapshotAsync(lowerIdCompany, seedCycle, dayNumber: 1);
+        await AddSnapshotAsync(higherIdCompany, seedCycle, dayNumber: 1);
+        var draws = new List<double>
+        {
+            0.5d,
+            0d, 0d, 0d,
+        };
+        draws.AddRange(Enumerable.Repeat(0.99d, 11));
+        draws.AddRange(
+        [
+            0.5d,
+            0d, 0.99d, 0d,
+        ]);
+        draws.AddRange(Enumerable.Repeat(0.99d, 11));
+
+        await Service(new ScriptedRandom(draws))
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = context.ChangeTracker
+            .Entries<CompanyFinancialSnapshot>()
+            .Where(entry => entry.State == EntityState.Added)
+            .Select(entry => entry.Entity)
+            .OrderBy(snapshot => snapshot.CompanyId)
+            .ToArray();
+        Assert.Equal(2, staged.Length);
+        Assert.Equal(lowerIdCompany.Id, staged[0].CompanyId);
+        Assert.True(staged[0].Revenue > 100m);
+        Assert.Equal(higherIdCompany.Id, staged[1].CompanyId);
+        Assert.True(staged[1].Revenue < 100m);
+    }
+
+    [Fact]
+    public async Task UpdateUsesLatestSnapshotByFinancialHistoryOrder()
+    {
+        var dayOne = await AddTradingDayAsync(1);
+        var dayTwo = await AddTradingDayAsync(2);
+        var dayThree = await AddTradingDayAsync(3);
+        var dayTwoOpeningCycle = await AddCycleAsync(dayTwo, tradingCycleNumber: 1);
+        var dayOneMiddayCycle = await AddCycleAsync(dayOne, MiddayTradingCycleNumber);
+        var dayTwoSeedCycle = await AddCycleAsync(dayTwo, tradingCycleNumber: 2);
+        var targetCycle = await AddCycleAsync(dayThree, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(
+            company,
+            dayTwoOpeningCycle,
+            dayNumber: 2,
+            configure: snapshot =>
+            {
+                snapshot.Moment = CompanyFinancialSnapshotMoment.DayOpening;
+                snapshot.Revenue = 500m;
+                snapshot.ManagementRevenueForecast = 500m;
+                snapshot.CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            });
+        await AddSnapshotAsync(
+            company,
+            dayOneMiddayCycle,
+            dayNumber: 1,
+            configure: snapshot =>
+            {
+                snapshot.Moment = CompanyFinancialSnapshotMoment.Midday;
+                snapshot.Revenue = 300m;
+                snapshot.ManagementRevenueForecast = 300m;
+                snapshot.CreatedAt = new DateTime(2026, 12, 1, 0, 0, 0, DateTimeKind.Utc);
+            });
+        await AddSnapshotAsync(
+            company,
+            dayTwoSeedCycle,
+            dayNumber: 2,
+            configure: snapshot =>
+            {
+                snapshot.Revenue = 400m;
+                snapshot.ManagementRevenueForecast = 400m;
+                snapshot.CreatedAt = new DateTime(2026, 12, 2, 0, 0, 0, DateTimeKind.Utc);
+            });
+        var draws = new List<double>
+        {
+            0.5d,
+            0d, 0d, 0d,
+        };
+        draws.AddRange(Enumerable.Repeat(0.99d, 11));
+
+        await Service(new ScriptedRandom(draws))
+            .ProcessForCycleAsync(targetCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.Equal(502.50m, staged.Revenue);
+    }
+
     public void Dispose()
     {
         context.Dispose();

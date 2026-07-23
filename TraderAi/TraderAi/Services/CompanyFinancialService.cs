@@ -10,7 +10,7 @@ public sealed class CompanyFinancialService
     private const int MoneyPrecision = 2;
     private const int RatioPrecision = 6;
     private const decimal MinimumMoneyChangeBase = 1m;
-    private const decimal MinimumPerShareChangeBase = 0.000001m;
+    private const decimal PerShareQuantum = 0.000001m;
     private const double IndependentDirectionBlendWeight = 0.60d;
     private const double CompanyImpulseBlendWeight = 0.40d;
 
@@ -261,7 +261,10 @@ public sealed class CompanyFinancialService
             var history = rowsByCompany[company.Id];
             var current = MutableFinancialState.From(history[^1]);
             var companyImpulse = DrawCompanyImpulse(company.IndustryTrend);
-            var changedMetrics = UpdateState(current, companyImpulse);
+            var changedMetrics = UpdateState(
+                current,
+                companyImpulse,
+                company.IssuedSharesCount);
             EnforceUpdateInvariants(current, company.IssuedSharesCount);
             var state = current.ToImmutable();
             var score = scorer.Score(new CompanyFinancialScoringInput(
@@ -284,7 +287,8 @@ public sealed class CompanyFinancialService
 
     private CompanyFinancialMetric UpdateState(
         MutableFinancialState state,
-        double companyImpulse)
+        double companyImpulse,
+        int issuedSharesCount)
     {
         var selected = CompanyFinancialMetric.None;
         var bands = chanceRates.RandomMagnitudeBands;
@@ -351,17 +355,13 @@ public sealed class CompanyFinancialService
             MoneyPrecision,
             CompanyFinancialMetric.TotalDebt,
             ref selected);
-        state.ExpectedDividendPerShare = UpdatePercentage(
-            state.ExpectedDividendPerShare,
+        state.ExpectedDividendPool = UpdateDividendPool(
+            state.ExpectedDividendPool,
             bands.FinancialDividendUpdateMin,
             bands.FinancialDividendUpdateMax,
             companyImpulse,
-            favorableIncreases: true,
-            nonNegative: true,
-            RatioPrecision,
-            CompanyFinancialMetric.ExpectedDividendPerShare,
-            ref selected,
-            MinimumPerShareChangeBase);
+            issuedSharesCount,
+            ref selected);
         state.BusinessRiskScore = UpdateScore(
             state.BusinessRiskScore,
             bands.FinancialRiskScoreUpdateMin,
@@ -464,6 +464,33 @@ public sealed class CompanyFinancialService
         return Ratio(Math.Clamp(next, 0m, 100m));
     }
 
+    private decimal UpdateDividendPool(
+        decimal current,
+        decimal minimum,
+        decimal maximum,
+        double companyImpulse,
+        int issuedSharesCount,
+        ref CompanyFinancialMetric selected)
+    {
+        if (random.NextDouble() >= chanceRates.EventTriggerChances.FinancialMetricChange)
+        {
+            return current;
+        }
+
+        var favorable = IsFavorableDirection(random.NextDouble(), companyImpulse);
+        var magnitude = DrawRange(minimum, maximum);
+        selected |= CompanyFinancialMetric.ExpectedDividendPerShare;
+        if (!favorable)
+        {
+            return Money(Math.Max(0m, current * (1m - magnitude)));
+        }
+
+        var percentageCandidate = Money(current * (1m + magnitude));
+        var representableCandidate = CeilingMoney(
+            PerShareQuantum * issuedSharesCount);
+        return Math.Max(percentageCandidate, representableCandidate);
+    }
+
     private void EnforceUpdateInvariants(
         MutableFinancialState state,
         int issuedSharesCount)
@@ -476,7 +503,7 @@ public sealed class CompanyFinancialService
         var dividend = CoherentDividend(
             state.NetProfit,
             state.OperatingCashFlow,
-            Money(state.ExpectedDividendPerShare * issuedSharesCount),
+            state.ExpectedDividendPool,
             issuedSharesCount);
         state.ExpectedDividendPerShare = dividend.PerShare;
         state.ExpectedDividendPool = dividend.Pool;
@@ -677,6 +704,9 @@ public sealed class CompanyFinancialService
 
     private static decimal Money(decimal value) =>
         Math.Round(value, MoneyPrecision, MidpointRounding.AwayFromZero);
+
+    private static decimal CeilingMoney(decimal value) =>
+        Math.Ceiling(value * 100m) / 100m;
 
     private static decimal Ratio(decimal value) =>
         Math.Round(value, RatioPrecision, MidpointRounding.AwayFromZero);
