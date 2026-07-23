@@ -352,9 +352,11 @@ public sealed class RandomMagnitudeBands
 
         try
         {
-            _ = (decimal)minimum;
-            _ = (decimal)maximum;
-            return true;
+            var decimalMinimum = (decimal)minimum;
+            var decimalMaximum = (decimal)maximum;
+            return decimalMinimum > 0m
+                && decimalMaximum > 0m
+                && decimalMinimum <= decimalMaximum;
         }
         catch (OverflowException)
         {

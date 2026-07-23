@@ -122,6 +122,15 @@ public sealed class CompanyFinancialOptionsTests
     }
 
     [Fact]
+    public void RandomOptionsRejectBigInvestmentMinimumThatLosesPrecisionToZero()
+    {
+        var belowDecimalPrecision = new RandomChanceRatesOptions();
+        belowDecimalPrecision.RandomMagnitudeBands.BigInvestmentFractionMin = double.Epsilon;
+
+        Assert.False(belowDecimalPrecision.IsValid());
+    }
+
+    [Fact]
     public void RandomOptionsRejectBigInvestmentFractionsAboveDecimalBounds()
     {
         var aboveDecimalMaximum = new RandomChanceRatesOptions();
