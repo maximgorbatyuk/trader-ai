@@ -1162,19 +1162,21 @@ public sealed class CollectiveFundServiceTests : IDisposable
         Assert.Equal(600m, refreshedFund.CurrentBalance);
 
         // Each member receives the full gross dividend as its own row before the fee is charged.
-        var dividendRows = await context.MoneyTransactions.AsNoTracking()
+        var dividendRows = (await context.MoneyTransactions.AsNoTracking()
             .Where(transaction => transaction.Type == MoneyTransactionType.CollectiveFundDividend)
-            .OrderBy(transaction => transaction.Amount)
             .Select(transaction => transaction.Amount)
-            .ToListAsync();
+            .ToListAsync())
+            .Order()
+            .ToList();
         Assert.Equal([125m, 375m], dividendRows);
 
         // The fee each member pays back to the fund is recorded on the member's side.
-        var feeRows = await context.MoneyTransactions.AsNoTracking()
+        var feeRows = (await context.MoneyTransactions.AsNoTracking()
             .Where(transaction => transaction.Type == MoneyTransactionType.CollectiveFundDividendFee)
-            .OrderBy(transaction => transaction.Amount)
             .Select(transaction => transaction.Amount)
-            .ToListAsync();
+            .ToListAsync())
+            .Order()
+            .ToList();
         Assert.Equal([25m, 75m], feeRows);
 
         // The fund records paying the full gross out and collecting the fees back, so both legs appear in its cash movements.
