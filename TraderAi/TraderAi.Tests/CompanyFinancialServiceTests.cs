@@ -189,6 +189,108 @@ public sealed class CompanyFinancialServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SeedDividendIsCappedByProfitPayoutAndCashFlowCoverage()
+    {
+        var cycle = await AddCycleAsync(dayNumber: 1, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        var financialOptions = new CompanyFinancialOptions
+        {
+            MaximumExpectedDividendPayoutRatio = 0.10m,
+            MinimumExpectedDividendCoverageRatio = 2m,
+        };
+        var snapshot = await Service(
+                new ScriptedRandom(
+                [
+                    0.5d, 0.5d, 0d, 0d, 0.5d, 0.5d,
+                    1d, 0.5d, 0.5d, 0.5d, 0.5d, 0.5d,
+                ]),
+                financialOptions: financialOptions)
+            .StageSeedSnapshotAsync(
+                company,
+                100m,
+                cycle.Id,
+                1,
+                DateTime.UtcNow);
+
+        Assert.NotNull(snapshot);
+        Assert.True(
+            snapshot.ExpectedDividendPool
+            <= Math.Max(0m, snapshot.NetProfit)
+                * financialOptions.MaximumExpectedDividendPayoutRatio);
+        Assert.True(
+            snapshot.ExpectedDividendPool
+            <= Math.Max(0m, snapshot.OperatingCashFlow)
+                / financialOptions.MinimumExpectedDividendCoverageRatio);
+        Assert.Equal(
+            Math.Round(
+                snapshot.ExpectedDividendPerShare * company.IssuedSharesCount,
+                2,
+                MidpointRounding.AwayFromZero),
+            snapshot.ExpectedDividendPool);
+        Assert.True(
+            snapshot.DividendCoverageRatio
+            >= financialOptions.MinimumExpectedDividendCoverageRatio);
+    }
+
+    [Fact]
+    public async Task SeedWithNegativeProfitAndCashFlowExpectsNoDividend()
+    {
+        var cycle = await AddCycleAsync(dayNumber: 1, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        var chanceRates = new RandomChanceRatesOptions();
+        chanceRates.RandomMagnitudeBands.FinancialSeedNetMarginMin = -0.10m;
+        chanceRates.RandomMagnitudeBands.FinancialSeedNetMarginMax = 0.10m;
+
+        var snapshot = await Service(
+                new ScriptedRandom(
+                [
+                    0.5d, 0.5d, 0d, 0.5d, 0.5d, 0.5d,
+                    1d, 0.5d, 0.5d, 0.5d, 0.5d, 0.5d,
+                ]),
+                chanceRates: chanceRates)
+            .StageSeedSnapshotAsync(
+                company,
+                100m,
+                cycle.Id,
+                1,
+                DateTime.UtcNow);
+
+        Assert.NotNull(snapshot);
+        Assert.True(snapshot.NetProfit < 0m);
+        Assert.True(snapshot.OperatingCashFlow < 0m);
+        Assert.Equal(0m, snapshot.ExpectedDividendPerShare);
+        Assert.Equal(0m, snapshot.ExpectedDividendPool);
+        Assert.Equal(0m, snapshot.DividendCoverageRatio);
+    }
+
+    [Fact]
+    public async Task SeedBusinessRiskIsAdjustedByIndustryTrend()
+    {
+        var cycle = await AddCycleAsync(dayNumber: 1, tradingCycleNumber: 1);
+        var risingCompany = await AddCompanyAsync(sentimentValue: 100);
+        var fallingCompany = await AddCompanyAsync(sentimentValue: -100);
+
+        var rising = await Service(new Random(123)).StageSeedSnapshotAsync(
+            risingCompany,
+            100m,
+            cycle.Id,
+            1,
+            DateTime.UtcNow);
+        var falling = await Service(new Random(123)).StageSeedSnapshotAsync(
+            fallingCompany,
+            100m,
+            cycle.Id,
+            1,
+            DateTime.UtcNow);
+
+        Assert.NotNull(rising);
+        Assert.NotNull(falling);
+        Assert.InRange(rising.BusinessRiskScore, 0m, 100m);
+        Assert.InRange(falling.BusinessRiskScore, 0m, 100m);
+        Assert.True(rising.BusinessRiskScore < falling.BusinessRiskScore);
+    }
+
+    [Fact]
     public async Task DisabledProcessingDrawsNothingAndStagesNothing()
     {
         var cycle = await AddCycleAsync(dayNumber: 1, tradingCycleNumber: 1);
@@ -237,7 +339,7 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         await AddSnapshotAsync(first, seedCycle, dayNumber: 1);
         await AddSnapshotAsync(second, seedCycle, dayNumber: 1);
         await AddSnapshotAsync(closed, seedCycle, dayNumber: 1);
-        var random = new ScriptedRandom(Enumerable.Repeat(0.99d, 48));
+        var random = new ScriptedRandom(Enumerable.Repeat(0.99d, 52));
 
         await Service(random).ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -265,7 +367,7 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
         var company = await AddCompanyAsync();
         await AddSnapshotAsync(company, seedCycle, dayNumber: 1);
-        var random = new ScriptedRandom(Enumerable.Repeat(0.99d, 12));
+        var random = new ScriptedRandom(Enumerable.Repeat(0.99d, 13));
         var service = Service(random);
 
         await service.ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
@@ -286,7 +388,8 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         var company = await AddCompanyAsync();
         var seed = await AddSnapshotAsync(company, seedCycle, dayNumber: 1);
 
-        await Service(new ScriptedRandom(Enumerable.Repeat(0.99d, 12)))
+        await Service(new ScriptedRandom(
+                new[] { 0.5d }.Concat(Enumerable.Repeat(0.99d, 12))))
             .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
 
         var staged = Assert.Single(
@@ -308,6 +411,7 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         var seed = await AddSnapshotAsync(company, seedCycle, dayNumber: 1);
         var random = new ScriptedRandom(
         [
+            0.5d,
             0d, 0d, 0d,
             0.99d,
             0.99d,
@@ -339,8 +443,8 @@ public sealed class CompanyFinancialServiceTests : IDisposable
     }
 
     [Theory]
-    [InlineData(100, 0.60d, true)]
-    [InlineData(-100, 0.60d, false)]
+    [InlineData(100, 0.50d, true)]
+    [InlineData(-100, 0.50d, false)]
     [InlineData(100, 0.90d, false)]
     [InlineData(-100, 0.10d, true)]
     public async Task IndustryBiasInfluencesButDoesNotDictateDirection(
@@ -353,7 +457,7 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
         var company = await AddCompanyAsync(sentimentValue: sentimentValue);
         var seed = await AddSnapshotAsync(company, seedCycle, dayNumber: 1);
-        var draws = new List<double> { 0d, directionRoll, 0d };
+        var draws = new List<double> { 0.5d, 0d, directionRoll, 0d };
         draws.AddRange(Enumerable.Repeat(0.99d, 11));
 
         await Service(new ScriptedRandom(draws))
@@ -388,6 +492,7 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         {
             draws.AddRange(
             [
+                0.5d,
                 0.99d,
                 0.99d,
                 0.99d,
@@ -456,6 +561,7 @@ public sealed class CompanyFinancialServiceTests : IDisposable
             });
         var draws = new List<double>
         {
+            0.5d,
             0.99d,
             0.99d,
             0.99d,
@@ -492,7 +598,9 @@ public sealed class CompanyFinancialServiceTests : IDisposable
             CreatedAt = DateTime.UtcNow,
         });
         await context.SaveChangesAsync();
-        var draws = Enumerable.Repeat(new[] { 0d, 0d, 0d }, 12).SelectMany(row => row);
+        var draws = new[] { 0.5d }
+            .Concat(Enumerable.Repeat(new[] { 0d, 0d, 0d }, 12)
+                .SelectMany(row => row));
 
         await Service(new ScriptedRandom(draws))
             .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
@@ -508,6 +616,102 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         var ledger = await context.CorporateCashTransactions.AsNoTracking().ToListAsync();
         Assert.Single(ledger);
         Assert.Equal(100m, ledger[0].Amount);
+    }
+
+    [Fact]
+    public async Task CheckpointDrawsOneCompanyImpulseBeforeMetricRolls()
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(company, seedCycle, dayNumber: 1);
+        var random = new ScriptedRandom(
+            new[] { 0.25d }.Concat(Enumerable.Repeat(0.99d, 12)));
+
+        await Service(random).ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        Assert.Equal(0, random.Remaining);
+    }
+
+    [Fact]
+    public async Task IndependentMetricDirectionCanOvercomeTheCompanyImpulse()
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync(sentimentValue: 100);
+        var seed = await AddSnapshotAsync(company, seedCycle, dayNumber: 1);
+        var draws = new List<double>
+        {
+            0d,
+            0d, 0.55d, 0d,
+            0d, 0.99d, 0d,
+        };
+        draws.AddRange(Enumerable.Repeat(0.99d, 10));
+
+        await Service(new ScriptedRandom(draws))
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.True(staged.Revenue > seed.Revenue);
+        Assert.True(staged.NetProfit < seed.NetProfit);
+    }
+
+    [Fact]
+    public async Task ProfitAndCashFlowDeteriorationReducesDividendEvenWhenDividendWasNotSelected()
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        var seed = await AddSnapshotAsync(
+            company,
+            seedCycle,
+            dayNumber: 1,
+            configure: snapshot =>
+            {
+                snapshot.NetProfit = 200m;
+                snapshot.OperatingCashFlow = 200m;
+                snapshot.ExpectedDividendPerShare = 0.10m;
+                snapshot.ExpectedDividendPool = 100m;
+                snapshot.DividendCoverageRatio = 2m;
+            });
+        var chanceRates = new RandomChanceRatesOptions();
+        chanceRates.RandomMagnitudeBands.FinancialOperatingUpdateMin = 0.75m;
+        chanceRates.RandomMagnitudeBands.FinancialOperatingUpdateMax = 0.75m;
+        var draws = new List<double>
+        {
+            0.5d,
+            0.99d,
+            0d, 0.99d, 1d,
+            0d, 0.99d, 1d,
+        };
+        draws.AddRange(Enumerable.Repeat(0.99d, 9));
+
+        await Service(new ScriptedRandom(draws), chanceRates: chanceRates)
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.True(staged.ExpectedDividendPool < seed.ExpectedDividendPool);
+        Assert.True(staged.ExpectedDividendPerShare < seed.ExpectedDividendPerShare);
+        Assert.True(
+            staged.ExpectedDividendPool
+            <= Math.Max(0m, staged.NetProfit) * 0.60m);
+        Assert.True(
+            staged.ExpectedDividendPool
+            <= Math.Max(0m, staged.OperatingCashFlow) / 1.20m);
+        Assert.True(staged.DividendCoverageRatio >= 1.20m);
+        Assert.True(staged.ChangedMetrics.HasFlag(CompanyFinancialMetric.NetProfit));
+        Assert.True(staged.ChangedMetrics.HasFlag(CompanyFinancialMetric.OperatingCashFlow));
+        Assert.True(staged.ChangedMetrics.HasFlag(
+            CompanyFinancialMetric.ExpectedDividendPerShare));
     }
 
     public void Dispose()
@@ -619,9 +823,9 @@ public sealed class CompanyFinancialServiceTests : IDisposable
             TotalAssets = 200m,
             TotalLiabilities = 80m,
             TotalDebt = 40m,
-            ExpectedDividendPerShare = 0.01m,
-            ExpectedDividendPool = 10m,
-            DividendCoverageRatio = 1m,
+            ExpectedDividendPerShare = 0.005m,
+            ExpectedDividendPool = 5m,
+            DividendCoverageRatio = 2m,
             BusinessRiskScore = 50m,
             ManagementRevenueForecast = 102m,
             ManagementProfitForecast = 10.2m,

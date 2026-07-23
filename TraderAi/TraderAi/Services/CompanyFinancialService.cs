@@ -74,6 +74,7 @@ public sealed class CompanyFinancialService
             return existing;
         }
 
+        var trend = await IndustryTrendForAsync(company.IndustryId);
         var magnitudes = chanceRates.RandomMagnitudeBands;
         var capitalization = Money(listingPrice * company.IssuedSharesCount);
         var assets = Money(capitalization * DrawRange(
@@ -94,12 +95,10 @@ public sealed class CompanyFinancialService
         var debt = Money(liabilities * DrawRange(
             magnitudes.FinancialSeedDebtToLiabilitiesMin,
             magnitudes.FinancialSeedDebtToLiabilitiesMax));
-        var dividendPerShare = Ratio(listingPrice * DrawRange(
+        var drawnDividendPerShare = Ratio(listingPrice * DrawRange(
             magnitudes.FinancialSeedExpectedDividendYieldMin,
             magnitudes.FinancialSeedExpectedDividendYieldMax));
-        var businessRisk = Ratio(DrawRange(
-            magnitudes.FinancialSeedBusinessRiskScoreMin,
-            magnitudes.FinancialSeedBusinessRiskScoreMax));
+        var businessRisk = SeedBusinessRisk(magnitudes, trend);
         var revenueForecast = Forecast(
             revenue,
             DrawSeedForecastDeviation(magnitudes));
@@ -112,7 +111,11 @@ public sealed class CompanyFinancialService
         var managementConfidence = Ratio(DrawRange(
             magnitudes.FinancialSeedManagementConfidenceMin,
             magnitudes.FinancialSeedManagementConfidenceMax));
-        var dividendPool = Money(dividendPerShare * company.IssuedSharesCount);
+        var dividend = CoherentDividend(
+            netProfit,
+            operatingCashFlow,
+            Money(drawnDividendPerShare * company.IssuedSharesCount),
+            company.IssuedSharesCount);
         var state = new CompanyFinancialState(
             revenue,
             netProfit,
@@ -120,15 +123,14 @@ public sealed class CompanyFinancialService
             assets,
             liabilities,
             Math.Min(debt, liabilities),
-            dividendPerShare,
-            dividendPool,
-            DividendCoverage(netProfit, dividendPool),
+            dividend.PerShare,
+            dividend.Pool,
+            dividend.Coverage,
             businessRisk,
             revenueForecast,
             profitForecast,
             cashFlowForecast,
             managementConfidence);
-        var trend = await IndustryTrendForAsync(company.IndustryId);
         var score = scorer.Score(new CompanyFinancialScoringInput(state, [], trend));
         var latestDividendEventId = await LatestDividendEventIdAsync(company.Id);
         var snapshot = CreateSnapshot(
@@ -255,9 +257,12 @@ public sealed class CompanyFinancialService
         foreach (var company in eligibleCompanies)
         {
             var history = rowsByCompany[company.Id];
+            var prior = MutableFinancialState.From(history[^1]);
             var current = MutableFinancialState.From(history[^1]);
-            var changedMetrics = UpdateState(current, company.IndustryTrend);
-            EnforceUpdateInvariants(current, company.IssuedSharesCount, ref changedMetrics);
+            var companyImpulse = DrawCompanyImpulse(company.IndustryTrend);
+            UpdateState(current, companyImpulse);
+            EnforceUpdateInvariants(current, company.IssuedSharesCount);
+            var changedMetrics = ChangedMetricsBetween(prior, current);
             var state = current.ToImmutable();
             var score = scorer.Score(new CompanyFinancialScoringInput(
                 state,
@@ -277,146 +282,117 @@ public sealed class CompanyFinancialService
         }
     }
 
-    private CompanyFinancialMetric UpdateState(
+    private void UpdateState(
         MutableFinancialState state,
-        IndustryTrend industryTrend)
+        double companyImpulse)
     {
-        var changed = CompanyFinancialMetric.None;
         var bands = chanceRates.RandomMagnitudeBands;
 
-        // Metric order is an observable reproducibility contract: trigger, direction, then magnitude are drawn
-        // together before the next metric, and companies are processed by ascending id.
+        // One shared impulse precedes the fixed trigger-direction-magnitude metric order so seeded runs preserve
+        // correlated company behavior without removing each metric's independent direction.
         state.Revenue = UpdatePercentage(
             state.Revenue,
             bands.FinancialOperatingUpdateMin,
             bands.FinancialOperatingUpdateMax,
-            industryTrend,
+            companyImpulse,
             favorableIncreases: true,
             nonNegative: true,
-            MoneyPrecision,
-            CompanyFinancialMetric.Revenue,
-            ref changed);
+            MoneyPrecision);
         state.NetProfit = UpdatePercentage(
             state.NetProfit,
             bands.FinancialOperatingUpdateMin,
             bands.FinancialOperatingUpdateMax,
-            industryTrend,
+            companyImpulse,
             favorableIncreases: true,
             nonNegative: false,
-            MoneyPrecision,
-            CompanyFinancialMetric.NetProfit,
-            ref changed);
+            MoneyPrecision);
         state.OperatingCashFlow = UpdatePercentage(
             state.OperatingCashFlow,
             bands.FinancialOperatingUpdateMin,
             bands.FinancialOperatingUpdateMax,
-            industryTrend,
+            companyImpulse,
             favorableIncreases: true,
             nonNegative: false,
-            MoneyPrecision,
-            CompanyFinancialMetric.OperatingCashFlow,
-            ref changed);
+            MoneyPrecision);
         state.TotalAssets = UpdatePercentage(
             state.TotalAssets,
             bands.FinancialBalanceSheetUpdateMin,
             bands.FinancialBalanceSheetUpdateMax,
-            industryTrend,
+            companyImpulse,
             favorableIncreases: true,
             nonNegative: true,
-            MoneyPrecision,
-            CompanyFinancialMetric.TotalAssets,
-            ref changed);
+            MoneyPrecision);
         state.TotalLiabilities = UpdatePercentage(
             state.TotalLiabilities,
             bands.FinancialBalanceSheetUpdateMin,
             bands.FinancialBalanceSheetUpdateMax,
-            industryTrend,
+            companyImpulse,
             favorableIncreases: false,
             nonNegative: true,
-            MoneyPrecision,
-            CompanyFinancialMetric.TotalLiabilities,
-            ref changed);
+            MoneyPrecision);
         state.TotalDebt = UpdatePercentage(
             state.TotalDebt,
             bands.FinancialBalanceSheetUpdateMin,
             bands.FinancialBalanceSheetUpdateMax,
-            industryTrend,
+            companyImpulse,
             favorableIncreases: false,
             nonNegative: true,
-            MoneyPrecision,
-            CompanyFinancialMetric.TotalDebt,
-            ref changed);
+            MoneyPrecision);
         state.ExpectedDividendPerShare = UpdatePercentage(
             state.ExpectedDividendPerShare,
             bands.FinancialDividendUpdateMin,
             bands.FinancialDividendUpdateMax,
-            industryTrend,
+            companyImpulse,
             favorableIncreases: true,
             nonNegative: true,
             RatioPrecision,
-            CompanyFinancialMetric.ExpectedDividendPerShare,
-            ref changed,
             MinimumPerShareChangeBase);
         state.BusinessRiskScore = UpdateScore(
             state.BusinessRiskScore,
             bands.FinancialRiskScoreUpdateMin,
             bands.FinancialRiskScoreUpdateMax,
-            industryTrend,
-            favorableIncreases: false,
-            CompanyFinancialMetric.BusinessRisk,
-            ref changed);
+            companyImpulse,
+            favorableIncreases: false);
         state.ManagementRevenueForecast = UpdatePercentage(
             state.ManagementRevenueForecast,
             bands.FinancialForecastUpdateMin,
             bands.FinancialForecastUpdateMax,
-            industryTrend,
+            companyImpulse,
             favorableIncreases: true,
             nonNegative: true,
-            MoneyPrecision,
-            CompanyFinancialMetric.ManagementRevenueForecast,
-            ref changed);
+            MoneyPrecision);
         state.ManagementProfitForecast = UpdatePercentage(
             state.ManagementProfitForecast,
             bands.FinancialForecastUpdateMin,
             bands.FinancialForecastUpdateMax,
-            industryTrend,
+            companyImpulse,
             favorableIncreases: true,
             nonNegative: false,
-            MoneyPrecision,
-            CompanyFinancialMetric.ManagementProfitForecast,
-            ref changed);
+            MoneyPrecision);
         state.ManagementOperatingCashFlowForecast = UpdatePercentage(
             state.ManagementOperatingCashFlowForecast,
             bands.FinancialForecastUpdateMin,
             bands.FinancialForecastUpdateMax,
-            industryTrend,
+            companyImpulse,
             favorableIncreases: true,
             nonNegative: false,
-            MoneyPrecision,
-            CompanyFinancialMetric.ManagementOperatingCashFlowForecast,
-            ref changed);
+            MoneyPrecision);
         state.ManagementConfidenceScore = UpdateScore(
             state.ManagementConfidenceScore,
             bands.FinancialRiskScoreUpdateMin,
             bands.FinancialRiskScoreUpdateMax,
-            industryTrend,
-            favorableIncreases: true,
-            CompanyFinancialMetric.ManagementConfidence,
-            ref changed);
-
-        return changed;
+            companyImpulse,
+            favorableIncreases: true);
     }
 
     private decimal UpdatePercentage(
         decimal current,
         decimal minimum,
         decimal maximum,
-        IndustryTrend industryTrend,
+        double companyImpulse,
         bool favorableIncreases,
         bool nonNegative,
         int precision,
-        CompanyFinancialMetric metric,
-        ref CompanyFinancialMetric changed,
         decimal minimumChangeBase = MinimumMoneyChangeBase)
     {
         if (random.NextDouble() >= chanceRates.EventTriggerChances.FinancialMetricChange)
@@ -424,7 +400,7 @@ public sealed class CompanyFinancialService
             return current;
         }
 
-        var favorable = random.NextDouble() < FavorableDirectionChance(industryTrend);
+        var favorable = IsFavorableDirection(random.NextDouble(), companyImpulse);
         var increase = favorable == favorableIncreases;
         var magnitude = DrawRange(minimum, maximum);
         var changeBase = Math.Max(Math.Abs(current), minimumChangeBase);
@@ -434,7 +410,6 @@ public sealed class CompanyFinancialService
             next = Math.Max(0m, next);
         }
 
-        changed |= metric;
         return Math.Round(next, precision, MidpointRounding.AwayFromZero);
     }
 
@@ -442,65 +417,55 @@ public sealed class CompanyFinancialService
         decimal current,
         decimal minimum,
         decimal maximum,
-        IndustryTrend industryTrend,
-        bool favorableIncreases,
-        CompanyFinancialMetric metric,
-        ref CompanyFinancialMetric changed)
+        double companyImpulse,
+        bool favorableIncreases)
     {
         if (random.NextDouble() >= chanceRates.EventTriggerChances.FinancialMetricChange)
         {
             return current;
         }
 
-        var favorable = random.NextDouble() < FavorableDirectionChance(industryTrend);
+        var favorable = IsFavorableDirection(random.NextDouble(), companyImpulse);
         var increase = favorable == favorableIncreases;
         var next = current + (increase ? 1m : -1m) * DrawRange(minimum, maximum);
-        changed |= metric;
         return Ratio(Math.Clamp(next, 0m, 100m));
     }
 
     private void EnforceUpdateInvariants(
         MutableFinancialState state,
-        int issuedSharesCount,
-        ref CompanyFinancialMetric changed)
+        int issuedSharesCount)
     {
         if (state.TotalDebt > state.TotalLiabilities)
         {
             state.TotalDebt = state.TotalLiabilities;
-            changed |= CompanyFinancialMetric.TotalDebt;
         }
 
-        state.ExpectedDividendPool = Money(
-            state.ExpectedDividendPerShare * issuedSharesCount);
-        state.DividendCoverageRatio = DividendCoverage(
+        var dividend = CoherentDividend(
             state.NetProfit,
-            state.ExpectedDividendPool);
+            state.OperatingCashFlow,
+            Money(state.ExpectedDividendPerShare * issuedSharesCount),
+            issuedSharesCount);
+        state.ExpectedDividendPerShare = dividend.PerShare;
+        state.ExpectedDividendPool = dividend.Pool;
+        state.DividendCoverageRatio = dividend.Coverage;
 
         ClampForecast(
             state.Revenue,
             ref state.ManagementRevenueForecast,
-            CompanyFinancialMetric.ManagementRevenueForecast,
-            ref changed,
             nonNegative: true);
         ClampForecast(
             state.NetProfit,
             ref state.ManagementProfitForecast,
-            CompanyFinancialMetric.ManagementProfitForecast,
-            ref changed,
             nonNegative: false);
         ClampForecast(
             state.OperatingCashFlow,
             ref state.ManagementOperatingCashFlowForecast,
-            CompanyFinancialMetric.ManagementOperatingCashFlowForecast,
-            ref changed,
             nonNegative: false);
     }
 
     private void ClampForecast(
         decimal actual,
         ref decimal forecast,
-        CompanyFinancialMetric metric,
-        ref CompanyFinancialMetric changed,
         bool nonNegative)
     {
         var deviation = Math.Abs(actual) * financialOptions.MaximumForecastDeviationRatio;
@@ -515,7 +480,6 @@ public sealed class CompanyFinancialService
         if (clamped != forecast)
         {
             forecast = clamped;
-            changed |= metric;
         }
     }
 
@@ -531,16 +495,26 @@ public sealed class CompanyFinancialService
             : null;
     }
 
-    private double FavorableDirectionChance(IndustryTrend trend)
+    private double DrawCompanyImpulse(IndustryTrend trend)
     {
         var impulse = (double)financialOptions.IndustryImpulseWeight;
-        return trend switch
+        var industryAdjustment = trend switch
         {
-            IndustryTrend.Rising => Math.Clamp(0.5d + impulse, 0d, 1d),
-            IndustryTrend.Plateau => 0.5d,
-            IndustryTrend.Falling => Math.Clamp(0.5d - impulse, 0d, 1d),
+            IndustryTrend.Rising => -impulse,
+            IndustryTrend.Plateau => 0d,
+            IndustryTrend.Falling => impulse,
             _ => throw new ArgumentOutOfRangeException(nameof(trend), trend, "Unknown industry trend."),
         };
+        return Math.Clamp(random.NextDouble() + industryAdjustment, 0d, 1d);
+    }
+
+    private bool IsFavorableDirection(double independentRoll, double companyImpulse)
+    {
+        var impulseWeight = (double)financialOptions.IndustryImpulseWeight;
+        var blendedRoll =
+            independentRoll * (1d - impulseWeight)
+            + companyImpulse * impulseWeight;
+        return blendedRoll < 0.5d;
     }
 
     private async Task<IndustryTrend> IndustryTrendForAsync(int industryId)
@@ -612,16 +586,146 @@ public sealed class CompanyFinancialService
     private decimal Forecast(decimal actual, decimal deviation) =>
         Money(actual * (1m + deviation));
 
-    private static decimal DividendCoverage(decimal netProfit, decimal dividendPool) =>
-        dividendPool <= 0m
-            ? 0m
-            : Ratio(Math.Max(0m, netProfit) / dividendPool);
+    private DividendState CoherentDividend(
+        decimal netProfit,
+        decimal operatingCashFlow,
+        decimal requestedPool,
+        int issuedSharesCount)
+    {
+        if (issuedSharesCount <= 0)
+        {
+            return new DividendState(0m, 0m, 0m);
+        }
+
+        var positiveProfit = Math.Max(0m, netProfit);
+        var positiveCashFlow = Math.Max(0m, operatingCashFlow);
+        var profitLimit =
+            positiveProfit * financialOptions.MaximumExpectedDividendPayoutRatio;
+        var cashFlowLimit =
+            positiveCashFlow / financialOptions.MinimumExpectedDividendCoverageRatio;
+        var boundedPool = Math.Max(
+            0m,
+            Math.Min(requestedPool, Math.Min(profitLimit, cashFlowLimit)));
+        var wholeCentPool = Math.Floor(boundedPool * 100m) / 100m;
+        var perShare = FloorRatio(wholeCentPool / issuedSharesCount);
+        var pool = Money(perShare * issuedSharesCount);
+        if (pool <= 0m)
+        {
+            return new DividendState(0m, 0m, 0m);
+        }
+
+        var coverage = Ratio(
+            Math.Min(positiveProfit, positiveCashFlow) / pool);
+        return new DividendState(
+            perShare,
+            pool,
+            Math.Max(
+                financialOptions.MinimumExpectedDividendCoverageRatio,
+                coverage));
+    }
+
+    private decimal SeedBusinessRisk(
+        RandomMagnitudeBands magnitudes,
+        IndustryTrend trend)
+    {
+        var drawnRisk = DrawRange(
+            magnitudes.FinancialSeedBusinessRiskScoreMin,
+            magnitudes.FinancialSeedBusinessRiskScoreMax);
+        var adjustment =
+            (magnitudes.FinancialSeedBusinessRiskScoreMax
+                - magnitudes.FinancialSeedBusinessRiskScoreMin)
+            * financialOptions.IndustryImpulseWeight;
+        var adjusted = trend switch
+        {
+            IndustryTrend.Rising => drawnRisk - adjustment,
+            IndustryTrend.Plateau => drawnRisk,
+            IndustryTrend.Falling => drawnRisk + adjustment,
+            _ => throw new ArgumentOutOfRangeException(nameof(trend), trend, "Unknown industry trend."),
+        };
+        return Ratio(Math.Clamp(adjusted, 0m, 100m));
+    }
+
+    private static CompanyFinancialMetric ChangedMetricsBetween(
+        MutableFinancialState prior,
+        MutableFinancialState current)
+    {
+        var changed = CompanyFinancialMetric.None;
+        AddIfChanged(prior.Revenue, current.Revenue, CompanyFinancialMetric.Revenue, ref changed);
+        AddIfChanged(prior.NetProfit, current.NetProfit, CompanyFinancialMetric.NetProfit, ref changed);
+        AddIfChanged(
+            prior.OperatingCashFlow,
+            current.OperatingCashFlow,
+            CompanyFinancialMetric.OperatingCashFlow,
+            ref changed);
+        AddIfChanged(
+            prior.TotalAssets,
+            current.TotalAssets,
+            CompanyFinancialMetric.TotalAssets,
+            ref changed);
+        AddIfChanged(
+            prior.TotalLiabilities,
+            current.TotalLiabilities,
+            CompanyFinancialMetric.TotalLiabilities,
+            ref changed);
+        AddIfChanged(
+            prior.TotalDebt,
+            current.TotalDebt,
+            CompanyFinancialMetric.TotalDebt,
+            ref changed);
+        AddIfChanged(
+            prior.ExpectedDividendPerShare,
+            current.ExpectedDividendPerShare,
+            CompanyFinancialMetric.ExpectedDividendPerShare,
+            ref changed);
+        AddIfChanged(
+            prior.BusinessRiskScore,
+            current.BusinessRiskScore,
+            CompanyFinancialMetric.BusinessRisk,
+            ref changed);
+        AddIfChanged(
+            prior.ManagementRevenueForecast,
+            current.ManagementRevenueForecast,
+            CompanyFinancialMetric.ManagementRevenueForecast,
+            ref changed);
+        AddIfChanged(
+            prior.ManagementProfitForecast,
+            current.ManagementProfitForecast,
+            CompanyFinancialMetric.ManagementProfitForecast,
+            ref changed);
+        AddIfChanged(
+            prior.ManagementOperatingCashFlowForecast,
+            current.ManagementOperatingCashFlowForecast,
+            CompanyFinancialMetric.ManagementOperatingCashFlowForecast,
+            ref changed);
+        AddIfChanged(
+            prior.ManagementConfidenceScore,
+            current.ManagementConfidenceScore,
+            CompanyFinancialMetric.ManagementConfidence,
+            ref changed);
+        return changed;
+    }
+
+    private static void AddIfChanged(
+        decimal prior,
+        decimal current,
+        CompanyFinancialMetric metric,
+        ref CompanyFinancialMetric changed)
+    {
+        if (prior != current)
+        {
+            changed |= metric;
+        }
+    }
+
 
     private static decimal Money(decimal value) =>
         Math.Round(value, MoneyPrecision, MidpointRounding.AwayFromZero);
 
     private static decimal Ratio(decimal value) =>
         Math.Round(value, RatioPrecision, MidpointRounding.AwayFromZero);
+
+    private static decimal FloorRatio(decimal value) =>
+        Math.Floor(value * 1_000_000m) / 1_000_000m;
 
     private static IndustryTrend TrendFor(int sentimentValue) =>
         sentimentValue switch
@@ -708,6 +812,11 @@ public sealed class CompanyFinancialService
     {
         public IndustryTrend IndustryTrend => TrendFor(SentimentValue);
     }
+
+    private sealed record DividendState(
+        decimal PerShare,
+        decimal Pool,
+        decimal Coverage);
 
     private sealed class MutableFinancialState
     {
