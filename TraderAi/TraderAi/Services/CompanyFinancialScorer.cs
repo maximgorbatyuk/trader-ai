@@ -49,10 +49,18 @@ public sealed class CompanyFinancialScorer
     private const double ReturnOnAssetsFullScale = 0.10d;
     private const double CashFlowRevenueFloorRatio = 0.05d;
     private const double RevenueTrendFullScale = 0.20d;
+    private const double ProfitTrendFullScale = 0.20d;
+    private const decimal RevenueTrendShare = 0.50m;
+    private const decimal ProfitTrendShare = 0.50m;
     private const double MaximumStabilityMetricChange = 0.30d;
     private const double EarningsHistoryShare = 0.80d;
     private const double NegativeGuidanceShare = 0.20d;
     private const double FullDebtLeverageRatio = 1d;
+    private const decimal DebtToAssetsLeverageShare = 0.50m;
+    private const decimal DebtToLiabilitiesLeverageShare = 0.50m;
+    private const decimal BusinessRiskCurrentLevelShare = 0.75m;
+    private const decimal BusinessRiskTrendShare = 0.25m;
+    private const double BusinessRiskTrendFullScale = 0.20d;
     private const decimal MinimumScore = 0m;
     private const decimal NeutralScore = 50m;
     private const decimal MaximumScore = 100m;
@@ -169,11 +177,21 @@ public sealed class CompanyFinancialScorer
         var cashFlowQuality = CenteredRatioScore(
             SafeRatio(current.OperatingCashFlow, cashFlowDenominator),
             1d);
-        var revenueTrend = history.Count == 0
+        var operatingTrend = history.Count == 0
             ? NeutralScore
-            : CenteredRatioScore(
-                SafeDirectionalChange(history[^1].State.Revenue, current.Revenue),
-                RevenueTrendFullScale);
+            : ClampScore(
+                CenteredRatioScore(
+                    SafeDirectionalChange(
+                        history[^1].State.Revenue,
+                        current.Revenue),
+                    RevenueTrendFullScale)
+                    * RevenueTrendShare
+                + CenteredRatioScore(
+                    SafeDirectionalChange(
+                        history[^1].State.NetProfit,
+                        current.NetProfit),
+                    ProfitTrendFullScale)
+                    * ProfitTrendShare);
         var management = ManagementScore(
             outlook,
             current.ManagementConfidenceScore);
@@ -182,7 +200,7 @@ public sealed class CompanyFinancialScorer
             netMargin * configuration.ProfitabilityNetMarginWeight
             + returnOnAssets * configuration.ProfitabilityReturnOnAssetsWeight
             + cashFlowQuality * configuration.ProfitabilityCashFlowWeight
-            + revenueTrend * configuration.ProfitabilityRevenueTrendWeight
+            + operatingTrend * configuration.ProfitabilityRevenueTrendWeight
             + management * configuration.ProfitabilityManagementOutlookWeight);
     }
 
@@ -226,18 +244,37 @@ public sealed class CompanyFinancialScorer
         ManagementOutlook outlook)
     {
         var earningsRisk = EarningsAndCashFlowRisk(current, history, outlook);
-        var leverageRisk = RatioRisk(
+        var debtToAssetsRisk = RatioRisk(
             SafeRatio(current.TotalDebt, current.TotalAssets),
             FullDebtLeverageRatio);
+        var debtToLiabilitiesRisk = RatioRisk(
+            SafeRatio(current.TotalDebt, current.TotalLiabilities),
+            (double)configuration.MaximumDebtToLiabilitiesRatio);
+        var leverageRisk = ClampScore(
+            debtToAssetsRisk * DebtToAssetsLeverageShare
+            + debtToLiabilitiesRisk * DebtToLiabilitiesLeverageShare);
         var liabilitiesRisk = RatioRisk(
             SafeRatio(current.TotalLiabilities, current.TotalAssets),
             (double)configuration.MaximumLiabilitiesToAssetsRatio);
-        var businessRisk = ClampScore(current.BusinessRiskScore);
+        var businessRiskTrend = history.Count == 0
+            ? NeutralScore
+            : CenteredRatioScore(
+                SafeDirectionalChange(
+                    history[^1].State.BusinessRiskScore,
+                    current.BusinessRiskScore),
+                BusinessRiskTrendFullScale);
+        var businessRisk = ClampScore(
+            ClampScore(current.BusinessRiskScore) * BusinessRiskCurrentLevelShare
+            + businessRiskTrend * BusinessRiskTrendShare);
         var industryRisk = industryTrend switch
         {
             IndustryTrend.Rising => MinimumScore,
+            IndustryTrend.Plateau => NeutralScore,
             IndustryTrend.Falling => MaximumScore,
-            _ => NeutralScore,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(industryTrend),
+                industryTrend,
+                "Unknown industry trend."),
         };
 
         return ClampScore(
@@ -263,7 +300,8 @@ public sealed class CompanyFinancialScorer
         var profitStreak = rows.TakeWhile(row => row.NetProfit < 0m).Count();
         var cashFlowStreak = rows.TakeWhile(row => row.OperatingCashFlow < 0m).Count();
         var negativeHistoryRatio =
-            (profitStreak + cashFlowStreak) / (2d * rows.Length);
+            (profitStreak + cashFlowStreak)
+            / (2d * configuration.StabilityWindowSnapshots);
         var negativeGuidance = outlook == ManagementOutlook.Negative
             ? UnitScore(current.ManagementConfidenceScore)
             : 0d;
@@ -401,7 +439,8 @@ public sealed class CompanyFinancialScorer
         decimal ClosureRiskIndustryWeight,
         decimal LowLevelMaximumScore,
         decimal HighLevelMinimumScore,
-        decimal MaximumLiabilitiesToAssetsRatio)
+        decimal MaximumLiabilitiesToAssetsRatio,
+        decimal MaximumDebtToLiabilitiesRatio)
     {
         public static ScoringConfiguration From(CompanyFinancialOptions options) =>
             new(
@@ -418,6 +457,7 @@ public sealed class CompanyFinancialScorer
                 options.ClosureRiskIndustryWeight,
                 options.LowLevelMaximumScore,
                 options.HighLevelMinimumScore,
-                options.MaximumLiabilitiesToAssetsRatio);
+                options.MaximumLiabilitiesToAssetsRatio,
+                options.MaximumDebtToLiabilitiesRatio);
     }
 }

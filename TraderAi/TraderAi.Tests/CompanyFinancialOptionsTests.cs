@@ -35,12 +35,14 @@ public sealed class CompanyFinancialOptionsTests
             0.10m);
     }
 
-    [Fact]
-    public void IsValidRejectsNonPositiveStabilityWindow()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void IsValidRejectsStabilityWindowWithoutAComparisonPair(int window)
     {
         var options = new CompanyFinancialOptions
         {
-            StabilityWindowSnapshots = 0,
+            StabilityWindowSnapshots = window,
         };
 
         Assert.False(options.IsValid());

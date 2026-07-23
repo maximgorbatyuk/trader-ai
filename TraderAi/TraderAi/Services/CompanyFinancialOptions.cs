@@ -63,7 +63,7 @@ public sealed class CompanyFinancialOptions
             ClosureRiskIndustryWeight,
         };
 
-        return StabilityWindowSnapshots > 0
+        return StabilityWindowSnapshots >= 2
             && LowLevelMaximumScore is >= 0m and <= 100m
             && HighLevelMinimumScore is >= 0m and <= 100m
             && LowLevelMaximumScore < HighLevelMinimumScore

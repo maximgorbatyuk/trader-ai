@@ -157,6 +157,21 @@ public sealed class CompanyFinancialScorerTests
     }
 
     [Fact]
+    public void OperatingTrendIncludesProfitDirectionWhenRevenueIsUnchanged()
+    {
+        var prior = BaseState();
+        var improving = prior with { NetProfit = 125m };
+        var worsening = prior with { NetProfit = 75m };
+        var options = ProfitabilityOnly("RevenueTrend");
+
+        var improvingResult = Score(improving, [Snapshot(prior, 1)], options);
+        var worseningResult = Score(worsening, [Snapshot(prior, 1)], options);
+
+        Assert.Equal(75m, improvingResult.ProfitabilityScore);
+        Assert.Equal(25m, worseningResult.ProfitabilityScore);
+    }
+
+    [Fact]
     public void StabilityIsNeutralWhenHistoryIsInsufficient()
     {
         var result = Score(BaseState());
@@ -220,8 +235,8 @@ public sealed class CompanyFinancialScorerTests
 
     [Theory]
     [InlineData(0, 0)]
-    [InlineData(50, 50)]
-    [InlineData(150, 100)]
+    [InlineData(50, 37.5)]
+    [InlineData(150, 87.5)]
     public void ClosureRiskNormalizesDebtLeverage(
         double debtToAssetsPercent,
         double expectedScore)
@@ -238,6 +253,53 @@ public sealed class CompanyFinancialScorerTests
             options: ClosureRiskOnly("Leverage"));
 
         Assert.Equal((decimal)expectedScore, result.ClosureRiskScore);
+    }
+
+    [Fact]
+    public void LeverageRiskIncludesDebtToAssetsWhenDebtToLiabilitiesIsUnchanged()
+    {
+        var lowerAssets = BaseState() with
+        {
+            TotalAssets = 100m,
+            TotalLiabilities = 100m,
+            TotalDebt = 50m,
+        };
+        var higherAssets = lowerAssets with { TotalAssets = 200m };
+        var options = ClosureRiskOnly("Leverage");
+
+        Assert.Equal(50m, Score(lowerAssets, options: options).ClosureRiskScore);
+        Assert.Equal(37.5m, Score(higherAssets, options: options).ClosureRiskScore);
+    }
+
+    [Fact]
+    public void LeverageRiskIncludesDebtToLiabilitiesWhenDebtToAssetsIsUnchanged()
+    {
+        var lowerLiabilities = BaseState() with
+        {
+            TotalAssets = 100m,
+            TotalLiabilities = 50m,
+            TotalDebt = 50m,
+        };
+        var higherLiabilities = lowerLiabilities with { TotalLiabilities = 100m };
+        var options = ClosureRiskOnly("Leverage");
+
+        Assert.Equal(75m, Score(lowerLiabilities, options: options).ClosureRiskScore);
+        Assert.Equal(50m, Score(higherLiabilities, options: options).ClosureRiskScore);
+    }
+
+    [Fact]
+    public void LeverageRiskUsesConfiguredMaximumDebtToLiabilitiesRatio()
+    {
+        var state = BaseState() with
+        {
+            TotalAssets = 100m,
+            TotalLiabilities = 100m,
+            TotalDebt = 50m,
+        };
+        var options = ClosureRiskOnly("Leverage");
+        options.MaximumDebtToLiabilitiesRatio = 0.50m;
+
+        Assert.Equal(75m, Score(state, options: options).ClosureRiskScore);
     }
 
     [Theory]
@@ -280,12 +342,54 @@ public sealed class CompanyFinancialScorerTests
             OperatingCashFlow = 100m,
         };
         var options = ClosureRiskOnly("EarningsAndCashFlow");
+        var profitHistory = Enumerable.Range(1, 5)
+            .Select(sequence => Snapshot(profit, sequence))
+            .ToArray();
+        var lossHistory = Enumerable.Range(1, 5)
+            .Select(sequence => Snapshot(loss, sequence))
+            .ToArray();
 
-        var oneLoss = Score(loss, [Snapshot(profit, 1), Snapshot(profit, 2)], options);
-        var lossStreak = Score(loss, [Snapshot(loss, 1), Snapshot(loss, 2)], options);
+        var oneLoss = Score(loss, profitHistory, options);
+        var lossStreak = Score(loss, lossHistory, options);
 
         Assert.True(lossStreak.ClosureRiskScore > oneLoss.ClosureRiskScore);
         Assert.Equal(100m, lossStreak.ClosureRiskScore);
+    }
+
+    [Fact]
+    public void NegativeStreakWarmsUpAgainstTheConfiguredWindow()
+    {
+        var healthy = BaseState() with
+        {
+            ManagementRevenueForecast = 1_000m,
+            ManagementProfitForecast = 100m,
+            ManagementOperatingCashFlowForecast = 110m,
+            ManagementConfidenceScore = 100m,
+        };
+        var loss = healthy with
+        {
+            NetProfit = -100m,
+            OperatingCashFlow = -100m,
+            ManagementProfitForecast = -100m,
+            ManagementOperatingCashFlowForecast = -100m,
+        };
+        var options = ClosureRiskOnly("EarningsAndCashFlow");
+        var healthyHistory = Enumerable.Range(1, 5)
+            .Select(sequence => Snapshot(healthy, sequence))
+            .ToArray();
+        var lossHistory = Enumerable.Range(1, 5)
+            .Select(sequence => Snapshot(loss, sequence))
+            .ToArray();
+
+        var noLoss = Score(healthy, options: options);
+        var firstLossWithoutHistory = Score(loss, options: options);
+        var firstLossWithWarmHistory = Score(loss, healthyHistory, options);
+        var fullLossWindow = Score(loss, lossHistory, options);
+
+        Assert.Equal(0m, noLoss.ClosureRiskScore);
+        Assert.Equal(13.333333m, firstLossWithoutHistory.ClosureRiskScore);
+        Assert.Equal(firstLossWithoutHistory.ClosureRiskScore, firstLossWithWarmHistory.ClosureRiskScore);
+        Assert.Equal(80m, fullLossWindow.ClosureRiskScore);
     }
 
     [Fact]
@@ -311,6 +415,23 @@ public sealed class CompanyFinancialScorerTests
             > Score(neutral, options: options).ClosureRiskScore);
     }
 
+    [Fact]
+    public void BusinessRiskBlendsCurrentLevelWithLatestDirection()
+    {
+        var current = BaseState() with { BusinessRiskScore = 50m };
+        var worseningPrior = current with { BusinessRiskScore = 25m };
+        var improvingPrior = current with { BusinessRiskScore = 100m };
+        var options = ClosureRiskOnly("Business");
+
+        var unchanged = Score(current, options: options);
+        var worsening = Score(current, [Snapshot(worseningPrior, 1)], options);
+        var improving = Score(current, [Snapshot(improvingPrior, 1)], options);
+
+        Assert.Equal(50m, unchanged.ClosureRiskScore);
+        Assert.Equal(62.5m, worsening.ClosureRiskScore);
+        Assert.Equal(37.5m, improving.ClosureRiskScore);
+    }
+
     [Theory]
     [InlineData(IndustryTrend.Rising, 0)]
     [InlineData(IndustryTrend.Plateau, 50)]
@@ -325,6 +446,70 @@ public sealed class CompanyFinancialScorerTests
             options: ClosureRiskOnly("Industry"));
 
         Assert.Equal((decimal)expectedScore, result.ClosureRiskScore);
+    }
+
+    [Fact]
+    public void UnknownIndustryTrendIsRejected()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            Score(
+                BaseState(),
+                industryTrend: (IndustryTrend)999,
+                options: ClosureRiskOnly("Industry")));
+    }
+
+    [Fact]
+    public void HistoryOrderingUsesMomentThenCycleTimestampAndIdWithinADay()
+    {
+        var current = BaseState() with
+        {
+            Revenue = 1_100m,
+            NetProfit = 110m,
+        };
+        var options = ProfitabilityOnly("RevenueTrend");
+        options.StabilityWindowSnapshots = 7;
+        var history = new[]
+        {
+            HistoryPoint(TrendState(1_000m), 4, CompanyFinancialSnapshotMoment.Midday, 2, 13, 2),
+            HistoryPoint(TrendState(500m), 4, CompanyFinancialSnapshotMoment.Seed, 99, 15, 99),
+            HistoryPoint(TrendState(900m), 4, CompanyFinancialSnapshotMoment.Midday, 2, 13, 1),
+            HistoryPoint(TrendState(700m), 4, CompanyFinancialSnapshotMoment.DayOpening, 50, 14, 50),
+            HistoryPoint(TrendState(850m), 4, CompanyFinancialSnapshotMoment.Midday, 2, 11, 2),
+            HistoryPoint(TrendState(800m), 4, CompanyFinancialSnapshotMoment.Midday, 1, 12, 1),
+        };
+
+        var result = Score(current, history, options);
+
+        Assert.Equal(72.727273m, result.ProfitabilityScore);
+    }
+
+    [Fact]
+    public void HistoryIsTruncatedToTheConfiguredWindow()
+    {
+        var current = UniformState(100m);
+        var options = new CompanyFinancialOptions
+        {
+            StabilityWindowSnapshots = 3,
+        };
+        var recentHistory = new[]
+        {
+            Snapshot(current, 3),
+            Snapshot(current, 4),
+        };
+        var historyWithOldOutliers = new[]
+        {
+            Snapshot(UniformState(1_000m), 1),
+            Snapshot(UniformState(10m), 2),
+            recentHistory[0],
+            recentHistory[1],
+        };
+
+        var recentResult = Score(current, recentHistory, options);
+        var outlierResult = Score(current, historyWithOldOutliers, options);
+
+        Assert.Equal(100m, recentResult.StabilityScore);
+        Assert.Equal(recentResult.StabilityScore, outlierResult.StabilityScore);
+        Assert.Equal(recentResult.ClosureRiskScore, outlierResult.ClosureRiskScore);
     }
 
     [Fact]
@@ -574,6 +759,13 @@ public sealed class CompanyFinancialScorerTests
             ManagementOperatingCashFlowForecast: value,
             ManagementConfidenceScore: value);
 
+    private static CompanyFinancialState TrendState(decimal revenue) =>
+        BaseState() with
+        {
+            Revenue = revenue,
+            NetProfit = revenue / 10m,
+        };
+
     private static CompanyFinancialState Scale(
         CompanyFinancialState state,
         decimal scale) =>
@@ -596,13 +788,28 @@ public sealed class CompanyFinancialScorerTests
     private static CompanyFinancialHistoryPoint Snapshot(
         CompanyFinancialState state,
         int sequence) =>
-        new(
+        HistoryPoint(
             state,
             sequence,
             CompanyFinancialSnapshotMoment.DayOpening,
             sequence,
-            new DateTime(2026, 7, sequence, 9, 0, 0, DateTimeKind.Utc),
+            9,
             sequence);
+
+    private static CompanyFinancialHistoryPoint HistoryPoint(
+        CompanyFinancialState state,
+        int tradingDay,
+        CompanyFinancialSnapshotMoment moment,
+        int createdInCycleId,
+        int hour,
+        int id) =>
+        new(
+            state,
+            tradingDay,
+            moment,
+            createdInCycleId,
+            new DateTime(2026, 7, tradingDay, hour, 0, 0, DateTimeKind.Utc),
+            id);
 
     private static void AssertScoresAreBounded(CompanyFinancialScoringResult result)
     {
