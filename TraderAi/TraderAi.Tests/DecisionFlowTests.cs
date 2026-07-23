@@ -1,5 +1,7 @@
+using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
@@ -12,6 +14,7 @@ public sealed class DecisionFlowTests : IDisposable
     private readonly SqliteConnection connection;
     private readonly AppDbContext context;
     private readonly MarketService marketService;
+    private readonly RecordingCommandInterceptor commandInterceptor = new();
 
     public DecisionFlowTests()
     {
@@ -20,6 +23,7 @@ public sealed class DecisionFlowTests : IDisposable
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseSqlite(connection)
+            .AddInterceptors(commandInterceptor)
             .Options;
 
         context = new AppDbContext(options);
@@ -110,6 +114,179 @@ public sealed class DecisionFlowTests : IDisposable
         var quotes = decisionEngine.LastQuotes!;
         Assert.Equal(375, Assert.Single(quotes, quote => quote.CompanyId != unmappedCompany.Id).SectorSentiment);
         Assert.Equal(0, Assert.Single(quotes, quote => quote.CompanyId == unmappedCompany.Id).SectorSentiment);
+    }
+
+    [Fact]
+    public async Task GeneratedQuotesNormalizeParticipantOrderFlowWithOneServerAggregation()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var company = await context.Companies.SingleAsync();
+        var cycle = await context.MarketCycles.SingleAsync();
+        var buyer = await context.Participants.SingleAsync(participant => participant.Name == "Bob");
+        var seller = await context.Participants.SingleAsync(participant => participant.Name == "Alice");
+        context.Orders.AddRange(
+            new Order
+            {
+                ParticipantId = buyer.Id,
+                CompanyId = company.Id,
+                Type = OrderType.Buy,
+                Status = OrderStatus.PartiallyFilled,
+                Quantity = 40,
+                FilledQuantity = 10,
+                LimitPrice = 100m,
+                ReservedCashAmount = 3_000m,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            },
+            new Order
+            {
+                ParticipantId = seller.Id,
+                CompanyId = company.Id,
+                Type = OrderType.Sell,
+                Status = OrderStatus.Open,
+                Quantity = 10,
+                LimitPrice = 100m,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            },
+            IssuerSell(company.Id, cycle.Id, quantity: 1_000, price: 100m));
+        await context.SaveChangesAsync();
+
+        var engine = new QuoteCapturingDecisionEngine();
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            engine,
+            new MarketCycleLock(),
+            new Random(1));
+        commandInterceptor.Clear();
+
+        await service.GenerateDecisionsAsync();
+
+        Assert.Equal(0.5m, Assert.Single(engine.LastQuotes!).OrderFlowImbalance);
+        var participantFlowQueries = commandInterceptor.Commands
+            .Where(command => command.Contains("FROM \"Orders\"", StringComparison.Ordinal)
+                && command.Contains("GROUP BY", StringComparison.Ordinal)
+                && command.Contains("\"ParticipantId\" IS NOT NULL", StringComparison.Ordinal))
+            .ToList();
+        Assert.Single(participantFlowQueries);
+    }
+
+    [Fact]
+    public async Task GeneratedQuotesCarryBatchedEffectiveAuditsAndLatestFinancialEvidence()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var firstCompany = await context.Companies.SingleAsync();
+        var industry = await context.Industries.SingleAsync();
+        var cycle = await context.MarketCycles.SingleAsync();
+        await SetDecisionTradingDayAsync(cycle, dayNumber: 10);
+        var secondCompany = new Company
+        {
+            Name = "Second Evidence Company",
+            IndustryId = industry.Id,
+            IssuedSharesCount = 20,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        context.Companies.Add(secondCompany);
+        await context.SaveChangesAsync();
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = secondCompany.Id,
+            Price = 50m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+
+        var auditor = new Auditor
+        {
+            Name = "Evidence Auditor",
+            Description = "Decision-flow evidence",
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.Auditors.Add(auditor);
+        await context.SaveChangesAsync();
+        await AddAuditAsync(
+            firstCompany.Id,
+            auditor.Id,
+            cycle.Id,
+            CompanyRiskRating.RaisedExpectations,
+            totalScore: 5,
+            effectiveDay: 10);
+        await AddAuditAsync(
+            firstCompany.Id,
+            auditor.Id,
+            cycle.Id,
+            CompanyRiskRating.HighRisk,
+            totalScore: -9,
+            effectiveDay: 11);
+        await AddAuditAsync(
+            secondCompany.Id,
+            auditor.Id,
+            cycle.Id,
+            CompanyRiskRating.Stable,
+            totalScore: 1,
+            effectiveDay: 10);
+
+        var firstLatestSnapshotId = await AddFinancialHistoryAsync(firstCompany.Id, cycle.Id, revenueOffset: 0m);
+        await AddFinancialHistoryAsync(secondCompany.Id, cycle.Id, revenueOffset: 1_000m);
+        context.CompanyDividendEvents.Add(new CompanyDividendEvent
+        {
+            CompanyId = firstCompany.Id,
+            DeclaredAmount = 50m,
+            FundedAmount = 0m,
+            FundingOutcome = DividendFundingOutcome.Skipped,
+            IssuerCashBeforeFunding = 0m,
+            CreatedInCycleId = cycle.Id,
+            TradingDayNumber = 11,
+            CreatedAt = DateTime.UtcNow.AddMinutes(1),
+        });
+        context.Participants.AddRange(
+            AutomatedIndividual("Evidence Trader Three"),
+            AutomatedIndividual("Evidence Trader Four"));
+        await context.SaveChangesAsync();
+
+        var engine = new ContextCapturingDecisionEngine();
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            engine,
+            new MarketCycleLock(),
+            new Random(1));
+        commandInterceptor.Clear();
+
+        await service.GenerateDecisionsAsync();
+
+        Assert.NotEmpty(engine.Contexts);
+        Assert.All(engine.Contexts, decision =>
+        {
+            Assert.Equal(2, decision.Companies.Count);
+            Assert.All(decision.Companies, quote => Assert.NotNull(quote.Financials));
+        });
+        var quotes = engine.Contexts[0].Companies.ToDictionary(quote => quote.CompanyId);
+        var firstAudit = Assert.IsType<EffectiveAuditEvidence>(quotes[firstCompany.Id].Audit);
+        Assert.Equal(CompanyRiskRating.RaisedExpectations, firstAudit.Rating);
+        Assert.Equal(5, firstAudit.TotalScore);
+        Assert.Equal(10, firstAudit.EffectiveTradingDayNumber);
+        Assert.Equal(CompanyRiskRating.Stable, quotes[secondCompany.Id].Audit!.Rating);
+
+        var firstFinancials = Assert.IsType<LatestFinancialEvidence>(quotes[firstCompany.Id].Financials);
+        Assert.Equal(firstLatestSnapshotId, firstFinancials.SnapshotId);
+        Assert.Equal(10, firstFinancials.TradingDayNumber);
+        Assert.Equal(CompanyFinancialSnapshotMoment.Midday, firstFinancials.Moment);
+        Assert.Equal(160m, firstFinancials.Current.Revenue);
+        Assert.Equal(60m, firstFinancials.Deltas.Revenue);
+        Assert.Equal(15m, firstFinancials.Deltas.NetProfit);
+        Assert.Equal(8m, firstFinancials.Deltas.ManagementConfidenceScore);
+        Assert.Equal(DividendFundingOutcome.Reduced, firstFinancials.LatestDividendOutcome);
+        Assert.Equal(30m, firstFinancials.LatestDividendDeclaredAmount);
+        Assert.Equal(20m, firstFinancials.LatestDividendFundedAmount);
+
+        Assert.Single(CommandsForTable("CompanyAuditEvidence"));
+        Assert.Single(CommandsForTable("CompanyFinancialSnapshots"));
+        Assert.Single(CommandsForTable("CompanyDividendEvents"));
     }
 
     // The batch resolves bounds once and hands them to the engine on the quote: the active band and the wider
@@ -1013,11 +1190,232 @@ public sealed class DecisionFlowTests : IDisposable
         Assert.Contains(engine.SeenTypes, type => type == ParticipantType.Individual);
     }
 
+    [Fact]
+    public async Task OrdinaryFundUsesItsManagerProfileSnapshotAndPlayerFundStaysManual()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var cycle = await context.MarketCycles.SingleAsync();
+        var founder = await context.Participants.FirstAsync();
+        var ordinaryFundParticipant = new Participant
+        {
+            Name = "Ordinary Managed Fund",
+            Type = ParticipantType.CollectiveFund,
+            Temperament = Temperament.Aggressive,
+            RiskProfile = RiskProfile.High,
+            CurrentBalance = 10_000m,
+            SettledCashBalance = 10_000m,
+            IsActive = true,
+        };
+        var playerFundParticipant = new Participant
+        {
+            Name = "Player Managed Fund",
+            Type = ParticipantType.CollectiveFund,
+            Temperament = Temperament.Conservative,
+            RiskProfile = RiskProfile.Low,
+            CurrentBalance = 10_000m,
+            SettledCashBalance = 10_000m,
+            IsActive = true,
+        };
+        context.Participants.AddRange(ordinaryFundParticipant, playerFundParticipant);
+        await context.SaveChangesAsync();
+        context.CollectiveFunds.AddRange(
+            new CollectiveFund
+            {
+                ParticipantId = ordinaryFundParticipant.Id,
+                FoundedByParticipantId = founder.Id,
+                Status = CollectiveFundStatus.Active,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = DateTime.UtcNow,
+            },
+            new CollectiveFund
+            {
+                ParticipantId = playerFundParticipant.Id,
+                FoundedByParticipantId = founder.Id,
+                IsPlayerManaged = true,
+                Status = CollectiveFundStatus.Active,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = DateTime.UtcNow,
+            });
+        await context.SaveChangesAsync();
+
+        // A later founder change cannot rewrite the manager profile the fund captured when it opened.
+        founder.Temperament = Temperament.Conservative;
+        founder.RiskProfile = RiskProfile.Low;
+        await context.SaveChangesAsync();
+
+        var engine = new ContextCapturingDecisionEngine();
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            engine,
+            new MarketCycleLock(),
+            new Random(1));
+
+        await service.GenerateDecisionsAsync();
+
+        var ordinaryContext = Assert.Single(
+            engine.Contexts,
+            decision => decision.Participant.Id == ordinaryFundParticipant.Id);
+        Assert.Equal(Temperament.Aggressive, ordinaryContext.Participant.Temperament);
+        Assert.Equal(RiskProfile.High, ordinaryContext.Participant.RiskProfile);
+        Assert.DoesNotContain(
+            engine.Contexts,
+            decision => decision.Participant.Id == playerFundParticipant.Id);
+    }
+
     public void Dispose()
     {
         context.Dispose();
         connection.Dispose();
     }
+
+    private async Task SetDecisionTradingDayAsync(MarketCycle cycle, int dayNumber)
+    {
+        var day = new TradingDay
+        {
+            DayNumber = dayNumber,
+            State = TradingSessionState.Trading,
+            OpenedInCycleId = cycle.Id,
+        };
+        context.TradingDays.Add(day);
+        await context.SaveChangesAsync();
+        cycle.TradingDayId = day.Id;
+        cycle.TradingCycleNumber = 2;
+        var market = await context.Markets.SingleAsync();
+        market.CurrentTradingDayId = day.Id;
+        await context.SaveChangesAsync();
+    }
+
+    private async Task AddAuditAsync(
+        int companyId,
+        int auditorId,
+        int cycleId,
+        CompanyRiskRating rating,
+        int totalScore,
+        int effectiveDay)
+    {
+        var companyRating = new CompanyRating
+        {
+            CompanyId = companyId,
+            AuditorId = auditorId,
+            Rating = rating,
+            CreatedInCycleId = cycleId,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.CompanyRatings.Add(companyRating);
+        await context.SaveChangesAsync();
+        context.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+        {
+            CompanyRatingId = companyRating.Id,
+            CompanyId = companyId,
+            EvaluationStartTradingDayNumber = effectiveDay - 2,
+            EvaluationEndTradingDayNumber = effectiveDay - 1,
+            EffectiveTradingDayNumber = effectiveDay,
+            TotalScore = totalScore,
+        });
+        await context.SaveChangesAsync();
+    }
+
+    private async Task<int> AddFinancialHistoryAsync(
+        int companyId,
+        int cycleId,
+        decimal revenueOffset)
+    {
+        var olderDividend = new CompanyDividendEvent
+        {
+            CompanyId = companyId,
+            DeclaredAmount = 10m,
+            FundedAmount = 10m,
+            FundingOutcome = DividendFundingOutcome.Paid,
+            IssuerCashBeforeFunding = 100m,
+            CreatedInCycleId = cycleId,
+            TradingDayNumber = 9,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-2),
+        };
+        var latestDividend = new CompanyDividendEvent
+        {
+            CompanyId = companyId,
+            DeclaredAmount = 30m,
+            FundedAmount = 20m,
+            FundingOutcome = DividendFundingOutcome.Reduced,
+            IssuerCashBeforeFunding = 20m,
+            CreatedInCycleId = cycleId,
+            TradingDayNumber = 10,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-1),
+        };
+        context.CompanyDividendEvents.AddRange(olderDividend, latestDividend);
+        await context.SaveChangesAsync();
+
+        context.CompanyFinancialSnapshots.Add(new CompanyFinancialSnapshot
+        {
+            CompanyId = companyId,
+            CreatedInCycleId = cycleId,
+            TradingDayNumber = 9,
+            Moment = CompanyFinancialSnapshotMoment.DayOpening,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-2),
+            Revenue = 100m + revenueOffset,
+            NetProfit = 20m,
+            OperatingCashFlow = 30m,
+            TotalAssets = 500m,
+            TotalLiabilities = 200m,
+            TotalDebt = 100m,
+            ExpectedDividendPerShare = 1m,
+            ExpectedDividendPool = 10m,
+            DividendCoverageRatio = 3m,
+            LatestDividendEventId = olderDividend.Id,
+            BusinessRiskScore = 40m,
+            ManagementRevenueForecast = 110m + revenueOffset,
+            ManagementProfitForecast = 22m,
+            ManagementOperatingCashFlowForecast = 35m,
+            ManagementOutlook = ManagementOutlook.Neutral,
+            ManagementConfidenceScore = 60m,
+            ProfitabilityScore = 55m,
+            ProfitabilityLevel = CompanyMetricLevel.Medium,
+            StabilityScore = 65m,
+            FinancialVolatilityLevel = CompanyMetricLevel.Low,
+            ClosureRiskScore = 25m,
+            ClosureRiskLevel = CompanyMetricLevel.Low,
+        });
+        var latest = new CompanyFinancialSnapshot
+        {
+            CompanyId = companyId,
+            CreatedInCycleId = cycleId,
+            TradingDayNumber = 10,
+            Moment = CompanyFinancialSnapshotMoment.Midday,
+            CreatedAt = DateTime.UtcNow,
+            Revenue = 160m + revenueOffset,
+            NetProfit = 35m,
+            OperatingCashFlow = 50m,
+            TotalAssets = 560m,
+            TotalLiabilities = 210m,
+            TotalDebt = 90m,
+            ExpectedDividendPerShare = 1.50m,
+            ExpectedDividendPool = 15m,
+            DividendCoverageRatio = 50m / 15m,
+            LatestDividendEventId = latestDividend.Id,
+            BusinessRiskScore = 35m,
+            ManagementRevenueForecast = 175m + revenueOffset,
+            ManagementProfitForecast = 40m,
+            ManagementOperatingCashFlowForecast = 55m,
+            ManagementOutlook = ManagementOutlook.Positive,
+            ManagementConfidenceScore = 68m,
+            ProfitabilityScore = 70m,
+            ProfitabilityLevel = CompanyMetricLevel.High,
+            StabilityScore = 75m,
+            FinancialVolatilityLevel = CompanyMetricLevel.Low,
+            ClosureRiskScore = 20m,
+            ClosureRiskLevel = CompanyMetricLevel.Low,
+        };
+        context.CompanyFinancialSnapshots.Add(latest);
+        await context.SaveChangesAsync();
+        return latest.Id;
+    }
+
+    private List<string> CommandsForTable(string tableName) =>
+        commandInterceptor.Commands
+            .Where(command => command.Contains($"FROM \"{tableName}\"", StringComparison.Ordinal)
+                || command.Contains($"JOIN \"{tableName}\"", StringComparison.Ordinal))
+            .ToList();
 
     private sealed class SeenParticipantsDecisionEngine : IDecisionEngine
     {
@@ -1205,5 +1603,31 @@ public sealed class DecisionFlowTests : IDisposable
         public override double NextDouble() => doubles.Dequeue();
 
         public override int Next(int maxValue) => 0;
+    }
+
+    private sealed class RecordingCommandInterceptor : DbCommandInterceptor
+    {
+        public List<string> Commands { get; } = [];
+
+        public void Clear() => Commands.Clear();
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            Commands.Add(command.CommandText);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            Commands.Add(command.CommandText);
+            return ValueTask.FromResult(result);
+        }
     }
 }

@@ -2915,27 +2915,30 @@ public sealed class MarketService(
         }
 
         // Issuer supply stays outside participant order flow so primary issuance cannot masquerade as bearish
-        // sentiment. The ratio makes equivalent books comparable across companies with different share scales.
+        // sentiment. Aggregate on the server once so the quote batch does not scale with order-book row count.
         var orderFlowByCompany = (await dbContext.Orders
                 .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
                     && order.ParticipantId != null)
-                .Select(order => new { order.CompanyId, order.Type, Remaining = order.Quantity - order.FilledQuantity })
-                .ToListAsync())
-            .GroupBy(order => order.CompanyId)
-            .ToDictionary(
-                group => group.Key,
-                group =>
+                .GroupBy(order => order.CompanyId)
+                .Select(group => new
                 {
-                    var buys = group
-                        .Where(order => order.Type == OrderType.Buy)
-                        .Sum(order => (long)order.Remaining);
-                    var sells = group
-                        .Where(order => order.Type == OrderType.Sell)
-                        .Sum(order => (long)order.Remaining);
-                    var total = buys + sells;
+                    CompanyId = group.Key,
+                    Buys = group.Sum(order => order.Type == OrderType.Buy
+                        ? (long)(order.Quantity - order.FilledQuantity)
+                        : 0L),
+                    Sells = group.Sum(order => order.Type == OrderType.Sell
+                        ? (long)(order.Quantity - order.FilledQuantity)
+                        : 0L),
+                })
+                .ToListAsync())
+            .ToDictionary(
+                row => row.CompanyId,
+                row =>
+                {
+                    var total = row.Buys + row.Sells;
                     return total == 0L
                         ? 0m
-                        : Math.Clamp((decimal)(buys - sells) / total, -1m, 1m);
+                        : Math.Clamp((decimal)(row.Buys - row.Sells) / total, -1m, 1m);
                 });
 
         var cycleNumbersById = await dbContext.CycleNumbersByIdAsync();
@@ -2979,6 +2982,68 @@ public sealed class MarketService(
             .Select(snapshot => snapshot.CompanyId)
             .Where(companyId => !closedCompanyIds.Contains(companyId) && !haltedCompanyIds.Contains(companyId))
             .ToHashSet();
+        var currentTradingDayNumber = market.CurrentTradingDayId is int currentTradingDayId
+            ? await dbContext.TradingDays.AsNoTracking()
+                .Where(day => day.Id == currentTradingDayId)
+                .Select(day => day.DayNumber)
+                .FirstOrDefaultAsync()
+            : 0;
+
+        var effectiveAuditByCompany = new Dictionary<int, EffectiveAuditEvidence>();
+        if (currentTradingDayNumber > 0)
+        {
+            var auditRows = await (
+                    from evidence in dbContext.CompanyAuditEvidence.AsNoTracking()
+                    join rating in dbContext.CompanyRatings.AsNoTracking()
+                        on evidence.CompanyRatingId equals rating.Id
+                    where quoteCompanyIds.Contains(evidence.CompanyId)
+                        && evidence.EffectiveTradingDayNumber <= currentTradingDayNumber
+                        && !dbContext.CompanyAuditEvidence.Any(candidate =>
+                            candidate.CompanyId == evidence.CompanyId
+                            && candidate.EffectiveTradingDayNumber <= currentTradingDayNumber
+                            && (candidate.EffectiveTradingDayNumber > evidence.EffectiveTradingDayNumber
+                                || (candidate.EffectiveTradingDayNumber == evidence.EffectiveTradingDayNumber
+                                    && candidate.CompanyRatingId > evidence.CompanyRatingId)))
+                    select new { Evidence = evidence, Rating = rating.Rating })
+                .ToListAsync();
+            effectiveAuditByCompany = auditRows.ToDictionary(
+                row => row.Evidence.CompanyId,
+                row => BuildEffectiveAuditEvidence(row.Rating, row.Evidence));
+        }
+
+        // A correlated rank keeps at most the latest two checkpoints per company in one bounded query. The
+        // previous checkpoint is needed only for deltas; it never becomes a second quote-level evidence object.
+        var financialRows = await dbContext.CompanyFinancialSnapshots.AsNoTracking()
+            .Where(snapshot => quoteCompanyIds.Contains(snapshot.CompanyId)
+                && (currentTradingDayNumber <= 0 || snapshot.TradingDayNumber <= currentTradingDayNumber))
+            .Where(snapshot => dbContext.CompanyFinancialSnapshots.Count(candidate =>
+                candidate.CompanyId == snapshot.CompanyId
+                && (currentTradingDayNumber <= 0 || candidate.TradingDayNumber <= currentTradingDayNumber)
+                && candidate.Id > snapshot.Id) < 2)
+            .ToListAsync();
+        var financialCheckpointsByCompany = financialRows
+            .GroupBy(snapshot => snapshot.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(snapshot => snapshot.Id).ToList());
+
+        var latestDividendRows = await dbContext.CompanyDividendEvents.AsNoTracking()
+            .Where(dividend => quoteCompanyIds.Contains(dividend.CompanyId)
+                && (currentTradingDayNumber <= 0 || dividend.TradingDayNumber <= currentTradingDayNumber)
+                && !dbContext.CompanyDividendEvents.Any(candidate =>
+                    candidate.CompanyId == dividend.CompanyId
+                    && (currentTradingDayNumber <= 0 || candidate.TradingDayNumber <= currentTradingDayNumber)
+                    && candidate.Id > dividend.Id))
+            .ToListAsync();
+        var latestDividendByCompany = latestDividendRows.ToDictionary(
+            dividend => dividend.CompanyId);
+        var financialEvidenceByCompany = financialCheckpointsByCompany.ToDictionary(
+            entry => entry.Key,
+            entry => BuildLatestFinancialEvidence(
+                entry.Value[0],
+                entry.Value.Count > 1 ? entry.Value[1] : null,
+                latestDividendByCompany.GetValueOrDefault(entry.Key)));
+
         var sentimentByIndustry = await dbContext.Industries.AsNoTracking()
             .ToDictionaryAsync(industry => industry.Id, industry => industry.SentimentValue);
         var quoteCompanyRows = companyRows.Where(company => quoteCompanyIds.Contains(company.Id)).ToList();
@@ -3146,6 +3211,8 @@ public sealed class MarketService(
                 {
                     Bounds = boundsByCompany.GetValueOrDefault(quote.CompanyId),
                     IssuedShares = issuedSharesByCompany.GetValueOrDefault(quote.CompanyId),
+                    Audit = effectiveAuditByCompany.GetValueOrDefault(quote.CompanyId),
+                    Financials = financialEvidenceByCompany.GetValueOrDefault(quote.CompanyId),
                     BestExecutableSellPrice = bestAsk?.Price,
                     BestExecutableSellQuantity = bestAsk is not null
                         ? (int)Math.Clamp(bestAsk.RemainingQuantity, 0L, int.MaxValue)
@@ -3300,6 +3367,86 @@ public sealed class MarketService(
         await dbContext.SaveChangesAsync();
         return RunDecisionsResult.Ok(buyOrdersPlaced, sellOrdersPlaced);
     }
+
+    private static EffectiveAuditEvidence BuildEffectiveAuditEvidence(
+        CompanyRiskRating rating,
+        CompanyAuditEvidence evidence) =>
+        new(
+            rating,
+            evidence.TotalScore,
+            evidence.EvaluationStartTradingDayNumber,
+            evidence.EvaluationEndTradingDayNumber,
+            evidence.EffectiveTradingDayNumber,
+            evidence.AdjustedReturnScore,
+            evidence.CycleJumpScore,
+            evidence.FreeShareEmissionScore,
+            evidence.DenominationScore,
+            evidence.DividendOutcomeScore,
+            evidence.DividendCoverageScore,
+            evidence.IndustryScore,
+            evidence.ProfitabilityFactorScore,
+            evidence.StabilityFactorScore,
+            evidence.ClosureRiskFactorScore,
+            evidence.ManagementOutlookFactorScore);
+
+    private static LatestFinancialEvidence BuildLatestFinancialEvidence(
+        CompanyFinancialSnapshot current,
+        CompanyFinancialSnapshot? previous,
+        CompanyDividendEvent? latestDividend) =>
+        new(
+            current.Id,
+            current.TradingDayNumber,
+            current.Moment,
+            FinancialValues(current),
+            FinancialDeltas(current, previous),
+            current.ProfitabilityScore,
+            current.ProfitabilityLevel,
+            current.StabilityScore,
+            current.FinancialVolatilityLevel,
+            current.ClosureRiskScore,
+            current.ClosureRiskLevel,
+            current.ManagementOutlook,
+            current.ManagementConfidenceScore,
+            latestDividend?.FundingOutcome,
+            latestDividend?.DeclaredAmount,
+            latestDividend?.FundedAmount);
+
+    private static CompanyFinancialValues FinancialValues(CompanyFinancialSnapshot snapshot) =>
+        new(
+            snapshot.Revenue,
+            snapshot.NetProfit,
+            snapshot.OperatingCashFlow,
+            snapshot.TotalAssets,
+            snapshot.TotalLiabilities,
+            snapshot.TotalDebt,
+            snapshot.ExpectedDividendPerShare,
+            snapshot.ExpectedDividendPool,
+            snapshot.DividendCoverageRatio,
+            snapshot.BusinessRiskScore,
+            snapshot.ManagementRevenueForecast,
+            snapshot.ManagementProfitForecast,
+            snapshot.ManagementOperatingCashFlowForecast);
+
+    private static CompanyFinancialDeltas FinancialDeltas(
+        CompanyFinancialSnapshot current,
+        CompanyFinancialSnapshot? previous) =>
+        previous is null
+            ? new CompanyFinancialDeltas(0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m)
+            : new CompanyFinancialDeltas(
+                current.Revenue - previous.Revenue,
+                current.NetProfit - previous.NetProfit,
+                current.OperatingCashFlow - previous.OperatingCashFlow,
+                current.TotalAssets - previous.TotalAssets,
+                current.TotalLiabilities - previous.TotalLiabilities,
+                current.TotalDebt - previous.TotalDebt,
+                current.ExpectedDividendPerShare - previous.ExpectedDividendPerShare,
+                current.ExpectedDividendPool - previous.ExpectedDividendPool,
+                current.DividendCoverageRatio - previous.DividendCoverageRatio,
+                current.BusinessRiskScore - previous.BusinessRiskScore,
+                current.ManagementRevenueForecast - previous.ManagementRevenueForecast,
+                current.ManagementProfitForecast - previous.ManagementProfitForecast,
+                current.ManagementOperatingCashFlowForecast - previous.ManagementOperatingCashFlowForecast,
+                current.ManagementConfidenceScore - previous.ManagementConfidenceScore);
 
     private static void UpdatePriorBuyPriorityLimit(
         IDictionary<int, decimal> priorityLimitByCompany,

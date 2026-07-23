@@ -145,14 +145,22 @@ public sealed class CollectiveFundServiceTests : IDisposable
     public async Task NewFundInheritsFounderCharacteristics()
     {
         var (_, cycle, _) = await SeedAsync(price: 100m);
-        await AddTraderAsync(currentBalance: 100_000m, temperament: Temperament.Aggressive, riskProfile: RiskProfile.High);
+        var founder = await AddTraderAsync(
+            currentBalance: 100_000m,
+            temperament: Temperament.Aggressive,
+            riskProfile: RiskProfile.High);
 
         await Service(enabled: true, new ScriptedRandom([0.0d], []))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         var fund = await context.CollectiveFunds.AsNoTracking().SingleAsync();
-        var fundParticipant = await context.Participants.AsNoTracking().FirstAsync(participant => participant.Id == fund.ParticipantId);
+        founder.Temperament = Temperament.Conservative;
+        founder.RiskProfile = RiskProfile.Low;
+        await context.SaveChangesAsync();
+
+        var fundParticipant = await context.Participants.AsNoTracking()
+            .FirstAsync(participant => participant.Id == fund.ParticipantId);
         Assert.Equal(Temperament.Aggressive, fundParticipant.Temperament);
         Assert.Equal(RiskProfile.High, fundParticipant.RiskProfile);
     }
