@@ -46,8 +46,7 @@ public sealed class DividendTests : IDisposable
 
         await Service().RunCycleTickAsync();
 
-        // Alice holds 10 shares at price 100; the floor rate (0.01% of capitalisation, i.e. 0.01 per share) pays
-        // 0.10 across her 10 shares.
+        // Alice holds 10 shares at price 100; issuer cash reduces the declared pool to the available 0.10.
         await context.Entry(alice).ReloadAsync();
         Assert.Equal(1000.1m, alice.CurrentBalance);
 
@@ -64,6 +63,12 @@ public sealed class DividendTests : IDisposable
         Assert.Equal(
             corporateMovement.Amount,
             await context.DividendPayouts.SumAsync(payout => payout.Amount));
+        var dividendEvent = await context.CompanyDividendEvents.SingleAsync();
+        Assert.Equal(DividendFundingOutcome.Reduced, dividendEvent.FundingOutcome);
+        Assert.Equal(0.3m, dividendEvent.DeclaredAmount);
+        Assert.Equal(0.1m, dividendEvent.FundedAmount);
+        Assert.Equal(0.1m, dividendEvent.IssuerCashBeforeFunding);
+        Assert.Equal(dueCycleId, dividendEvent.CreatedInCycleId);
 
         // Bob owns no shares, so he is never credited.
         await context.Entry(bob).ReloadAsync();
@@ -364,18 +369,24 @@ public sealed class DividendTests : IDisposable
     public async Task StableCapitalizationPaysOnAMidRollThatVolatileWouldReject()
     {
         // Baseline equals current capitalisation (100 x 1000), so the company is stable and rolls at 75%.
-        var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m);
+        var holder = await SeedSingleHolderAsync(baselineCapitalization: 100_000m, cashBalance: 0.3m);
         var company = await context.Companies.FirstAsync();
 
         // A 0.5 roll clears the 0.75 stable chance but would miss the 0.25 volatile one; then the rate floors.
         await Service(new QueuedRoll(0.5d, 0d, 1d)).RunCycleTickAsync();
 
         await context.Entry(holder).ReloadAsync();
-        Assert.Equal(0.1m, holder.CurrentBalance);
+        Assert.Equal(0.3m, holder.CurrentBalance);
         Assert.True(await context.MoneyTransactions.AnyAsync(money => money.Type == MoneyTransactionType.Dividend));
 
         await context.Entry(company).ReloadAsync();
         Assert.Equal(100_000m, company.LastDividendCapitalization);
+        var dividendEvent = await context.CompanyDividendEvents.SingleAsync();
+        Assert.Equal(DividendFundingOutcome.Paid, dividendEvent.FundingOutcome);
+        Assert.Equal(0.3m, dividendEvent.DeclaredAmount);
+        Assert.Equal(0.3m, dividendEvent.FundedAmount);
+        Assert.Equal(0.3m, dividendEvent.IssuerCashBeforeFunding);
+        Assert.Equal(7, dividendEvent.TradingDayNumber);
     }
 
     [Fact]
@@ -395,6 +406,12 @@ public sealed class DividendTests : IDisposable
         Assert.Equal(0.04m, dividend.Amount);
         Assert.Equal(0.04m, await context.DividendPayouts.SumAsync(payout => payout.Amount));
         Assert.Equal(0.04m, (await context.CorporateCashTransactions.SingleAsync()).Amount);
+        var dividendEvent = await context.CompanyDividendEvents.SingleAsync();
+        Assert.Equal(DividendFundingOutcome.Reduced, dividendEvent.FundingOutcome);
+        Assert.Equal(0.3m, dividendEvent.DeclaredAmount);
+        Assert.Equal(0.04m, dividendEvent.FundedAmount);
+        Assert.Equal(0.04m, dividendEvent.IssuerCashBeforeFunding);
+        Assert.Equal(7, dividendEvent.TradingDayNumber);
 
         var news = await context.NewsPosts.SingleAsync(post => post.TargetCompanyId == company.Id);
         Assert.Contains("reduced", news.Title, StringComparison.OrdinalIgnoreCase);
@@ -414,6 +431,12 @@ public sealed class DividendTests : IDisposable
         Assert.False(await context.MoneyTransactions.AnyAsync(money => money.Type == MoneyTransactionType.Dividend));
         Assert.Empty(context.DividendPayouts);
         Assert.Empty(context.CorporateCashTransactions);
+        var dividendEvent = await context.CompanyDividendEvents.SingleAsync();
+        Assert.Equal(DividendFundingOutcome.Skipped, dividendEvent.FundingOutcome);
+        Assert.Equal(0.3m, dividendEvent.DeclaredAmount);
+        Assert.Equal(0m, dividendEvent.FundedAmount);
+        Assert.Equal(0m, dividendEvent.IssuerCashBeforeFunding);
+        Assert.Equal(7, dividendEvent.TradingDayNumber);
 
         var news = await context.NewsPosts.SingleAsync(post => post.TargetCompanyId == company.Id);
         Assert.Contains("skipped", news.Title, StringComparison.OrdinalIgnoreCase);
@@ -434,6 +457,7 @@ public sealed class DividendTests : IDisposable
         Assert.Equal(0m, holder.CurrentBalance);
         Assert.False(await context.MoneyTransactions.AnyAsync(money => money.Type == MoneyTransactionType.Dividend));
         Assert.False(await context.CorporateCashTransactions.AnyAsync());
+        Assert.Empty(context.CompanyDividendEvents);
 
         await context.Entry(company).ReloadAsync();
         Assert.Equal(100_000m, company.LastDividendCapitalization);
@@ -449,7 +473,22 @@ public sealed class DividendTests : IDisposable
         int heldShares = 10)
     {
         var now = DateTime.UtcNow;
-        var cycle = new MarketCycle { CycleNumber = 1, Status = CycleStatus.Running, StartedAt = now };
+        var tradingDay = new TradingDay
+        {
+            DayNumber = 7,
+            State = TradingSessionState.Trading,
+            OpenedInCycleId = 0,
+        };
+        context.TradingDays.Add(tradingDay);
+        await context.SaveChangesAsync();
+        var cycle = new MarketCycle
+        {
+            CycleNumber = 1,
+            TradingDayId = tradingDay.Id,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Running,
+            StartedAt = now,
+        };
         context.MarketCycles.Add(cycle);
         var market = new Market { Name = "Demo", Status = MarketStatus.Running, CreatedAt = now, UpdatedAt = now };
         context.Markets.Add(market);

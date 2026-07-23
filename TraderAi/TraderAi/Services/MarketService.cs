@@ -1518,12 +1518,12 @@ public sealed class MarketService(
         }
 
         market.NextDividendCycleNumber = currentCycle.CycleNumber + RandomDividendInterval(random);
-        await PayDividendsAsync(currentCycle.Id, now);
+        await PayDividendsAsync(currentCycle.Id, currentCycle.TradingDayId, now);
     }
 
     // Draw discipline for a scripted Random: every priced company draws its dividend roll/rate in ascending Id
     // order before any company draws its independent income roll/rate in the same order.
-    private async Task PayDividendsAsync(int currentCycleId, DateTime now)
+    private async Task PayDividendsAsync(int currentCycleId, int currentTradingDayId, DateTime now)
     {
         var latestPriceByCompany = await LatestPriceByCompanyAsync();
         if (latestPriceByCompany.Count == 0)
@@ -1531,6 +1531,12 @@ public sealed class MarketService(
             return;
         }
 
+        var tradingDayNumber = currentTradingDayId > 0
+            ? await dbContext.TradingDays
+                .Where(day => day.Id == currentTradingDayId)
+                .Select(day => day.DayNumber)
+                .SingleOrDefaultAsync()
+            : 0;
         var pricedCompanyIds = latestPriceByCompany.Keys.ToList();
         var companies = await dbContext.Companies
             .Where(company => company.ClosedInCycleId == null && pricedCompanyIds.Contains(company.Id))
@@ -1613,7 +1619,23 @@ public sealed class MarketService(
                 continue;
             }
 
-            var fundedPool = Math.Min(declaredPool, company.CashBalance);
+            var issuerCashBeforeFunding = company.CashBalance;
+            var fundedPool = Math.Min(declaredPool, issuerCashBeforeFunding);
+            dbContext.CompanyDividendEvents.Add(new CompanyDividendEvent
+            {
+                CompanyId = company.Id,
+                DeclaredAmount = declaredPool,
+                FundedAmount = fundedPool,
+                FundingOutcome = fundedPool <= 0m
+                    ? DividendFundingOutcome.Skipped
+                    : fundedPool < declaredPool
+                        ? DividendFundingOutcome.Reduced
+                        : DividendFundingOutcome.Paid,
+                IssuerCashBeforeFunding = issuerCashBeforeFunding,
+                CreatedInCycleId = currentCycleId,
+                TradingDayNumber = tradingDayNumber,
+                CreatedAt = now,
+            });
             if (fundedPool < declaredPool)
             {
                 var skipped = fundedPool <= 0m;
