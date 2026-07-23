@@ -32,7 +32,7 @@ public sealed class CompanyFinancialOptions
 
     public decimal HighLevelMinimumScore { get; set; } = 67m;
 
-    public decimal MaximumLiabilitiesToAssetsRatio { get; set; } = 0.95m;
+    public decimal MaximumLiabilitiesToAssetsRatio { get; set; } = 1.25m;
 
     public decimal MaximumDebtToLiabilitiesRatio { get; set; } = 1m;
 
@@ -69,7 +69,7 @@ public sealed class CompanyFinancialOptions
             && LowLevelMaximumScore < HighLevelMinimumScore
             && WeightsAreValid(profitabilityWeights)
             && WeightsAreValid(closureRiskWeights)
-            && MaximumLiabilitiesToAssetsRatio is > 0m and <= 1m
+            && MaximumLiabilitiesToAssetsRatio is > 0m and <= 2m
             && MaximumDebtToLiabilitiesRatio is > 0m and <= 1m
             && MaximumForecastDeviationRatio is >= 0m and <= 1m
             && IndustryImpulseWeight is >= 0m and <= 1m

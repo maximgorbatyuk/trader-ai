@@ -282,7 +282,7 @@ public sealed class RandomMagnitudeBands
         && OrderedRange(CrisisIndustryDropMinPercent, CrisisIndustryDropMaxPercent, 0m, 100m)
         && OrderedRange(ScienceIndustryLiftMinPercent, ScienceIndustryLiftMaxPercent, 0m, 100m)
         && OrderedRange(GlobalCrisisIndustryShareMin, GlobalCrisisIndustryShareMax, 0d, 1d)
-        && OrderedRange(BigInvestmentFractionMin, BigInvestmentFractionMax, 0d, double.MaxValue)
+        && OrderedPositiveDecimalRange(BigInvestmentFractionMin, BigInvestmentFractionMax)
         && StrictRange(FinancialSeedAssetsToMarketCapMin, FinancialSeedAssetsToMarketCapMax, 0m, 10m)
         && StrictRange(FinancialSeedRevenueToAssetsMin, FinancialSeedRevenueToAssetsMax, 0m, 10m)
         && StrictRange(FinancialSeedNetMarginMin, FinancialSeedNetMarginMax, -1m, 1m)
@@ -339,4 +339,26 @@ public sealed class RandomMagnitudeBands
         && minimum >= floor
         && maximum <= ceiling
         && minimum <= maximum;
+
+    private static bool OrderedPositiveDecimalRange(double minimum, double maximum)
+    {
+        if (!double.IsFinite(minimum)
+            || !double.IsFinite(maximum)
+            || minimum <= 0d
+            || minimum > maximum)
+        {
+            return false;
+        }
+
+        try
+        {
+            _ = (decimal)minimum;
+            _ = (decimal)maximum;
+            return true;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
 }

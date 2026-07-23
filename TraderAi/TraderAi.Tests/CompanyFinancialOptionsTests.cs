@@ -24,6 +24,7 @@ public sealed class CompanyFinancialOptionsTests
         Assert.True(
             random.RandomMagnitudeBands.FinancialSeedLiabilitiesToAssetsMax
             < options.MaximumLiabilitiesToAssetsRatio);
+        Assert.True(random.RandomMagnitudeBands.FinancialSeedLiabilitiesToAssetsMax < 1m);
         Assert.InRange(
             random.RandomMagnitudeBands.FinancialSeedManagementForecastDeviationMin,
             -0.10m,
@@ -80,11 +81,22 @@ public sealed class CompanyFinancialOptionsTests
     }
 
     [Fact]
+    public void IsValidAllowsBoundedNegativeEquityForGradualDeterioration()
+    {
+        var gradualNegativeEquity = new CompanyFinancialOptions
+        {
+            MaximumLiabilitiesToAssetsRatio = 1.25m,
+        };
+
+        Assert.True(gradualNegativeEquity.IsValid());
+    }
+
+    [Fact]
     public void IsValidRejectsUnsafeFinancialInvariantsAndDividendRules()
     {
-        var unsafeLiabilities = new CompanyFinancialOptions
+        var excessiveLiabilities = new CompanyFinancialOptions
         {
-            MaximumLiabilitiesToAssetsRatio = 1.10m,
+            MaximumLiabilitiesToAssetsRatio = 2.01m,
         };
         var invalidDividendCoverage = new CompanyFinancialOptions
         {
@@ -95,9 +107,27 @@ public sealed class CompanyFinancialOptionsTests
             IndustryImpulseWeight = 1.10m,
         };
 
-        Assert.False(unsafeLiabilities.IsValid());
+        Assert.False(excessiveLiabilities.IsValid());
         Assert.False(invalidDividendCoverage.IsValid());
         Assert.False(invalidIndustryWeight.IsValid());
+    }
+
+    [Fact]
+    public void RandomOptionsRejectZeroBigInvestmentFractionMinimum()
+    {
+        var zeroMinimum = new RandomChanceRatesOptions();
+        zeroMinimum.RandomMagnitudeBands.BigInvestmentFractionMin = 0d;
+
+        Assert.False(zeroMinimum.IsValid());
+    }
+
+    [Fact]
+    public void RandomOptionsRejectBigInvestmentFractionsAboveDecimalBounds()
+    {
+        var aboveDecimalMaximum = new RandomChanceRatesOptions();
+        aboveDecimalMaximum.RandomMagnitudeBands.BigInvestmentFractionMax = double.MaxValue;
+
+        Assert.False(aboveDecimalMaximum.IsValid());
     }
 
     [Fact]
