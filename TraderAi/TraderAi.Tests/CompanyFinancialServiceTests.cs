@@ -326,6 +326,134 @@ public sealed class CompanyFinancialServiceTests : IDisposable
             entry => entry.State == EntityState.Added);
     }
 
+    [Theory]
+    [InlineData(1, CompanyFinancialSnapshotMoment.DayOpening)]
+    [InlineData(MiddayTradingCycleNumber, CompanyFinancialSnapshotMoment.Midday)]
+    public async Task FirstEnabledCheckpointRecoversCurrentBaselineAndScheduledReport(
+        int tradingCycleNumber,
+        CompanyFinancialSnapshotMoment expectedMoment)
+    {
+        var cycle = await AddCycleAsync(dayNumber: 4, tradingCycleNumber);
+        var company = await AddCompanyAsync();
+        await AddPriceAsync(company, cycle, 75m);
+        var options = new CompanyFinancialOptions { Enabled = false };
+        var random = new ScriptedRandom(
+            Enumerable.Repeat(0.5d, 13)
+                .Concat(Enumerable.Repeat(0.99d, 12)));
+        var service = Service(
+            random,
+            enabled: false,
+            financialOptions: options);
+
+        Assert.Null(await service.StageSeedSnapshotAsync(
+            company,
+            75m,
+            cycle.Id,
+            tradingDayNumber: 4,
+            DateTime.UtcNow));
+        options.Enabled = true;
+        await service.ProcessForCycleAsync(cycle.Id, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var rows = await context.CompanyFinancialSnapshots
+            .AsNoTracking()
+            .OrderBy(snapshot => snapshot.Moment)
+            .ToListAsync();
+        Assert.Collection(
+            rows,
+            seed =>
+            {
+                Assert.Equal(CompanyFinancialSnapshotMoment.Seed, seed.Moment);
+                Assert.Equal(4, seed.TradingDayNumber);
+                Assert.Equal(cycle.Id, seed.CreatedInCycleId);
+                Assert.Equal(75_000m, seed.TotalAssets);
+            },
+            scheduled =>
+            {
+                Assert.Equal(expectedMoment, scheduled.Moment);
+                Assert.Equal(4, scheduled.TradingDayNumber);
+                Assert.Equal(cycle.Id, scheduled.CreatedInCycleId);
+            });
+        Assert.Equal(0, random.Remaining);
+    }
+
+    [Fact]
+    public async Task LegacyLiveCompanyRecoversWithoutFabricatingEarlierHistory()
+    {
+        var cycle = await AddCycleAsync(dayNumber: 7, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        await AddPriceAsync(company, cycle, 120m);
+
+        await Service(new ScriptedRandom(
+                Enumerable.Repeat(0.5d, 13)
+                    .Concat(Enumerable.Repeat(0.99d, 12))))
+            .ProcessForCycleAsync(cycle.Id, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var rows = await context.CompanyFinancialSnapshots
+            .AsNoTracking()
+            .OrderBy(snapshot => snapshot.Moment)
+            .ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(120_000m, rows[0].TotalAssets);
+        Assert.All(rows, snapshot =>
+        {
+            Assert.Equal(7, snapshot.TradingDayNumber);
+            Assert.Equal(cycle.Id, snapshot.CreatedInCycleId);
+        });
+        Assert.DoesNotContain(rows, snapshot => snapshot.TradingDayNumber < 7);
+    }
+
+    [Fact]
+    public async Task MissingBaselinesRecoverInCompanyOrderAndRepeatWithoutDraws()
+    {
+        var cycle = await AddCycleAsync(dayNumber: 3, tradingCycleNumber: 1);
+        var first = await AddCompanyAsync();
+        var second = await AddCompanyAsync();
+        await AddPriceAsync(first, cycle, 100m);
+        await AddPriceAsync(second, cycle, 100m);
+        var draws = Enumerable.Repeat(0d, 12)
+            .Concat(Enumerable.Repeat(0.999d, 12))
+            .Concat(Enumerable.Repeat(0.999d, 26));
+        var random = new ScriptedRandom(draws);
+        var service = Service(random);
+
+        await service.ProcessForCycleAsync(cycle.Id, DateTime.UtcNow);
+        await service.ProcessForCycleAsync(cycle.Id, DateTime.UtcNow);
+
+        var added = context.ChangeTracker
+            .Entries<CompanyFinancialSnapshot>()
+            .Where(entry => entry.State == EntityState.Added)
+            .Select(entry => entry.Entity)
+            .ToList();
+        Assert.Equal(4, added.Count);
+        var seeds = added
+            .Where(snapshot => snapshot.Moment == CompanyFinancialSnapshotMoment.Seed)
+            .OrderBy(snapshot => snapshot.CompanyId)
+            .ToList();
+        Assert.Equal([first.Id, second.Id], seeds.Select(snapshot => snapshot.CompanyId));
+        Assert.True(seeds[0].TotalAssets < seeds[1].TotalAssets);
+        Assert.Equal(0, random.Remaining);
+    }
+
+    [Fact]
+    public async Task MissingBaselineWithoutLivePriceFailsBeforeDrawing()
+    {
+        var cycle = await AddCycleAsync(dayNumber: 2, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        var random = new ScriptedRandom([]);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Service(random).ProcessForCycleAsync(cycle.Id, DateTime.UtcNow));
+
+        Assert.Contains(company.Id.ToString(), error.Message);
+        Assert.Contains("latest price", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+            entry => entry.State == EntityState.Added);
+        Assert.Equal(0, random.Remaining);
+    }
+
     [Fact]
     public async Task OpeningAndMiddayStageOneSnapshotPerLiveCompanyAndSkipClosedCompanies()
     {
@@ -1280,6 +1408,22 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         context.CompanyFinancialSnapshots.Add(snapshot);
         await context.SaveChangesAsync();
         return snapshot;
+    }
+
+    private async Task AddPriceAsync(
+        Company company,
+        MarketCycle cycle,
+        decimal price)
+    {
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = company.Id,
+            Price = price,
+            Capitalization = price * company.IssuedSharesCount,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
     }
 
     private static CompanyFinancialState StateOf(CompanyFinancialSnapshot snapshot) =>

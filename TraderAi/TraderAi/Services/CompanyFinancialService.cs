@@ -245,13 +245,49 @@ public sealed class CompanyFinancialService
                     .ThenBy(snapshot => snapshot.Id)
                     .ToArray());
 
-        var missingCompany = eligibleCompanies.FirstOrDefault(company =>
-            !rowsByCompany.TryGetValue(company.Id, out var history)
-            || history.Length == 0);
-        if (missingCompany is not null)
+        var missingCompanyIds = eligibleCompanies
+            .Where(company =>
+                !rowsByCompany.TryGetValue(company.Id, out var history)
+                || history.Length == 0)
+            .Select(company => company.Id)
+            .ToHashSet();
+        if (missingCompanyIds.Count > 0)
         {
-            throw new InvalidOperationException(
-                $"Company {missingCompany.Id} has no financial seed snapshot.");
+            var latestPriceByCompany =
+                await PriceSnapshotQueries.LatestPriceByCompanyAsync(dbContext);
+            var missingPriceCompany = eligibleCompanies.FirstOrDefault(company =>
+                missingCompanyIds.Contains(company.Id)
+                && !latestPriceByCompany.ContainsKey(company.Id));
+            if (missingPriceCompany is not null)
+            {
+                throw new InvalidOperationException(
+                    $"Company {missingPriceCompany.Id} has no latest price snapshot for financial baseline recovery.");
+            }
+
+            var companiesForRecovery = await dbContext.Companies
+                .AsNoTracking()
+                .Where(company => missingCompanyIds.Contains(company.Id))
+                .OrderBy(company => company.Id)
+                .ToDictionaryAsync(company => company.Id);
+            foreach (var company in eligibleCompanies.Where(company =>
+                         missingCompanyIds.Contains(company.Id)))
+            {
+                if (!companiesForRecovery.TryGetValue(company.Id, out var companyEntity))
+                {
+                    throw new InvalidOperationException(
+                        $"Company {company.Id} disappeared during financial baseline recovery.");
+                }
+
+                var seed = await StageSeedSnapshotAsync(
+                    companyEntity,
+                    latestPriceByCompany[company.Id],
+                    currentCycleId,
+                    checkpoint.TradingDayNumber,
+                    now)
+                    ?? throw new InvalidOperationException(
+                        "Financial reporting was disabled during baseline recovery.");
+                rowsByCompany[company.Id] = [seed];
+            }
         }
 
         var latestDividendIds = await LatestDividendEventIdsAsync(companyIds);

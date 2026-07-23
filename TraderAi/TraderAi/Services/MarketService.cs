@@ -806,7 +806,8 @@ public sealed class MarketService(
     // market is explicitly running.
     public Task<CycleTickResult> RunCycleTickAsync() => WithLockAsync(RunCycleTickCoreAsync);
 
-    public Task<Market> SeedDemoMarketAsync() => WithLockAsync(SeedDemoMarketCoreAsync);
+    public Task<Market> SeedDemoMarketAsync() =>
+        WithLockAsync(() => InTransactionAsync(SeedDemoMarketCoreAsync));
 
     public Task<Market> ResetDemoMarketAsync() => WithLockAsync(ResetDemoMarketCoreAsync);
 

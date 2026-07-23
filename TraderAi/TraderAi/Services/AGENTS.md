@@ -27,6 +27,7 @@ Do not reorder these phases without reviewing which prices, ratings, holdings, o
 
 Financial snapshots are saved before lifecycle and audit work so those consumers share one current-cycle report.
 The initial roster and every new listing use the same financial seed path after the company id and first price exist.
+Manual `AdvanceCycleAsync` is a matching/advance helper and does not run pre-match services, including financial reporting.
 
 ## Order resting
 

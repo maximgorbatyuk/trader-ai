@@ -224,6 +224,108 @@ public sealed class MarketLoopTests : IDisposable
         Assert.All(falling, row => Assert.True(row.BusinessRiskScore > 50m));
     }
 
+    [Fact]
+    public async Task InitialSeedRollsBackLateFinancialFailureAndRetriesCleanly()
+    {
+        var failure = new FailOnceFinancialSnapshotInterceptor();
+        using var seedConnection = new SqliteConnection("DataSource=:memory:");
+        seedConnection.Open();
+        var seedOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(seedConnection)
+            .AddInterceptors(failure)
+            .Options;
+        await using var seedContext = new AppDbContext(seedOptions);
+        seedContext.Database.EnsureCreated();
+        var financialOptions = new CompanyFinancialOptions();
+        var financialService = new CompanyFinancialService(
+            seedContext,
+            Options.Create(financialOptions),
+            Options.Create(new RandomChanceRatesOptions()),
+            Options.Create(new TradingClockOptions()),
+            new Random(20260724),
+            new CompanyFinancialScorer(Options.Create(financialOptions)));
+        var clock = new TradingClockService(
+            seedContext,
+            Options.Create(new TradingClockOptions()));
+        var service = new MarketService(
+            seedContext,
+            new MatchingEngine(seedContext),
+            new NoOpDecisionEngine(),
+            new MarketCycleLock(),
+            new Random(1),
+            tradingClockService: clock,
+            companyFinancialService: financialService);
+
+        var error = await Assert.ThrowsAnyAsync<Exception>(
+            () => service.SeedDemoMarketAsync());
+        Assert.Contains("Injected late financial seed failure.", error.ToString());
+        seedContext.ChangeTracker.Clear();
+
+        Assert.Empty(await seedContext.Markets.ToListAsync());
+        Assert.Empty(await seedContext.MarketRuns.ToListAsync());
+        Assert.Empty(await seedContext.MarketCycles.ToListAsync());
+        Assert.Empty(await seedContext.TradingDays.ToListAsync());
+        Assert.Empty(await seedContext.Companies.ToListAsync());
+        Assert.Empty(await seedContext.Participants.ToListAsync());
+        Assert.Empty(await seedContext.PriceSnapshots.ToListAsync());
+        Assert.Empty(await seedContext.CompanyFinancialSnapshots.ToListAsync());
+
+        await service.SeedDemoMarketAsync();
+
+        Assert.Single(await seedContext.Markets.ToListAsync());
+        Assert.Single(await seedContext.MarketRuns.ToListAsync());
+        Assert.Single(await seedContext.MarketCycles.ToListAsync());
+        Assert.Single(await seedContext.TradingDays.ToListAsync());
+        Assert.Equal(100, await seedContext.Companies.CountAsync());
+        Assert.Equal(600, await seedContext.Participants.CountAsync());
+        Assert.Equal(100, await seedContext.PriceSnapshots.CountAsync());
+        Assert.Equal(100, await seedContext.CompanyFinancialSnapshots.CountAsync());
+    }
+
+    [Fact]
+    public async Task FirstRunningCheckpointRecoversDemoRosterSeededWhileFinancialsWereDisabled()
+    {
+        var financialOptions = new CompanyFinancialOptions { Enabled = false };
+        var financialService = new CompanyFinancialService(
+            context,
+            Options.Create(financialOptions),
+            Options.Create(new RandomChanceRatesOptions()),
+            Options.Create(new TradingClockOptions()),
+            new Random(20260724),
+            new CompanyFinancialScorer(Options.Create(financialOptions)));
+        var clock = new TradingClockService(
+            context,
+            Options.Create(new TradingClockOptions()));
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            new NoOpDecisionEngine(),
+            new MarketCycleLock(),
+            new Random(1),
+            tradingClockService: clock,
+            companyFinancialService: financialService);
+        await service.SeedDemoMarketAsync();
+        var firstCycleId = await context.Markets.Select(market => market.CurrentCycleId).SingleAsync();
+        Assert.Empty(await context.CompanyFinancialSnapshots.ToListAsync());
+
+        financialOptions.Enabled = true;
+        await service.SetStatusAsync(MarketStatus.Running);
+        await service.RunCycleTickAsync();
+
+        var rows = await context.CompanyFinancialSnapshots
+            .AsNoTracking()
+            .ToListAsync();
+        Assert.Equal(200, rows.Count);
+        Assert.Equal(100, rows.Count(snapshot =>
+            snapshot.Moment == CompanyFinancialSnapshotMoment.Seed
+            && snapshot.CreatedInCycleId == firstCycleId
+            && snapshot.TradingDayNumber == 1));
+        Assert.Equal(100, rows.Count(snapshot =>
+            snapshot.Moment == CompanyFinancialSnapshotMoment.DayOpening
+            && snapshot.CreatedInCycleId == firstCycleId
+            && snapshot.TradingDayNumber == 1));
+    }
+
     [Theory]
     [InlineData(1, CompanyFinancialSnapshotMoment.DayOpening, true)]
     [InlineData(105, CompanyFinancialSnapshotMoment.DayOpening, false)]
@@ -692,6 +794,29 @@ public sealed class MarketLoopTests : IDisposable
             CancellationToken cancellationToken = default)
         {
             Commands.Add(command.CommandText);
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private sealed class FailOnceFinancialSnapshotInterceptor : DbCommandInterceptor
+    {
+        private bool shouldFail = true;
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (shouldFail
+                && command.CommandText.Contains(
+                    "INSERT INTO \"CompanyFinancialSnapshots\"",
+                    StringComparison.Ordinal))
+            {
+                shouldFail = false;
+                throw new InvalidOperationException("Injected late financial seed failure.");
+            }
+
             return ValueTask.FromResult(result);
         }
     }
