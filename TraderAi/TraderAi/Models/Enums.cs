@@ -171,6 +171,7 @@ public enum NewsCategory
     FundPerformance,
     FundAdvertisement,
     CapitalRaise,
+    PortfolioAudit,
 }
 
 public enum CrisisScope

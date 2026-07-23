@@ -483,6 +483,7 @@ public sealed class AuditorService
                     .ToArray());
 
         var auditorOffset = (currentCycle.TradingDayNumber - 1) % auditors.Count;
+        var stagedAudits = new List<(CompanyRating Rating, CompanyAuditEvidence Evidence)>(due.Length);
         for (var index = 0; index < due.Length; index++)
         {
             var candidate = due[index];
@@ -601,7 +602,7 @@ public sealed class AuditorService
                 CreatedAt = now,
             };
             dbContext.CompanyRatings.Add(rating);
-            rating.Evidence = new CompanyAuditEvidence
+            var evidence = new CompanyAuditEvidence
             {
                 CompanyRating = rating,
                 CompanyId = companyId,
@@ -640,7 +641,11 @@ public sealed class AuditorService
                 ClosingIndustrySentiment = industryEvidence.Closing,
                 IndustryTrend = industryEvidence.Trend,
             };
+            rating.Evidence = evidence;
+            stagedAudits.Add((rating, evidence));
         }
+
+        await PublishPortfolioSummaryAsync(stagedAudits, currentCycleId, now);
     }
 
     public static int AuditorCountFor(int companyCount) =>
@@ -665,6 +670,124 @@ public sealed class AuditorService
 
         // Ratings store scalar auditor ids, so deterministic backfill is flushed once before the batch is staged.
         await dbContext.SaveChangesAsync();
+    }
+
+    private async Task PublishPortfolioSummaryAsync(
+        IReadOnlyList<(CompanyRating Rating, CompanyAuditEvidence Evidence)> stagedAudits,
+        int currentCycleId,
+        DateTime now)
+    {
+        if (stagedAudits.Count == 0)
+        {
+            return;
+        }
+
+        var playerIds = await dbContext.Participants
+            .AsNoTracking()
+            .Where(participant => participant.Type == ParticipantType.Player)
+            .Select(participant => participant.Id)
+            .ToArrayAsync();
+        var managedFundParticipantIds = await dbContext.CollectiveFunds
+            .AsNoTracking()
+            .Where(fund => fund.IsPlayerManaged)
+            .Select(fund => fund.ParticipantId)
+            .ToArrayAsync();
+        var ownerIds = playerIds
+            .Concat(managedFundParticipantIds)
+            .Distinct()
+            .ToArray();
+        if (ownerIds.Length == 0)
+        {
+            return;
+        }
+
+        var stagedByCompany = stagedAudits.ToDictionary(
+            audit => audit.Rating.CompanyId);
+        var auditedCompanyIds = stagedByCompany.Keys.ToArray();
+        var heldRows = await dbContext.Holdings
+            .AsNoTracking()
+            .Where(holding =>
+                ownerIds.Contains(holding.ParticipantId)
+                && auditedCompanyIds.Contains(holding.CompanyId)
+                && holding.Quantity > 0)
+            .Select(holding => new
+            {
+                holding.ParticipantId,
+                holding.CompanyId,
+                holding.Quantity,
+            })
+            .ToListAsync();
+        var heldAudits = heldRows
+            .GroupBy(holding => holding.CompanyId)
+            .OrderBy(group => group.Key)
+            .Select(group => new
+            {
+                Audit = stagedByCompany[group.Key],
+                PlayerQuantity = group
+                    .Where(holding => playerIds.Contains(holding.ParticipantId))
+                    .Sum(holding => holding.Quantity),
+                ManagedFundQuantity = group
+                    .Where(holding => managedFundParticipantIds.Contains(holding.ParticipantId))
+                    .Sum(holding => holding.Quantity),
+            })
+            .Where(row => row.PlayerQuantity > 0 || row.ManagedFundQuantity > 0)
+            .ToArray();
+        if (heldAudits.Length == 0)
+        {
+            return;
+        }
+
+        var averageScore = Round6(
+            heldAudits.Sum(row => (decimal)row.Audit.Evidence.TotalScore)
+            / heldAudits.Length);
+        var news = new NewsPost
+        {
+            Title = "Portfolio audit update",
+            Content = $"Auditors published new evidence-backed ratings for {heldAudits.Length} portfolio companies.",
+            PublishedInCycleId = currentCycleId,
+            PublishedAt = now,
+            Scope = NewsImpactScope.None,
+            Category = NewsCategory.PortfolioAudit,
+        };
+        var summary = new PortfolioAuditSummary
+        {
+            NewsPost = news,
+            EvaluationStartTradingDayNumber = heldAudits.Min(
+                row => row.Audit.Evidence.EvaluationStartTradingDayNumber),
+            EvaluationEndTradingDayNumber = heldAudits.Max(
+                row => row.Audit.Evidence.EvaluationEndTradingDayNumber),
+            EffectiveTradingDayNumber = heldAudits.Max(
+                row => row.Audit.Evidence.EffectiveTradingDayNumber),
+            ExtraRaisedExpectationsCount = heldAudits.Count(
+                row => row.Audit.Rating.Rating == CompanyRiskRating.ExtraRaisedExpectations),
+            RaisedExpectationsCount = heldAudits.Count(
+                row => row.Audit.Rating.Rating == CompanyRiskRating.RaisedExpectations),
+            StableCount = heldAudits.Count(
+                row => row.Audit.Rating.Rating == CompanyRiskRating.Stable),
+            LowRiskCount = heldAudits.Count(
+                row => row.Audit.Rating.Rating == CompanyRiskRating.LowRisk),
+            HighRiskCount = heldAudits.Count(
+                row => row.Audit.Rating.Rating == CompanyRiskRating.HighRisk),
+            AverageScore = averageScore,
+            OverallDirection = averageScore >= 2m
+                ? PortfolioAuditDirection.Positive
+                : averageScore <= -2m
+                    ? PortfolioAuditDirection.Negative
+                    : PortfolioAuditDirection.Neutral,
+            CreatedAt = now,
+        };
+        foreach (var row in heldAudits)
+        {
+            summary.Items.Add(new PortfolioAuditSummaryItem
+            {
+                CompanyId = row.Audit.Rating.CompanyId,
+                CompanyRating = row.Audit.Rating,
+                PlayerQuantity = row.PlayerQuantity,
+                ManagedFundQuantity = row.ManagedFundQuantity,
+            });
+        }
+
+        dbContext.PortfolioAuditSummaries.Add(summary);
     }
 
     private (int? Opening, int? Closing, IndustryTrend Trend) IndustryEvidenceFor(

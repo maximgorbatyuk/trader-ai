@@ -29,7 +29,6 @@ public sealed class AiDecisionApplicationTests : IDisposable
             context,
             Options.Create(new BigInvestmentOptions { Enabled = bigInvestmentEnabled }),
             chanceRates,
-            new MarketImpactService(context),
             new Random(2));
         return new MarketService(
             context,
@@ -105,7 +104,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
     }
 
     [Fact]
-    public async Task BigInvestmentOnlyDecisionPersistsTheCompleteDealAndRaisedPrice()
+    public async Task BigInvestmentOnlyDecisionPersistsTheDealWithoutSyntheticAuditOrPriceLift()
     {
         var seed = await SeedAsync();
         var participant = await context.Participants.SingleAsync(candidate => candidate.Id == seed.ParticipantId);
@@ -130,10 +129,10 @@ public sealed class AiDecisionApplicationTests : IDisposable
         Assert.Equal(1, await context.ShareTransactions.CountAsync());
         Assert.Equal(1, await context.OrderFills.CountAsync());
         Assert.Equal(1, await context.MoneyTransactions.CountAsync());
-        Assert.Equal(1, await context.CompanyRatings.CountAsync());
+        Assert.Equal(0, await context.CompanyRatings.CountAsync());
         Assert.Equal(1, await context.NewsPosts.CountAsync());
         Assert.Equal(
-            108m,
+            100m,
             await context.PriceSnapshots
                 .Where(snapshot => snapshot.CompanyId == seed.CompanyBId)
                 .OrderByDescending(snapshot => snapshot.Id)

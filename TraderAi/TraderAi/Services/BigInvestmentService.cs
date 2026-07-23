@@ -16,23 +16,19 @@ public sealed record BigInvestmentOpportunity(
     int MaximumShares);
 
 // Executes both automated and manual direct funding deals by minting shares at the current price and settling the
-// resulting cash, holding, rating, sentiment, protection, and history changes together. It runs after primary
-// issuance and before closure so a fresh deal's delisting protection is honoured in the same cycle.
+// resulting cash, holding, sentiment, protection, and history changes together. It runs after primary issuance
+// and before closure so a fresh deal's delisting protection is honoured in the same cycle.
 // Generic draws are trigger, pair, then size; a fresh Extra raise draws pair, cash-scaled chance, then size, while
 // disabled processing and the shared deal executor draw nothing so scripted simulations remain reproducible.
 public sealed class BigInvestmentService(
     AppDbContext dbContext,
     IOptions<BigInvestmentOptions> options,
     IOptions<RandomChanceRatesOptions> chanceRates,
-    MarketImpactService marketImpact,
     Random random,
     IOptions<IndustrySentimentOptions>? industrySentimentOptions = null)
 {
     // Trading days a fresh deal shields the company from delisting.
     private const int ProtectionTradingDays = 5;
-
-    // The auditor "raise" attached to a deal lifts the price by this fixed percent, inside the ordinary raise band.
-    private const decimal RatingImpactPercent = 8m;
 
     // Positive sentiment nudge applied to the company's industry.
     private const int IndustrySentimentPush = 10;
@@ -137,8 +133,8 @@ public sealed class BigInvestmentService(
     }
 
     // Stages every record for one deal and returns the shares minted (0 if the cash cannot buy a whole share). The
-    // caller owns the surrounding save; the one internal save mints the filled orders' ids and lets the raise's
-    // market-impact query read the enlarged supply and the deal-price snapshot.
+    // caller owns the surrounding save; the one internal save mints the filled order ids needed by the fill and
+    // cash-ledger rows staged immediately afterwards.
     public async Task<int> ExecuteDealAsync(
         Participant investor, Company company, decimal price, decimal investmentCash, int currentCycleId, DateTime now)
     {
@@ -310,30 +306,6 @@ public sealed class BigInvestmentService(
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
         });
-
-        // The deal earns an auditor "raise": a RaisedExpectations rating with a positive price lift. Attributed to
-        // any existing auditor; skipped only in the degenerate case of a market with no auditors yet.
-        var auditor = await dbContext.Auditors.OrderBy(candidate => candidate.Id).FirstOrDefaultAsync();
-        if (auditor is not null)
-        {
-            dbContext.CompanyRatings.Add(new CompanyRating
-            {
-                CompanyId = company.Id,
-                AuditorId = auditor.Id,
-                Rating = CompanyRiskRating.RaisedExpectations,
-                ImpactPercent = RatingImpactPercent,
-                CreatedInCycleId = currentCycleId,
-                CreatedAt = now,
-            });
-
-            await marketImpact.ApplyImpactAsync(
-                NewsImpactDirection.Increase,
-                [company.Id],
-                RatingImpactPercent,
-                currentCycleId,
-                now,
-                cancelStaleOrders: false);
-        }
 
         dbContext.NewsPosts.Add(new NewsPost
         {

@@ -41,6 +41,172 @@ public sealed class AuditorServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PortfolioSummaryCombinesPlayerAndManagedFundHoldingsFromCurrentBatch()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var sharedCompany = await AddCompanyAsync(day1, "Shared company");
+        var fundCompany = await AddCompanyAsync(day1, "Fund company");
+        var outsiderCompany = await AddCompanyAsync(day1, "Outsider company");
+        var notDueCompany = await AddCompanyAsync(day2, "Not due company");
+        foreach (var company in new[] { sharedCompany, fundCompany, outsiderCompany, notDueCompany })
+        {
+            await AddPriceAsync(company, 100m, company == notDueCompany ? day2 : day1);
+            await AddPriceAsync(company, 100m, day2);
+        }
+
+        await AddFinancialAsync(
+            sharedCompany,
+            day2,
+            CompanyFinancialSnapshotMoment.Midday,
+            profitability: CompanyMetricLevel.High,
+            volatility: CompanyMetricLevel.Low,
+            closureRisk: CompanyMetricLevel.Low,
+            outlook: ManagementOutlook.Positive,
+            confidence: 100m);
+        await AddFinancialAsync(
+            fundCompany,
+            day2,
+            CompanyFinancialSnapshotMoment.Midday,
+            coverage: 0.5m,
+            profitability: CompanyMetricLevel.Low,
+            volatility: CompanyMetricLevel.High,
+            closureRisk: CompanyMetricLevel.High,
+            outlook: ManagementOutlook.Negative,
+            confidence: 100m);
+        await AddFinancialAsync(outsiderCompany, day2, CompanyFinancialSnapshotMoment.Midday);
+
+        var player = await AddParticipantAsync(ParticipantType.Player);
+        var managedFundParticipant = await AddParticipantAsync(ParticipantType.CollectiveFund);
+        var ordinaryFundParticipant = await AddParticipantAsync(ParticipantType.CollectiveFund);
+        var ordinaryInvestor = await AddParticipantAsync(ParticipantType.Individual);
+        await AddFundAsync(managedFundParticipant, player, isPlayerManaged: true, day1);
+        await AddFundAsync(ordinaryFundParticipant, ordinaryInvestor, isPlayerManaged: false, day1);
+
+        var playerShared = await AddHoldingAsync(player, sharedCompany, 10);
+        var fundShared = await AddHoldingAsync(managedFundParticipant, sharedCompany, 20);
+        await AddHoldingAsync(managedFundParticipant, fundCompany, 30);
+        await AddHoldingAsync(player, notDueCompany, 40);
+        await AddHoldingAsync(ordinaryInvestor, outsiderCompany, 50);
+        await AddHoldingAsync(ordinaryFundParticipant, outsiderCompany, 60);
+
+        await ProcessAsync(day3);
+        await ProcessAsync(day3);
+
+        var summary = await context.PortfolioAuditSummaries
+            .AsNoTracking()
+            .Include(candidate => candidate.NewsPost)
+            .Include(candidate => candidate.Items)
+            .SingleAsync();
+        Assert.Equal((1, 2, 3), (
+            summary.EvaluationStartTradingDayNumber,
+            summary.EvaluationEndTradingDayNumber,
+            summary.EffectiveTradingDayNumber));
+        Assert.Equal(1, summary.ExtraRaisedExpectationsCount);
+        Assert.Equal(0, summary.RaisedExpectationsCount);
+        Assert.Equal(0, summary.StableCount);
+        Assert.Equal(0, summary.LowRiskCount);
+        Assert.Equal(1, summary.HighRiskCount);
+        Assert.Equal(-1m, summary.AverageScore);
+        Assert.Equal(PortfolioAuditDirection.Neutral, summary.OverallDirection);
+        Assert.Equal(day3.Id, summary.NewsPost!.PublishedInCycleId);
+        Assert.Equal((NewsCategory)7, summary.NewsPost.Category);
+        Assert.Equal(NewsImpactScope.None, summary.NewsPost.Scope);
+        Assert.Null(summary.NewsPost.Direction);
+        Assert.Null(summary.NewsPost.ImpactPercent);
+        Assert.Null(summary.NewsPost.TargetCompanyId);
+        Assert.Null(summary.NewsPost.ImpactAppliedInCycleId);
+
+        Assert.Equal(2, summary.Items.Count);
+        var sharedItem = Assert.Single(summary.Items, item => item.CompanyId == sharedCompany.Id);
+        Assert.Equal(10, sharedItem.PlayerQuantity);
+        Assert.Equal(20, sharedItem.ManagedFundQuantity);
+        var fundItem = Assert.Single(summary.Items, item => item.CompanyId == fundCompany.Id);
+        Assert.Equal(0, fundItem.PlayerQuantity);
+        Assert.Equal(30, fundItem.ManagedFundQuantity);
+        Assert.DoesNotContain(summary.Items, item => item.CompanyId == outsiderCompany.Id);
+        Assert.DoesNotContain(summary.Items, item => item.CompanyId == notDueCompany.Id);
+
+        var itemRatings = await context.PortfolioAuditSummaryItems
+            .AsNoTracking()
+            .Join(
+                context.CompanyRatings.AsNoTracking(),
+                item => item.CompanyRatingId,
+                rating => rating.Id,
+                (item, rating) => new { item.CompanyId, rating.Rating, rating.Evidence })
+            .OrderBy(row => row.CompanyId)
+            .ToListAsync();
+        Assert.Contains(
+            itemRatings,
+            row => row.CompanyId == sharedCompany.Id
+                && row.Rating == CompanyRiskRating.ExtraRaisedExpectations
+                && row.Evidence!.TotalScore == 8);
+        Assert.Contains(
+            itemRatings,
+            row => row.CompanyId == fundCompany.Id
+                && row.Rating == CompanyRiskRating.HighRisk
+                && row.Evidence!.TotalScore == -10);
+
+        playerShared.Quantity = 99;
+        fundShared.Quantity = 88;
+        await context.SaveChangesAsync();
+        context.ChangeTracker.Clear();
+
+        var storedItems = await context.PortfolioAuditSummaryItems
+            .AsNoTracking()
+            .OrderBy(item => item.CompanyId)
+            .ToListAsync();
+        Assert.Equal(10, storedItems.Single(item => item.CompanyId == sharedCompany.Id).PlayerQuantity);
+        Assert.Equal(20, storedItems.Single(item => item.CompanyId == sharedCompany.Id).ManagedFundQuantity);
+    }
+
+    [Fact]
+    public async Task AuditWithoutPlayerPortfolioIntersectionDoesNotPublishNews()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 100m, day2);
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        var ordinaryInvestor = await AddParticipantAsync(ParticipantType.Individual);
+        await AddHoldingAsync(ordinaryInvestor, company, 10);
+
+        await ProcessAsync(day3);
+
+        Assert.Single(await context.CompanyRatings.AsNoTracking().ToListAsync());
+        Assert.Empty(await context.PortfolioAuditSummaries.AsNoTracking().ToListAsync());
+        Assert.Empty(await context.NewsPosts.AsNoTracking().ToListAsync());
+    }
+
+    [Theory]
+    [InlineData(103, 2, PortfolioAuditDirection.Positive)]
+    [InlineData(100, 0, PortfolioAuditDirection.Neutral)]
+    [InlineData(96, -2, PortfolioAuditDirection.Negative)]
+    public async Task PortfolioSummaryDirectionUsesInclusiveTwoPointBoundaries(
+        int endingPrice,
+        int expectedScore,
+        PortfolioAuditDirection expectedDirection)
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, endingPrice, day2);
+        var player = await AddParticipantAsync(ParticipantType.Player);
+        await AddHoldingAsync(player, company, 1);
+
+        await ProcessAsync(day3);
+
+        var summary = await context.PortfolioAuditSummaries.AsNoTracking().SingleAsync();
+        Assert.Equal(expectedScore, summary.AverageScore);
+        Assert.Equal(expectedDirection, summary.OverallDirection);
+    }
+
+    [Fact]
     public async Task SeededCompanyUsesOpeningCycleAndTwoDayCadence()
     {
         var day1 = await AddCycleAsync(1, 1);
@@ -1207,22 +1373,64 @@ public sealed class AuditorServiceTests : IDisposable
         });
     }
 
-    private async Task<Participant> AddTraderAsync()
+    private Task<Participant> AddTraderAsync() =>
+        AddParticipantAsync(ParticipantType.Individual);
+
+    private async Task<Participant> AddParticipantAsync(ParticipantType type)
     {
         var trader = new Participant
         {
             Name = $"Trader {Guid.NewGuid():N}",
-            Type = ParticipantType.Individual,
+            Type = type,
             Temperament = Temperament.Balanced,
             RiskProfile = RiskProfile.Medium,
             InitialBalance = 10_000m,
             CurrentBalance = 10_000m,
+            SettledCashBalance = 10_000m,
             ReservedBalance = 500m,
             IsActive = true,
         };
         context.Participants.Add(trader);
         await context.SaveChangesAsync();
         return trader;
+    }
+
+    private async Task<CollectiveFund> AddFundAsync(
+        Participant fundParticipant,
+        Participant founder,
+        bool isPlayerManaged,
+        MarketCycle cycle)
+    {
+        var fund = new CollectiveFund
+        {
+            ParticipantId = fundParticipant.Id,
+            FoundedByParticipantId = founder.Id,
+            IsPlayerManaged = isPlayerManaged,
+            Status = CollectiveFundStatus.Active,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.CollectiveFunds.Add(fund);
+        await context.SaveChangesAsync();
+        return fund;
+    }
+
+    private async Task<Holding> AddHoldingAsync(
+        Participant participant,
+        Company company,
+        int quantity)
+    {
+        var holding = new Holding
+        {
+            ParticipantId = participant.Id,
+            CompanyId = company.Id,
+            Quantity = quantity,
+            SettledQuantity = quantity,
+            AverageCost = 100m,
+        };
+        context.Holdings.Add(holding);
+        await context.SaveChangesAsync();
+        return holding;
     }
 
     private async Task<Order> AddOrderAsync(

@@ -41,7 +41,6 @@ public sealed class BigInvestmentServiceTests : IDisposable
             context,
             Options.Create(new BigInvestmentOptions { Enabled = enabled }),
             Options.Create(randomChanceRates),
-            new MarketImpactService(context),
             random,
             Options.Create(new IndustrySentimentOptions { Enabled = sentimentEnabled, SentimentValueLimit = 1000 }));
     }
@@ -276,7 +275,7 @@ public sealed class BigInvestmentServiceTests : IDisposable
         var company = await AddCompanyAsync(issuedShares: 1000);
         await AddSnapshotAsync(company.Id, price: 1000m, cycle);
         var investor = await AddTraderAsync(balance: 500_000m);
-        var auditor = await AddAuditorAsync();
+        await AddAuditorAsync();
 
         // Trigger fires, the single pair is chosen, and the minimum 0.40 fraction is drawn → 400,000 for 400 shares.
         await Service(enabled: true, new ScriptedRandom([0.0d, 0.0d], [0]))
@@ -324,9 +323,7 @@ public sealed class BigInvestmentServiceTests : IDisposable
         Assert.Equal(400_000m, debit.Amount);
         Assert.Equal(investor.Id, debit.ParticipantId);
 
-        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
-        Assert.Equal(CompanyRiskRating.RaisedExpectations, rating.Rating);
-        Assert.Equal(auditor.Id, rating.AuditorId);
+        Assert.Empty(await context.CompanyRatings.AsNoTracking().ToListAsync());
 
         var news = await context.NewsPosts.AsNoTracking().SingleAsync();
         Assert.Equal(NewsCategory.CapitalRaise, news.Category);
@@ -334,8 +331,8 @@ public sealed class BigInvestmentServiceTests : IDisposable
 
         Assert.Equal(510, (await context.Industries.AsNoTracking().SingleAsync()).SentimentValue);
 
-        // Original snapshot, the deal snapshot, and the auditor raise's lift.
-        Assert.Equal(3, await context.PriceSnapshots.CountAsync());
+        // The deal records its execution price without manufacturing a separate auditor-driven move.
+        Assert.Equal(2, await context.PriceSnapshots.CountAsync());
 
         var record = await context.CompanyInvestments.AsNoTracking().SingleAsync();
         Assert.Equal(refreshedCompany.Id, record.CompanyId);
