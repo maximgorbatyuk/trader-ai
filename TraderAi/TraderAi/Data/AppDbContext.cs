@@ -366,13 +366,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<CompanyAuditEvidence>()
             .HasOne(evidence => evidence.LatestDividendEvent)
             .WithMany()
-            .HasForeignKey(evidence => evidence.LatestDividendEventId)
+            .HasForeignKey(evidence => new { evidence.LatestDividendEventId, evidence.CompanyId })
+            .HasPrincipalKey(dividendEvent => new { dividendEvent.Id, dividendEvent.CompanyId })
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<CompanyAuditEvidence>()
             .HasOne(evidence => evidence.CompanyFinancialSnapshot)
             .WithMany()
-            .HasForeignKey(evidence => evidence.CompanyFinancialSnapshotId)
+            .HasForeignKey(evidence => new { evidence.CompanyFinancialSnapshotId, evidence.CompanyId })
+            .HasPrincipalKey(snapshot => new { snapshot.Id, snapshot.CompanyId })
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<CompanyAuditEvidence>()
@@ -386,6 +388,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<CompanyDividendEvent>()
             .HasIndex(dividendEvent => new { dividendEvent.CompanyId, dividendEvent.TradingDayNumber, dividendEvent.Id });
+
+        modelBuilder.Entity<CompanyDividendEvent>()
+            .HasAlternateKey(dividendEvent => new { dividendEvent.Id, dividendEvent.CompanyId });
 
         modelBuilder.Entity<CompanyDividendEvent>()
             .ToTable(table =>
@@ -413,8 +418,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<CompanyFinancialSnapshot>()
             .HasOne(snapshot => snapshot.LatestDividendEvent)
             .WithMany()
-            .HasForeignKey(snapshot => snapshot.LatestDividendEventId)
+            .HasForeignKey(snapshot => new { snapshot.LatestDividendEventId, snapshot.CompanyId })
+            .HasPrincipalKey(dividendEvent => new { dividendEvent.Id, dividendEvent.CompanyId })
             .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyFinancialSnapshot>()
+            .HasAlternateKey(snapshot => new { snapshot.Id, snapshot.CompanyId });
 
         modelBuilder.Entity<CompanyFinancialSnapshot>()
             .HasIndex(snapshot => new { snapshot.CompanyId, snapshot.TradingDayNumber, snapshot.Moment })
@@ -454,6 +463,20 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + " AND CAST(StabilityScore AS NUMERIC) <= 100"
                     + " AND CAST(ClosureRiskScore AS NUMERIC) >= 0"
                     + " AND CAST(ClosureRiskScore AS NUMERIC) <= 100");
+                table.HasCheckConstraint(
+                    "CK_CompanyFinancialSnapshots_Moment_Valid",
+                    "Moment IN (0, 1, 2)");
+                table.HasCheckConstraint(
+                    "CK_CompanyFinancialSnapshots_ManagementOutlook_Valid",
+                    "ManagementOutlook IN (0, 1, 2)");
+                table.HasCheckConstraint(
+                    "CK_CompanyFinancialSnapshots_Levels_Valid",
+                    "ProfitabilityLevel IN (0, 1, 2)"
+                    + " AND FinancialVolatilityLevel IN (0, 1, 2)"
+                    + " AND ClosureRiskLevel IN (0, 1, 2)");
+                table.HasCheckConstraint(
+                    "CK_CompanyFinancialSnapshots_ChangedMetrics_Valid",
+                    "ChangedMetrics >= 0 AND (ChangedMetrics & ~4095) = 0");
             });
 
         modelBuilder.Entity<PortfolioAuditSummary>()
@@ -716,6 +739,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.ProfitabilityScore).HasPrecision(18, 6);
         modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.StabilityScore).HasPrecision(18, 6);
         modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.ClosureRiskScore).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.Moment).HasConversion<int>();
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.ManagementOutlook).HasConversion<int>();
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.ProfitabilityLevel).HasConversion<int>();
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.FinancialVolatilityLevel).HasConversion<int>();
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.ClosureRiskLevel).HasConversion<int>();
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.ChangedMetrics).HasConversion<int>();
         modelBuilder.Entity<PortfolioAuditSummary>().Property(summary => summary.AverageScore).HasPrecision(18, 6);
 
         // Behavioural-audit indices are min-max-normalised sums near the 0..5 range; the money scale above would

@@ -121,6 +121,42 @@ public sealed class CompanyFinancialPersistenceTests : IDisposable
     }
 
     [Fact]
+    public async Task SnapshotEnumsAreStoredAsStableIntegerValues()
+    {
+        var (company, cycle) = await AddCompanyAndCycleAsync();
+        var snapshot = CreateValidSnapshot(company.Id, cycle.Id, candidate =>
+        {
+            candidate.Moment = CompanyFinancialSnapshotMoment.Midday;
+            candidate.ManagementOutlook = ManagementOutlook.Negative;
+            candidate.ProfitabilityLevel = CompanyMetricLevel.High;
+            candidate.FinancialVolatilityLevel = CompanyMetricLevel.Medium;
+            candidate.ClosureRiskLevel = CompanyMetricLevel.Low;
+            candidate.ChangedMetrics = CompanyFinancialMetric.All;
+        });
+        context.CompanyFinancialSnapshots.Add(snapshot);
+        await context.SaveChangesAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT Moment, ManagementOutlook, ProfitabilityLevel, FinancialVolatilityLevel,
+                   ClosureRiskLevel, ChangedMetrics
+            FROM CompanyFinancialSnapshots
+            WHERE Id = $id
+            """;
+        command.Parameters.AddWithValue("$id", snapshot.Id);
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+
+        Assert.Equal(2L, reader.GetInt64(0));
+        Assert.Equal(2L, reader.GetInt64(1));
+        Assert.Equal(2L, reader.GetInt64(2));
+        Assert.Equal(1L, reader.GetInt64(3));
+        Assert.Equal(0L, reader.GetInt64(4));
+        Assert.Equal(4095L, reader.GetInt64(5));
+    }
+
+    [Fact]
     public async Task SeedAndDayOpeningCanExistForSameCompanyAndDay()
     {
         var (company, cycle) = await AddCompanyAndCycleAsync();
@@ -145,6 +181,30 @@ public sealed class CompanyFinancialPersistenceTests : IDisposable
             CreateValidSnapshot(company.Id, cycle.Id),
             CreateValidSnapshot(company.Id, cycle.Id, snapshot =>
                 snapshot.CreatedAt = DateTime.UtcNow.AddSeconds(1)));
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+    }
+
+    [Fact]
+    public async Task SnapshotCannotReferenceAnotherCompanysDividendEvent()
+    {
+        var (company, cycle) = await AddCompanyAndCycleAsync();
+        var otherCompany = await AddCompanyAsync();
+        var otherDividend = new CompanyDividendEvent
+        {
+            CompanyId = otherCompany.Id,
+            DeclaredAmount = 100m,
+            FundedAmount = 100m,
+            FundingOutcome = DividendFundingOutcome.Paid,
+            IssuerCashBeforeFunding = 500m,
+            CreatedInCycleId = cycle.Id,
+            TradingDayNumber = 1,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.CompanyDividendEvents.Add(otherDividend);
+        await context.SaveChangesAsync();
+        context.CompanyFinancialSnapshots.Add(CreateValidSnapshot(company.Id, cycle.Id, snapshot =>
+            snapshot.LatestDividendEventId = otherDividend.Id));
 
         await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
     }
@@ -220,6 +280,49 @@ public sealed class CompanyFinancialPersistenceTests : IDisposable
         await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
     }
 
+    [Theory]
+    [InlineData("moment")]
+    [InlineData("outlook")]
+    [InlineData("profitability-level")]
+    [InlineData("volatility-level")]
+    [InlineData("closure-risk-level")]
+    [InlineData("unknown-metric-bit")]
+    [InlineData("negative-metric-bits")]
+    public async Task InvalidSnapshotEnumsAndMetricBitsAreRejected(string invalidField)
+    {
+        var (company, cycle) = await AddCompanyAndCycleAsync();
+        var snapshot = CreateValidSnapshot(company.Id, cycle.Id);
+        switch (invalidField)
+        {
+            case "moment":
+                snapshot.Moment = (CompanyFinancialSnapshotMoment)3;
+                break;
+            case "outlook":
+                snapshot.ManagementOutlook = (ManagementOutlook)3;
+                break;
+            case "profitability-level":
+                snapshot.ProfitabilityLevel = (CompanyMetricLevel)3;
+                break;
+            case "volatility-level":
+                snapshot.FinancialVolatilityLevel = (CompanyMetricLevel)3;
+                break;
+            case "closure-risk-level":
+                snapshot.ClosureRiskLevel = (CompanyMetricLevel)3;
+                break;
+            case "unknown-metric-bit":
+                snapshot.ChangedMetrics = (CompanyFinancialMetric)(1 << 12);
+                break;
+            case "negative-metric-bits":
+                snapshot.ChangedMetrics = (CompanyFinancialMetric)(-1);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(invalidField));
+        }
+        context.CompanyFinancialSnapshots.Add(snapshot);
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+    }
+
     [Fact]
     public async Task NegativeProfitCashFlowAndForecastsAreAllowed()
     {
@@ -278,6 +381,21 @@ public sealed class CompanyFinancialPersistenceTests : IDisposable
 
     private async Task<(Company Company, MarketCycle Cycle)> AddCompanyAndCycleAsync()
     {
+        var company = await AddCompanyAsync();
+        var cycle = new MarketCycle
+        {
+            CycleNumber = 1,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Running,
+            StartedAt = DateTime.UtcNow,
+        };
+        context.MarketCycles.Add(cycle);
+        await context.SaveChangesAsync();
+        return (company, cycle);
+    }
+
+    private async Task<Company> AddCompanyAsync()
+    {
         var company = new Company
         {
             Name = $"Financial issuer {Guid.NewGuid():N}",
@@ -286,16 +404,9 @@ public sealed class CompanyFinancialPersistenceTests : IDisposable
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         };
-        var cycle = new MarketCycle
-        {
-            CycleNumber = 1,
-            TradingCycleNumber = 1,
-            Status = CycleStatus.Running,
-            StartedAt = DateTime.UtcNow,
-        };
-        context.AddRange(company, cycle);
+        context.Companies.Add(company);
         await context.SaveChangesAsync();
-        return (company, cycle);
+        return company;
     }
 
     private static CompanyFinancialSnapshot CreateValidSnapshot(

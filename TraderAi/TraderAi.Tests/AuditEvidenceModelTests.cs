@@ -214,6 +214,58 @@ public sealed class AuditEvidenceModelTests : IDisposable
     }
 
     [Fact]
+    public async Task EvidenceCannotReferenceAnotherCompanysFinancialSnapshot()
+    {
+        var (company, otherCompany, cycle, rating) = await AddAuditSetupAsync();
+        var otherSnapshot = CreateValidSnapshot(otherCompany.Id, cycle.Id);
+        context.CompanyFinancialSnapshots.Add(otherSnapshot);
+        await context.SaveChangesAsync();
+        context.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+        {
+            CompanyRatingId = rating.Id,
+            CompanyId = company.Id,
+            CompanyFinancialSnapshotId = otherSnapshot.Id,
+            EvaluationStartTradingDayNumber = 1,
+            EvaluationEndTradingDayNumber = 2,
+            EffectiveTradingDayNumber = 3,
+            IndustryTrend = IndustryTrend.Plateau,
+        });
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+    }
+
+    [Fact]
+    public async Task EvidenceCannotReferenceAnotherCompanysDividendEvent()
+    {
+        var (company, otherCompany, cycle, rating) = await AddAuditSetupAsync();
+        var otherDividend = new CompanyDividendEvent
+        {
+            CompanyId = otherCompany.Id,
+            DeclaredAmount = 100m,
+            FundedAmount = 100m,
+            FundingOutcome = DividendFundingOutcome.Paid,
+            IssuerCashBeforeFunding = 500m,
+            CreatedInCycleId = cycle.Id,
+            TradingDayNumber = 1,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.CompanyDividendEvents.Add(otherDividend);
+        await context.SaveChangesAsync();
+        context.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+        {
+            CompanyRatingId = rating.Id,
+            CompanyId = company.Id,
+            LatestDividendEventId = otherDividend.Id,
+            EvaluationStartTradingDayNumber = 1,
+            EvaluationEndTradingDayNumber = 2,
+            EffectiveTradingDayNumber = 3,
+            IndustryTrend = IndustryTrend.Plateau,
+        });
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+    }
+
+    [Fact]
     public async Task CompanyDeletionIsRestrictedWhileAuditHistoryExists()
     {
         var company = await AddCompanyAsync();
@@ -349,4 +401,66 @@ public sealed class AuditEvidenceModelTests : IDisposable
         await context.SaveChangesAsync();
         return company;
     }
+
+    private async Task<(Company Company, Company OtherCompany, MarketCycle Cycle, CompanyRating Rating)> AddAuditSetupAsync()
+    {
+        var company = await AddCompanyAsync();
+        var otherCompany = await AddCompanyAsync();
+        var cycle = new MarketCycle
+        {
+            CycleNumber = 1,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Completed,
+            StartedAt = DateTime.UtcNow,
+            CompletedAt = DateTime.UtcNow,
+        };
+        var auditor = new Auditor
+        {
+            Name = "Company-aware audit",
+            Description = "Keeps evidence inside the audited company.",
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.AddRange(cycle, auditor);
+        await context.SaveChangesAsync();
+        var rating = new CompanyRating
+        {
+            CompanyId = company.Id,
+            AuditorId = auditor.Id,
+            Rating = CompanyRiskRating.Stable,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.CompanyRatings.Add(rating);
+        await context.SaveChangesAsync();
+        return (company, otherCompany, cycle, rating);
+    }
+
+    private static CompanyFinancialSnapshot CreateValidSnapshot(int companyId, int cycleId) =>
+        new()
+        {
+            CompanyId = companyId,
+            CreatedInCycleId = cycleId,
+            TradingDayNumber = 1,
+            Moment = CompanyFinancialSnapshotMoment.DayOpening,
+            CreatedAt = DateTime.UtcNow,
+            Revenue = 10000m,
+            NetProfit = 1000m,
+            OperatingCashFlow = 1200m,
+            TotalAssets = 20000m,
+            TotalLiabilities = 8000m,
+            TotalDebt = 5000m,
+            DividendCoverageRatio = 4m,
+            BusinessRiskScore = 20m,
+            ManagementRevenueForecast = 11000m,
+            ManagementProfitForecast = 1200m,
+            ManagementOperatingCashFlowForecast = 1400m,
+            ManagementOutlook = ManagementOutlook.Positive,
+            ManagementConfidenceScore = 80m,
+            ProfitabilityScore = 70m,
+            ProfitabilityLevel = CompanyMetricLevel.High,
+            StabilityScore = 75m,
+            FinancialVolatilityLevel = CompanyMetricLevel.Low,
+            ClosureRiskScore = 15m,
+            ClosureRiskLevel = CompanyMetricLevel.Low,
+        };
 }
