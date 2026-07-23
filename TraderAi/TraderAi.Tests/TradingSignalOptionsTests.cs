@@ -151,6 +151,39 @@ public sealed class TradingSignalOptionsTests
         Assert.False(new TradingSignalOptions { MinimumWaitWeight = -0.01m }.IsValid());
     }
 
+    [Fact]
+    public void WaitAndPersonalityFactorsAcceptTheirExactUpperBounds()
+    {
+        var options = new TradingSignalOptions
+        {
+            MinimumWaitWeight = 1m,
+            AggressiveActivityFactor = 5m,
+            BalancedActivityFactor = 5m,
+            ConservativeActivityFactor = 5m,
+            LowRiskQualityResponseFactor = 5m,
+            LowRiskGrowthResponseFactor = 5m,
+            MediumRiskQualityResponseFactor = 5m,
+            MediumRiskGrowthResponseFactor = 5m,
+            HighRiskQualityResponseFactor = 5m,
+            HighRiskGrowthResponseFactor = 5m,
+        };
+
+        Assert.True(options.IsValid());
+    }
+
+    [Theory]
+    [InlineData("1.000001")]
+    [InlineData("79228162514264337593543950335")]
+    public void MinimumWaitWeightRejectsValuesAboveOne(string value)
+    {
+        Assert.False(new TradingSignalOptions
+        {
+            MinimumWaitWeight = decimal.Parse(
+                value,
+                System.Globalization.CultureInfo.InvariantCulture),
+        }.IsValid());
+    }
+
     [Theory]
     [InlineData(nameof(TradingSignalOptions.AggressiveActivityFactor))]
     [InlineData(nameof(TradingSignalOptions.BalancedActivityFactor))]
@@ -165,6 +198,35 @@ public sealed class TradingSignalOptionsTests
     {
         var options = new TradingSignalOptions();
         typeof(TradingSignalOptions).GetProperty(propertyName)!.SetValue(options, 0m);
+
+        Assert.False(options.IsValid());
+    }
+
+    [Theory]
+    [InlineData(nameof(TradingSignalOptions.AggressiveActivityFactor))]
+    [InlineData(nameof(TradingSignalOptions.BalancedActivityFactor))]
+    [InlineData(nameof(TradingSignalOptions.ConservativeActivityFactor))]
+    [InlineData(nameof(TradingSignalOptions.LowRiskQualityResponseFactor))]
+    [InlineData(nameof(TradingSignalOptions.LowRiskGrowthResponseFactor))]
+    [InlineData(nameof(TradingSignalOptions.MediumRiskQualityResponseFactor))]
+    [InlineData(nameof(TradingSignalOptions.MediumRiskGrowthResponseFactor))]
+    [InlineData(nameof(TradingSignalOptions.HighRiskQualityResponseFactor))]
+    [InlineData(nameof(TradingSignalOptions.HighRiskGrowthResponseFactor))]
+    public void PersonalityResponseFactorsRejectValuesAboveFive(string propertyName)
+    {
+        var options = new TradingSignalOptions();
+        typeof(TradingSignalOptions).GetProperty(propertyName)!.SetValue(options, 5.000001m);
+
+        Assert.False(options.IsValid());
+    }
+
+    [Fact]
+    public void PersonalityResponseFactorsRejectDecimalMaximum()
+    {
+        var options = new TradingSignalOptions
+        {
+            AggressiveActivityFactor = decimal.MaxValue,
+        };
 
         Assert.False(options.IsValid());
     }

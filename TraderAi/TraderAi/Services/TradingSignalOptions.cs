@@ -3,6 +3,8 @@ namespace TraderAi.Services;
 public sealed class TradingSignalOptions
 {
     public const string SectionName = "TradingSignal";
+    private const decimal MaximumWaitWeight = 1m;
+    private const decimal MaximumResponseFactor = 5m;
 
     public decimal MomentumWeight { get; set; } = 0.24m;
     public decimal OrderFlowWeight { get; set; } = 0.21m;
@@ -33,8 +35,8 @@ public sealed class TradingSignalOptions
             AuditWeight,
             FundamentalWeight)
         && IsProbabilityDistribution(EvidenceWeight, PersonalityNoiseWeight)
-        && MinimumWaitWeight > 0m
-        && Positive(
+        && MinimumWaitWeight is > 0m and <= MaximumWaitWeight
+        && ValidResponseFactors(
             AggressiveActivityFactor,
             BalancedActivityFactor,
             ConservativeActivityFactor,
@@ -49,6 +51,6 @@ public sealed class TradingSignalOptions
         weights.All(weight => weight >= 0m)
         && weights.Sum() == 1m;
 
-    private static bool Positive(params decimal[] factors) =>
-        factors.All(factor => factor > 0m);
+    private static bool ValidResponseFactors(params decimal[] factors) =>
+        factors.All(factor => factor is > 0m and <= MaximumResponseFactor);
 }

@@ -373,6 +373,62 @@ public sealed class GameSettingsServiceTests
                 setting => setting.Key == "TradingSignal:MinimumWaitWeight")).ValueJson);
     }
 
+    [Theory]
+    [InlineData("TradingSignal:MinimumWaitWeight", "1.01")]
+    [InlineData("TradingSignal:AggressiveActivityFactor", "5.01")]
+    public async Task OversizedTradingSignalSettingsAreRejectedWithoutPartialWrites(
+        string invalidKey,
+        string invalidJson)
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        IDbContextFactory<AppDbContext> factory = new TestDbContextFactory(dbOptions);
+        await using (var context = await factory.CreateDbContextAsync())
+        {
+            await context.Database.EnsureCreatedAsync();
+        }
+
+        var service = new GameSettingsService(factory, Configuration(
+            ("TradingSignal:MomentumWeight", "0.24"),
+            ("TradingSignal:OrderFlowWeight", "0.21"),
+            ("TradingSignal:IndustryWeight", "0.15"),
+            ("TradingSignal:AuditWeight", "0.15"),
+            ("TradingSignal:FundamentalWeight", "0.25"),
+            ("TradingSignal:EvidenceWeight", "0.75"),
+            ("TradingSignal:PersonalityNoiseWeight", "0.25"),
+            ("TradingSignal:MinimumWaitWeight", "0.20"),
+            ("TradingSignal:AggressiveActivityFactor", "1.25")));
+        await service.InitializeAsync();
+
+        using var invalid = JsonDocument.Parse(invalidJson);
+        using var validMomentum = JsonDocument.Parse("0.25");
+        using var validOrderFlow = JsonDocument.Parse("0.20");
+        var exception = await Assert.ThrowsAsync<GameSettingsValidationException>(() =>
+            service.UpdateAsync(new Dictionary<string, JsonElement>
+            {
+                [invalidKey] = invalid.RootElement.Clone(),
+                ["TradingSignal:MomentumWeight"] = validMomentum.RootElement.Clone(),
+                ["TradingSignal:OrderFlowWeight"] = validOrderFlow.RootElement.Clone(),
+            }));
+
+        Assert.True(exception.Errors.ContainsKey("TradingSignal"));
+        var current = service.GetOptions<TradingSignalOptions>(TradingSignalOptions.SectionName);
+        Assert.Equal(0.24m, current.MomentumWeight);
+        Assert.Equal(0.21m, current.OrderFlowWeight);
+        Assert.Equal(0.20m, current.MinimumWaitWeight);
+        Assert.Equal(1.25m, current.AggressiveActivityFactor);
+        await using var verification = await factory.CreateDbContextAsync();
+        Assert.Equal(
+            "0.24",
+            (await verification.GameSettings.SingleAsync(
+                setting => setting.Key == "TradingSignal:MomentumWeight")).ValueJson);
+        Assert.Equal(
+            invalidKey.EndsWith("MinimumWaitWeight", StringComparison.Ordinal) ? "0.20" : "1.25",
+            (await verification.GameSettings.SingleAsync(
+                setting => setting.Key == invalidKey)).ValueJson);
+    }
+
     [Fact]
     public async Task InvalidAuditScoreBoundsAreRejectedWithoutPartialWrites()
     {

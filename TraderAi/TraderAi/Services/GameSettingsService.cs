@@ -400,7 +400,7 @@ public sealed class GameSettingsService(
             .Get<TradingSignalOptions>() ?? new();
         if (!tradingSignal.IsValid())
         {
-            errors["TradingSignal"] = ["Directional and blend weights must form probability distributions, minimum wait must be positive, and personality response factors must be positive."];
+            errors["TradingSignal"] = ["Directional and blend weights must form probability distributions, minimum wait must be above 0 and no more than 1, and personality response factors must be above 0 and no more than 5."];
         }
 
         if (errors.Count > 0)

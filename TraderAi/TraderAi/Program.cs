@@ -102,7 +102,7 @@ builder.Services.AddOptions<TradingSignalOptions>()
     .Bind(builder.Configuration.GetSection(TradingSignalOptions.SectionName))
     .Validate(
         options => options.IsValid(),
-        "TradingSignal component and blend weights, wait weight, and personality response factors are invalid.")
+        "TradingSignal component and blend weights, wait weight in (0, 1], and personality response factors in (0, 5] are invalid.")
     .ValidateOnStart();
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
 builder.Services.Configure<BigInvestmentOptions>(builder.Configuration.GetSection(BigInvestmentOptions.SectionName));
@@ -348,7 +348,7 @@ static void ValidateDefaultTradingSignalOptions(IConfiguration configuration)
     throw new OptionsValidationException(
         Options.DefaultName,
         typeof(TradingSignalOptions),
-        ["TradingSignal component and blend weights, wait weight, and personality response factors are invalid."]);
+        ["TradingSignal component and blend weights, wait weight in (0, 1], and personality response factors in (0, 5] are invalid."]);
 }
 
 static void ValidateDefaultCompanyFinancialOptions(IConfiguration configuration)
