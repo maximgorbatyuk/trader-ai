@@ -13,11 +13,8 @@ public sealed record CompanyAuditScoringInput(
     decimal ModeledMaximumDividend,
     decimal DividendCoverageRatio,
     IndustryTrend IndustryTrend,
-    decimal ProfitabilityScore,
     CompanyMetricLevel ProfitabilityLevel,
-    decimal FinancialStabilityScore,
     CompanyMetricLevel FinancialVolatilityLevel,
-    decimal ClosureRiskScore,
     CompanyMetricLevel ClosureRiskLevel,
     ManagementOutlook ManagementOutlook,
     decimal ManagementConfidenceScore,
@@ -307,14 +304,11 @@ public sealed class CompanyAuditScorer
                 "Modeled dividends and their coverage cannot be negative.");
         }
 
-        if (input.ProfitabilityScore is < 0m or > MaximumNormalizedScore
-            || input.FinancialStabilityScore is < 0m or > MaximumNormalizedScore
-            || input.ClosureRiskScore is < 0m or > MaximumNormalizedScore
-            || input.ManagementConfidenceScore is < 0m or > MaximumNormalizedScore)
+        if (input.ManagementConfidenceScore is < 0m or > MaximumNormalizedScore)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(input),
-                "Normalized financial scores must be between 0 and 100.");
+                "Management confidence must be between 0 and 100.");
         }
     }
 

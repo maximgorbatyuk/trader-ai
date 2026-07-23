@@ -90,7 +90,9 @@ builder.Services.Configure<MarketExitOptions>(builder.Configuration.GetSection(M
 builder.Services.Configure<StockSplitOptions>(builder.Configuration.GetSection(StockSplitOptions.SectionName));
 builder.Services.AddOptions<AuditorOptions>()
     .Bind(builder.Configuration.GetSection(AuditorOptions.SectionName))
-    .Validate(options => options.IsValid(), "Auditor intervals, thresholds, and decision pulls are invalid.")
+    .Validate(
+        options => options.IsValid(),
+        "Auditor interval, metric boundaries, factor directions, score clamps, status thresholds, and decision pulls must form valid ordered ranges.")
     .ValidateOnStart();
 builder.Services.AddOptions<CompanyFinancialOptions>()
     .Bind(builder.Configuration.GetSection(CompanyFinancialOptions.SectionName))
@@ -353,7 +355,7 @@ static void ValidateDefaultAuditorOptions(IConfiguration configuration)
     throw new OptionsValidationException(
         Options.DefaultName,
         typeof(AuditorOptions),
-        ["Auditor intervals, thresholds, and decision pulls are invalid."]);
+        ["Auditor interval, metric boundaries, factor directions, score clamps, status thresholds, and decision pulls must form valid ordered ranges."]);
 }
 
 static bool SqliteDatabaseExists(string connectionString)

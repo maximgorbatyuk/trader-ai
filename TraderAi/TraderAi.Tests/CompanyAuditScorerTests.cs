@@ -204,6 +204,29 @@ public sealed class CompanyAuditScorerTests
     }
 
     [Theory]
+    [InlineData(ManagementOutlook.Positive, 3, 2)]
+    [InlineData(ManagementOutlook.Negative, -3, -2)]
+    public void ManagementConfidenceUsesAwayFromZeroMidpointRounding(
+        ManagementOutlook outlook,
+        int configuredScore,
+        int expected)
+    {
+        var options = new AuditorOptions
+        {
+            PositiveManagementOutlookScore = Math.Max(0, configuredScore),
+            NegativeManagementOutlookScore = Math.Min(0, configuredScore),
+        };
+
+        var result = CreateScorer(options).Score(NeutralInput() with
+        {
+            ManagementOutlook = outlook,
+            ManagementConfidenceScore = 50m,
+        });
+
+        Assert.Equal(expected, result.ManagementOutlookFactorScore);
+    }
+
+    [Theory]
     [InlineData(-5, CompanyRiskRating.HighRisk)]
     [InlineData(-2, CompanyRiskRating.LowRisk)]
     [InlineData(0, CompanyRiskRating.Stable)]
@@ -214,10 +237,19 @@ public sealed class CompanyAuditScorerTests
         CompanyRiskRating expected)
     {
         var options = ZeroScoringOptions();
-        options.StrongPositiveReturnScore = componentScore;
+        var adjustedReturn = componentScore < 0 ? -10m : 10m;
+        if (componentScore < 0)
+        {
+            options.StrongNegativeReturnScore = componentScore;
+        }
+        else
+        {
+            options.StrongPositiveReturnScore = componentScore;
+        }
+
         var result = CreateScorer(options).Score(NeutralInput() with
         {
-            AdjustedReturnPercent = 10m,
+            AdjustedReturnPercent = adjustedReturn,
         });
 
         Assert.Equal(componentScore, result.TotalScore);
@@ -281,6 +313,144 @@ public sealed class CompanyAuditScorerTests
         Assert.Equal(CompanyRiskRating.Stable, result.Rating);
     }
 
+    [Theory]
+    [InlineData("AuditIntervalTradingDays", 0)]
+    [InlineData("MinimumDenominationScore", 1)]
+    [InlineData("MaximumDenominationScore", -1)]
+    [InlineData("LowRiskThreshold", 0)]
+    [InlineData("RaisedExpectationsThreshold", 0)]
+    public void ConstructorRejectsNeutralUnsafeConfiguration(
+        string propertyName,
+        int value)
+    {
+        var options = new AuditorOptions();
+        typeof(AuditorOptions).GetProperty(propertyName)!.SetValue(options, value);
+
+        Assert.Throws<ArgumentException>(() => CreateScorer(options));
+    }
+
+    [Fact]
+    public void ConstructorRejectsTotalClampAndStatusBandsThatExcludeNeutral()
+    {
+        var options = new AuditorOptions
+        {
+            MinimumTotalScore = 1,
+            HighRiskThreshold = 2,
+            LowRiskThreshold = 3,
+            RaisedExpectationsThreshold = 4,
+            ExtraRaisedExpectationsThreshold = 5,
+        };
+
+        Assert.Throws<ArgumentException>(() => CreateScorer(options));
+    }
+
+    [Theory]
+    [InlineData("Dividend")]
+    [InlineData("Industry")]
+    [InlineData("Profitability")]
+    [InlineData("Volatility")]
+    [InlineData("ClosureRisk")]
+    [InlineData("Management")]
+    public void UnknownEvidenceEnumIsRejected(string family)
+    {
+        var input = family switch
+        {
+            "Dividend" => NeutralInput() with
+            {
+                LatestDividendOutcome = (DividendFundingOutcome)999,
+            },
+            "Industry" => NeutralInput() with
+            {
+                IndustryTrend = (IndustryTrend)999,
+            },
+            "Profitability" => NeutralInput() with
+            {
+                ProfitabilityLevel = (CompanyMetricLevel)999,
+            },
+            "Volatility" => NeutralInput() with
+            {
+                FinancialVolatilityLevel = (CompanyMetricLevel)999,
+            },
+            "ClosureRisk" => NeutralInput() with
+            {
+                ClosureRiskLevel = (CompanyMetricLevel)999,
+            },
+            "Management" => NeutralInput() with
+            {
+                ManagementOutlook = (ManagementOutlook)999,
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(family)),
+        };
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => CreateScorer().Score(input));
+    }
+
+    [Theory]
+    [InlineData("Jump")]
+    [InlineData("Dilution")]
+    [InlineData("SplitCount")]
+    [InlineData("ReverseSplitCount")]
+    [InlineData("ModeledDividend")]
+    [InlineData("Coverage")]
+    [InlineData("Confidence")]
+    [InlineData("NegativeConfidence")]
+    public void InvalidNormalizedEvidenceIsRejected(string field)
+    {
+        var input = field switch
+        {
+            "Jump" => NeutralInput() with
+            {
+                MaximumAdjustedCycleMovePercent = -1m,
+            },
+            "Dilution" => NeutralInput() with
+            {
+                FreeShareDilutionPercent = -1m,
+            },
+            "SplitCount" => NeutralInput() with
+            {
+                StockSplitCount = -1,
+            },
+            "ReverseSplitCount" => NeutralInput() with
+            {
+                ReverseSplitCount = -1,
+            },
+            "ModeledDividend" => NeutralInput() with
+            {
+                ModeledMaximumDividend = -1m,
+            },
+            "Coverage" => NeutralInput() with
+            {
+                DividendCoverageRatio = -1m,
+            },
+            "Confidence" => NeutralInput() with
+            {
+                ManagementConfidenceScore = 101m,
+            },
+            "NegativeConfidence" => NeutralInput() with
+            {
+                ManagementConfidenceScore = -1m,
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(field)),
+        };
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => CreateScorer().Score(input));
+    }
+
+    [Fact]
+    public void ScorerUsesDefensiveCopyOfOptions()
+    {
+        var options = new AuditorOptions();
+        var scorer = CreateScorer(options);
+        options.StrongPositiveReturnScore = 99;
+
+        var result = scorer.Score(NeutralInput() with
+        {
+            AdjustedReturnPercent = 10m,
+        });
+
+        Assert.Equal(3, result.AdjustedReturnScore);
+    }
+
     private static CompanyAuditScorer CreateScorer(AuditorOptions? options = null) =>
         new(Options.Create(options ?? new AuditorOptions()));
 
@@ -295,11 +465,8 @@ public sealed class CompanyAuditScorerTests
             ModeledMaximumDividend: 100m,
             DividendCoverageRatio: 1m,
             IndustryTrend: IndustryTrend.Plateau,
-            ProfitabilityScore: 50m,
             ProfitabilityLevel: CompanyMetricLevel.Medium,
-            FinancialStabilityScore: 50m,
             FinancialVolatilityLevel: CompanyMetricLevel.Medium,
-            ClosureRiskScore: 50m,
             ClosureRiskLevel: CompanyMetricLevel.Medium,
             ManagementOutlook: ManagementOutlook.Neutral,
             ManagementConfidenceScore: 100m,

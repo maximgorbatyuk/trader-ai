@@ -99,7 +99,7 @@ public sealed class AuditorOptions
     public decimal StrongDecisionPull { get; set; } = 0.10m;
 
     public bool IsValid()
-        => AuditIntervalTradingDays >= 0
+        => AuditIntervalTradingDays >= 1
             && ModerateAdjustedReturnPercent > 0m
             && ModerateAdjustedReturnPercent < StrongAdjustedReturnPercent
             && StrongAdjustedReturnPercent <= 100m
@@ -109,19 +109,44 @@ public sealed class AuditorOptions
             && ModerateFreeShareDilutionPercent is >= 0m and <= 100m
             && IndustryDirectionDeadband >= 0m
             && ScoresAreValid()
+            && StrongNegativeReturnScore <= ModerateNegativeReturnScore
+            && ModerateNegativeReturnScore <= 0
+            && ModeratePositiveReturnScore >= 0
+            && ModeratePositiveReturnScore <= StrongPositiveReturnScore
+            && StrongCycleJumpScore <= ModerateCycleJumpScore
+            && ModerateCycleJumpScore <= 0
+            && StrongFreeShareEmissionScore <= ModerateFreeShareEmissionScore
+            && ModerateFreeShareEmissionScore <= 0
+            && ReverseSplitScore <= 0
+            && StockSplitScore >= 0
+            && DividendSkippedScore <= DividendReducedScore
+            && DividendReducedScore <= 0
+            && DividendPaidScore >= 0
+            && DividendUncoveredScore <= 0
+            && DividendCoveredScore >= 0
+            && IndustryFallingScore <= 0
+            && IndustryRisingScore >= 0
             && LowProfitabilityScore <= MediumProfitabilityScore
             && MediumProfitabilityScore <= HighProfitabilityScore
+            && MediumProfitabilityScore == 0
             && HighVolatilityScore <= MediumVolatilityScore
             && MediumVolatilityScore <= LowVolatilityScore
+            && MediumVolatilityScore == 0
             && HighClosureRiskScore <= MediumClosureRiskScore
             && MediumClosureRiskScore <= LowClosureRiskScore
+            && MediumClosureRiskScore == 0
             && NegativeManagementOutlookScore <= NeutralManagementOutlookScore
             && NeutralManagementOutlookScore <= PositiveManagementOutlookScore
-            && MinimumDenominationScore <= MaximumDenominationScore
+            && NeutralManagementOutlookScore == 0
+            && MinimumDenominationScore <= 0
+            && MaximumDenominationScore >= 0
+            && MinimumTotalScore <= 0
+            && MaximumTotalScore >= 0
             && MinimumTotalScore < MaximumTotalScore
             && MinimumTotalScore <= HighRiskThreshold
             && HighRiskThreshold < LowRiskThreshold
-            && LowRiskThreshold < RaisedExpectationsThreshold
+            && LowRiskThreshold < 0
+            && RaisedExpectationsThreshold > 0
             && RaisedExpectationsThreshold < ExtraRaisedExpectationsThreshold
             && ExtraRaisedExpectationsThreshold <= MaximumTotalScore
             && ModerateDecisionPull is >= 0m and <= 1m

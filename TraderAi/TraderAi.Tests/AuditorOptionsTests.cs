@@ -66,6 +66,7 @@ public sealed class AuditorOptionsTests
 
     [Theory]
     [InlineData("AuditIntervalTradingDays", -1)]
+    [InlineData("AuditIntervalTradingDays", 0)]
     [InlineData("ModerateAdjustedReturnPercent", 11)]
     [InlineData("ModerateCycleJumpPercent", 11)]
     [InlineData("ModerateFreeShareDilutionPercent", -1)]
@@ -101,6 +102,61 @@ public sealed class AuditorOptionsTests
     [InlineData("MinimumTotalScore", -4)]
     [InlineData("MaximumTotalScore", 4)]
     public void StatusThresholdsMustRemainStrictlyOrderedInsideTotalScoreBounds(
+        string propertyName,
+        int value)
+    {
+        var options = new AuditorOptions();
+        typeof(AuditorOptions).GetProperty(propertyName)!.SetValue(options, value);
+
+        Assert.False(options.IsValid());
+    }
+
+    [Theory]
+    [InlineData("MinimumDenominationScore", 1)]
+    [InlineData("MaximumDenominationScore", -1)]
+    [InlineData("MinimumTotalScore", 1)]
+    [InlineData("MaximumTotalScore", -1)]
+    [InlineData("LowRiskThreshold", 0)]
+    [InlineData("RaisedExpectationsThreshold", 0)]
+    public void NeutralMustRemainInsideClampsAndStatusBand(string propertyName, int value)
+    {
+        var options = new AuditorOptions();
+        typeof(AuditorOptions).GetProperty(propertyName)!.SetValue(options, value);
+
+        Assert.False(options.IsValid());
+    }
+
+    [Theory]
+    [InlineData("StrongNegativeReturnScore", 1)]
+    [InlineData("ModerateNegativeReturnScore", -4)]
+    [InlineData("ModeratePositiveReturnScore", -1)]
+    [InlineData("StrongPositiveReturnScore", 1)]
+    [InlineData("StrongCycleJumpScore", 0)]
+    [InlineData("ModerateCycleJumpScore", 1)]
+    [InlineData("StrongFreeShareEmissionScore", 0)]
+    [InlineData("ModerateFreeShareEmissionScore", 1)]
+    [InlineData("ReverseSplitScore", 1)]
+    [InlineData("StockSplitScore", -1)]
+    [InlineData("DividendSkippedScore", -1)]
+    [InlineData("DividendReducedScore", 1)]
+    [InlineData("DividendPaidScore", -1)]
+    [InlineData("DividendUncoveredScore", 1)]
+    [InlineData("DividendCoveredScore", -1)]
+    [InlineData("IndustryFallingScore", 1)]
+    [InlineData("IndustryRisingScore", -1)]
+    [InlineData("LowProfitabilityScore", 1)]
+    [InlineData("MediumProfitabilityScore", 1)]
+    [InlineData("HighProfitabilityScore", -1)]
+    [InlineData("HighVolatilityScore", 1)]
+    [InlineData("MediumVolatilityScore", 1)]
+    [InlineData("LowVolatilityScore", -1)]
+    [InlineData("HighClosureRiskScore", 1)]
+    [InlineData("MediumClosureRiskScore", 1)]
+    [InlineData("LowClosureRiskScore", -1)]
+    [InlineData("NegativeManagementOutlookScore", 1)]
+    [InlineData("NeutralManagementOutlookScore", 1)]
+    [InlineData("PositiveManagementOutlookScore", -1)]
+    public void FactorScoresMustPreserveTheirFinancialDirection(
         string propertyName,
         int value)
     {

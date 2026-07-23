@@ -350,6 +350,99 @@ public sealed class GameSettingsServiceTests
                 setting => setting.Key == "Auditor:AuditIntervalTradingDays")).ValueJson);
     }
 
+    [Theory]
+    [InlineData("Auditor:AuditIntervalTradingDays", "0")]
+    [InlineData("Auditor:MinimumDenominationScore", "1")]
+    [InlineData("Auditor:LowRiskThreshold", "0")]
+    [InlineData("Auditor:MediumProfitabilityScore", "1")]
+    public async Task InvalidAuditSemanticsAreRejectedWithoutPartialWrites(
+        string invalidKey,
+        string invalidJson)
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        IDbContextFactory<AppDbContext> factory = new TestDbContextFactory(dbOptions);
+        await using (var context = await factory.CreateDbContextAsync())
+        {
+            await context.Database.EnsureCreatedAsync();
+        }
+
+        var service = new GameSettingsService(factory, Configuration(
+            ("Auditor:AuditIntervalTradingDays", "2"),
+            ("Auditor:MinimumDenominationScore", "-4"),
+            ("Auditor:LowRiskThreshold", "-2"),
+            ("Auditor:MediumProfitabilityScore", "0"),
+            ("Auditor:ModerateDecisionPull", "0.05")));
+        await service.InitializeAsync();
+
+        using var invalid = JsonDocument.Parse(invalidJson);
+        using var validDecisionPull = JsonDocument.Parse("0.06");
+        var exception = await Assert.ThrowsAsync<GameSettingsValidationException>(() =>
+            service.UpdateAsync(new Dictionary<string, JsonElement>
+            {
+                [invalidKey] = invalid.RootElement.Clone(),
+                ["Auditor:ModerateDecisionPull"] = validDecisionPull.RootElement.Clone(),
+            }));
+
+        Assert.True(exception.Errors.ContainsKey("Auditor"));
+        Assert.Equal(
+            0.05m,
+            service.GetOptions<AuditorOptions>(AuditorOptions.SectionName).ModerateDecisionPull);
+        await using var verification = await factory.CreateDbContextAsync();
+        Assert.Equal(
+            "0.05",
+            (await verification.GameSettings.SingleAsync(
+                setting => setting.Key == "Auditor:ModerateDecisionPull")).ValueJson);
+    }
+
+    [Fact]
+    public async Task AuditStatusBandCannotMoveEntirelyAboveNeutral()
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        IDbContextFactory<AppDbContext> factory = new TestDbContextFactory(dbOptions);
+        await using (var context = await factory.CreateDbContextAsync())
+        {
+            await context.Database.EnsureCreatedAsync();
+        }
+
+        var service = new GameSettingsService(factory, Configuration(
+            ("Auditor:MinimumTotalScore", "-20"),
+            ("Auditor:HighRiskThreshold", "-5"),
+            ("Auditor:LowRiskThreshold", "-2"),
+            ("Auditor:RaisedExpectationsThreshold", "2"),
+            ("Auditor:ExtraRaisedExpectationsThreshold", "5"),
+            ("Auditor:ModerateDecisionPull", "0.05")));
+        await service.InitializeAsync();
+
+        using var minimum = JsonDocument.Parse("1");
+        using var highRisk = JsonDocument.Parse("2");
+        using var lowRisk = JsonDocument.Parse("3");
+        using var raised = JsonDocument.Parse("4");
+        using var extraRaised = JsonDocument.Parse("5");
+        using var validDecisionPull = JsonDocument.Parse("0.06");
+        var exception = await Assert.ThrowsAsync<GameSettingsValidationException>(() =>
+            service.UpdateAsync(new Dictionary<string, JsonElement>
+            {
+                ["Auditor:MinimumTotalScore"] = minimum.RootElement.Clone(),
+                ["Auditor:HighRiskThreshold"] = highRisk.RootElement.Clone(),
+                ["Auditor:LowRiskThreshold"] = lowRisk.RootElement.Clone(),
+                ["Auditor:RaisedExpectationsThreshold"] = raised.RootElement.Clone(),
+                ["Auditor:ExtraRaisedExpectationsThreshold"] = extraRaised.RootElement.Clone(),
+                ["Auditor:ModerateDecisionPull"] = validDecisionPull.RootElement.Clone(),
+            }));
+
+        Assert.True(exception.Errors.ContainsKey("Auditor"));
+        Assert.Equal(
+            -20,
+            service.GetOptions<AuditorOptions>(AuditorOptions.SectionName).MinimumTotalScore);
+        Assert.Equal(
+            0.05m,
+            service.GetOptions<AuditorOptions>(AuditorOptions.SectionName).ModerateDecisionPull);
+    }
+
     [Fact]
     public async Task ProviderCatalogUsesProviderValuesSavedAfterItWasCreated()
     {
