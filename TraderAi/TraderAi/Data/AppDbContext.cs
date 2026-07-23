@@ -39,6 +39,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<StockDenominationEvent> StockDenominationEvents => Set<StockDenominationEvent>();
 
+    public DbSet<PrimaryIssuanceEvent> PrimaryIssuanceEvents => Set<PrimaryIssuanceEvent>();
+
     public DbSet<PriceSnapshot> PriceSnapshots => Set<PriceSnapshot>();
 
     public DbSet<Market> Markets => Set<Market>();
@@ -626,6 +628,33 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<StockDenominationEvent>()
             .HasIndex(denominationEvent => new { denominationEvent.CompanyId, denominationEvent.EffectiveInCycleNumber })
             .IsUnique();
+
+        modelBuilder.Entity<PrimaryIssuanceEvent>()
+            .HasOne<Company>()
+            .WithMany()
+            .HasForeignKey(issuance => issuance.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<PrimaryIssuanceEvent>()
+            .HasOne<MarketCycle>()
+            .WithMany()
+            .HasForeignKey(issuance => issuance.CreatedInCycleId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<PrimaryIssuanceEvent>()
+            .HasIndex(issuance => new { issuance.CompanyId, issuance.CreatedInCycleId })
+            .IsUnique();
+
+        modelBuilder.Entity<PrimaryIssuanceEvent>()
+            .ToTable(table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_PrimaryIssuanceEvents_Counts_Positive",
+                    "IssuedSharesBefore > 0 AND NewlyIssuedShares > 0 AND IssuedSharesAfter > 0");
+                table.HasCheckConstraint(
+                    "CK_PrimaryIssuanceEvents_Counts_Coherent",
+                    "IssuedSharesBefore + NewlyIssuedShares = IssuedSharesAfter");
+            });
 
         modelBuilder.Entity<SettlementInstruction>()
             .HasOne(instruction => instruction.ShareTransaction)

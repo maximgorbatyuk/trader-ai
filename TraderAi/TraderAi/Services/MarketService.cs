@@ -3435,6 +3435,7 @@ public sealed class MarketService(
         await dbContext.CompanyFinancialSnapshots.ExecuteDeleteAsync();
         await dbContext.CompanyDividendEvents.ExecuteDeleteAsync();
         await dbContext.CorporateCashTransactions.ExecuteDeleteAsync();
+        await dbContext.PrimaryIssuanceEvents.ExecuteDeleteAsync();
         await dbContext.StockDenominationEvents.ExecuteDeleteAsync();
         await dbContext.PriceBandStates.ExecuteDeleteAsync();
         await dbContext.MoneyTransactions.ExecuteDeleteAsync();

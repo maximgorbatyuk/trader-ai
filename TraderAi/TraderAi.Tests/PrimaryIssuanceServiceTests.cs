@@ -39,6 +39,12 @@ public sealed class PrimaryIssuanceServiceTests : IDisposable
         Assert.Equal(120, order.Quantity);
         Assert.Equal(100m, order.LimitPrice);
         Assert.True(order.IsFloatReplenishment);
+        var issuance = await context.PrimaryIssuanceEvents.AsNoTracking().SingleAsync();
+        Assert.Equal(company.Id, issuance.CompanyId);
+        Assert.Equal(cycle.Id, issuance.CreatedInCycleId);
+        Assert.Equal(1_000, issuance.IssuedSharesBefore);
+        Assert.Equal(120, issuance.NewlyIssuedShares);
+        Assert.Equal(1_120, issuance.IssuedSharesAfter);
     }
 
     [Fact]
@@ -438,6 +444,25 @@ public sealed class PrimaryIssuanceServiceTests : IDisposable
         Assert.Equal(100m, replacement.LimitPrice);
         Assert.Equal(currentCycle.Id, replacement.CreatedInCycleId);
         Assert.Equal(now, replacement.CreatedAt);
+        Assert.Empty(await context.PrimaryIssuanceEvents.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task PrimaryIssuanceEvidenceRejectsIncoherentShareCounts()
+    {
+        var cycle = await AddCycleAsync(dayNumber: 1, cycleNumber: 1);
+        var company = await AddScarceCompanyAsync(issuedShares: 1_000, price: 100m, cycle.Id);
+        context.PrimaryIssuanceEvents.Add(new PrimaryIssuanceEvent
+        {
+            CompanyId = company.Id,
+            CreatedInCycleId = cycle.Id,
+            IssuedSharesBefore = 1_000,
+            NewlyIssuedShares = 100,
+            IssuedSharesAfter = 1_099,
+            CreatedAt = DateTime.UtcNow,
+        });
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
     }
 
     [Fact]

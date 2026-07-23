@@ -244,8 +244,18 @@ public sealed class PrimaryIssuanceService(
 
             if (newlyIssuedQuantity > 0)
             {
+                var issuedSharesBefore = company.IssuedSharesCount;
                 company.IssuedSharesCount += (int)newlyIssuedQuantity;
                 company.UpdatedAt = now;
+                dbContext.PrimaryIssuanceEvents.Add(new PrimaryIssuanceEvent
+                {
+                    CompanyId = company.Id,
+                    CreatedInCycleId = currentCycleId,
+                    IssuedSharesBefore = issuedSharesBefore,
+                    NewlyIssuedShares = (int)newlyIssuedQuantity,
+                    IssuedSharesAfter = company.IssuedSharesCount,
+                    CreatedAt = now,
+                });
             }
             dbContext.Orders.Add(new Order
             {
