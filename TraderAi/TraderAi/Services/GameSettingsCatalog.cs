@@ -62,7 +62,7 @@ public static class GameSettingsCatalog
             [
                 "Enabled", "StabilityWindowSnapshots",
                 "ProfitabilityNetMarginWeight", "ProfitabilityReturnOnAssetsWeight",
-                "ProfitabilityCashFlowWeight", "ProfitabilityRevenueTrendWeight",
+                "ProfitabilityCashFlowWeight", "ProfitabilityOperatingTrendWeight",
                 "ProfitabilityManagementOutlookWeight",
                 "ClosureRiskEarningsAndCashFlowWeight", "ClosureRiskLeverageWeight",
                 "ClosureRiskLiabilitiesWeight", "ClosureRiskBusinessWeight", "ClosureRiskIndustryWeight",
@@ -303,7 +303,7 @@ public static class GameSettingsCatalog
             ["CompanyFinancial:ProfitabilityNetMarginWeight"] = "Sets the net-margin share of the profitability score.",
             ["CompanyFinancial:ProfitabilityReturnOnAssetsWeight"] = "Sets the return-on-assets share of the profitability score.",
             ["CompanyFinancial:ProfitabilityCashFlowWeight"] = "Sets the operating-cash-flow share of the profitability score.",
-            ["CompanyFinancial:ProfitabilityRevenueTrendWeight"] = "Sets the revenue-trend share of the profitability score.",
+            ["CompanyFinancial:ProfitabilityOperatingTrendWeight"] = "Sets the combined revenue-and-profit trend share of the profitability score.",
             ["CompanyFinancial:ProfitabilityManagementOutlookWeight"] = "Sets the management-outlook share of the profitability score.",
             ["CompanyFinancial:ClosureRiskEarningsAndCashFlowWeight"] = "Sets the earnings and cash-flow share of the future-closure risk score.",
             ["CompanyFinancial:ClosureRiskLeverageWeight"] = "Sets the debt-leverage share of the future-closure risk score.",

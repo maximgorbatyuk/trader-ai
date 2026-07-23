@@ -14,7 +14,7 @@ public sealed class CompanyFinancialOptions
 
     public decimal ProfitabilityCashFlowWeight { get; set; } = 0.20m;
 
-    public decimal ProfitabilityRevenueTrendWeight { get; set; } = 0.15m;
+    public decimal ProfitabilityOperatingTrendWeight { get; set; } = 0.15m;
 
     public decimal ProfitabilityManagementOutlookWeight { get; set; } = 0.15m;
 
@@ -51,7 +51,7 @@ public sealed class CompanyFinancialOptions
             ProfitabilityNetMarginWeight,
             ProfitabilityReturnOnAssetsWeight,
             ProfitabilityCashFlowWeight,
-            ProfitabilityRevenueTrendWeight,
+            ProfitabilityOperatingTrendWeight,
             ProfitabilityManagementOutlookWeight,
         };
         var closureRiskWeights = new[]

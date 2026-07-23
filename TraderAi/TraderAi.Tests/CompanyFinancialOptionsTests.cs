@@ -176,7 +176,7 @@ public sealed class CompanyFinancialOptionsTests
         options.ProfitabilityNetMarginWeight
         + options.ProfitabilityReturnOnAssetsWeight
         + options.ProfitabilityCashFlowWeight
-        + options.ProfitabilityRevenueTrendWeight
+        + options.ProfitabilityOperatingTrendWeight
         + options.ProfitabilityManagementOutlookWeight;
 
     private static decimal ClosureRiskWeightSum(CompanyFinancialOptions options) =>

@@ -96,7 +96,7 @@ public sealed class CompanyFinancialScorerTests
     [InlineData("NetMargin")]
     [InlineData("ReturnOnAssets")]
     [InlineData("CashFlow")]
-    [InlineData("RevenueTrend")]
+    [InlineData("OperatingTrend")]
     [InlineData("ManagementOutlook")]
     public void ProfitabilityComponentsRewardFinancialHealth(string component)
     {
@@ -119,7 +119,7 @@ public sealed class CompanyFinancialScorerTests
                 healthy = healthy with { OperatingCashFlow = 200m };
                 unhealthy = unhealthy with { OperatingCashFlow = -200m };
                 break;
-            case "RevenueTrend":
+            case "OperatingTrend":
                 healthy = healthy with { Revenue = 1_250m };
                 unhealthy = unhealthy with { Revenue = 750m };
                 healthyHistory = [Snapshot(BaseState(), 1)];
@@ -162,7 +162,7 @@ public sealed class CompanyFinancialScorerTests
         var prior = BaseState();
         var improving = prior with { NetProfit = 125m };
         var worsening = prior with { NetProfit = 75m };
-        var options = ProfitabilityOnly("RevenueTrend");
+        var options = ProfitabilityOnly("OperatingTrend");
 
         var improvingResult = Score(improving, [Snapshot(prior, 1)], options);
         var worseningResult = Score(worsening, [Snapshot(prior, 1)], options);
@@ -466,8 +466,7 @@ public sealed class CompanyFinancialScorerTests
             Revenue = 1_100m,
             NetProfit = 110m,
         };
-        var options = ProfitabilityOnly("RevenueTrend");
-        options.StabilityWindowSnapshots = 7;
+        var options = ProfitabilityOnly("OperatingTrend");
         var history = new[]
         {
             HistoryPoint(TrendState(1_000m), 4, CompanyFinancialSnapshotMoment.Midday, 2, 13, 2),
@@ -643,7 +642,7 @@ public sealed class CompanyFinancialScorerTests
             ProfitabilityNetMarginWeight = 0m,
             ProfitabilityReturnOnAssetsWeight = 0m,
             ProfitabilityCashFlowWeight = 0m,
-            ProfitabilityRevenueTrendWeight = 0m,
+            ProfitabilityOperatingTrendWeight = 0m,
             ProfitabilityManagementOutlookWeight = 0m,
         };
 
@@ -658,8 +657,8 @@ public sealed class CompanyFinancialScorerTests
             case "CashFlow":
                 options.ProfitabilityCashFlowWeight = 1m;
                 break;
-            case "RevenueTrend":
-                options.ProfitabilityRevenueTrendWeight = 1m;
+            case "OperatingTrend":
+                options.ProfitabilityOperatingTrendWeight = 1m;
                 break;
             case "ManagementOutlook":
                 options.ProfitabilityManagementOutlookWeight = 1m;
@@ -714,7 +713,7 @@ public sealed class CompanyFinancialScorerTests
             ProfitabilityNetMarginWeight = 0m,
             ProfitabilityReturnOnAssetsWeight = 0m,
             ProfitabilityCashFlowWeight = 0m,
-            ProfitabilityRevenueTrendWeight = 0m,
+            ProfitabilityOperatingTrendWeight = 0m,
             ProfitabilityManagementOutlookWeight = 1m,
             ClosureRiskEarningsAndCashFlowWeight = 0m,
             ClosureRiskLeverageWeight = 0m,

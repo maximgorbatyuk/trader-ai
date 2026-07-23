@@ -200,7 +200,7 @@ public sealed class CompanyFinancialScorer
             netMargin * configuration.ProfitabilityNetMarginWeight
             + returnOnAssets * configuration.ProfitabilityReturnOnAssetsWeight
             + cashFlowQuality * configuration.ProfitabilityCashFlowWeight
-            + operatingTrend * configuration.ProfitabilityRevenueTrendWeight
+            + operatingTrend * configuration.ProfitabilityOperatingTrendWeight
             + management * configuration.ProfitabilityManagementOutlookWeight);
     }
 
@@ -430,7 +430,7 @@ public sealed class CompanyFinancialScorer
         decimal ProfitabilityNetMarginWeight,
         decimal ProfitabilityReturnOnAssetsWeight,
         decimal ProfitabilityCashFlowWeight,
-        decimal ProfitabilityRevenueTrendWeight,
+        decimal ProfitabilityOperatingTrendWeight,
         decimal ProfitabilityManagementOutlookWeight,
         decimal ClosureRiskEarningsAndCashFlowWeight,
         decimal ClosureRiskLeverageWeight,
@@ -448,7 +448,7 @@ public sealed class CompanyFinancialScorer
                 options.ProfitabilityNetMarginWeight,
                 options.ProfitabilityReturnOnAssetsWeight,
                 options.ProfitabilityCashFlowWeight,
-                options.ProfitabilityRevenueTrendWeight,
+                options.ProfitabilityOperatingTrendWeight,
                 options.ProfitabilityManagementOutlookWeight,
                 options.ClosureRiskEarningsAndCashFlowWeight,
                 options.ClosureRiskLeverageWeight,
