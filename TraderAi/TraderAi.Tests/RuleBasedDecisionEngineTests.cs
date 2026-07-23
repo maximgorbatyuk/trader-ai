@@ -598,6 +598,87 @@ public sealed class RuleBasedDecisionEngineTests
     }
 
     [Fact]
+    public void AutomatedFanoutCannotReserveBeyondAggregateExposureHeadroom()
+    {
+        var participant = NewParticipant(4_700m, riskProfile: RiskProfile.Medium);
+        var context = new DecisionContext(
+            participant,
+            AvailableCash: 4_700m,
+            [
+                new CompanyQuote(
+                    1,
+                    Price: 100m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000,
+                    BestExecutableSellPrice: 100m,
+                    BestExecutableSellQuantity: 10,
+                    OpenSellQuantity: 10),
+                new CompanyQuote(
+                    2,
+                    Price: 100m,
+                    Bounds: Bounds(100m),
+                    IssuedShares: 10_000,
+                    BestExecutableSellPrice: 100m,
+                    BestExecutableSellQuantity: 10,
+                    OpenSellQuantity: 10),
+            ],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: 5_300m,
+            NetWorth: 10_000m,
+            AvailableBalance: 4_700m,
+            BuyingPower: 4_700m,
+            HasAutomatedTradingData: true);
+        var options = new AutomatedTradingOptions
+        {
+            BuyOrdersPerCycleMin = 2,
+            BuyOrdersPerCycleMax = 2,
+        };
+        var assessment = EngineWith([0.99d], automatedTradingOptions: options)
+            .Evaluate(context);
+
+        var intent = Assert.Single(EngineWith(
+            [(double)(assessment.Probabilities.Buy / 2m)],
+            automatedTradingOptions: options).Decide(context));
+
+        Assert.Equal(200m, intent.Quantity * intent.LimitPrice);
+    }
+
+    [Fact]
+    public void LegacyFanoutCannotReserveBeyondAggregateCash()
+    {
+        var participant = NewParticipant(150m);
+        participant.Type = ParticipantType.CollectiveFund;
+        var context = new DecisionContext(
+            participant,
+            AvailableCash: 150m,
+            [
+                new CompanyQuote(1, Price: 100m, Bounds: Bounds(100m)),
+                new CompanyQuote(2, Price: 100m, Bounds: Bounds(100m)),
+            ],
+            new Dictionary<int, int>(),
+            new HashSet<int>(),
+            HoldingsValue: 0m,
+            NetWorth: 150m,
+            AvailableBalance: 150m,
+            BuyingPower: 150m,
+            HasAutomatedTradingData: true);
+        var options = new AutomatedTradingOptions
+        {
+            BuyOrdersPerCycleMin = 2,
+            BuyOrdersPerCycleMax = 2,
+        };
+        var assessment = EngineWith([0.99d], automatedTradingOptions: options)
+            .Evaluate(context);
+
+        var intent = Assert.Single(EngineWith(
+            [(double)(assessment.Probabilities.Buy / 2m), 0.50d, 0.50d],
+            automatedTradingOptions: options).Decide(context));
+
+        Assert.True(intent.Quantity * intent.LimitPrice <= context.AvailableCash);
+    }
+
+    [Fact]
     public void IndividualUniformFallbackAppliesThePassiveBuyChance()
     {
         var chanceRates = new RandomChanceRatesOptions();

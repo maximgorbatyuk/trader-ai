@@ -559,6 +559,7 @@ public sealed class RuleBasedDecisionEngine(
 
         var buys = new List<OrderIntent>(count) { firstBuy };
         var used = new HashSet<int> { firstBuy.CompanyId };
+        var projectedContext = ReserveBuy(context, firstBuy);
         var usesAutomatedBuyPolicy = UsesAutomatedBuyPolicy(context);
         var candidates = context.Companies
             .Where(quote => IsEligibleBuyCandidate(
@@ -587,13 +588,36 @@ public sealed class RuleBasedDecisionEngine(
                 continue;
             }
 
-            if (BuildBuy(context, quote) is { } extraBuy)
+            if (!IsEligibleBuyCandidate(
+                    projectedContext,
+                    quote,
+                    usesAutomatedBuyPolicy))
+            {
+                continue;
+            }
+
+            if (BuildBuy(projectedContext, quote) is { } extraBuy)
             {
                 buys.Add(extraBuy);
+                projectedContext = ReserveBuy(projectedContext, extraBuy);
             }
         }
 
         return buys;
+    }
+
+    private static DecisionContext ReserveBuy(
+        DecisionContext context,
+        OrderIntent buy)
+    {
+        var notional = buy.Quantity * buy.LimitPrice;
+        return context with
+        {
+            AvailableCash = Math.Max(0m, context.AvailableCash - notional),
+            AvailableBalance = context.AvailableBalance - notional,
+            BuyingPower = Math.Max(0m, context.BuyingPower - notional),
+            ReservedBuyNotional = context.ReservedBuyNotional + notional,
+        };
     }
 
     private decimal PickPassiveLimitPrice(CompanyQuote quote)

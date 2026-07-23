@@ -3251,8 +3251,8 @@ public sealed class MarketService(
 
             foreach (var intent in decisionEngine.Decide(context))
             {
-                // The engine emits at most one order per trader and skips companies the trader already has an
-                // open order in, so staged orders never race the per-order validation — one save covers the pass.
+                // Distinct-company fan-out projects its own aggregate reservations; sequential placement still
+                // validates each staged intent against external state before one save covers the decision pass.
                 var result = await PlaceOrderCoreAsync(
                     trader.Id,
                     intent.CompanyId,
