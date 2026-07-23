@@ -129,7 +129,8 @@ public sealed class CompanyLifecycleService(
             : [];
 
         var capByCompany = await CapitalizationByCompanyAsync(liveCompanies);
-        var severeAuditStreakCompanyIds = await SevereAuditStreakCompanyIdsAsync();
+        var severeAuditStreakCompanyIds = await SevereAuditStreakCompanyIdsAsync(
+            liveCompanies.Select(company => company.Id).ToList());
         var pendingCompanyIds = (await dbContext.SettlementInstructions
                 .Where(instruction => instruction.Status == SettlementStatus.Pending)
                 .Select(instruction => instruction.CompanyId)
@@ -501,21 +502,46 @@ public sealed class CompanyLifecycleService(
                     .ToList());
     }
 
-    private async Task<HashSet<int>> SevereAuditStreakCompanyIdsAsync()
+    private async Task<HashSet<int>> SevereAuditStreakCompanyIdsAsync(
+        IReadOnlyCollection<int> liveCompanyIds)
     {
-        var ratings = await dbContext.CompanyRatings
-            .OrderByDescending(rating => rating.Id)
-            .Select(rating => new { rating.CompanyId, rating.Rating })
+        var persistedRatings = await dbContext.CompanyRatings
+            .AsNoTracking()
+            .Where(rating => liveCompanyIds.Contains(rating.CompanyId)
+                && dbContext.CompanyRatings.Count(candidate =>
+                    candidate.CompanyId == rating.CompanyId && candidate.Id > rating.Id) < RiskStreakLength)
+            .OrderBy(rating => rating.CompanyId)
+            .ThenByDescending(rating => rating.Id)
             .ToListAsync();
 
+        var stagedRatings = dbContext.ChangeTracker
+            .Entries<CompanyRating>()
+            .Where(entry => entry.State == EntityState.Added
+                && liveCompanyIds.Contains(entry.Entity.CompanyId))
+            .Select((entry, index) => new { Rating = entry.Entity, Index = index })
+            .GroupBy(entry => entry.Rating.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(entry => entry.Index)
+                    .Select(entry => entry.Rating)
+                    .Take(RiskStreakLength)
+                    .ToList());
+        var persistedByCompany = persistedRatings
+            .GroupBy(rating => rating.CompanyId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
         var result = new HashSet<int>();
-        foreach (var group in ratings.GroupBy(rating => rating.CompanyId))
+        foreach (var companyId in liveCompanyIds)
         {
-            var recent = group.Take(RiskStreakLength).ToList();
+            var recent = stagedRatings.GetValueOrDefault(companyId, [])
+                .Concat(persistedByCompany.GetValueOrDefault(companyId, []))
+                .Take(RiskStreakLength)
+                .ToList();
             if (recent.Count == RiskStreakLength
                 && recent.All(rating => rating.Rating == CompanyRiskRating.HighRisk))
             {
-                result.Add(group.Key);
+                result.Add(companyId);
             }
         }
 

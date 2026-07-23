@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
@@ -16,6 +17,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
 {
     private readonly SqliteConnection connection;
     private readonly AppDbContext context;
+    private static readonly RatingMaterializationInterceptor ratingMaterializations = new();
     private int industryId;
 
     public CompanyLifecycleServiceTests()
@@ -25,6 +27,7 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseSqlite(connection)
+            .AddInterceptors(ratingMaterializations)
             .Options;
 
         context = new AppDbContext(options);
@@ -328,6 +331,62 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
 
         var refreshed = await context.Companies.AsNoTracking().SingleAsync();
         Assert.Null(refreshed.ClosedInCycleId);
+    }
+
+    [Theory]
+    [InlineData(0, CompanyRiskRating.HighRisk, true)]
+    [InlineData(200, CompanyRiskRating.HighRisk, true)]
+    [InlineData(200, CompanyRiskRating.Stable, false)]
+    public async Task SevereAuditStreakMaterializesOnlyLatestThreeRatings(
+        int olderRatingCount,
+        CompanyRiskRating middleLatestRating,
+        bool shouldClose)
+    {
+        var current = await AddCycleAsync(200);
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(current);
+        var company = await AddCompanyAsync();
+        await AddRatingHistoryAsync(
+            company.Id,
+            current,
+            Enumerable.Repeat(CompanyRiskRating.LowRisk, olderRatingCount)
+                .Concat([
+                    CompanyRiskRating.HighRisk,
+                    middleLatestRating,
+                    CompanyRiskRating.HighRisk,
+                ]));
+
+        ratingMaterializations.Reset();
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync(candidate => candidate.Id == company.Id);
+        Assert.Equal(shouldClose, refreshed.ClosedInCycleId.HasValue);
+        Assert.Equal(3, ratingMaterializations.Count);
+    }
+
+    [Fact]
+    public async Task StagedRatingParticipatesInLatestSevereAuditStreak()
+    {
+        var current = await AddCycleAsync(200);
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(current);
+        var company = await AddCompanyAsync();
+        await AddRatingHistoryAsync(
+            company.Id,
+            current,
+            Enumerable.Repeat(CompanyRiskRating.HighRisk, 3));
+        await AddStagedRatingAsync(company.Id, CompanyRiskRating.Stable, current);
+
+        ratingMaterializations.Reset();
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync(candidate => candidate.Id == company.Id);
+        Assert.Null(refreshed.ClosedInCycleId);
+        Assert.Equal(3, ratingMaterializations.Count);
     }
 
     [Fact]
@@ -1249,6 +1308,41 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await context.SaveChangesAsync();
     }
 
+    private async Task AddRatingHistoryAsync(
+        int companyId,
+        MarketCycle cycle,
+        IEnumerable<CompanyRiskRating> ratings)
+    {
+        var auditor = new Auditor { Name = "History ratings", Description = "Test", CreatedAt = DateTime.UtcNow };
+        context.Auditors.Add(auditor);
+        await context.SaveChangesAsync();
+
+        context.CompanyRatings.AddRange(ratings.Select(rating => new CompanyRating
+        {
+            CompanyId = companyId,
+            AuditorId = auditor.Id,
+            Rating = rating,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        }));
+        await context.SaveChangesAsync();
+    }
+
+    private async Task AddStagedRatingAsync(int companyId, CompanyRiskRating rating, MarketCycle cycle)
+    {
+        var auditor = new Auditor { Name = "Staged rating", Description = "Test", CreatedAt = DateTime.UtcNow };
+        context.Auditors.Add(auditor);
+        await context.SaveChangesAsync();
+        context.CompanyRatings.Add(new CompanyRating
+        {
+            CompanyId = companyId,
+            AuditorId = auditor.Id,
+            Rating = rating,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+    }
+
     private CompanyFinancialService FinancialService(Random random)
     {
         var options = new CompanyFinancialOptions();
@@ -1278,5 +1372,24 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         public override int Next(int maxValue) => ints.Dequeue();
 
         public override int Next(int minValue, int maxValue) => ints.Dequeue();
+    }
+
+    private sealed class RatingMaterializationInterceptor : IMaterializationInterceptor
+    {
+        public int Count { get; private set; }
+
+        public object InitializedInstance(
+            MaterializationInterceptionData materializationData,
+            object entity)
+        {
+            if (entity is CompanyRating)
+            {
+                Count++;
+            }
+
+            return entity;
+        }
+
+        public void Reset() => Count = 0;
     }
 }
