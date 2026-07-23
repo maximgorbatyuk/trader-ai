@@ -1,5 +1,7 @@
+using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
@@ -11,6 +13,7 @@ public sealed class AuditorServiceTests : IDisposable
 {
     private readonly SqliteConnection connection;
     private readonly AppDbContext context;
+    private readonly RecordingCommandInterceptor commands = new();
     private readonly Dictionary<int, TradingDay> days = [];
     private readonly Industry industry;
 
@@ -21,6 +24,7 @@ public sealed class AuditorServiceTests : IDisposable
 
         var dbOptions = new DbContextOptionsBuilder<AppDbContext>()
             .UseSqlite(connection)
+            .AddInterceptors(commands)
             .Options;
         context = new AppDbContext(dbOptions);
         context.Database.EnsureCreated();
@@ -371,8 +375,9 @@ public sealed class AuditorServiceTests : IDisposable
         var day2 = await AddCycleAsync(2, 1);
         var day3 = await AddCycleAsync(3, 1);
         var company = await AddCompanyAsync(day1);
-        await AddArchivedPriceAsync(company, 100m, day1, capitalization: 100_000m);
-        await AddPriceAsync(company, 105m, day2, capitalization: 105_000m);
+        await AddArchivedPriceAsync(company, 100m, day1, capitalization: 100_000m, id: 10);
+        await AddPriceAsync(company, 105m, day2, capitalization: 105_000m, id: 20);
+        await AddArchivedPriceAsync(company, 999m, day2, capitalization: 999_000m, id: 20);
         context.SectorSentimentSnapshotArchives.Add(new SectorSentimentSnapshotArchive
         {
             IndustryId = industry.Id,
@@ -403,6 +408,165 @@ public sealed class AuditorServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task LaterAuditCarriesThePriorPriceAcrossAQuietWindow()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var day4 = await AddCycleAsync(4, 1);
+        var day5 = await AddCycleAsync(5, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddPriceAsync(company, 95m, day1);
+        await AddPriceAsync(company, 100m, day2);
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        await AddFinancialAsync(company, day4, CompanyFinancialSnapshotMoment.Midday);
+
+        await ProcessAsync(day3);
+        await ProcessAsync(day5);
+
+        var evidence = await context.CompanyAuditEvidence
+            .AsNoTracking()
+            .OrderByDescending(row => row.EffectiveTradingDayNumber)
+            .FirstAsync();
+        Assert.Equal(100m, evidence.StartPrice);
+        Assert.Equal(100m, evidence.EndPrice);
+        Assert.Equal(0m, evidence.AdjustedReturnPercent);
+        Assert.Equal(0m, evidence.MaximumAdjustedCycleMovePercent);
+    }
+
+    [Fact]
+    public async Task CarryInOrdersByTimeAndAppliesOnlyDenominationsBetweenSelectedPrices()
+    {
+        var timestamp = DateTime.UtcNow;
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var day4 = await AddCycleAsync(4, 1);
+        var day5 = await AddCycleAsync(5, 1);
+        var company = await AddCompanyAsync(day1, issuedShares: 4000);
+        await AddPriceAsync(company, 100m, day2, createdAt: timestamp, id: 20);
+        await AddDenominationAsync(
+            company,
+            day1,
+            StockDenominationActionType.Split,
+            ratio: 2,
+            sharesBefore: 500,
+            sharesAfter: 1000,
+            priceBefore: 200m,
+            priceAfter: 100m);
+        await AddDenominationAsync(
+            company,
+            day3,
+            StockDenominationActionType.Split,
+            ratio: 4,
+            sharesBefore: 1000,
+            sharesAfter: 4000,
+            priceBefore: 100m,
+            priceAfter: 25m);
+        await AddPriceAsync(
+            company,
+            27.5m,
+            day4,
+            createdAt: timestamp.AddMinutes(1),
+            id: 50);
+        await AddPriceAsync(
+            company,
+            30m,
+            day4,
+            createdAt: timestamp.AddMinutes(2),
+            id: 40);
+        await AddDenominationAsync(
+            company,
+            day5,
+            StockDenominationActionType.ReverseSplit,
+            ratio: 4,
+            sharesBefore: 4000,
+            sharesAfter: 1000,
+            priceBefore: 30m,
+            priceAfter: 120m);
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        await AddFinancialAsync(company, day4, CompanyFinancialSnapshotMoment.Midday);
+
+        await ProcessAsync(day3);
+        await ProcessAsync(day5);
+
+        var evidence = await context.CompanyAuditEvidence
+            .AsNoTracking()
+            .OrderByDescending(row => row.EffectiveTradingDayNumber)
+            .FirstAsync();
+        Assert.Equal(100m, evidence.StartPrice);
+        Assert.Equal(30m, evidence.EndPrice);
+        Assert.Equal(20m, evidence.AdjustedReturnPercent);
+        Assert.Equal(9.090909m, evidence.MaximumAdjustedCycleMovePercent);
+        Assert.Equal(1, evidence.StockSplitCount);
+        Assert.Equal(0, evidence.ReverseSplitCount);
+    }
+
+    [Fact]
+    public async Task OpeningSupplyAndIssuerCashReverseCompletedAndEffectiveDayActions()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1, issuedShares: 5150);
+        company.CashBalance = 800m;
+        await context.SaveChangesAsync();
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 100m, day2);
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        var investor = await AddTraderAsync();
+
+        await AddEmissionAsync(company, day1, 50);
+        await AddPrimaryIssuanceAsync(company, day1, 1050, 100, 1150);
+        await AddInvestmentAsync(company, investor, day1, 50, 1150);
+
+        await AddDenominationAsync(
+            company,
+            day3,
+            StockDenominationActionType.Split,
+            ratio: 4,
+            sharesBefore: 1200,
+            sharesAfter: 4800,
+            priceBefore: 100m,
+            priceAfter: 25m);
+        await AddEmissionAsync(company, day3, 200);
+        await AddPrimaryIssuanceAsync(company, day3, 5000, 100, 5100);
+        await AddInvestmentAsync(company, investor, day3, 50, 5100);
+
+        AddCorporateCash(company, day3, CorporateCashTransactionType.OperatingIncome, 100m);
+        AddCorporateCash(company, day3, CorporateCashTransactionType.BigInvestment, 200m);
+        AddCorporateCash(company, day3, CorporateCashTransactionType.PrimaryIssuance, 50m);
+        AddCorporateCash(company, day3, CorporateCashTransactionType.DividendDeclared, 30m);
+        AddCorporateCash(company, day3, CorporateCashTransactionType.ClosureDistribution, 20m);
+        await context.SaveChangesAsync();
+
+        await ProcessAsync(day3);
+
+        var evidence = await context.CompanyAuditEvidence.AsNoTracking().SingleAsync();
+        Assert.Equal(1000, evidence.OpeningIssuedShares);
+        Assert.Equal(50, evidence.EmittedShares);
+        Assert.Equal(5m, evidence.FreeShareDilutionPercent);
+        Assert.Equal(500m, evidence.IssuerCash);
+    }
+
+    [Fact]
+    public async Task UnknownCorporateCashMovementFailsInsteadOfGuessingItsDirection()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 100m, day2);
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        AddCorporateCash(company, day3, (CorporateCashTransactionType)999, 10m);
+        await context.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            Service().ProcessForCycleAsync(day3.Id, day3.CycleNumber, DateTime.UtcNow));
+    }
+
+    [Fact]
     public async Task MissingAuditorsAreCreatedDeterministicallyWithoutRandomDependency()
     {
         var day1 = await AddCycleAsync(1, 1);
@@ -419,6 +583,43 @@ public sealed class AuditorServiceTests : IDisposable
         Assert.Equal(
             (await context.Auditors.AsNoTracking().SingleAsync()).Id,
             (await context.CompanyRatings.AsNoTracking().SingleAsync()).AuditorId);
+    }
+
+    [Fact]
+    public async Task EvidenceTablesAreReadOnceForTheWholeDueBatch()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        for (var index = 0; index < 3; index++)
+        {
+            var company = await AddCompanyAsync(day1);
+            await AddPriceAsync(company, 100m + index, day1);
+            await AddPriceAsync(company, 101m + index, day2);
+            await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        }
+
+        commands.Clear();
+        await ProcessAsync(day3);
+
+        Assert.Equal(3, await context.CompanyRatings.CountAsync());
+        foreach (var table in new[]
+        {
+            "PriceSnapshots",
+            "PriceSnapshotArchives",
+            "StockDenominationEvents",
+            "ShareEmissions",
+            "PrimaryIssuanceEvents",
+            "CompanyInvestments",
+            "CorporateCashTransactions",
+            "CompanyDividendEvents",
+            "CompanyFinancialSnapshots",
+            "SectorSentimentSnapshots",
+            "SectorSentimentSnapshotArchives",
+        })
+        {
+            Assert.Equal(1, commands.ReaderCount(table));
+        }
     }
 
     private AuditorService Service(bool enabled = true, int interval = 2) =>
@@ -505,16 +706,23 @@ public sealed class AuditorServiceTests : IDisposable
         Company company,
         decimal price,
         MarketCycle cycle,
-        decimal? capitalization = null)
+        decimal? capitalization = null,
+        DateTime? createdAt = null,
+        int? id = null)
     {
-        context.PriceSnapshots.Add(new PriceSnapshot
+        var snapshot = new PriceSnapshot
         {
             CompanyId = company.Id,
             Price = price,
             Capitalization = capitalization,
             CreatedInCycleId = cycle.Id,
-            CreatedAt = DateTime.UtcNow,
-        });
+            CreatedAt = createdAt ?? DateTime.UtcNow,
+        };
+        if (id is int snapshotId)
+        {
+            snapshot.Id = snapshotId;
+        }
+        context.PriceSnapshots.Add(snapshot);
         await context.SaveChangesAsync();
     }
 
@@ -522,16 +730,22 @@ public sealed class AuditorServiceTests : IDisposable
         Company company,
         decimal price,
         MarketCycle cycle,
-        decimal? capitalization = null)
+        decimal? capitalization = null,
+        int? id = null)
     {
-        context.PriceSnapshotArchives.Add(new PriceSnapshotArchive
+        var snapshot = new PriceSnapshotArchive
         {
             CompanyId = company.Id,
             Price = price,
             Capitalization = capitalization,
             CreatedInCycleId = cycle.Id,
             CreatedAt = DateTime.UtcNow,
-        });
+        };
+        if (id is int snapshotId)
+        {
+            snapshot.Id = snapshotId;
+        }
+        context.PriceSnapshotArchives.Add(snapshot);
         await context.SaveChangesAsync();
     }
 
@@ -637,6 +851,81 @@ public sealed class AuditorServiceTests : IDisposable
         await context.SaveChangesAsync();
     }
 
+    private async Task AddEmissionAsync(
+        Company company,
+        MarketCycle cycle,
+        int shares)
+    {
+        context.ShareEmissions.Add(new ShareEmission
+        {
+            CompanyId = company.Id,
+            SharesEmitted = shares,
+            RecipientCount = 1,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+    }
+
+    private async Task AddPrimaryIssuanceAsync(
+        Company company,
+        MarketCycle cycle,
+        int before,
+        int newlyIssued,
+        int after)
+    {
+        context.PrimaryIssuanceEvents.Add(new PrimaryIssuanceEvent
+        {
+            CompanyId = company.Id,
+            CreatedInCycleId = cycle.Id,
+            IssuedSharesBefore = before,
+            NewlyIssuedShares = newlyIssued,
+            IssuedSharesAfter = after,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+    }
+
+    private async Task AddInvestmentAsync(
+        Company company,
+        Participant investor,
+        MarketCycle cycle,
+        int issuedShares,
+        int sharesBefore)
+    {
+        context.CompanyInvestments.Add(new CompanyInvestment
+        {
+            CompanyId = company.Id,
+            InvestorParticipantId = investor.Id,
+            DealValue = 100m,
+            SharesIssued = issuedShares,
+            SharesBeforeDeal = sharesBefore,
+            CapitalizationBeforeDeal = sharesBefore * 100m,
+            FinalCapitalization = (sharesBefore + issuedShares) * 100m,
+            InvestorSharePercent = 1m,
+            TradingDayNumber = days.Values.Single(day => day.Id == cycle.TradingDayId).DayNumber,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+    }
+
+    private void AddCorporateCash(
+        Company company,
+        MarketCycle cycle,
+        CorporateCashTransactionType type,
+        decimal amount)
+    {
+        context.CorporateCashTransactions.Add(new CorporateCashTransaction
+        {
+            CompanyId = company.Id,
+            Type = type,
+            Amount = amount,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+    }
+
     private async Task<Participant> AddTraderAsync()
     {
         var trader = new Participant
@@ -682,5 +971,34 @@ public sealed class AuditorServiceTests : IDisposable
     {
         context.Dispose();
         connection.Dispose();
+    }
+
+    private sealed class RecordingCommandInterceptor : DbCommandInterceptor
+    {
+        private readonly List<string> commands = [];
+
+        public void Clear() => commands.Clear();
+
+        public int ReaderCount(string table) => commands.Count(command =>
+            command.Contains($"FROM \"{table}\"", StringComparison.Ordinal));
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            commands.Add(command.CommandText);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            commands.Add(command.CommandText);
+            return ValueTask.FromResult(result);
+        }
     }
 }

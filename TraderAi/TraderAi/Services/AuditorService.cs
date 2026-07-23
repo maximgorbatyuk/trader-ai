@@ -137,6 +137,8 @@ public sealed class AuditorService
                 snapshot.Price,
                 snapshot.Capitalization,
                 snapshot.CreatedInCycleId,
+                snapshot.CreatedAt,
+                SourcePriority = 1,
             })
             .ToListAsync();
         var archivedPrices = await dbContext.PriceSnapshotArchives
@@ -149,6 +151,8 @@ public sealed class AuditorService
                 snapshot.Price,
                 snapshot.Capitalization,
                 snapshot.CreatedInCycleId,
+                snapshot.CreatedAt,
+                SourcePriority = 0,
             })
             .ToListAsync();
         var pricesByCompany = livePrices
@@ -156,7 +160,6 @@ public sealed class AuditorService
             .Where(snapshot =>
                 cycleById.TryGetValue(snapshot.CreatedInCycleId, out var cycle)
                 && cycle.MarketRunId == currentCycle.MarketRunId
-                && cycle.TradingDayNumber >= minimumStartDay
                 && cycle.TradingDayNumber <= maximumEndDay)
             .Select(snapshot =>
             {
@@ -167,14 +170,21 @@ public sealed class AuditorService
                     snapshot.Price,
                     snapshot.Capitalization,
                     cycle.CycleNumber,
-                    cycle.TradingDayNumber);
+                    cycle.TradingDayNumber,
+                    snapshot.CreatedAt,
+                    snapshot.SourcePriority);
             })
             .GroupBy(snapshot => snapshot.CompanyId)
             .ToDictionary(
                 group => group.Key,
                 group => group
-                    .OrderBy(snapshot => snapshot.TradingDayNumber)
-                    .ThenBy(snapshot => snapshot.CycleNumber)
+                    .GroupBy(snapshot => snapshot.Id)
+                    .Select(duplicates => duplicates
+                        .OrderByDescending(snapshot => snapshot.SourcePriority)
+                        .ThenBy(snapshot => snapshot.CreatedAt)
+                        .First())
+                    .OrderBy(snapshot => snapshot.CycleNumber)
+                    .ThenBy(snapshot => snapshot.CreatedAt)
                     .ThenBy(snapshot => snapshot.Id)
                     .ToArray());
 
@@ -188,8 +198,7 @@ public sealed class AuditorService
             .Where(denominationEvent =>
                 cycleById.TryGetValue(denominationEvent.EffectiveInCycleId, out var cycle)
                 && cycle.MarketRunId == currentCycle.MarketRunId
-                && cycle.TradingDayNumber >= minimumStartDay
-                && cycle.TradingDayNumber <= maximumEndDay)
+                && cycle.CycleNumber <= currentCycle.CycleNumber)
             .GroupBy(denominationEvent => denominationEvent.CompanyId)
             .ToDictionary(
                 group => group.Key,
@@ -206,8 +215,25 @@ public sealed class AuditorService
                 cycleById.TryGetValue(emission.CreatedInCycleId, out var cycle)
                 && cycle.MarketRunId == currentCycle.MarketRunId
                 && cycle.TradingDayNumber >= minimumStartDay
-                && cycle.TradingDayNumber <= maximumEndDay)
+                && cycle.CycleNumber <= currentCycle.CycleNumber)
             .GroupBy(emission => emission.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToArray());
+
+        var primaryIssuances = await dbContext.PrimaryIssuanceEvents
+            .AsNoTracking()
+            .Where(issuance => dueCompanyIds.Contains(issuance.CompanyId))
+            .OrderBy(issuance => issuance.CreatedInCycleId)
+            .ThenBy(issuance => issuance.Id)
+            .ToListAsync();
+        var primaryIssuancesByCompany = primaryIssuances
+            .Where(issuance =>
+                cycleById.TryGetValue(issuance.CreatedInCycleId, out var cycle)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.TradingDayNumber >= minimumStartDay
+                && cycle.CycleNumber <= currentCycle.CycleNumber)
+            .GroupBy(issuance => issuance.CompanyId)
             .ToDictionary(
                 group => group.Key,
                 group => group.ToArray());
@@ -223,8 +249,29 @@ public sealed class AuditorService
                 cycleById.TryGetValue(investment.CreatedInCycleId, out var cycle)
                 && cycle.MarketRunId == currentCycle.MarketRunId
                 && cycle.TradingDayNumber >= minimumStartDay
-                && cycle.TradingDayNumber <= maximumEndDay)
+                && cycle.CycleNumber <= currentCycle.CycleNumber)
             .GroupBy(investment => investment.CompanyId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToArray());
+
+        var corporateCashTransactions = await dbContext.CorporateCashTransactions
+            .AsNoTracking()
+            .Where(transaction => dueCompanyIds.Contains(transaction.CompanyId))
+            .OrderBy(transaction => transaction.CreatedInCycleId)
+            .ThenBy(transaction => transaction.Id)
+            .ToListAsync();
+        corporateCashTransactions.AddRange(dbContext.ChangeTracker
+            .Entries<CorporateCashTransaction>()
+            .Where(entry => entry.State == EntityState.Added
+                && dueCompanyIds.Contains(entry.Entity.CompanyId))
+            .Select(entry => entry.Entity));
+        var corporateCashByCompany = corporateCashTransactions
+            .Where(transaction =>
+                cycleById.TryGetValue(transaction.CreatedInCycleId, out var cycle)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.CycleNumber <= currentCycle.CycleNumber)
+            .GroupBy(transaction => transaction.CompanyId)
             .ToDictionary(
                 group => group.Key,
                 group => group.ToArray());
@@ -309,7 +356,7 @@ public sealed class AuditorService
         {
             var candidate = due[index];
             var companyId = candidate.Company.Id;
-            var priceWindow = Window(
+            var priceWindow = PriceWindowWithCarry(
                 pricesByCompany.GetValueOrDefault(companyId),
                 candidate.EvaluationStartTradingDayNumber,
                 candidate.EvaluationEndTradingDayNumber);
@@ -325,11 +372,29 @@ public sealed class AuditorService
                 candidate.EvaluationStartTradingDayNumber,
                 candidate.EvaluationEndTradingDayNumber,
                 emission => emission.CreatedInCycleId);
-            var investmentWindow = Window(
+            var supplyDenominations = SupplyWindow(
+                denominationByCompany.GetValueOrDefault(companyId),
+                cycleById,
+                candidate.EvaluationStartTradingDayNumber,
+                currentCycle.CycleNumber,
+                denominationEvent => denominationEvent.EffectiveInCycleId);
+            var supplyEmissions = SupplyWindow(
+                emissionsByCompany.GetValueOrDefault(companyId),
+                cycleById,
+                candidate.EvaluationStartTradingDayNumber,
+                currentCycle.CycleNumber,
+                emission => emission.CreatedInCycleId);
+            var supplyPrimaryIssuances = SupplyWindow(
+                primaryIssuancesByCompany.GetValueOrDefault(companyId),
+                cycleById,
+                candidate.EvaluationStartTradingDayNumber,
+                currentCycle.CycleNumber,
+                issuance => issuance.CreatedInCycleId);
+            var supplyInvestments = SupplyWindow(
                 investmentsByCompany.GetValueOrDefault(companyId),
                 cycleById,
                 candidate.EvaluationStartTradingDayNumber,
-                candidate.EvaluationEndTradingDayNumber,
+                currentCycle.CycleNumber,
                 investment => investment.CreatedInCycleId);
             var financial = financialsByCompany.GetValueOrDefault(companyId)?
                 .Where(snapshot =>
@@ -351,14 +416,22 @@ public sealed class AuditorService
                 candidate.EvaluationStartTradingDayNumber,
                 candidate.EvaluationEndTradingDayNumber);
 
-            var priceEvidence = PriceEvidenceFor(priceWindow, denominationWindow);
+            var priceEvidence = PriceEvidenceFor(
+                priceWindow,
+                denominationByCompany.GetValueOrDefault(companyId) ?? []);
             var openingIssuedShares = OpeningIssuedShares(
                 candidate.Company.IssuedSharesCount,
-                priceWindow,
-                denominationWindow,
-                emissionWindow,
-                investmentWindow,
+                supplyDenominations,
+                supplyEmissions,
+                supplyPrimaryIssuances,
+                supplyInvestments,
                 cycleById);
+            var issuerCash = IssuerCashAtWindowEnd(
+                candidate.Company.CashBalance,
+                corporateCashByCompany.GetValueOrDefault(companyId) ?? [],
+                cycleById,
+                candidate.EvaluationEndTradingDayNumber,
+                currentCycle.CycleNumber);
             var emittedShares = emissionWindow.Sum(emission => emission.SharesEmitted);
             var dilutionPercent = openingIssuedShares > 0
                 ? Round6(100m * emittedShares / openingIssuedShares)
@@ -428,7 +501,7 @@ public sealed class AuditorService
                 ReverseSplitCount = denominationWindow.Count(denominationEvent =>
                     denominationEvent.ActionType == StockDenominationActionType.ReverseSplit),
                 LatestDividendEventId = latestDividend?.Id,
-                IssuerCash = candidate.Company.CashBalance,
+                IssuerCash = issuerCash,
                 ModeledMaximumDividend = modeledMaximumDividend,
                 DividendCoverageRatio = dividendCoverageRatio,
                 OpeningIndustrySentiment = industryEvidence.Opening,
@@ -492,11 +565,19 @@ public sealed class AuditorService
 
         var startPrice = prices[0].Price;
         var endPrice = prices[^1].Price;
+        var applicableDenominations = denominationEvents
+            .Where(denominationEvent =>
+                OccursAfter(denominationEvent, prices[0])
+                && OccursAtOrBefore(denominationEvent, prices[^1]))
+            .OrderBy(denominationEvent => denominationEvent.EffectiveInCycleNumber)
+            .ThenBy(denominationEvent => denominationEvent.CreatedAt)
+            .ThenBy(denominationEvent => denominationEvent.Id)
+            .ToArray();
         var adjustedReturn = 0m;
         if (startPrice > 0m)
         {
             var adjustedFactor = endPrice / startPrice;
-            foreach (var denominationEvent in denominationEvents)
+            foreach (var denominationEvent in applicableDenominations)
             {
                 if (denominationEvent.PriceAfter > 0m)
                 {
@@ -513,7 +594,7 @@ public sealed class AuditorService
             var previous = prices[index - 1];
             var current = prices[index];
             if (previous.Price <= 0m
-                || IsDenominationBoundary(previous, current, denominationEvents))
+                || IsDenominationBoundary(previous, current, applicableDenominations))
             {
                 continue;
             }
@@ -534,60 +615,109 @@ public sealed class AuditorService
         PricePoint current,
         IReadOnlyList<StockDenominationEvent> denominationEvents) =>
         denominationEvents.Any(denominationEvent =>
-            (denominationEvent.EffectiveInCycleNumber > previous.CycleNumber
-                && denominationEvent.EffectiveInCycleNumber <= current.CycleNumber)
-            || (denominationEvent.EffectiveInCycleNumber == current.CycleNumber
-                && previous.Price == denominationEvent.PriceBefore
-                && current.Price == denominationEvent.PriceAfter));
+            OccursAfter(denominationEvent, previous)
+            && OccursAtOrBefore(denominationEvent, current));
+
+    private static bool OccursAfter(
+        StockDenominationEvent denominationEvent,
+        PricePoint price) =>
+        denominationEvent.EffectiveInCycleNumber > price.CycleNumber
+        || (denominationEvent.EffectiveInCycleNumber == price.CycleNumber
+            && denominationEvent.CreatedAt > price.CreatedAt);
+
+    private static bool OccursAtOrBefore(
+        StockDenominationEvent denominationEvent,
+        PricePoint price) =>
+        denominationEvent.EffectiveInCycleNumber < price.CycleNumber
+        || (denominationEvent.EffectiveInCycleNumber == price.CycleNumber
+            && denominationEvent.CreatedAt <= price.CreatedAt);
 
     private static int OpeningIssuedShares(
         int currentIssuedShares,
-        IReadOnlyList<PricePoint> prices,
         IReadOnlyList<StockDenominationEvent> denominationEvents,
         IReadOnlyList<ShareEmission> emissions,
+        IReadOnlyList<PrimaryIssuanceEvent> primaryIssuances,
         IReadOnlyList<CompanyInvestment> investments,
         IReadOnlyDictionary<int, CyclePoint> cycleById)
     {
-        var capitalizedOpening = prices.FirstOrDefault();
-        if (capitalizedOpening is not null)
-        {
-            var shares = capitalizedOpening.Price > 0m
-                && capitalizedOpening.Capitalization > 0m
-                    ? capitalizedOpening.Capitalization.Value / capitalizedOpening.Price
-                    : 0m;
-            if (shares is > 0m and <= int.MaxValue)
-            {
-                return decimal.ToInt32(decimal.Round(
-                    shares,
-                    0,
-                    MidpointRounding.AwayFromZero));
-            }
-        }
-
         var changes = denominationEvents
             .Select(denominationEvent => new SupplyChange(
                 denominationEvent.EffectiveInCycleNumber,
+                ReverseSupplyPhase.Denomination,
                 denominationEvent.Id,
                 denominationEvent.IssuedSharesBefore,
                 0))
             .Concat(emissions.Select(emission => new SupplyChange(
                 cycleById.GetValueOrDefault(emission.CreatedInCycleId)?.CycleNumber ?? 0,
+                ReverseSupplyPhase.FreeEmission,
                 emission.Id,
                 null,
                 emission.SharesEmitted)))
+            .Concat(primaryIssuances.Select(issuance => new SupplyChange(
+                cycleById.GetValueOrDefault(issuance.CreatedInCycleId)?.CycleNumber ?? 0,
+                ReverseSupplyPhase.PrimaryIssuance,
+                issuance.Id,
+                null,
+                issuance.NewlyIssuedShares)))
             .Concat(investments.Select(investment => new SupplyChange(
                 cycleById.GetValueOrDefault(investment.CreatedInCycleId)?.CycleNumber ?? 0,
+                ReverseSupplyPhase.BigInvestment,
                 investment.Id,
                 null,
                 investment.SharesIssued)))
             .OrderByDescending(change => change.CycleNumber)
+            .ThenByDescending(change => change.Phase)
             .ThenByDescending(change => change.Id)
             .ToArray();
         var reconstructed = currentIssuedShares;
         foreach (var change in changes)
         {
-            reconstructed = change.IssuedSharesBefore
-                ?? Math.Max(0, reconstructed - change.SharesIssued);
+            if (change.IssuedSharesBefore is int issuedSharesBefore)
+            {
+                reconstructed = issuedSharesBefore;
+                continue;
+            }
+
+            if (change.SharesIssued > reconstructed)
+            {
+                throw new InvalidOperationException("Supply history exceeds the company's current issued shares.");
+            }
+
+            reconstructed -= change.SharesIssued;
+        }
+
+        return reconstructed;
+    }
+
+    private static decimal IssuerCashAtWindowEnd(
+        decimal currentIssuerCash,
+        IReadOnlyList<CorporateCashTransaction> transactions,
+        IReadOnlyDictionary<int, CyclePoint> cycleById,
+        int evaluationEndTradingDayNumber,
+        int currentCycleNumber)
+    {
+        var reconstructed = currentIssuerCash;
+        foreach (var transaction in transactions
+            .Where(transaction =>
+                cycleById.TryGetValue(transaction.CreatedInCycleId, out var cycle)
+                && cycle.TradingDayNumber > evaluationEndTradingDayNumber
+                && cycle.CycleNumber <= currentCycleNumber)
+            .OrderByDescending(transaction =>
+                cycleById.GetValueOrDefault(transaction.CreatedInCycleId)?.CycleNumber ?? 0)
+            .ThenByDescending(transaction => transaction.Id))
+        {
+            reconstructed += transaction.Type switch
+            {
+                CorporateCashTransactionType.PrimaryIssuance => -transaction.Amount,
+                CorporateCashTransactionType.OperatingIncome => -transaction.Amount,
+                CorporateCashTransactionType.BigInvestment => -transaction.Amount,
+                CorporateCashTransactionType.DividendDeclared => transaction.Amount,
+                CorporateCashTransactionType.ClosureDistribution => transaction.Amount,
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(transaction.Type),
+                    transaction.Type,
+                    "Unknown corporate cash transaction type."),
+            };
         }
 
         return reconstructed;
@@ -607,14 +737,41 @@ public sealed class AuditorService
             .ToArray()
         ?? [];
 
-    private static PricePoint[] Window(
+    private static PricePoint[] PriceWindowWithCarry(
         IReadOnlyList<PricePoint>? rows,
         int startDay,
-        int endDay) =>
-        rows?
+        int endDay)
+    {
+        if (rows is not { Count: > 0 })
+        {
+            return [];
+        }
+
+        var anchor = rows.LastOrDefault(row => row.TradingDayNumber < startDay);
+        var window = rows
             .Where(row =>
                 row.TradingDayNumber >= startDay
                 && row.TradingDayNumber <= endDay)
+            .ToList();
+        if (anchor is not null)
+        {
+            window.Insert(0, anchor);
+        }
+
+        return window.ToArray();
+    }
+
+    private static T[] SupplyWindow<T>(
+        IReadOnlyList<T>? rows,
+        IReadOnlyDictionary<int, CyclePoint> cycleById,
+        int startDay,
+        int currentCycleNumber,
+        Func<T, int> cycleId) =>
+        rows?
+            .Where(row =>
+                cycleById.TryGetValue(cycleId(row), out var cycle)
+                && cycle.TradingDayNumber >= startDay
+                && cycle.CycleNumber <= currentCycleNumber)
             .ToArray()
         ?? [];
 
@@ -652,7 +809,9 @@ public sealed class AuditorService
         decimal Price,
         decimal? Capitalization,
         int CycleNumber,
-        int TradingDayNumber);
+        int TradingDayNumber,
+        DateTime CreatedAt,
+        int SourcePriority);
 
     private sealed record SentimentPoint(
         int Id,
@@ -669,7 +828,16 @@ public sealed class AuditorService
 
     private sealed record SupplyChange(
         int CycleNumber,
+        ReverseSupplyPhase Phase,
         int Id,
         int? IssuedSharesBefore,
         int SharesIssued);
+
+    private enum ReverseSupplyPhase
+    {
+        Denomination = 4,
+        FreeEmission = 5,
+        PrimaryIssuance = 6,
+        BigInvestment = 7,
+    }
 }
