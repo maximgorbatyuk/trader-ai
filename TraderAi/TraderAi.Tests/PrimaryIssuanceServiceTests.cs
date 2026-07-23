@@ -505,6 +505,41 @@ public sealed class PrimaryIssuanceServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RepeatedCallBeforeSaveStagesOneRelistedFloatOrder()
+    {
+        var previousCycle = await AddCycleAsync(dayNumber: 1, cycleNumber: 1);
+        var currentCycle = await AddCycleAsync(dayNumber: 2, cycleNumber: 2);
+        var company = await AddScarceCompanyAsync(
+            issuedShares: 1_000,
+            price: 100m,
+            previousCycle.Id,
+            heldShares: 950);
+        AddSell(
+            company,
+            quantity: 50,
+            limitPrice: 80m,
+            previousCycle.Id,
+            isFloatReplenishment: true);
+        var buyer = await AddParticipantAsync(ParticipantType.Individual);
+        AddBuy(buyer, company, quantity: 30, limitPrice: 100m, currentCycle.Id);
+        await context.SaveChangesAsync();
+        var service = Service(enabled: true);
+        var now = DateTime.UtcNow.AddMinutes(1);
+
+        await service.ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, now);
+        await service.ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, now);
+
+        Assert.Equal(1_000, company.IssuedSharesCount);
+        Assert.Single(
+            context.ChangeTracker.Entries<Order>(),
+            entry => entry.State == EntityState.Added
+                && entry.Entity.IsFloatReplenishment);
+        Assert.DoesNotContain(
+            context.ChangeTracker.Entries<PrimaryIssuanceEvent>(),
+            entry => entry.State == EntityState.Added);
+    }
+
+    [Fact]
     public async Task PrimaryIssuanceEvidenceRejectsIncoherentShareCounts()
     {
         var cycle = await AddCycleAsync(dayNumber: 1, cycleNumber: 1);

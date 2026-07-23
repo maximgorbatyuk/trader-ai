@@ -387,9 +387,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasPrincipalKey(snapshot => new { snapshot.Id, snapshot.CompanyId })
             .OnDelete(DeleteBehavior.Restrict);
 
-        modelBuilder.Entity<CompanyAuditEvidence>()
-            .HasIndex(evidence => new { evidence.CompanyId, evidence.EffectiveTradingDayNumber });
-
         modelBuilder.Entity<CompanyDividendEvent>()
             .HasOne<Company>()
             .WithMany()

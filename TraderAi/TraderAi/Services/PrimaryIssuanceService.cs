@@ -74,6 +74,15 @@ public sealed class PrimaryIssuanceService(
             .Select(row => row.CompanyId)
             .ToListAsync();
         issuedToday.UnionWith(legacyIssuerOrders);
+        issuedToday.UnionWith(dbContext.ChangeTracker
+            .Entries<Order>()
+            .Where(entry => entry.State == EntityState.Added
+                && entry.Entity.ParticipantId == null
+                && entry.Entity.Type == OrderType.Sell
+                && entry.Entity.IsFloatReplenishment
+                && entry.Entity.LimitPrice > 0m
+                && tradingDayCycleIds.Contains(entry.Entity.CreatedInCycleId))
+            .Select(entry => entry.Entity.CompanyId));
 
         var heldByCompany = (await dbContext.Holdings
                 .Select(holding => new { holding.CompanyId, holding.Quantity })

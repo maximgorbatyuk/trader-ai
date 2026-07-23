@@ -640,6 +640,35 @@ public sealed class AuditorServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task StagedCurrentCycleCashRowsRemainAvailableToAuditReconstruction()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1);
+        company.CashBalance = 600m;
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 100m, day2);
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        await AddAuditorAsync("Existing auditor");
+        AddCorporateCash(
+            company,
+            day3,
+            CorporateCashTransactionType.OperatingIncome,
+            100m);
+
+        await Service().ProcessForCycleAsync(
+            day3.Id,
+            day3.CycleNumber,
+            DateTime.UtcNow);
+
+        var evidence = Assert.Single(
+            context.ChangeTracker.Entries<CompanyAuditEvidence>(),
+            entry => entry.State == EntityState.Added).Entity;
+        Assert.Equal(500m, evidence.IssuerCash);
+    }
+
+    [Fact]
     public async Task MissingFinancialSnapshotProducesConservativeEvidence()
     {
         var day1 = await AddCycleAsync(1, 1);
@@ -770,6 +799,11 @@ public sealed class AuditorServiceTests : IDisposable
                 commands.SingleReaderCommand(table),
                 StringComparison.Ordinal);
         }
+
+        Assert.Contains(
+            commands.ReaderCommands("MarketCycles"),
+            sql => sql.Contains("MarketRunId", StringComparison.Ordinal)
+                && sql.Contains("\"DayNumber\" >= ", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1228,6 +1262,10 @@ public sealed class AuditorServiceTests : IDisposable
 
         public int ReaderCount(string table) => commands.Count(command =>
             command.Contains($"FROM \"{table}\"", StringComparison.Ordinal));
+
+        public IReadOnlyList<string> ReaderCommands(string table) => commands
+            .Where(command => command.Contains($"FROM \"{table}\"", StringComparison.Ordinal))
+            .ToArray();
 
         public string SingleReaderCommand(string table) => Assert.Single(
             commands,

@@ -152,6 +152,7 @@ public sealed class AuditorService
             join day in dbContext.TradingDays.AsNoTracking() on cycle.TradingDayId equals day.Id
             where cycle.MarketRunId == currentCycle.MarketRunId
                 && cycle.CycleNumber <= currentCycle.CycleNumber
+                && day.DayNumber >= minimumStartDay
             select new CyclePoint(
                 cycle.Id,
                 cycle.CycleNumber,
