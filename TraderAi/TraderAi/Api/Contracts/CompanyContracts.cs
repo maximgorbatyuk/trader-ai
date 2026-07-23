@@ -42,6 +42,7 @@ public sealed record CompanyAttentionResponse(
     bool PriceDeclining,
     bool BadNewsImpact,
     bool HighRisk,
+    decimal? FinancialClosureRiskScore,
     bool RecentMerge);
 
 public sealed record PagedCompaniesResponse(CompanyResponse[] Items, int Total, int Page, int PageSize);

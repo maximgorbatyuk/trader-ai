@@ -2436,9 +2436,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Theory]
+    [InlineData(CompanyRiskRating.LowRisk)]
+    [InlineData(CompanyRiskRating.Stable)]
     [InlineData(CompanyRiskRating.RaisedExpectations)]
     [InlineData(CompanyRiskRating.ExtraRaisedExpectations)]
-    public async Task PositiveAuditorRatingsDoNotPutAHoldingInHighRiskAttention(CompanyRiskRating rating)
+    [InlineData(CompanyRiskRating.Extra)]
+    public async Task NonSevereAuditorRatingsDoNotPutAHoldingInHighRiskAttention(CompanyRiskRating rating)
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
         var databasePath = Path.Combine(databaseDirectory, "app.db");
@@ -2481,6 +2484,67 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             using var response = await client.GetFromJsonAsync<JsonDocument>(
                 $"/participants/{participantId}/companies-attention");
             Assert.Empty(response!.RootElement.EnumerateArray());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ParticipantAttentionSeparatesHighRiskAuditFromFinancialClosureRisk()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int participantId;
+            int companyId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                participantId = await dbContext.Participants.Select(participant => participant.Id).FirstAsync();
+                companyId = await dbContext.Companies.Select(company => company.Id).FirstAsync();
+                dbContext.Holdings.Add(new Holding
+                {
+                    ParticipantId = participantId,
+                    CompanyId = companyId,
+                    Quantity = 1,
+                    SettledQuantity = 1,
+                    AverageCost = 100m,
+                });
+
+                var latestFinancial = await dbContext.CompanyFinancialSnapshots
+                    .Where(snapshot => snapshot.CompanyId == companyId)
+                    .OrderByDescending(snapshot => snapshot.Id)
+                    .FirstAsync();
+                latestFinancial.ClosureRiskScore = 87.5m;
+
+                var auditorId = await dbContext.Auditors.Select(auditor => auditor.Id).FirstAsync();
+                var cycleId = (await dbContext.Markets.FirstAsync()).CurrentCycleId!.Value;
+                dbContext.CompanyRatings.Add(new CompanyRating
+                {
+                    CompanyId = companyId,
+                    AuditorId = auditorId,
+                    Rating = CompanyRiskRating.HighRisk,
+                    CreatedInCycleId = cycleId,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                await dbContext.SaveChangesAsync();
+            }
+
+            using var response = await client.GetFromJsonAsync<JsonDocument>(
+                $"/participants/{participantId}/companies-attention");
+            var attention = Assert.Single(response!.RootElement.EnumerateArray());
+            Assert.Equal(companyId, attention.GetProperty("companyId").GetInt32());
+            Assert.True(attention.GetProperty("highRisk").GetBoolean());
+            Assert.Equal(87.5m, attention.GetProperty("financialClosureRiskScore").GetDecimal());
         }
         finally
         {

@@ -9,9 +9,10 @@ namespace TraderAi.Services;
 // list one new one. Nothing closes during the market's first five trading days, and each listing gets the same
 // five-day protection from delisting and lifecycle repricing. Closure is deterministic and draws nothing: past
 // those grace periods a company qualifies when its price fell in at least 16 of the last 20 recorded per-cycle
-// closes, or its three most recent auditor ratings are all High/Extra. At most one company closes per cycle — the
-// worst performer when several qualify — and when the market is full at the 300 cap with nothing failing on its
-// own, the single worst sub-threshold mature performer is delisted to make room. A company worth at least
+// closes, or its three most recent auditor ratings are all HighRisk. Financial closure risk cannot qualify a
+// company by itself, but it joins price and audit evidence when already-qualified candidates are ranked. At most
+// one company closes per cycle, and when the market is full at the 300 cap with nothing failing on its own, the
+// single worst sub-threshold mature performer is delisted to make room. A company worth at least
 // ProtectionCapFraction of total market capitalisation is never closed: a would-be-closed one instead has its price
 // cut ProtectedCompanyPriceDropPercent% (via MarketImpactService) and stays listed. A
 // closed company's orders are cancelled (buy reservations released), its holdings zeroed with no payout, and it is
@@ -45,7 +46,7 @@ public sealed class CompanyLifecycleService(
     private const int DeclineWindowCycles = 20;
     private const int DeclineThreshold = 16;
 
-    // ...or when its RiskStreakLength most recent ratings are all High or Extra.
+    // ...or when its RiskStreakLength most recent ratings are all HighRisk.
     private const int RiskStreakLength = 3;
 
     // Market-wide and per-listing lifecycle protection use trading days so breaks and cycle-count changes do not
@@ -128,7 +129,7 @@ public sealed class CompanyLifecycleService(
             : [];
 
         var capByCompany = await CapitalizationByCompanyAsync(liveCompanies);
-        var riskStreakCompanyIds = await RiskStreakCompanyIdsAsync();
+        var severeAuditStreakCompanyIds = await SevereAuditStreakCompanyIdsAsync();
         var pendingCompanyIds = (await dbContext.SettlementInstructions
                 .Where(instruction => instruction.Status == SettlementStatus.Pending)
                 .Select(instruction => instruction.CompanyId)
@@ -148,13 +149,24 @@ public sealed class CompanyLifecycleService(
                 && !dealProtectedCompanyIds.Contains(company.Id)
                 && !pendingCompanyIds.Contains(company.Id)
                 && (HasDeclineStreak(closesByCompany.GetValueOrDefault(company.Id))
-                || riskStreakCompanyIds.Contains(company.Id))
+                || severeAuditStreakCompanyIds.Contains(company.Id))
             )
             .ToList();
 
         if (qualifiers.Count > 0)
         {
-            var target = WorstPerformer(qualifiers, closesByCompany);
+            var financialsByCompany = await LatestFinancialsByCompanyAsync(
+                qualifiers.Select(company => company.Id).ToList());
+            var target = qualifiers
+                .OrderByDescending(company => FailureScore(
+                    company.Id,
+                    closesByCompany,
+                    severeAuditStreakCompanyIds,
+                    financialsByCompany))
+                .ThenBy(company => financialsByCompany.GetValueOrDefault(company.Id)?.ProfitabilityScore ?? 100m)
+                .ThenBy(company => financialsByCompany.GetValueOrDefault(company.Id)?.StabilityScore ?? 100m)
+                .ThenBy(company => company.Id)
+                .First();
 
             // A large-cap failure is punished with a price cut rather than a delisting; it is not a closure, so it
             // frees no slot and does not feed the appearance boost.
@@ -257,6 +269,21 @@ public sealed class CompanyLifecycleService(
             .OrderBy(company => RecentChange(closesByCompany.GetValueOrDefault(company.Id)))
             .ThenBy(company => company.Id)
             .First();
+
+    private static decimal FailureScore(
+        int companyId,
+        IReadOnlyDictionary<int, List<decimal>> closesByCompany,
+        IReadOnlySet<int> severeAuditStreakCompanyIds,
+        IReadOnlyDictionary<int, CompanyFinancialSnapshot> financialsByCompany)
+    {
+        var priceDeclineScore = Math.Clamp(
+            -RecentChange(closesByCompany.GetValueOrDefault(companyId)) * 100m,
+            0m,
+            100m);
+        var severeAuditScore = severeAuditStreakCompanyIds.Contains(companyId) ? 100m : 0m;
+        var closureRiskScore = financialsByCompany.GetValueOrDefault(companyId)?.ClosureRiskScore ?? 0m;
+        return priceDeclineScore + severeAuditScore + closureRiskScore;
+    }
 
     private async Task CloseCompanyAsync(
         Company company, int currentCycleId, int currentCycleNumber, DateTime now, Crisis? activeCrisis)
@@ -474,7 +501,7 @@ public sealed class CompanyLifecycleService(
                     .ToList());
     }
 
-    private async Task<HashSet<int>> RiskStreakCompanyIdsAsync()
+    private async Task<HashSet<int>> SevereAuditStreakCompanyIdsAsync()
     {
         var ratings = await dbContext.CompanyRatings
             .OrderByDescending(rating => rating.Id)
@@ -486,13 +513,24 @@ public sealed class CompanyLifecycleService(
         {
             var recent = group.Take(RiskStreakLength).ToList();
             if (recent.Count == RiskStreakLength
-                && recent.All(rating => rating.Rating is CompanyRiskRating.High or CompanyRiskRating.Extra))
+                && recent.All(rating => rating.Rating == CompanyRiskRating.HighRisk))
             {
                 result.Add(group.Key);
             }
         }
 
         return result;
+    }
+
+    private async Task<Dictionary<int, CompanyFinancialSnapshot>> LatestFinancialsByCompanyAsync(
+        IReadOnlyCollection<int> companyIds)
+    {
+        var snapshots = await dbContext.CompanyFinancialSnapshots
+            .Where(snapshot => companyIds.Contains(snapshot.CompanyId)
+                && !dbContext.CompanyFinancialSnapshots.Any(candidate =>
+                    candidate.CompanyId == snapshot.CompanyId && candidate.Id > snapshot.Id))
+            .ToListAsync();
+        return snapshots.ToDictionary(snapshot => snapshot.CompanyId);
     }
 
     private static bool HasDeclineStreak(List<decimal>? closes)

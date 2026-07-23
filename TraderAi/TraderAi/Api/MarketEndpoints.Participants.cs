@@ -463,7 +463,7 @@ public static partial class MarketEndpoints
         });
 
         // Companies the participant holds that show a warning signal, so they can be watched at a glance: a recent
-        // price slide, a bad news or crisis hit, a standing High/Extra risk verdict, or a recent reverse merge.
+        // price slide, a bad news or crisis hit, a standing HighRisk verdict, or a recent reverse merge.
         app.MapGet("/participants/{participantId:int}/companies-attention", async (int participantId, AppDbContext dbContext) =>
         {
             const int RecentWindowCycles = 20;
@@ -495,6 +495,11 @@ public static partial class MarketEndpoints
             var changeByCompany = await PriceChangePctByCompanyAsync(dbContext);
             var latestRatingByCompany = await LatestRatingByCompanyAsync(dbContext);
             var heldIndustryIds = companies.Select(company => company.IndustryId).Distinct().ToList();
+            var financialClosureRiskByCompany = await dbContext.CompanyFinancialSnapshots
+                .Where(snapshot => heldCompanyIds.Contains(snapshot.CompanyId)
+                    && !dbContext.CompanyFinancialSnapshots.Any(candidate =>
+                        candidate.CompanyId == snapshot.CompanyId && candidate.Id > snapshot.Id))
+                .ToDictionaryAsync(snapshot => snapshot.CompanyId, snapshot => snapshot.ClosureRiskScore);
 
             // (a) Price slide: reduce each company's snapshots to one close per cycle, then count cycle-over-cycle
             // declines across the last few cycles.
@@ -567,8 +572,7 @@ public static partial class MarketEndpoints
                 }
             }
 
-            // (c) Standing High/Extra risk: the most recent verdict inside the window is High or Extra (a later Low
-            // would be the newest and clear it).
+            // (c) Standing severe audit risk: only a latest HighRisk verdict inside the window qualifies.
             var highRiskCompanyIds = (await dbContext.CompanyRatings
                     .Where(rating => heldCompanyIds.Contains(rating.CompanyId)
                         && recentCycleIds.Contains(rating.CreatedInCycleId))
@@ -576,7 +580,7 @@ public static partial class MarketEndpoints
                     .ToListAsync())
                 .GroupBy(rating => rating.CompanyId)
                 .Where(group => group.OrderByDescending(rating => rating.Id).First().Rating
-                    is CompanyRiskRating.High or CompanyRiskRating.Extra)
+                    == CompanyRiskRating.HighRisk)
                 .Select(group => group.Key)
                 .ToHashSet();
 
@@ -597,6 +601,9 @@ public static partial class MarketEndpoints
                         decliningCompanyIds.Contains(company.Id),
                         badNewsCompanyIds.Contains(company.Id),
                         highRiskCompanyIds.Contains(company.Id),
+                        financialClosureRiskByCompany.TryGetValue(company.Id, out var closureRiskScore)
+                            ? closureRiskScore
+                            : null,
                         company.LastMergedInCycleId is int mergedCycleId && recentCycleIds.Contains(mergedCycleId));
                 })
                 .Where(row => row.PriceDeclining || row.BadNewsImpact || row.HighRisk || row.RecentMerge)

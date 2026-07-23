@@ -286,15 +286,15 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ThreeConsecutiveHighOrExtraRatingsDelistCompany()
+    public async Task ThreeConsecutiveHighRiskRatingsDelistCompany()
     {
         var cycles = await AddCyclesAsync(3, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync();
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, cycles[0]);
-        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, cycles[1]);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, cycles[2]);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, cycles[0]);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, cycles[1]);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, cycles[2]);
 
         // The close boosts the appearance chance to 0.25; the 0.99 roll misses it, isolating the delisting.
         await Service(enabled: true, new ScriptedRandom([0.99d], []))
@@ -305,16 +305,21 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         Assert.Equal(current.Id, refreshed.ClosedInCycleId);
     }
 
-    [Fact]
-    public async Task ALowRatingInTheStreakSpareCompany()
+    [Theory]
+    [InlineData(CompanyRiskRating.LowRisk)]
+    [InlineData(CompanyRiskRating.Stable)]
+    [InlineData(CompanyRiskRating.RaisedExpectations)]
+    [InlineData(CompanyRiskRating.ExtraRaisedExpectations)]
+    [InlineData(CompanyRiskRating.Extra)]
+    public async Task AnyNonHighRiskRatingInTheStreakSparesCompany(CompanyRiskRating nonSevereRating)
     {
         var cycles = await AddCyclesAsync(3, firstNumber: 200);
         var current = cycles[^1];
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync();
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, cycles[0]);
-        await AddRatingAsync(company.Id, CompanyRiskRating.Low, cycles[1]);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, cycles[2]);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, cycles[0]);
+        await AddRatingAsync(company.Id, nonSevereRating, cycles[1]);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, cycles[2]);
 
         // Nothing closes, but the one surviving company still sits in the 10% tier, so a roll is drawn; 0.99 misses.
         await Service(enabled: true, new ScriptedRandom([0.99d], []))
@@ -323,6 +328,138 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
 
         var refreshed = await context.Companies.AsNoTracking().SingleAsync();
         Assert.Null(refreshed.ClosedInCycleId);
+    }
+
+    [Fact]
+    public async Task HighFinancialClosureRiskAloneDoesNotQualifyCompany()
+    {
+        var current = await AddCycleAsync(200);
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(company.Id, price: 100m, current);
+        await AddFinancialSnapshotAsync(
+            company.Id,
+            current,
+            closureRiskScore: 100m,
+            profitabilityScore: 0m,
+            stabilityScore: 0m);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var refreshed = await context.Companies.AsNoTracking().SingleAsync();
+        Assert.Null(refreshed.ClosedInCycleId);
+    }
+
+    [Fact]
+    public async Task HigherFinancialClosureRiskBreaksEqualQualifiedCandidates()
+    {
+        var cycles = await AddCyclesAsync(21, firstNumber: 200);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(cycles[0]);
+        var lowerRisk = await AddCompanyAsync();
+        var higherRisk = await AddCompanyAsync();
+        await AddDecliningSnapshotsAsync(lowerRisk.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+        await AddDecliningSnapshotsAsync(higherRisk.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+        await AddFinancialSnapshotAsync(
+            lowerRisk.Id,
+            current,
+            closureRiskScore: 10m,
+            profitabilityScore: 50m,
+            stabilityScore: 50m);
+        await AddFinancialSnapshotAsync(
+            higherRisk.Id,
+            cycles[0],
+            closureRiskScore: 0m,
+            profitabilityScore: 50m,
+            stabilityScore: 50m);
+        await AddFinancialSnapshotAsync(
+            higherRisk.Id,
+            current,
+            closureRiskScore: 90m,
+            profitabilityScore: 50m,
+            stabilityScore: 50m,
+            tradingDayNumber: 2,
+            moment: CompanyFinancialSnapshotMoment.DayOpening);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Null((await context.Companies.AsNoTracking().SingleAsync(c => c.Id == lowerRisk.Id)).ClosedInCycleId);
+        Assert.Equal(
+            current.Id,
+            (await context.Companies.AsNoTracking().SingleAsync(c => c.Id == higherRisk.Id)).ClosedInCycleId);
+    }
+
+    [Fact]
+    public async Task LowerProfitabilityBreaksEqualFailureScores()
+    {
+        var cycles = await AddCyclesAsync(21, firstNumber: 200);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(cycles[0]);
+        var profitable = await AddCompanyAsync();
+        var unprofitable = await AddCompanyAsync();
+        await AddDecliningSnapshotsAsync(profitable.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+        await AddDecliningSnapshotsAsync(unprofitable.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+        await AddFinancialSnapshotAsync(
+            profitable.Id,
+            current,
+            closureRiskScore: 50m,
+            profitabilityScore: 90m,
+            stabilityScore: 50m);
+        await AddFinancialSnapshotAsync(
+            unprofitable.Id,
+            current,
+            closureRiskScore: 50m,
+            profitabilityScore: 10m,
+            stabilityScore: 50m);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Null((await context.Companies.AsNoTracking().SingleAsync(c => c.Id == profitable.Id)).ClosedInCycleId);
+        Assert.Equal(
+            current.Id,
+            (await context.Companies.AsNoTracking().SingleAsync(c => c.Id == unprofitable.Id)).ClosedInCycleId);
+    }
+
+    [Fact]
+    public async Task LowerStabilityBreaksEqualFailureScores()
+    {
+        var cycles = await AddCyclesAsync(21, firstNumber: 200);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(cycles[0]);
+        var stable = await AddCompanyAsync();
+        var unstable = await AddCompanyAsync();
+        await AddDecliningSnapshotsAsync(stable.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+        await AddDecliningSnapshotsAsync(unstable.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+        await AddFinancialSnapshotAsync(
+            stable.Id,
+            current,
+            closureRiskScore: 50m,
+            profitabilityScore: 50m,
+            stabilityScore: 90m);
+        await AddFinancialSnapshotAsync(
+            unstable.Id,
+            current,
+            closureRiskScore: 50m,
+            profitabilityScore: 50m,
+            stabilityScore: 10m);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Null((await context.Companies.AsNoTracking().SingleAsync(c => c.Id == stable.Id)).ClosedInCycleId);
+        Assert.Equal(
+            current.Id,
+            (await context.Companies.AsNoTracking().SingleAsync(c => c.Id == unstable.Id)).ClosedInCycleId);
     }
 
     [Fact]
@@ -483,9 +620,9 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync(issuedShares: 1_000_000);
         await AddSnapshotAsync(company.Id, price: 100m, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
         var snapshotCount = await context.PriceSnapshots.CountAsync();
 
         await Service(enabled: true, new ScriptedRandom([0.99d], []))
@@ -505,9 +642,9 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync(issuedShares: 1_000_000);
         await AddSnapshotAsync(company.Id, price: 100m, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
 
         await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
@@ -536,9 +673,9 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync(issuedShares: 1_000_000, createdInCycleId: listingCycle.Id);
         await AddSnapshotAsync(company.Id, price: 100m, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
         var snapshotCount = await context.PriceSnapshots.CountAsync();
 
         await Service(enabled: true, new ScriptedRandom([0.99d], []))
@@ -572,9 +709,9 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync(issuedShares: 1_000_000, createdInCycleId: listingCycle.Id);
         await AddSnapshotAsync(company.Id, price: 100m, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
         var snapshotCount = await context.PriceSnapshots.CountAsync();
 
         await Service(enabled: true, new ScriptedRandom([0.99d], []))
@@ -595,9 +732,9 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
         var company = await AddCompanyAsync(issuedShares: 1_000_000, createdInCycleId: listingCycle.Id);
         await AddSnapshotAsync(company.Id, price: 100m, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
 
         await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
@@ -650,9 +787,9 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await AddCapBackdropAsync(current);
         var company = await AddCompanyAsync(createdInCycleId: null);
         await AddSnapshotAsync(company.Id, price: 100m, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
 
         await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
@@ -671,9 +808,9 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         await AddCapBackdropAsync(current);
         var company = await AddCompanyAsync(createdInCycleId: listingCycle.Id);
         await AddSnapshotAsync(company.Id, price: 100m, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.Extra, current);
-        await AddRatingAsync(company.Id, CompanyRiskRating.High, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
+        await AddRatingAsync(company.Id, CompanyRiskRating.HighRisk, current);
 
         await Service(enabled: true, new ScriptedRandom([0.99d], []))
             .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
@@ -895,6 +1032,39 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         {
             await AddSnapshotAsync(companyId, startPrice - (decrementPerCycle * index), cycles[index]);
         }
+    }
+
+    private async Task AddFinancialSnapshotAsync(
+        int companyId,
+        MarketCycle cycle,
+        decimal closureRiskScore,
+        decimal profitabilityScore,
+        decimal stabilityScore,
+        int tradingDayNumber = 1,
+        CompanyFinancialSnapshotMoment moment = CompanyFinancialSnapshotMoment.Seed)
+    {
+        context.CompanyFinancialSnapshots.Add(new CompanyFinancialSnapshot
+        {
+            CompanyId = companyId,
+            CreatedInCycleId = cycle.Id,
+            TradingDayNumber = tradingDayNumber,
+            Moment = moment,
+            CreatedAt = DateTime.UtcNow,
+            Revenue = 100m,
+            NetProfit = 10m,
+            OperatingCashFlow = 10m,
+            TotalAssets = 100m,
+            TotalLiabilities = 50m,
+            TotalDebt = 25m,
+            ManagementRevenueForecast = 100m,
+            ManagementProfitForecast = 10m,
+            ManagementOperatingCashFlowForecast = 10m,
+            ManagementConfidenceScore = 50m,
+            ProfitabilityScore = profitabilityScore,
+            StabilityScore = stabilityScore,
+            ClosureRiskScore = closureRiskScore,
+        });
+        await context.SaveChangesAsync();
     }
 
     private async Task<Participant> AddTraderAsync(decimal balance, decimal reserved)
