@@ -146,6 +146,36 @@ public sealed class MarketLoopTests : IDisposable
             .SingleAsync(snapshot => snapshot.CompanyId == oldCompany.Id);
         oldSnapshot.LatestDividendEventId = dividend.Id;
         await context.SaveChangesAsync();
+        var auditor = new Auditor
+        {
+            Name = "Reset chain auditor",
+            Description = "Protects the complete audit evidence deletion order.",
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.Auditors.Add(auditor);
+        await context.SaveChangesAsync();
+        var rating = new CompanyRating
+        {
+            CompanyId = oldCompany.Id,
+            AuditorId = auditor.Id,
+            Rating = CompanyRiskRating.Stable,
+            CreatedInCycleId = oldCycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.CompanyRatings.Add(rating);
+        await context.SaveChangesAsync();
+        context.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+        {
+            CompanyRatingId = rating.Id,
+            CompanyId = oldCompany.Id,
+            CompanyFinancialSnapshotId = oldSnapshot.Id,
+            LatestDividendEventId = dividend.Id,
+            EvaluationStartTradingDayNumber = 1,
+            EvaluationEndTradingDayNumber = 1,
+            EffectiveTradingDayNumber = 2,
+            IndustryTrend = IndustryTrend.Plateau,
+        });
+        await context.SaveChangesAsync();
 
         await service.ResetDemoMarketAsync();
 
@@ -155,6 +185,8 @@ public sealed class MarketLoopTests : IDisposable
             .ToListAsync();
         Assert.Equal(await context.Companies.CountAsync(), financialCounts.Count);
         Assert.All(financialCounts, count => Assert.Equal(1, count));
+        Assert.Empty(await context.CompanyAuditEvidence.ToListAsync());
+        Assert.Empty(await context.CompanyRatings.ToListAsync());
         Assert.Empty(await context.CompanyDividendEvents.ToListAsync());
         Assert.DoesNotContain(
             await context.CompanyFinancialSnapshots.ToListAsync(),
@@ -231,7 +263,7 @@ public sealed class MarketLoopTests : IDisposable
     }
 
     [Fact]
-    public async Task ScheduledFinancialSnapshotIsPersistedBeforeSameCycleLifecycleWork()
+    public async Task ScheduledFinancialSnapshotIsPersistedBeforeSameCycleLifecycleAndAuditWork()
     {
         var observer = new RecordingCommandInterceptor();
         using var observedConnection = new SqliteConnection("DataSource=:memory:");
@@ -266,6 +298,11 @@ public sealed class MarketLoopTests : IDisposable
             new ConstantRandom(0d),
             new MarketImpactService(observedContext),
             financialService);
+        var auditor = new AuditorService(
+            observedContext,
+            Options.Create(new AuditorOptions { Enabled = true }),
+            new ConstantRandom(0.5d),
+            new MarketImpactService(observedContext));
         var service = new MarketService(
             observedContext,
             new MatchingEngine(observedContext),
@@ -273,6 +310,7 @@ public sealed class MarketLoopTests : IDisposable
             new MarketCycleLock(),
             new Random(1),
             companyLifecycleService: lifecycle,
+            auditorService: auditor,
             companyFinancialService: financialService);
 
         await service.RunCycleTickAsync();
@@ -286,9 +324,15 @@ public sealed class MarketLoopTests : IDisposable
             command => command.Contains("FROM \"Companies\" AS \"c\"", StringComparison.Ordinal)
                 && command.Contains("\"c\".\"ClosedInCycleId\" IS NULL", StringComparison.Ordinal)
                 && !command.Contains("JOIN", StringComparison.Ordinal));
+        var auditRead = Array.FindIndex(
+            commands,
+            command => command.Contains("FROM \"Auditors\" AS \"a\"", StringComparison.Ordinal)
+                && command.Contains("ORDER BY \"a\".\"Id\"", StringComparison.Ordinal));
         Assert.True(reportInsert >= 0);
         Assert.True(lifecycleRead >= 0);
+        Assert.True(auditRead >= 0);
         Assert.True(reportInsert < lifecycleRead);
+        Assert.True(reportInsert < auditRead);
 
         var companies = await observedContext.Companies.OrderBy(company => company.Id).ToListAsync();
         Assert.Equal(2, companies.Count);
@@ -300,6 +344,7 @@ public sealed class MarketLoopTests : IDisposable
             await observedContext.CompanyFinancialSnapshots.ToListAsync(),
             snapshot => snapshot.CompanyId == companies[1].Id
                 && snapshot.Moment == CompanyFinancialSnapshotMoment.Seed);
+        Assert.NotEmpty(await observedContext.CompanyRatings.ToListAsync());
     }
 
     [Fact]
