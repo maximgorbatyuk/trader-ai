@@ -11,6 +11,8 @@ public sealed class CompanyFinancialService
     private const int RatioPrecision = 6;
     private const decimal MinimumMoneyChangeBase = 1m;
     private const decimal MinimumPerShareChangeBase = 0.000001m;
+    private const double IndependentDirectionBlendWeight = 0.60d;
+    private const double CompanyImpulseBlendWeight = 0.40d;
 
     private readonly AppDbContext dbContext;
     private readonly CompanyFinancialOptions financialOptions;
@@ -257,12 +259,10 @@ public sealed class CompanyFinancialService
         foreach (var company in eligibleCompanies)
         {
             var history = rowsByCompany[company.Id];
-            var prior = MutableFinancialState.From(history[^1]);
             var current = MutableFinancialState.From(history[^1]);
             var companyImpulse = DrawCompanyImpulse(company.IndustryTrend);
-            UpdateState(current, companyImpulse);
+            var changedMetrics = UpdateState(current, companyImpulse);
             EnforceUpdateInvariants(current, company.IssuedSharesCount);
-            var changedMetrics = ChangedMetricsBetween(prior, current);
             var state = current.ToImmutable();
             var score = scorer.Score(new CompanyFinancialScoringInput(
                 state,
@@ -282,10 +282,11 @@ public sealed class CompanyFinancialService
         }
     }
 
-    private void UpdateState(
+    private CompanyFinancialMetric UpdateState(
         MutableFinancialState state,
         double companyImpulse)
     {
+        var selected = CompanyFinancialMetric.None;
         var bands = chanceRates.RandomMagnitudeBands;
 
         // One shared impulse precedes the fixed trigger-direction-magnitude metric order so seeded runs preserve
@@ -297,7 +298,9 @@ public sealed class CompanyFinancialService
             companyImpulse,
             favorableIncreases: true,
             nonNegative: true,
-            MoneyPrecision);
+            MoneyPrecision,
+            CompanyFinancialMetric.Revenue,
+            ref selected);
         state.NetProfit = UpdatePercentage(
             state.NetProfit,
             bands.FinancialOperatingUpdateMin,
@@ -305,7 +308,9 @@ public sealed class CompanyFinancialService
             companyImpulse,
             favorableIncreases: true,
             nonNegative: false,
-            MoneyPrecision);
+            MoneyPrecision,
+            CompanyFinancialMetric.NetProfit,
+            ref selected);
         state.OperatingCashFlow = UpdatePercentage(
             state.OperatingCashFlow,
             bands.FinancialOperatingUpdateMin,
@@ -313,7 +318,9 @@ public sealed class CompanyFinancialService
             companyImpulse,
             favorableIncreases: true,
             nonNegative: false,
-            MoneyPrecision);
+            MoneyPrecision,
+            CompanyFinancialMetric.OperatingCashFlow,
+            ref selected);
         state.TotalAssets = UpdatePercentage(
             state.TotalAssets,
             bands.FinancialBalanceSheetUpdateMin,
@@ -321,7 +328,9 @@ public sealed class CompanyFinancialService
             companyImpulse,
             favorableIncreases: true,
             nonNegative: true,
-            MoneyPrecision);
+            MoneyPrecision,
+            CompanyFinancialMetric.TotalAssets,
+            ref selected);
         state.TotalLiabilities = UpdatePercentage(
             state.TotalLiabilities,
             bands.FinancialBalanceSheetUpdateMin,
@@ -329,7 +338,9 @@ public sealed class CompanyFinancialService
             companyImpulse,
             favorableIncreases: false,
             nonNegative: true,
-            MoneyPrecision);
+            MoneyPrecision,
+            CompanyFinancialMetric.TotalLiabilities,
+            ref selected);
         state.TotalDebt = UpdatePercentage(
             state.TotalDebt,
             bands.FinancialBalanceSheetUpdateMin,
@@ -337,7 +348,9 @@ public sealed class CompanyFinancialService
             companyImpulse,
             favorableIncreases: false,
             nonNegative: true,
-            MoneyPrecision);
+            MoneyPrecision,
+            CompanyFinancialMetric.TotalDebt,
+            ref selected);
         state.ExpectedDividendPerShare = UpdatePercentage(
             state.ExpectedDividendPerShare,
             bands.FinancialDividendUpdateMin,
@@ -346,13 +359,17 @@ public sealed class CompanyFinancialService
             favorableIncreases: true,
             nonNegative: true,
             RatioPrecision,
+            CompanyFinancialMetric.ExpectedDividendPerShare,
+            ref selected,
             MinimumPerShareChangeBase);
         state.BusinessRiskScore = UpdateScore(
             state.BusinessRiskScore,
             bands.FinancialRiskScoreUpdateMin,
             bands.FinancialRiskScoreUpdateMax,
             companyImpulse,
-            favorableIncreases: false);
+            favorableIncreases: false,
+            CompanyFinancialMetric.BusinessRisk,
+            ref selected);
         state.ManagementRevenueForecast = UpdatePercentage(
             state.ManagementRevenueForecast,
             bands.FinancialForecastUpdateMin,
@@ -360,7 +377,9 @@ public sealed class CompanyFinancialService
             companyImpulse,
             favorableIncreases: true,
             nonNegative: true,
-            MoneyPrecision);
+            MoneyPrecision,
+            CompanyFinancialMetric.ManagementRevenueForecast,
+            ref selected);
         state.ManagementProfitForecast = UpdatePercentage(
             state.ManagementProfitForecast,
             bands.FinancialForecastUpdateMin,
@@ -368,7 +387,9 @@ public sealed class CompanyFinancialService
             companyImpulse,
             favorableIncreases: true,
             nonNegative: false,
-            MoneyPrecision);
+            MoneyPrecision,
+            CompanyFinancialMetric.ManagementProfitForecast,
+            ref selected);
         state.ManagementOperatingCashFlowForecast = UpdatePercentage(
             state.ManagementOperatingCashFlowForecast,
             bands.FinancialForecastUpdateMin,
@@ -376,13 +397,19 @@ public sealed class CompanyFinancialService
             companyImpulse,
             favorableIncreases: true,
             nonNegative: false,
-            MoneyPrecision);
+            MoneyPrecision,
+            CompanyFinancialMetric.ManagementOperatingCashFlowForecast,
+            ref selected);
         state.ManagementConfidenceScore = UpdateScore(
             state.ManagementConfidenceScore,
             bands.FinancialRiskScoreUpdateMin,
             bands.FinancialRiskScoreUpdateMax,
             companyImpulse,
-            favorableIncreases: true);
+            favorableIncreases: true,
+            CompanyFinancialMetric.ManagementConfidence,
+            ref selected);
+
+        return selected;
     }
 
     private decimal UpdatePercentage(
@@ -393,6 +420,8 @@ public sealed class CompanyFinancialService
         bool favorableIncreases,
         bool nonNegative,
         int precision,
+        CompanyFinancialMetric metric,
+        ref CompanyFinancialMetric selected,
         decimal minimumChangeBase = MinimumMoneyChangeBase)
     {
         if (random.NextDouble() >= chanceRates.EventTriggerChances.FinancialMetricChange)
@@ -410,6 +439,7 @@ public sealed class CompanyFinancialService
             next = Math.Max(0m, next);
         }
 
+        selected |= metric;
         return Math.Round(next, precision, MidpointRounding.AwayFromZero);
     }
 
@@ -418,7 +448,9 @@ public sealed class CompanyFinancialService
         decimal minimum,
         decimal maximum,
         double companyImpulse,
-        bool favorableIncreases)
+        bool favorableIncreases,
+        CompanyFinancialMetric metric,
+        ref CompanyFinancialMetric selected)
     {
         if (random.NextDouble() >= chanceRates.EventTriggerChances.FinancialMetricChange)
         {
@@ -428,6 +460,7 @@ public sealed class CompanyFinancialService
         var favorable = IsFavorableDirection(random.NextDouble(), companyImpulse);
         var increase = favorable == favorableIncreases;
         var next = current + (increase ? 1m : -1m) * DrawRange(minimum, maximum);
+        selected |= metric;
         return Ratio(Math.Clamp(next, 0m, 100m));
     }
 
@@ -510,10 +543,9 @@ public sealed class CompanyFinancialService
 
     private bool IsFavorableDirection(double independentRoll, double companyImpulse)
     {
-        var impulseWeight = (double)financialOptions.IndustryImpulseWeight;
         var blendedRoll =
-            independentRoll * (1d - impulseWeight)
-            + companyImpulse * impulseWeight;
+            independentRoll * IndependentDirectionBlendWeight
+            + companyImpulse * CompanyImpulseBlendWeight;
         return blendedRoll < 0.5d;
     }
 
@@ -614,14 +646,11 @@ public sealed class CompanyFinancialService
             return new DividendState(0m, 0m, 0m);
         }
 
-        var coverage = Ratio(
-            Math.Min(positiveProfit, positiveCashFlow) / pool);
+        var coverage = Ratio(positiveCashFlow / pool);
         return new DividendState(
             perShare,
             pool,
-            Math.Max(
-                financialOptions.MinimumExpectedDividendCoverageRatio,
-                coverage));
+            coverage);
     }
 
     private decimal SeedBusinessRisk(
@@ -643,78 +672,6 @@ public sealed class CompanyFinancialService
             _ => throw new ArgumentOutOfRangeException(nameof(trend), trend, "Unknown industry trend."),
         };
         return Ratio(Math.Clamp(adjusted, 0m, 100m));
-    }
-
-    private static CompanyFinancialMetric ChangedMetricsBetween(
-        MutableFinancialState prior,
-        MutableFinancialState current)
-    {
-        var changed = CompanyFinancialMetric.None;
-        AddIfChanged(prior.Revenue, current.Revenue, CompanyFinancialMetric.Revenue, ref changed);
-        AddIfChanged(prior.NetProfit, current.NetProfit, CompanyFinancialMetric.NetProfit, ref changed);
-        AddIfChanged(
-            prior.OperatingCashFlow,
-            current.OperatingCashFlow,
-            CompanyFinancialMetric.OperatingCashFlow,
-            ref changed);
-        AddIfChanged(
-            prior.TotalAssets,
-            current.TotalAssets,
-            CompanyFinancialMetric.TotalAssets,
-            ref changed);
-        AddIfChanged(
-            prior.TotalLiabilities,
-            current.TotalLiabilities,
-            CompanyFinancialMetric.TotalLiabilities,
-            ref changed);
-        AddIfChanged(
-            prior.TotalDebt,
-            current.TotalDebt,
-            CompanyFinancialMetric.TotalDebt,
-            ref changed);
-        AddIfChanged(
-            prior.ExpectedDividendPerShare,
-            current.ExpectedDividendPerShare,
-            CompanyFinancialMetric.ExpectedDividendPerShare,
-            ref changed);
-        AddIfChanged(
-            prior.BusinessRiskScore,
-            current.BusinessRiskScore,
-            CompanyFinancialMetric.BusinessRisk,
-            ref changed);
-        AddIfChanged(
-            prior.ManagementRevenueForecast,
-            current.ManagementRevenueForecast,
-            CompanyFinancialMetric.ManagementRevenueForecast,
-            ref changed);
-        AddIfChanged(
-            prior.ManagementProfitForecast,
-            current.ManagementProfitForecast,
-            CompanyFinancialMetric.ManagementProfitForecast,
-            ref changed);
-        AddIfChanged(
-            prior.ManagementOperatingCashFlowForecast,
-            current.ManagementOperatingCashFlowForecast,
-            CompanyFinancialMetric.ManagementOperatingCashFlowForecast,
-            ref changed);
-        AddIfChanged(
-            prior.ManagementConfidenceScore,
-            current.ManagementConfidenceScore,
-            CompanyFinancialMetric.ManagementConfidence,
-            ref changed);
-        return changed;
-    }
-
-    private static void AddIfChanged(
-        decimal prior,
-        decimal current,
-        CompanyFinancialMetric metric,
-        ref CompanyFinancialMetric changed)
-    {
-        if (prior != current)
-        {
-            changed |= metric;
-        }
     }
 
 

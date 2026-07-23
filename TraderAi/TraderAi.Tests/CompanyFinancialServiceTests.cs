@@ -402,6 +402,65 @@ public sealed class CompanyFinancialServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SelectedMetricIsFlaggedWhenRoundingKeepsItsStoredValue()
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        var seed = await AddSnapshotAsync(company, seedCycle, dayNumber: 1);
+        var chanceRates = new RandomChanceRatesOptions();
+        chanceRates.RandomMagnitudeBands.FinancialDividendUpdateMin = 0m;
+        chanceRates.RandomMagnitudeBands.FinancialDividendUpdateMax = 0m;
+        var draws = new List<double> { 0.5d };
+        draws.AddRange(Enumerable.Repeat(0.99d, 6));
+        draws.AddRange([0d, 0d, 0d]);
+        draws.AddRange(Enumerable.Repeat(0.99d, 5));
+
+        await Service(new ScriptedRandom(draws), chanceRates: chanceRates)
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.Equal(seed.ExpectedDividendPerShare, staged.ExpectedDividendPerShare);
+        Assert.Equal(
+            CompanyFinancialMetric.ExpectedDividendPerShare,
+            staged.ChangedMetrics);
+    }
+
+    [Fact]
+    public async Task UnselectedInvariantCorrectionIsNotMarkedAsSelected()
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        var seed = await AddSnapshotAsync(
+            company,
+            seedCycle,
+            dayNumber: 1,
+            configure: snapshot =>
+            {
+                snapshot.ExpectedDividendPerShare = 0.10m;
+                snapshot.ExpectedDividendPool = 100m;
+                snapshot.DividendCoverageRatio = 0.12m;
+            });
+
+        await Service(new ScriptedRandom(
+                new[] { 0.5d }.Concat(Enumerable.Repeat(0.99d, 12))))
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.True(staged.ExpectedDividendPerShare < seed.ExpectedDividendPerShare);
+        Assert.Equal(CompanyFinancialMetric.None, staged.ChangedMetrics);
+    }
+
+    [Fact]
     public async Task SelectedMetricsChangeInTheDocumentedFixedOrder()
     {
         var day = await AddTradingDayAsync(1);
@@ -661,6 +720,70 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         Assert.True(staged.NetProfit < seed.NetProfit);
     }
 
+    [Theory]
+    [InlineData(100, 0.90d, 0.99d, false)]
+    [InlineData(-100, 0.10d, 0d, true)]
+    public async Task IndependentDirectionDominatesEvenAtMaximumIndustryImpulseWeight(
+        int sentimentValue,
+        double impulseRoll,
+        double directionRoll,
+        bool expectedIncrease)
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync(sentimentValue: sentimentValue);
+        var seed = await AddSnapshotAsync(company, seedCycle, dayNumber: 1);
+        var financialOptions = new CompanyFinancialOptions
+        {
+            IndustryImpulseWeight = 1m,
+        };
+        var draws = new List<double>
+        {
+            impulseRoll,
+            0d, directionRoll, 0d,
+        };
+        draws.AddRange(Enumerable.Repeat(0.99d, 11));
+
+        await Service(
+                new ScriptedRandom(draws),
+                financialOptions: financialOptions)
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.Equal(expectedIncrease, staged.Revenue > seed.Revenue);
+    }
+
+    [Fact]
+    public async Task SharedCompanyImpulseCorrelatesAlignedMetricDirections()
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        var seed = await AddSnapshotAsync(company, seedCycle, dayNumber: 1);
+        var draws = new List<double>
+        {
+            0d,
+            0d, 0.60d, 0d,
+            0d, 0.60d, 0d,
+        };
+        draws.AddRange(Enumerable.Repeat(0.99d, 10));
+
+        await Service(new ScriptedRandom(draws))
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.True(staged.Revenue > seed.Revenue);
+        Assert.True(staged.NetProfit > seed.NetProfit);
+    }
+
     [Fact]
     public async Task ProfitAndCashFlowDeteriorationReducesDividendEvenWhenDividendWasNotSelected()
     {
@@ -710,8 +833,88 @@ public sealed class CompanyFinancialServiceTests : IDisposable
         Assert.True(staged.DividendCoverageRatio >= 1.20m);
         Assert.True(staged.ChangedMetrics.HasFlag(CompanyFinancialMetric.NetProfit));
         Assert.True(staged.ChangedMetrics.HasFlag(CompanyFinancialMetric.OperatingCashFlow));
-        Assert.True(staged.ChangedMetrics.HasFlag(
+        Assert.False(staged.ChangedMetrics.HasFlag(
             CompanyFinancialMetric.ExpectedDividendPerShare));
+    }
+
+    [Fact]
+    public async Task DividendCoverageUsesActualOperatingCashFlowOnly()
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(
+            company,
+            seedCycle,
+            dayNumber: 1,
+            configure: snapshot =>
+            {
+                snapshot.NetProfit = 100m;
+                snapshot.OperatingCashFlow = 200m;
+                snapshot.ExpectedDividendPerShare = 0.10m;
+                snapshot.ExpectedDividendPool = 100m;
+                snapshot.DividendCoverageRatio = 2m;
+            });
+
+        await Service(new ScriptedRandom(
+                new[] { 0.5d }.Concat(Enumerable.Repeat(0.99d, 12))))
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.Equal(
+            Math.Round(
+                staged.OperatingCashFlow / staged.ExpectedDividendPool,
+                6,
+                MidpointRounding.AwayFromZero),
+            staged.DividendCoverageRatio);
+        Assert.NotEqual(
+            Math.Round(
+                staged.NetProfit / staged.ExpectedDividendPool,
+                6,
+                MidpointRounding.AwayFromZero),
+            staged.DividendCoverageRatio);
+    }
+
+    [Fact]
+    public async Task DividendRoundingPreservesConfiguredCashFlowCoverage()
+    {
+        var day = await AddTradingDayAsync(1);
+        var seedCycle = await AddCycleAsync(day, tradingCycleNumber: 2);
+        var openingCycle = await AddCycleAsync(day, tradingCycleNumber: 1);
+        var company = await AddCompanyAsync();
+        await AddSnapshotAsync(
+            company,
+            seedCycle,
+            dayNumber: 1,
+            configure: snapshot =>
+            {
+                snapshot.NetProfit = 100m;
+                snapshot.OperatingCashFlow = 1m;
+                snapshot.ExpectedDividendPerShare = 1m;
+                snapshot.ExpectedDividendPool = 1_000m;
+                snapshot.DividendCoverageRatio = 0.001m;
+            });
+
+        await Service(new ScriptedRandom(
+                new[] { 0.5d }.Concat(Enumerable.Repeat(0.99d, 12))))
+            .ProcessForCycleAsync(openingCycle.Id, DateTime.UtcNow);
+
+        var staged = Assert.Single(
+                context.ChangeTracker.Entries<CompanyFinancialSnapshot>(),
+                entry => entry.State == EntityState.Added)
+            .Entity;
+        Assert.Equal(0.83m, staged.ExpectedDividendPool);
+        Assert.Equal(
+            Math.Round(
+                staged.OperatingCashFlow / staged.ExpectedDividendPool,
+                6,
+                MidpointRounding.AwayFromZero),
+            staged.DividendCoverageRatio);
+        Assert.True(staged.DividendCoverageRatio >= 1.20m);
     }
 
     public void Dispose()
@@ -825,7 +1028,7 @@ public sealed class CompanyFinancialServiceTests : IDisposable
             TotalDebt = 40m,
             ExpectedDividendPerShare = 0.005m,
             ExpectedDividendPool = 5m,
-            DividendCoverageRatio = 2m,
+            DividendCoverageRatio = 2.4m,
             BusinessRiskScore = 50m,
             ManagementRevenueForecast = 102m,
             ManagementProfitForecast = 10.2m,
