@@ -393,7 +393,14 @@ public sealed class GameSettingsService(
 
         if (!random.RandomMagnitudeBands.IsValid())
         {
-            errors["RandomChanceRates:RandomMagnitudeBands"] = ["Seed and update range minimums must not exceed maximums, rates and shares must remain within their valid bounds, and score values must remain between 0 and 100."];
+            errors["RandomChanceRates:RandomMagnitudeBands"] = ["Seed, update, and passive-price range minimums must not exceed maximums; rates, shares, offsets, and score values must remain within their valid bounds."];
+        }
+
+        var tradingSignal = candidate.Configuration.GetSection(TradingSignalOptions.SectionName)
+            .Get<TradingSignalOptions>() ?? new();
+        if (!tradingSignal.IsValid())
+        {
+            errors["TradingSignal"] = ["Directional and blend weights must form probability distributions, minimum wait must be positive, and personality response factors must be positive."];
         }
 
         if (errors.Count > 0)

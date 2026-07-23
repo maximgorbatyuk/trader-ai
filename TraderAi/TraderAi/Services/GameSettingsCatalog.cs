@@ -71,6 +71,15 @@ public static class GameSettingsCatalog
                 "MaximumForecastDeviationRatio", "IndustryImpulseWeight",
                 "MinimumExpectedDividendCoverageRatio", "MaximumExpectedDividendPayoutRatio",
             ],
+            ["TradingSignal"] =
+            [
+                "MomentumWeight", "OrderFlowWeight", "IndustryWeight", "AuditWeight", "FundamentalWeight",
+                "EvidenceWeight", "PersonalityNoiseWeight", "MinimumWaitWeight",
+                "AggressiveActivityFactor", "BalancedActivityFactor", "ConservativeActivityFactor",
+                "LowRiskQualityResponseFactor", "LowRiskGrowthResponseFactor",
+                "MediumRiskQualityResponseFactor", "MediumRiskGrowthResponseFactor",
+                "HighRiskQualityResponseFactor", "HighRiskGrowthResponseFactor",
+            ],
             ["Auditor"] =
             [
                 "Enabled", "AuditIntervalTradingDays",
@@ -221,6 +230,8 @@ public static class GameSettingsCatalog
         "RandomMagnitudeBands:FinancialRiskScoreUpdateMax",
         "RandomMagnitudeBands:FinancialForecastUpdateMin",
         "RandomMagnitudeBands:FinancialForecastUpdateMax",
+        "RandomMagnitudeBands:PassivePriceOffsetMinPercent",
+        "RandomMagnitudeBands:PassivePriceOffsetMaxPercent",
     ];
 
     private static readonly HashSet<string> IntegerKeys =
@@ -357,6 +368,23 @@ public static class GameSettingsCatalog
             ["CompanyFinancial:IndustryImpulseWeight"] = "Sets how strongly the industry's direction influences company financial changes.",
             ["CompanyFinancial:MinimumExpectedDividendCoverageRatio"] = "Sets the minimum cash-flow coverage required for an expected dividend to be considered covered.",
             ["CompanyFinancial:MaximumExpectedDividendPayoutRatio"] = "Caps expected dividends relative to eligible profit and operating cash flow.",
+            ["TradingSignal:MomentumWeight"] = "Sets the recent-price-momentum share of directional evidence.",
+            ["TradingSignal:OrderFlowWeight"] = "Sets the normalized participant order-flow share of directional evidence.",
+            ["TradingSignal:IndustryWeight"] = "Sets the industry-direction share of directional evidence.",
+            ["TradingSignal:AuditWeight"] = "Sets the effective-audit share of directional evidence.",
+            ["TradingSignal:FundamentalWeight"] = "Sets the company-fundamentals share of directional evidence.",
+            ["TradingSignal:EvidenceWeight"] = "Sets the action-distribution share derived from directional evidence.",
+            ["TradingSignal:PersonalityNoiseWeight"] = "Sets the action-distribution share derived from temperament noise.",
+            ["TradingSignal:MinimumWaitWeight"] = "Keeps waiting available before eligible actions are normalized.",
+            ["TradingSignal:AggressiveActivityFactor"] = "Scales trading activity for aggressive participants.",
+            ["TradingSignal:BalancedActivityFactor"] = "Scales trading activity for balanced participants.",
+            ["TradingSignal:ConservativeActivityFactor"] = "Scales trading activity for conservative participants.",
+            ["TradingSignal:LowRiskQualityResponseFactor"] = "Scales low-risk participants' response to quality and stability.",
+            ["TradingSignal:LowRiskGrowthResponseFactor"] = "Scales low-risk participants' response to growth and guidance.",
+            ["TradingSignal:MediumRiskQualityResponseFactor"] = "Scales medium-risk participants' response to quality and stability.",
+            ["TradingSignal:MediumRiskGrowthResponseFactor"] = "Scales medium-risk participants' response to growth and guidance.",
+            ["TradingSignal:HighRiskQualityResponseFactor"] = "Scales high-risk participants' response to quality and stability.",
+            ["TradingSignal:HighRiskGrowthResponseFactor"] = "Scales high-risk participants' response to growth and guidance.",
             ["Margin:Enabled"] = "Controls whether participants can use margin accounts.",
             ["Margin:InitialMarginRate"] = "Sets the portion of a margin purchase that must be covered by the participant's own equity.",
             ["Margin:MaintenanceMarginRate"] = "Sets the minimum equity ratio required to avoid a margin call.",

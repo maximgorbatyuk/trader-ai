@@ -26,8 +26,6 @@ public sealed class RuleBasedDecisionEngine(
     private const double RecentMoveScale = 4.0;
     private const double RecentMoveCap = 0.20;
 
-    // Net buy demand on the resting book adds a buy pull; ten net shares add one percentage point.
-    private const double ImbalanceBiasPerShare = 0.001;
     private const double MaxImbalanceBias = 0.20;
 
     // Beyond a ~60% move versus roughly ten cycles ago, holders take profit on a run-up and bystanders
@@ -359,8 +357,8 @@ public sealed class RuleBasedDecisionEngine(
         var growth = RecentMovePull(quote.PriceChangePct);
 
         // More resting buy demand than sell supply signals upward pressure worth front-running.
-        var imbalance = quote.NetShareDemand > 0
-            ? Math.Min(MaxImbalanceBias, quote.NetShareDemand * ImbalanceBiasPerShare)
+        var imbalance = quote.OrderFlowImbalance > 0m
+            ? Math.Min(MaxImbalanceBias, (double)quote.OrderFlowImbalance * MaxImbalanceBias)
             : 0.0;
 
         // A deep, sustained drop tempts bargain hunters who do not already hold the share.

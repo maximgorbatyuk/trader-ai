@@ -275,6 +275,10 @@ public sealed class RandomMagnitudeBands
 
     public decimal FinancialForecastUpdateMax { get; set; } = 0.05m;
 
+    public decimal PassivePriceOffsetMinPercent { get; set; } = 1m;
+
+    public decimal PassivePriceOffsetMaxPercent { get; set; } = 5m;
+
     internal bool IsValid() =>
         OrderedRange(DividendRateMin, DividendRateMax, 0m, 1m)
         && OrderedRange(PrimaryIssuanceRateMin, PrimaryIssuanceRateMax, 0d, 1d)
@@ -325,7 +329,8 @@ public sealed class RandomMagnitudeBands
         && OrderedRange(FinancialBalanceSheetUpdateMin, FinancialBalanceSheetUpdateMax, 0m, 1m)
         && OrderedRange(FinancialDividendUpdateMin, FinancialDividendUpdateMax, 0m, 1m)
         && OrderedRange(FinancialRiskScoreUpdateMin, FinancialRiskScoreUpdateMax, 0m, 100m)
-        && OrderedRange(FinancialForecastUpdateMin, FinancialForecastUpdateMax, 0m, 1m);
+        && OrderedRange(FinancialForecastUpdateMin, FinancialForecastUpdateMax, 0m, 1m)
+        && OrderedRange(PassivePriceOffsetMinPercent, PassivePriceOffsetMaxPercent, 0m, 100m);
 
     private static bool StrictRange(decimal minimum, decimal maximum, decimal floor, decimal ceiling) =>
         minimum >= floor && maximum <= ceiling && minimum < maximum;

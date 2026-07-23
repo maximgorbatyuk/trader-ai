@@ -20,8 +20,11 @@ public sealed class GameSettingsServiceTests
             ("Auditor:HighProfitabilityScore", "2"),
             ("CompanyFinancial:StabilityWindowSnapshots", "6"),
             ("CompanyFinancial:ProfitabilityNetMarginWeight", "0.30"),
+            ("TradingSignal:MomentumWeight", "0.24"),
+            ("TradingSignal:PersonalityNoiseWeight", "0.25"),
             ("RandomChanceRates:EventTriggerChances:NoSellOrderBuyChance", "0.80"),
             ("RandomChanceRates:EventTriggerChances:FinancialMetricChange", "0.45"),
+            ("RandomChanceRates:RandomMagnitudeBands:PassivePriceOffsetMinPercent", "1"),
             ("RandomChanceRates:RandomMagnitudeBands:FinancialSeedAssetsToMarketCapMin", "0.60"),
             ("AutomatedTrading:PassiveBuyPremiumMinPercent", "1"),
             ("AutomatedTrading:PassiveBuyPremiumMaxPercent", "15"),
@@ -74,7 +77,22 @@ public sealed class GameSettingsServiceTests
                 && !string.IsNullOrWhiteSpace(definition.Description));
         Assert.Contains(
             definitions,
+            definition => definition.Key == "TradingSignal:MomentumWeight"
+                && definition.ValueType == GameSettingValueType.Decimal
+                && !string.IsNullOrWhiteSpace(definition.Description));
+        Assert.Contains(
+            definitions,
+            definition => definition.Key == "TradingSignal:PersonalityNoiseWeight"
+                && definition.ValueType == GameSettingValueType.Decimal
+                && !string.IsNullOrWhiteSpace(definition.Description));
+        Assert.Contains(
+            definitions,
             definition => definition.Key == "RandomChanceRates:EventTriggerChances:FinancialMetricChange"
+                && definition.ValueType == GameSettingValueType.Decimal
+                && !string.IsNullOrWhiteSpace(definition.Description));
+        Assert.Contains(
+            definitions,
+            definition => definition.Key == "RandomChanceRates:RandomMagnitudeBands:PassivePriceOffsetMinPercent"
                 && definition.ValueType == GameSettingValueType.Decimal
                 && !string.IsNullOrWhiteSpace(definition.Description));
         Assert.Contains(
@@ -309,6 +327,50 @@ public sealed class GameSettingsServiceTests
             "6",
             (await verification.GameSettings.SingleAsync(
                 setting => setting.Key == "CompanyFinancial:StabilityWindowSnapshots")).ValueJson);
+    }
+
+    [Fact]
+    public async Task InvalidTradingSignalSettingsAreRejectedWithoutPartialWrites()
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        IDbContextFactory<AppDbContext> factory = new TestDbContextFactory(dbOptions);
+        await using (var context = await factory.CreateDbContextAsync())
+        {
+            await context.Database.EnsureCreatedAsync();
+        }
+
+        var service = new GameSettingsService(factory, Configuration(
+            ("TradingSignal:MomentumWeight", "0.24"),
+            ("TradingSignal:OrderFlowWeight", "0.21"),
+            ("TradingSignal:IndustryWeight", "0.15"),
+            ("TradingSignal:AuditWeight", "0.15"),
+            ("TradingSignal:FundamentalWeight", "0.25"),
+            ("TradingSignal:EvidenceWeight", "0.75"),
+            ("TradingSignal:PersonalityNoiseWeight", "0.25"),
+            ("TradingSignal:MinimumWaitWeight", "0.20")));
+        await service.InitializeAsync();
+
+        using var invalidMomentum = JsonDocument.Parse("0.50");
+        using var validMinimumWait = JsonDocument.Parse("0.30");
+        var exception = await Assert.ThrowsAsync<GameSettingsValidationException>(() =>
+            service.UpdateAsync(new Dictionary<string, JsonElement>
+            {
+                ["TradingSignal:MomentumWeight"] = invalidMomentum.RootElement.Clone(),
+                ["TradingSignal:MinimumWaitWeight"] = validMinimumWait.RootElement.Clone(),
+            }));
+
+        Assert.True(exception.Errors.ContainsKey("TradingSignal"));
+        Assert.Equal(
+            0.20m,
+            service.GetOptions<TradingSignalOptions>(
+                TradingSignalOptions.SectionName).MinimumWaitWeight);
+        await using var verification = await factory.CreateDbContextAsync();
+        Assert.Equal(
+            "0.20",
+            (await verification.GameSettings.SingleAsync(
+                setting => setting.Key == "TradingSignal:MinimumWaitWeight")).ValueJson);
     }
 
     [Fact]

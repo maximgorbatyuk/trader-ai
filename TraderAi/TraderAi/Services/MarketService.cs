@@ -2914,9 +2914,9 @@ public sealed class MarketService(
             return RunDecisionsResult.Fail("Market is not running.");
         }
 
-        // Net buy demand counts only participant orders; the issuer's seed sell of every share would
-        // otherwise swamp the signal and read as permanent selling pressure.
-        var netDemandByCompany = (await dbContext.Orders
+        // Issuer supply stays outside participant order flow so primary issuance cannot masquerade as bearish
+        // sentiment. The ratio makes equivalent books comparable across companies with different share scales.
+        var orderFlowByCompany = (await dbContext.Orders
                 .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
                     && order.ParticipantId != null)
                 .Select(order => new { order.CompanyId, order.Type, Remaining = order.Quantity - order.FilledQuantity })
@@ -2924,9 +2924,19 @@ public sealed class MarketService(
             .GroupBy(order => order.CompanyId)
             .ToDictionary(
                 group => group.Key,
-                // Sum in long: aggregate remaining buy demand across all participants for one company is
-                // unbounded by share count and overflows a 32-bit accumulator on a hot company.
-                group => group.Sum(order => order.Type == OrderType.Buy ? (long)order.Remaining : -(long)order.Remaining));
+                group =>
+                {
+                    var buys = group
+                        .Where(order => order.Type == OrderType.Buy)
+                        .Sum(order => (long)order.Remaining);
+                    var sells = group
+                        .Where(order => order.Type == OrderType.Sell)
+                        .Sum(order => (long)order.Remaining);
+                    var total = buys + sells;
+                    return total == 0L
+                        ? 0m
+                        : Math.Clamp((decimal)(buys - sells) / total, -1m, 1m);
+                });
 
         var cycleNumbersById = await dbContext.CycleNumbersByIdAsync();
         var currentCycleNumber = cycleNumbersById.GetValueOrDefault(market.CurrentCycleId.Value);
@@ -3000,7 +3010,7 @@ public sealed class MarketService(
                     group.Key,
                     latest.Price,
                     changePct,
-                    (int)Math.Clamp(netDemandByCompany.GetValueOrDefault(group.Key), int.MinValue, int.MaxValue),
+                    orderFlowByCompany.GetValueOrDefault(group.Key),
                     longRangeChangePct,
                     sentimentByCompany.GetValueOrDefault(group.Key));
             })

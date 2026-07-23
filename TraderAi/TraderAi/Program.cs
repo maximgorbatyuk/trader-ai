@@ -98,6 +98,12 @@ builder.Services.AddOptions<CompanyFinancialOptions>()
     .Bind(builder.Configuration.GetSection(CompanyFinancialOptions.SectionName))
     .Validate(options => options.IsValid(), "CompanyFinancial windows, weights, score levels, invariants, and dividend rules are invalid.")
     .ValidateOnStart();
+builder.Services.AddOptions<TradingSignalOptions>()
+    .Bind(builder.Configuration.GetSection(TradingSignalOptions.SectionName))
+    .Validate(
+        options => options.IsValid(),
+        "TradingSignal component and blend weights, wait weight, and personality response factors are invalid.")
+    .ValidateOnStart();
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
 builder.Services.Configure<BigInvestmentOptions>(builder.Configuration.GetSection(BigInvestmentOptions.SectionName));
 builder.Services.AddOptions<PrimaryIssuanceOptions>()
@@ -132,7 +138,7 @@ builder.Services.AddScoped<AiPredictionEvaluationService>();
 builder.Services.AddHostedService<AiTraderCoordinator>();
 builder.Services.AddOptions<RandomChanceRatesOptions>()
     .Bind(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName))
-    .Validate(options => options.IsValid(), "Random probabilities, seed ranges, and update magnitudes are invalid.")
+    .Validate(options => options.IsValid(), "Random probabilities, seed ranges, update magnitudes, and passive-price offsets are invalid.")
     .ValidateOnStart();
 builder.Services.AddHostedService<MarketLoopService>();
 
@@ -150,6 +156,7 @@ AddGameSettingsOptions<MarketExitOptions>(builder.Services, MarketExitOptions.Se
 AddGameSettingsOptions<StockSplitOptions>(builder.Services, StockSplitOptions.SectionName);
 AddGameSettingsOptions<AuditorOptions>(builder.Services, AuditorOptions.SectionName);
 AddGameSettingsOptions<CompanyFinancialOptions>(builder.Services, CompanyFinancialOptions.SectionName);
+AddGameSettingsOptions<TradingSignalOptions>(builder.Services, TradingSignalOptions.SectionName);
 AddGameSettingsOptions<ShareEmissionOptions>(builder.Services, ShareEmissionOptions.SectionName);
 AddGameSettingsOptions<BigInvestmentOptions>(builder.Services, BigInvestmentOptions.SectionName);
 AddGameSettingsOptions<PrimaryIssuanceOptions>(builder.Services, PrimaryIssuanceOptions.SectionName);
@@ -195,6 +202,7 @@ var app = builder.Build();
 
 ValidateDefaultAuditorOptions(builder.Configuration);
 ValidateDefaultCompanyFinancialOptions(builder.Configuration);
+ValidateDefaultTradingSignalOptions(builder.Configuration);
 ValidateDefaultRandomChanceRates(builder.Configuration);
 
 using (var scope = app.Services.CreateScope())
@@ -325,7 +333,22 @@ static void ValidateDefaultRandomChanceRates(IConfiguration configuration)
     throw new OptionsValidationException(
         Options.DefaultName,
         typeof(RandomChanceRatesOptions),
-        ["Random probabilities, seed ranges, and update magnitudes are invalid."]);
+        ["Random probabilities, seed ranges, update magnitudes, and passive-price offsets are invalid."]);
+}
+
+static void ValidateDefaultTradingSignalOptions(IConfiguration configuration)
+{
+    var options = configuration.GetSection(TradingSignalOptions.SectionName)
+        .Get<TradingSignalOptions>() ?? new TradingSignalOptions();
+    if (options.IsValid())
+    {
+        return;
+    }
+
+    throw new OptionsValidationException(
+        Options.DefaultName,
+        typeof(TradingSignalOptions),
+        ["TradingSignal component and blend weights, wait weight, and personality response factors are invalid."]);
 }
 
 static void ValidateDefaultCompanyFinancialOptions(IConfiguration configuration)

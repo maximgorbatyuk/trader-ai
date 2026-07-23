@@ -151,7 +151,7 @@ public sealed class RuleBasedDecisionEngineTests
                     1,
                     Price: 100m,
                     PriceChangePct: 0.10m,
-                    NetShareDemand: 1_000,
+                    OrderFlowImbalance: 1m,
                     Bounds: Bounds(100m),
                     IssuedShares: 10_000),
                 new CompanyQuote(
@@ -203,7 +203,7 @@ public sealed class RuleBasedDecisionEngineTests
                     1,
                     Price: 100m,
                     PriceChangePct: 0.10m,
-                    NetShareDemand: 1_000,
+                    OrderFlowImbalance: 1m,
                     Bounds: Bounds(100m),
                     IssuedShares: 10_000),
                 new CompanyQuote(
@@ -713,7 +713,7 @@ public sealed class RuleBasedDecisionEngineTests
         var context = new DecisionContext(
             NewParticipant(availableCash: 50_000m, temperament, riskProfile),
             AvailableCash: 50_000m,
-            [new CompanyQuote(1, Price: 100m, PriceChangePct: 0.10m, NetShareDemand: 1000, Bounds: Bounds(100m))],
+            [new CompanyQuote(1, Price: 100m, PriceChangePct: 0.10m, OrderFlowImbalance: 1m, Bounds: Bounds(100m))],
             new Dictionary<int, int>(),
             new HashSet<int>(),
             crisisActive);
@@ -913,7 +913,7 @@ public sealed class RuleBasedDecisionEngineTests
             participant,
             AvailableCash: 50_000m,
             [
-                new CompanyQuote(1, Price: 100m, PriceChangePct: 0.10m, NetShareDemand: 1000, Bounds: Bounds(100m)),
+                new CompanyQuote(1, Price: 100m, PriceChangePct: 0.10m, OrderFlowImbalance: 1m, Bounds: Bounds(100m)),
                 new CompanyQuote(2, Price: 100m, Bounds: Bounds(100m)),
             ],
             new Dictionary<int, int>(),
@@ -1102,7 +1102,7 @@ public sealed class RuleBasedDecisionEngineTests
                 sharesOwned: 0,
                 companyPrice: 100m,
                 priceChangePct: 0.10m,
-                netShareDemand: 200,
+                orderFlowImbalance: 1m,
                 longRangeChangePct: -0.80m,
                 sectorSentiment: 1_000));
         var sell = new RuleBasedDecisionEngine(
@@ -1218,7 +1218,7 @@ public sealed class RuleBasedDecisionEngineTests
         decimal companyPrice,
         int[]? companiesWithOpenOrders = null,
         decimal priceChangePct = 0m,
-        int netShareDemand = 0,
+        decimal orderFlowImbalance = 0m,
         decimal longRangeChangePct = 0m,
         int sectorSentiment = 0,
         Temperament temperament = Temperament.Balanced,
@@ -1234,7 +1234,7 @@ public sealed class RuleBasedDecisionEngineTests
         return new DecisionContext(
             NewParticipant(availableCash, temperament, riskProfile),
             availableCash,
-            [new CompanyQuote(companyId, companyPrice, priceChangePct, netShareDemand, longRangeChangePct, sectorSentiment, bounds ?? Bounds(companyPrice))],
+            [new CompanyQuote(companyId, companyPrice, priceChangePct, orderFlowImbalance, longRangeChangePct, sectorSentiment, bounds ?? Bounds(companyPrice))],
             holdings,
             new HashSet<int>(companiesWithOpenOrders ?? []));
     }
