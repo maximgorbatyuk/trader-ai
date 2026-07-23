@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
+using TraderAi.Services;
 
 namespace TraderAi.Tests;
 
@@ -118,6 +119,11 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
             Assert.NotEmpty(margin.GetProperty("description").GetString()!);
             Assert.Equal("Decimal", margin.GetProperty("valueType").GetString());
             Assert.Equal(0.50m, margin.GetProperty("value").GetDecimal());
+            var financialWindow = Assert.Single(settings!, setting =>
+                setting.GetProperty("key").GetString() == "CompanyFinancial:StabilityWindowSnapshots");
+            Assert.Equal("Integer", financialWindow.GetProperty("valueType").GetString());
+            Assert.Equal(6, financialWindow.GetProperty("value").GetInt32());
+            Assert.NotEmpty(financialWindow.GetProperty("description").GetString()!);
             var predictionHorizon = Assert.Single(settings!, setting =>
                 setting.GetProperty("key").GetString() == "AiTrading:PredictionHorizonCycles");
             Assert.Equal("Integer", predictionHorizon.GetProperty("valueType").GetString());
@@ -391,6 +397,31 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
 
             var exception = Assert.Throws<OptionsValidationException>(() => configuredFactory.CreateClient());
             Assert.Contains("Auditor", exception.Message);
+            Assert.False(File.Exists(databasePath));
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void StartupRejectsInvalidCompanyFinancialConfiguration()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = factory.WithWebHostBuilder(builder =>
+            {
+                builder.UseSetting("ConnectionStrings:DefaultConnection", $"Data Source={databasePath}");
+                builder.UseSetting("CompanyFinancial:StabilityWindowSnapshots", "0");
+            });
+
+            var exception = Assert.Throws<OptionsValidationException>(() => configuredFactory.CreateClient());
+            Assert.Contains("CompanyFinancial", exception.Message);
             Assert.False(File.Exists(databasePath));
         }
         finally

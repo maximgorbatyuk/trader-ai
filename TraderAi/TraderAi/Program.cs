@@ -90,6 +90,10 @@ builder.Services.AddOptions<AuditorOptions>()
     .Bind(builder.Configuration.GetSection(AuditorOptions.SectionName))
     .Validate(options => options.IsValid(), "Auditor intervals, thresholds, and decision pulls are invalid.")
     .ValidateOnStart();
+builder.Services.AddOptions<CompanyFinancialOptions>()
+    .Bind(builder.Configuration.GetSection(CompanyFinancialOptions.SectionName))
+    .Validate(options => options.IsValid(), "CompanyFinancial windows, weights, score levels, invariants, and dividend rules are invalid.")
+    .ValidateOnStart();
 builder.Services.Configure<ShareEmissionOptions>(builder.Configuration.GetSection(ShareEmissionOptions.SectionName));
 builder.Services.Configure<BigInvestmentOptions>(builder.Configuration.GetSection(BigInvestmentOptions.SectionName));
 builder.Services.AddOptions<PrimaryIssuanceOptions>()
@@ -124,7 +128,7 @@ builder.Services.AddScoped<AiPredictionEvaluationService>();
 builder.Services.AddHostedService<AiTraderCoordinator>();
 builder.Services.AddOptions<RandomChanceRatesOptions>()
     .Bind(builder.Configuration.GetSection(RandomChanceRatesOptions.SectionName))
-    .Validate(RandomChanceRatesAreValid, "Random probabilities and modifiers are invalid.")
+    .Validate(options => options.IsValid(), "Random probabilities, seed ranges, and update magnitudes are invalid.")
     .ValidateOnStart();
 builder.Services.AddHostedService<MarketLoopService>();
 
@@ -141,6 +145,7 @@ AddGameSettingsOptions<CollectiveFundOptions>(builder.Services, CollectiveFundOp
 AddGameSettingsOptions<MarketExitOptions>(builder.Services, MarketExitOptions.SectionName);
 AddGameSettingsOptions<StockSplitOptions>(builder.Services, StockSplitOptions.SectionName);
 AddGameSettingsOptions<AuditorOptions>(builder.Services, AuditorOptions.SectionName);
+AddGameSettingsOptions<CompanyFinancialOptions>(builder.Services, CompanyFinancialOptions.SectionName);
 AddGameSettingsOptions<ShareEmissionOptions>(builder.Services, ShareEmissionOptions.SectionName);
 AddGameSettingsOptions<BigInvestmentOptions>(builder.Services, BigInvestmentOptions.SectionName);
 AddGameSettingsOptions<PrimaryIssuanceOptions>(builder.Services, PrimaryIssuanceOptions.SectionName);
@@ -185,6 +190,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 var app = builder.Build();
 
 ValidateDefaultAuditorOptions(builder.Configuration);
+ValidateDefaultCompanyFinancialOptions(builder.Configuration);
 ValidateDefaultRandomChanceRates(builder.Configuration);
 
 using (var scope = app.Services.CreateScope())
@@ -307,7 +313,7 @@ static void ValidateDefaultRandomChanceRates(IConfiguration configuration)
 {
     var options = configuration.GetSection(RandomChanceRatesOptions.SectionName)
         .Get<RandomChanceRatesOptions>() ?? new RandomChanceRatesOptions();
-    if (RandomChanceRatesAreValid(options))
+    if (options.IsValid())
     {
         return;
     }
@@ -315,7 +321,22 @@ static void ValidateDefaultRandomChanceRates(IConfiguration configuration)
     throw new OptionsValidationException(
         Options.DefaultName,
         typeof(RandomChanceRatesOptions),
-        ["Random probabilities and modifiers are invalid."]);
+        ["Random probabilities, seed ranges, and update magnitudes are invalid."]);
+}
+
+static void ValidateDefaultCompanyFinancialOptions(IConfiguration configuration)
+{
+    var options = configuration.GetSection(CompanyFinancialOptions.SectionName)
+        .Get<CompanyFinancialOptions>() ?? new CompanyFinancialOptions();
+    if (options.IsValid())
+    {
+        return;
+    }
+
+    throw new OptionsValidationException(
+        Options.DefaultName,
+        typeof(CompanyFinancialOptions),
+        ["CompanyFinancial windows, weights, score levels, invariants, and dividend rules are invalid."]);
 }
 
 static void ValidateDefaultAuditorOptions(IConfiguration configuration)
@@ -331,25 +352,6 @@ static void ValidateDefaultAuditorOptions(IConfiguration configuration)
         Options.DefaultName,
         typeof(AuditorOptions),
         ["Auditor intervals, thresholds, and decision pulls are invalid."]);
-}
-
-static bool RandomChanceRatesAreValid(RandomChanceRatesOptions options)
-{
-    var probabilities = options.EventTriggerChances.GetType().GetProperties()
-        .Select(property => property.GetValue(options.EventTriggerChances))
-        .Select(value => value switch
-        {
-            double doubleValue => doubleValue,
-            decimal decimalValue => (double)decimalValue,
-            _ => double.NaN,
-        });
-    var modifiers = options.ChanceModifiers.GetType().GetProperties()
-        .Select(property => property.GetValue(options.ChanceModifiers))
-        .OfType<double>();
-
-    return probabilities.All(probability => double.IsFinite(probability) && probability is >= 0d and <= 1d)
-        && modifiers.All(modifier => double.IsFinite(modifier) && modifier >= 0d)
-        && options.EventTriggerChances.BigInvestmentMax <= EventTriggerChances.BigInvestmentHardMax;
 }
 
 static bool SqliteDatabaseExists(string connectionString)

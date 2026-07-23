@@ -287,6 +287,13 @@ public sealed class GameSettingsService(
             errors["Auditor"] = ["Audit intervals, metric boundaries, score thresholds, and decision pulls must form valid ordered ranges."];
         }
 
+        var companyFinancial = candidate.Configuration.GetSection(CompanyFinancialOptions.SectionName)
+            .Get<CompanyFinancialOptions>() ?? new();
+        if (!companyFinancial.IsValid())
+        {
+            errors["CompanyFinancial"] = ["Financial windows, score levels, component weights, invariants, and dividend rules must form valid ranges."];
+        }
+
         var news = candidate.Configuration.GetSection(NewsOptions.SectionName).Get<NewsOptions>() ?? new();
         if (news.CyclesBetweenPosts <= 0)
         {
@@ -379,39 +386,14 @@ public sealed class GameSettingsService(
 
         var random = candidate.Configuration.GetSection(RandomChanceRatesOptions.SectionName)
             .Get<RandomChanceRatesOptions>() ?? new();
-        var probabilities = random.EventTriggerChances.GetType().GetProperties()
-            .Select(property => property.GetValue(random.EventTriggerChances))
-            .Select(value => value switch
-            {
-                double doubleValue => doubleValue,
-                decimal decimalValue => (double)decimalValue,
-                _ => double.NaN,
-            });
-        var modifiers = random.ChanceModifiers.GetType().GetProperties()
-            .Select(property => property.GetValue(random.ChanceModifiers))
-            .OfType<double>();
-        if (probabilities.Any(probability => !double.IsFinite(probability) || probability is < 0d or > 1d)
-            || modifiers.Any(modifier => !double.IsFinite(modifier) || modifier < 0d)
-            || random.EventTriggerChances.BigInvestmentMax > EventTriggerChances.BigInvestmentHardMax)
+        if (!random.ProbabilitiesAndModifiersAreValid())
         {
             errors["RandomChanceRates"] = ["Event probabilities must remain between 0 and 1, modifiers must be non-negative, and Extra-raised investment chances cannot exceed 50%."];
         }
 
-        var bands = random.RandomMagnitudeBands;
-        if (bands.DividendRateMin is < 0m or > 1m
-            || bands.DividendRateMax < bands.DividendRateMin
-            || bands.DividendRateMax > 1m
-            || !OrderedUnitRange(bands.PrimaryIssuanceRateMin, bands.PrimaryIssuanceRateMax)
-            || !OrderedUnitRange(bands.ShareEmissionRateMin, bands.ShareEmissionRateMax)
-            || bands.CrisisIndustryDropMinPercent < 0m
-            || bands.CrisisIndustryDropMaxPercent < bands.CrisisIndustryDropMinPercent
-            || bands.CrisisIndustryDropMaxPercent > 100m
-            || bands.ScienceIndustryLiftMinPercent < 0m
-            || bands.ScienceIndustryLiftMaxPercent < bands.ScienceIndustryLiftMinPercent
-            || bands.ScienceIndustryLiftMaxPercent > 100m
-            || !OrderedUnitRange(bands.GlobalCrisisIndustryShareMin, bands.GlobalCrisisIndustryShareMax))
+        if (!random.RandomMagnitudeBands.IsValid())
         {
-            errors["RandomChanceRates:RandomMagnitudeBands"] = ["Random magnitude minimums must not exceed maximums, rates and shares must remain between 0 and 1, and percentages cannot exceed 100."];
+            errors["RandomChanceRates:RandomMagnitudeBands"] = ["Seed and update range minimums must not exceed maximums, rates and shares must remain within their valid bounds, and score values must remain between 0 and 100."];
         }
 
         if (errors.Count > 0)
@@ -419,13 +401,6 @@ public sealed class GameSettingsService(
             throw new GameSettingsValidationException(errors);
         }
     }
-
-    private static bool OrderedUnitRange(double minimum, double maximum)
-        => double.IsFinite(minimum)
-            && double.IsFinite(maximum)
-            && minimum is >= 0d and <= 1d
-            && maximum is >= 0d and <= 1d
-            && minimum <= maximum;
 
     private static bool IsBlankValue(JsonElement value)
         => value.ValueKind is JsonValueKind.Null

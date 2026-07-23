@@ -12,6 +12,30 @@ public sealed class RandomChanceRatesOptions
     public ChanceModifiers ChanceModifiers { get; set; } = new();
 
     public RandomMagnitudeBands RandomMagnitudeBands { get; set; } = new();
+
+    public bool IsValid() =>
+        ProbabilitiesAndModifiersAreValid()
+        && RandomMagnitudeBands.IsValid();
+
+    internal bool ProbabilitiesAndModifiersAreValid()
+    {
+        var probabilities = EventTriggerChances.GetType().GetProperties()
+            .Select(property => property.GetValue(EventTriggerChances))
+            .Select(value => value switch
+            {
+                double doubleValue => doubleValue,
+                decimal decimalValue => (double)decimalValue,
+                _ => double.NaN,
+            });
+        var modifiers = ChanceModifiers.GetType().GetProperties()
+            .Select(property => property.GetValue(ChanceModifiers))
+            .OfType<double>();
+
+        return probabilities.All(probability =>
+                double.IsFinite(probability) && probability is >= 0d and <= 1d)
+            && modifiers.All(modifier => double.IsFinite(modifier) && modifier >= 0d)
+            && EventTriggerChances.BigInvestmentMax <= EventTriggerChances.BigInvestmentHardMax;
+    }
 }
 
 // Probabilities that gate whether a random event fires this cycle.
@@ -103,6 +127,9 @@ public sealed class EventTriggerChances
 
     // Ceiling on the cash-scaled investment chance following an Extra raised-expectations rating.
     public double BigInvestmentMax { get; set; } = BigInvestmentHardMax;
+
+    // Each eligible financial indicator draws this chance independently at an opening or midday checkpoint.
+    public double FinancialMetricChange { get; set; } = 0.45;
 }
 
 // Values that scale or shift a base chance rather than gating a roll on their own.
@@ -187,4 +214,129 @@ public sealed class RandomMagnitudeBands
 
     // Upper bound of the global-crisis sector fraction.
     public double GlobalCrisisIndustryShareMax { get; set; } = 0.70;
+
+    public decimal FinancialSeedAssetsToMarketCapMin { get; set; } = 0.70m;
+
+    public decimal FinancialSeedAssetsToMarketCapMax { get; set; } = 1.30m;
+
+    public decimal FinancialSeedRevenueToAssetsMin { get; set; } = 0.30m;
+
+    public decimal FinancialSeedRevenueToAssetsMax { get; set; } = 0.90m;
+
+    public decimal FinancialSeedNetMarginMin { get; set; } = 0.02m;
+
+    public decimal FinancialSeedNetMarginMax { get; set; } = 0.18m;
+
+    public decimal FinancialSeedOperatingCashFlowToProfitMin { get; set; } = 0.80m;
+
+    public decimal FinancialSeedOperatingCashFlowToProfitMax { get; set; } = 1.20m;
+
+    public decimal FinancialSeedLiabilitiesToAssetsMin { get; set; } = 0.25m;
+
+    public decimal FinancialSeedLiabilitiesToAssetsMax { get; set; } = 0.65m;
+
+    public decimal FinancialSeedDebtToLiabilitiesMin { get; set; } = 0.15m;
+
+    public decimal FinancialSeedDebtToLiabilitiesMax { get; set; } = 0.65m;
+
+    public decimal FinancialSeedExpectedDividendYieldMin { get; set; } = 0.005m;
+
+    public decimal FinancialSeedExpectedDividendYieldMax { get; set; } = 0.04m;
+
+    public decimal FinancialSeedBusinessRiskScoreMin { get; set; } = 35m;
+
+    public decimal FinancialSeedBusinessRiskScoreMax { get; set; } = 65m;
+
+    public decimal FinancialSeedManagementForecastDeviationMin { get; set; } = -0.05m;
+
+    public decimal FinancialSeedManagementForecastDeviationMax { get; set; } = 0.05m;
+
+    public decimal FinancialSeedManagementConfidenceMin { get; set; } = 50m;
+
+    public decimal FinancialSeedManagementConfidenceMax { get; set; } = 80m;
+
+    public decimal FinancialOperatingUpdateMin { get; set; } = 0.005m;
+
+    public decimal FinancialOperatingUpdateMax { get; set; } = 0.04m;
+
+    public decimal FinancialBalanceSheetUpdateMin { get; set; } = 0.0025m;
+
+    public decimal FinancialBalanceSheetUpdateMax { get; set; } = 0.02m;
+
+    public decimal FinancialDividendUpdateMin { get; set; } = 0.01m;
+
+    public decimal FinancialDividendUpdateMax { get; set; } = 0.10m;
+
+    public decimal FinancialRiskScoreUpdateMin { get; set; } = 1m;
+
+    public decimal FinancialRiskScoreUpdateMax { get; set; } = 8m;
+
+    public decimal FinancialForecastUpdateMin { get; set; } = 0.005m;
+
+    public decimal FinancialForecastUpdateMax { get; set; } = 0.05m;
+
+    internal bool IsValid() =>
+        OrderedRange(DividendRateMin, DividendRateMax, 0m, 1m)
+        && OrderedRange(PrimaryIssuanceRateMin, PrimaryIssuanceRateMax, 0d, 1d)
+        && OrderedRange(ShareEmissionRateMin, ShareEmissionRateMax, 0d, 1d)
+        && OrderedRange(CrisisIndustryDropMinPercent, CrisisIndustryDropMaxPercent, 0m, 100m)
+        && OrderedRange(ScienceIndustryLiftMinPercent, ScienceIndustryLiftMaxPercent, 0m, 100m)
+        && OrderedRange(GlobalCrisisIndustryShareMin, GlobalCrisisIndustryShareMax, 0d, 1d)
+        && OrderedRange(BigInvestmentFractionMin, BigInvestmentFractionMax, 0d, double.MaxValue)
+        && StrictRange(FinancialSeedAssetsToMarketCapMin, FinancialSeedAssetsToMarketCapMax, 0m, 10m)
+        && StrictRange(FinancialSeedRevenueToAssetsMin, FinancialSeedRevenueToAssetsMax, 0m, 10m)
+        && StrictRange(FinancialSeedNetMarginMin, FinancialSeedNetMarginMax, -1m, 1m)
+        && StrictRange(
+            FinancialSeedOperatingCashFlowToProfitMin,
+            FinancialSeedOperatingCashFlowToProfitMax,
+            0m,
+            10m)
+        && StrictRange(
+            FinancialSeedLiabilitiesToAssetsMin,
+            FinancialSeedLiabilitiesToAssetsMax,
+            0m,
+            1m)
+        && StrictRange(
+            FinancialSeedDebtToLiabilitiesMin,
+            FinancialSeedDebtToLiabilitiesMax,
+            0m,
+            1m)
+        && StrictRange(
+            FinancialSeedExpectedDividendYieldMin,
+            FinancialSeedExpectedDividendYieldMax,
+            0m,
+            1m)
+        && StrictRange(
+            FinancialSeedBusinessRiskScoreMin,
+            FinancialSeedBusinessRiskScoreMax,
+            0m,
+            100m)
+        && StrictRange(
+            FinancialSeedManagementForecastDeviationMin,
+            FinancialSeedManagementForecastDeviationMax,
+            -1m,
+            1m)
+        && StrictRange(
+            FinancialSeedManagementConfidenceMin,
+            FinancialSeedManagementConfidenceMax,
+            0m,
+            100m)
+        && OrderedRange(FinancialOperatingUpdateMin, FinancialOperatingUpdateMax, 0m, 1m)
+        && OrderedRange(FinancialBalanceSheetUpdateMin, FinancialBalanceSheetUpdateMax, 0m, 1m)
+        && OrderedRange(FinancialDividendUpdateMin, FinancialDividendUpdateMax, 0m, 1m)
+        && OrderedRange(FinancialRiskScoreUpdateMin, FinancialRiskScoreUpdateMax, 0m, 100m)
+        && OrderedRange(FinancialForecastUpdateMin, FinancialForecastUpdateMax, 0m, 1m);
+
+    private static bool StrictRange(decimal minimum, decimal maximum, decimal floor, decimal ceiling) =>
+        minimum >= floor && maximum <= ceiling && minimum < maximum;
+
+    private static bool OrderedRange(decimal minimum, decimal maximum, decimal floor, decimal ceiling) =>
+        minimum >= floor && maximum <= ceiling && minimum <= maximum;
+
+    private static bool OrderedRange(double minimum, double maximum, double floor, double ceiling) =>
+        double.IsFinite(minimum)
+        && double.IsFinite(maximum)
+        && minimum >= floor
+        && maximum <= ceiling
+        && minimum <= maximum;
 }

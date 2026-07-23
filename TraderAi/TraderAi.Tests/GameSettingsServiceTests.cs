@@ -17,7 +17,11 @@ public sealed class GameSettingsServiceTests
         var configuration = Configuration(
             ("Margin:InitialMarginRate", "0.50"),
             ("Auditor:AuditIntervalTradingDays", "2"),
+            ("CompanyFinancial:StabilityWindowSnapshots", "6"),
+            ("CompanyFinancial:ProfitabilityNetMarginWeight", "0.30"),
             ("RandomChanceRates:EventTriggerChances:NoSellOrderBuyChance", "0.80"),
+            ("RandomChanceRates:EventTriggerChances:FinancialMetricChange", "0.45"),
+            ("RandomChanceRates:RandomMagnitudeBands:FinancialSeedAssetsToMarketCapMin", "0.60"),
             ("AutomatedTrading:PassiveBuyPremiumMinPercent", "1"),
             ("AutomatedTrading:PassiveBuyPremiumMaxPercent", "15"),
             ("AiTrading:Providers:glm:DisplayName", "GLM"),
@@ -51,6 +55,27 @@ public sealed class GameSettingsServiceTests
             definitions,
             definition => definition.Key == "AutomatedTrading:PassiveBuyPremiumMaxPercent"
                 && definition.ValueType == GameSettingValueType.Decimal);
+
+        var stabilityWindow = Assert.Single(
+            definitions,
+            definition => definition.Key == "CompanyFinancial:StabilityWindowSnapshots");
+        Assert.Equal(GameSettingValueType.Integer, stabilityWindow.ValueType);
+        Assert.Contains("history", stabilityWindow.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            definitions,
+            definition => definition.Key == "CompanyFinancial:ProfitabilityNetMarginWeight"
+                && definition.ValueType == GameSettingValueType.Decimal
+                && !string.IsNullOrWhiteSpace(definition.Description));
+        Assert.Contains(
+            definitions,
+            definition => definition.Key == "RandomChanceRates:EventTriggerChances:FinancialMetricChange"
+                && definition.ValueType == GameSettingValueType.Decimal
+                && !string.IsNullOrWhiteSpace(definition.Description));
+        Assert.Contains(
+            definitions,
+            definition => definition.Key == "RandomChanceRates:RandomMagnitudeBands:FinancialSeedAssetsToMarketCapMin"
+                && definition.ValueType == GameSettingValueType.Decimal
+                && !string.IsNullOrWhiteSpace(definition.Description));
 
         var models = Assert.Single(definitions, definition => definition.Key == "AiTrading:Providers:glm:Models");
         Assert.Equal("GLM models", models.Name);
@@ -240,6 +265,44 @@ public sealed class GameSettingsServiceTests
         });
 
         Assert.Equal(0.65, options.Value.EventTriggerChances.NoSellOrderBuyChance);
+    }
+
+    [Fact]
+    public async Task InvalidFinancialSettingsAreRejectedWithoutPartialWrites()
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        IDbContextFactory<AppDbContext> factory = new TestDbContextFactory(dbOptions);
+        await using (var context = await factory.CreateDbContextAsync())
+        {
+            await context.Database.EnsureCreatedAsync();
+        }
+
+        var service = new GameSettingsService(factory, Configuration(
+            ("CompanyFinancial:Enabled", "true"),
+            ("CompanyFinancial:StabilityWindowSnapshots", "6"),
+            ("CompanyFinancial:LowLevelMaximumScore", "34"),
+            ("CompanyFinancial:HighLevelMinimumScore", "67")));
+        await service.InitializeAsync();
+
+        using var invalidHighBoundary = JsonDocument.Parse("20");
+        using var validWindow = JsonDocument.Parse("8");
+        var exception = await Assert.ThrowsAsync<GameSettingsValidationException>(() =>
+            service.UpdateAsync(new Dictionary<string, JsonElement>
+            {
+                ["CompanyFinancial:HighLevelMinimumScore"] = invalidHighBoundary.RootElement.Clone(),
+                ["CompanyFinancial:StabilityWindowSnapshots"] = validWindow.RootElement.Clone(),
+            }));
+
+        Assert.True(exception.Errors.ContainsKey("CompanyFinancial"));
+        Assert.Equal(6, service.GetOptions<CompanyFinancialOptions>(
+            CompanyFinancialOptions.SectionName).StabilityWindowSnapshots);
+        await using var verification = await factory.CreateDbContextAsync();
+        Assert.Equal(
+            "6",
+            (await verification.GameSettings.SingleAsync(
+                setting => setting.Key == "CompanyFinancial:StabilityWindowSnapshots")).ValueJson);
     }
 
     [Fact]
