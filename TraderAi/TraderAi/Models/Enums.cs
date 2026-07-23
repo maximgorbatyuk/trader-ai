@@ -217,6 +217,57 @@ public enum DividendFundingOutcome
     Skipped,
 }
 
+public enum CompanyFinancialSnapshotMoment
+{
+    Seed = 0,
+    DayOpening = 1,
+    Midday = 2,
+}
+
+public enum CompanyMetricLevel
+{
+    Low = 0,
+    Medium = 1,
+    High = 2,
+}
+
+public enum ManagementOutlook
+{
+    Neutral = 0,
+    Positive = 1,
+    Negative = 2,
+}
+
+[Flags]
+public enum CompanyFinancialMetric
+{
+    None = 0,
+    Revenue = 1 << 0,
+    NetProfit = 1 << 1,
+    OperatingCashFlow = 1 << 2,
+    TotalAssets = 1 << 3,
+    TotalLiabilities = 1 << 4,
+    TotalDebt = 1 << 5,
+    ExpectedDividendPerShare = 1 << 6,
+    BusinessRisk = 1 << 7,
+    ManagementRevenueForecast = 1 << 8,
+    ManagementProfitForecast = 1 << 9,
+    ManagementOperatingCashFlowForecast = 1 << 10,
+    ManagementConfidence = 1 << 11,
+    All = Revenue
+        | NetProfit
+        | OperatingCashFlow
+        | TotalAssets
+        | TotalLiabilities
+        | TotalDebt
+        | ExpectedDividendPerShare
+        | BusinessRisk
+        | ManagementRevenueForecast
+        | ManagementProfitForecast
+        | ManagementOperatingCashFlowForecast
+        | ManagementConfidence,
+}
+
 public enum IndustryTrend
 {
     Plateau,

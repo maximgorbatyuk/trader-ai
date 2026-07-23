@@ -8,6 +8,10 @@ public sealed class CompanyAuditEvidence
 
     public int CompanyId { get; set; }
 
+    public int? CompanyFinancialSnapshotId { get; set; }
+
+    public CompanyFinancialSnapshot? CompanyFinancialSnapshot { get; set; }
+
     public int EvaluationStartTradingDayNumber { get; set; }
 
     public int EvaluationEndTradingDayNumber { get; set; }
@@ -29,6 +33,14 @@ public sealed class CompanyAuditEvidence
     public int DividendCoverageScore { get; set; }
 
     public int IndustryScore { get; set; }
+
+    public int ProfitabilityFactorScore { get; set; }
+
+    public int StabilityFactorScore { get; set; }
+
+    public int ClosureRiskFactorScore { get; set; }
+
+    public int ManagementOutlookFactorScore { get; set; }
 
     public decimal StartPrice { get; set; }
 

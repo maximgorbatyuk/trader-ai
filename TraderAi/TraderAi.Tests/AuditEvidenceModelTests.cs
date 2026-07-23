@@ -120,6 +120,100 @@ public sealed class AuditEvidenceModelTests : IDisposable
     }
 
     [Fact]
+    public async Task EvidenceCanReferenceTheFinancialSnapshotUsedByTheAudit()
+    {
+        var company = await AddCompanyAsync();
+        var cycle = new MarketCycle
+        {
+            CycleNumber = 1,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Completed,
+            StartedAt = DateTime.UtcNow,
+            CompletedAt = DateTime.UtcNow,
+        };
+        var auditor = new Auditor
+        {
+            Name = "Financial evidence audit",
+            Description = "Uses the financial state available to the auditor.",
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.AddRange(cycle, auditor);
+        await context.SaveChangesAsync();
+        var snapshot = new CompanyFinancialSnapshot
+        {
+            CompanyId = company.Id,
+            CreatedInCycleId = cycle.Id,
+            TradingDayNumber = 1,
+            Moment = CompanyFinancialSnapshotMoment.DayOpening,
+            CreatedAt = DateTime.UtcNow,
+            Revenue = 10000m,
+            NetProfit = 1000m,
+            OperatingCashFlow = 1200m,
+            TotalAssets = 20000m,
+            TotalLiabilities = 8000m,
+            TotalDebt = 5000m,
+            DividendCoverageRatio = 4m,
+            BusinessRiskScore = 20m,
+            ManagementRevenueForecast = 11000m,
+            ManagementProfitForecast = 1200m,
+            ManagementOperatingCashFlowForecast = 1400m,
+            ManagementOutlook = ManagementOutlook.Positive,
+            ManagementConfidenceScore = 80m,
+            ProfitabilityScore = 70m,
+            ProfitabilityLevel = CompanyMetricLevel.High,
+            StabilityScore = 75m,
+            FinancialVolatilityLevel = CompanyMetricLevel.Low,
+            ClosureRiskScore = 15m,
+            ClosureRiskLevel = CompanyMetricLevel.Low,
+        };
+        context.CompanyFinancialSnapshots.Add(snapshot);
+        await context.SaveChangesAsync();
+        var rating = new CompanyRating
+        {
+            CompanyId = company.Id,
+            AuditorId = auditor.Id,
+            Rating = CompanyRiskRating.RaisedExpectations,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.CompanyRatings.Add(rating);
+        await context.SaveChangesAsync();
+        context.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+        {
+            CompanyRatingId = rating.Id,
+            CompanyId = company.Id,
+            CompanyFinancialSnapshotId = snapshot.Id,
+            EvaluationStartTradingDayNumber = 1,
+            EvaluationEndTradingDayNumber = 2,
+            EffectiveTradingDayNumber = 3,
+            ProfitabilityFactorScore = 4,
+            StabilityFactorScore = 3,
+            ClosureRiskFactorScore = 2,
+            ManagementOutlookFactorScore = 4,
+            IndustryTrend = IndustryTrend.Rising,
+        });
+        await context.SaveChangesAsync();
+        context.ChangeTracker.Clear();
+
+        var stored = await context.CompanyAuditEvidence
+            .Include(evidence => evidence.CompanyFinancialSnapshot)
+            .SingleAsync();
+
+        Assert.Equal(snapshot.Id, stored.CompanyFinancialSnapshotId);
+        Assert.NotNull(stored.CompanyFinancialSnapshot);
+        Assert.Equal(4, stored.ProfitabilityFactorScore);
+        Assert.Equal(3, stored.StabilityFactorScore);
+        Assert.Equal(2, stored.ClosureRiskFactorScore);
+        Assert.Equal(4, stored.ManagementOutlookFactorScore);
+
+        var foreignKey = context.Model.FindEntityType(typeof(CompanyAuditEvidence))!
+            .GetForeignKeys()
+            .Single(candidate => candidate.PrincipalEntityType.ClrType == typeof(CompanyFinancialSnapshot));
+        Assert.Equal(DeleteBehavior.Restrict, foreignKey.DeleteBehavior);
+        Assert.False(foreignKey.IsRequired);
+    }
+
+    [Fact]
     public async Task CompanyDeletionIsRestrictedWhileAuditHistoryExists()
     {
         var company = await AddCompanyAsync();

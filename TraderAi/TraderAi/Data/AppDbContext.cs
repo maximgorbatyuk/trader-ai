@@ -79,6 +79,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<CompanyDividendEvent> CompanyDividendEvents => Set<CompanyDividendEvent>();
 
+    public DbSet<CompanyFinancialSnapshot> CompanyFinancialSnapshots => Set<CompanyFinancialSnapshot>();
+
     public DbSet<PortfolioAuditSummary> PortfolioAuditSummaries => Set<PortfolioAuditSummary>();
 
     public DbSet<PortfolioAuditSummaryItem> PortfolioAuditSummaryItems => Set<PortfolioAuditSummaryItem>();
@@ -368,6 +370,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<CompanyAuditEvidence>()
+            .HasOne(evidence => evidence.CompanyFinancialSnapshot)
+            .WithMany()
+            .HasForeignKey(evidence => evidence.CompanyFinancialSnapshotId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyAuditEvidence>()
             .HasIndex(evidence => new { evidence.CompanyId, evidence.EffectiveTradingDayNumber });
 
         modelBuilder.Entity<CompanyDividendEvent>()
@@ -388,6 +396,64 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 table.HasCheckConstraint(
                     "CK_CompanyDividendEvents_FundedNotAboveDeclared",
                     "CAST(FundedAmount AS NUMERIC) <= CAST(DeclaredAmount AS NUMERIC)");
+            });
+
+        modelBuilder.Entity<CompanyFinancialSnapshot>()
+            .HasOne<Company>()
+            .WithMany()
+            .HasForeignKey(snapshot => snapshot.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyFinancialSnapshot>()
+            .HasOne<MarketCycle>()
+            .WithMany()
+            .HasForeignKey(snapshot => snapshot.CreatedInCycleId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyFinancialSnapshot>()
+            .HasOne(snapshot => snapshot.LatestDividendEvent)
+            .WithMany()
+            .HasForeignKey(snapshot => snapshot.LatestDividendEventId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyFinancialSnapshot>()
+            .HasIndex(snapshot => new { snapshot.CompanyId, snapshot.TradingDayNumber, snapshot.Moment })
+            .IsUnique();
+
+        modelBuilder.Entity<CompanyFinancialSnapshot>()
+            .HasIndex(snapshot => new { snapshot.CompanyId, snapshot.CreatedInCycleId });
+
+        modelBuilder.Entity<CompanyFinancialSnapshot>()
+            .ToTable(table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_CompanyFinancialSnapshots_TradingDay_Positive",
+                    "TradingDayNumber > 0");
+                table.HasCheckConstraint(
+                    "CK_CompanyFinancialSnapshots_NonNegativeValues",
+                    "CAST(Revenue AS NUMERIC) >= 0"
+                    + " AND CAST(TotalAssets AS NUMERIC) >= 0"
+                    + " AND CAST(TotalLiabilities AS NUMERIC) >= 0"
+                    + " AND CAST(TotalDebt AS NUMERIC) >= 0"
+                    + " AND CAST(ExpectedDividendPerShare AS NUMERIC) >= 0"
+                    + " AND CAST(ExpectedDividendPool AS NUMERIC) >= 0"
+                    + " AND CAST(DividendCoverageRatio AS NUMERIC) >= 0"
+                    + " AND CAST(BusinessRiskScore AS NUMERIC) >= 0"
+                    + " AND CAST(ManagementRevenueForecast AS NUMERIC) >= 0");
+                table.HasCheckConstraint(
+                    "CK_CompanyFinancialSnapshots_DebtWithinLiabilities",
+                    "CAST(TotalDebt AS NUMERIC) <= CAST(TotalLiabilities AS NUMERIC)");
+                table.HasCheckConstraint(
+                    "CK_CompanyFinancialSnapshots_ScoresInRange",
+                    "CAST(BusinessRiskScore AS NUMERIC) <= 100"
+                    + " AND CAST(ManagementConfidenceScore AS NUMERIC) >= 0"
+                    + " AND CAST(ManagementConfidenceScore AS NUMERIC) <= 100"
+                    + " AND CAST(ProfitabilityScore AS NUMERIC) >= 0"
+                    + " AND CAST(ProfitabilityScore AS NUMERIC) <= 100"
+                    + " AND CAST(StabilityScore AS NUMERIC) >= 0"
+                    + " AND CAST(StabilityScore AS NUMERIC) <= 100"
+                    + " AND CAST(ClosureRiskScore AS NUMERIC) >= 0"
+                    + " AND CAST(ClosureRiskScore AS NUMERIC) <= 100");
             });
 
         modelBuilder.Entity<PortfolioAuditSummary>()
@@ -643,6 +709,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<CompanyAuditEvidence>().Property(evidence => evidence.MaximumAdjustedCycleMovePercent).HasPrecision(18, 6);
         modelBuilder.Entity<CompanyAuditEvidence>().Property(evidence => evidence.FreeShareDilutionPercent).HasPrecision(18, 6);
         modelBuilder.Entity<CompanyAuditEvidence>().Property(evidence => evidence.DividendCoverageRatio).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.ExpectedDividendPerShare).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.DividendCoverageRatio).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.BusinessRiskScore).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.ManagementConfidenceScore).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.ProfitabilityScore).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.StabilityScore).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyFinancialSnapshot>().Property(snapshot => snapshot.ClosureRiskScore).HasPrecision(18, 6);
         modelBuilder.Entity<PortfolioAuditSummary>().Property(summary => summary.AverageScore).HasPrecision(18, 6);
 
         // Behavioural-audit indices are min-max-normalised sums near the 0..5 range; the money scale above would
