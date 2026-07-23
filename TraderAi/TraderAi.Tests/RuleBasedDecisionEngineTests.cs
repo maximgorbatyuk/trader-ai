@@ -452,6 +452,36 @@ public sealed class RuleBasedDecisionEngineTests
     }
 
     [Fact]
+    public void IndividualPassiveBidClampsUpToTheActiveLowerBound()
+    {
+        var bounds = new OrderPriceBounds(
+            ReferencePrice: 120m,
+            ActiveLowerPrice: 108m,
+            ActiveUpperPrice: 132m,
+            AllowedMinimumPrice: 90m,
+            AllowedMaximumPrice: 140m);
+        var context = AutomatedContextFor(
+            riskProfile: RiskProfile.Medium,
+            netWorth: 100_000m,
+            holdingsValue: 0m,
+            availableBalance: 100_000m,
+            buyingPower: 100_000m,
+            bestAskPrice: null,
+            bestAskQuantity: 0,
+            issuedShares: 10_000,
+            bounds: bounds);
+        var assessment = EngineWith([0.99d]).Evaluate(context);
+
+        var intent = Assert.Single(EngineWith([
+            (double)(assessment.Probabilities.Buy / 2m),
+            0d,
+        ]).Decide(context));
+
+        Assert.Equal(108m, intent.LimitPrice);
+        Assert.True(bounds.IsWithinActiveBand(intent.LimitPrice));
+    }
+
+    [Fact]
     public void IndividualPlacesNoPassiveBidWhenTheCompanyIsFalling()
     {
         var context = AutomatedContextFor(

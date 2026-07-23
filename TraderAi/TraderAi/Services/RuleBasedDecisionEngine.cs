@@ -643,7 +643,7 @@ public sealed class RuleBasedDecisionEngine(
             + ((decimal)random.NextDouble() * (maximum - minimum));
         var proposed = Round(
             quote.Price * (1m + (premiumPercent / 100m)));
-        return Math.Min(proposed, quote.Bounds!.ActiveUpperPrice);
+        return quote.Bounds!.ClampToActiveBand(proposed);
     }
 
     private AutomatedExposureAssessment? AutomatedExposure(
