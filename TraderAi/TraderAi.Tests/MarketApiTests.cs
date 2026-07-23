@@ -2553,6 +2553,52 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task HighFinancialClosureRiskAloneDoesNotCreateParticipantAttention()
+    {
+        var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(databaseDirectory, "app.db");
+        Directory.CreateDirectory(databaseDirectory);
+
+        try
+        {
+            using var configuredFactory = CreateFactory(databasePath);
+            using var client = configuredFactory.CreateClient();
+            await client.PostAsync("/market/seed", null);
+
+            int participantId;
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                participantId = await dbContext.Participants.Select(participant => participant.Id).FirstAsync();
+                var companyId = await dbContext.Companies.Select(company => company.Id).FirstAsync();
+                dbContext.Holdings.Add(new Holding
+                {
+                    ParticipantId = participantId,
+                    CompanyId = companyId,
+                    Quantity = 1,
+                    SettledQuantity = 1,
+                    AverageCost = 100m,
+                });
+
+                var latestFinancial = await dbContext.CompanyFinancialSnapshots
+                    .Where(snapshot => snapshot.CompanyId == companyId)
+                    .OrderByDescending(snapshot => snapshot.Id)
+                    .FirstAsync();
+                latestFinancial.ClosureRiskScore = 100m;
+                await dbContext.SaveChangesAsync();
+            }
+
+            using var response = await client.GetFromJsonAsync<JsonDocument>(
+                $"/participants/{participantId}/companies-attention");
+            Assert.Empty(response!.RootElement.EnumerateArray());
+        }
+        finally
+        {
+            Directory.Delete(databaseDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CompanyEmissionsEndpointReturnsRecords()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");

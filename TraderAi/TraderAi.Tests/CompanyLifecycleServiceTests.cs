@@ -516,6 +516,33 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PendingSettlementSkipsQualifiedCompanyAndClosesNextWorst()
+    {
+        var cycles = await AddCyclesAsync(21, firstNumber: 200);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        await AddCapBackdropAsync(cycles[0]);
+        var pendingWorst = await AddCompanyAsync();
+        var milder = await AddCompanyAsync();
+        await AddDecliningSnapshotsAsync(pendingWorst.Id, cycles, startPrice: 100m, decrementPerCycle: 1m);
+        await AddDecliningSnapshotsAsync(milder.Id, cycles, startPrice: 100m, decrementPerCycle: 0.5m);
+        await AddPendingSettlementAsync(pendingWorst.Id, current);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Null(
+            (await context.Companies.AsNoTracking().SingleAsync(c => c.Id == pendingWorst.Id)).ClosedInCycleId);
+        Assert.Equal(
+            current.Id,
+            (await context.Companies.AsNoTracking().SingleAsync(c => c.Id == milder.Id)).ClosedInCycleId);
+        Assert.Equal(
+            SettlementStatus.Pending,
+            (await context.SettlementInstructions.AsNoTracking().SingleAsync()).Status);
+    }
+
+    [Fact]
     public async Task FullMarketWithNoQualifierForceClosesTheWorstPerformer()
     {
         var cycles = await AddCyclesAsync(2, firstNumber: 200);
@@ -543,6 +570,41 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         Assert.Equal(1, await context.Companies.CountAsync(c => c.ClosedInCycleId != null));
         var refreshedDoomed = await context.Companies.AsNoTracking().SingleAsync(c => c.Id == doomed.Id);
         Assert.Equal(current.Id, refreshedDoomed.ClosedInCycleId);
+    }
+
+    [Fact]
+    public async Task FullMarketPressureSkipsCompanyWithPendingSettlement()
+    {
+        var cycles = await AddCyclesAsync(2, firstNumber: 200);
+        var current = cycles[^1];
+        await SetupMarketAsync(current, lastAppearanceCycleNumber: current.CycleNumber);
+        var companies = await AddCompaniesAsync(300);
+
+        companies[0].IssuedSharesCount = 1_000_000;
+        await context.SaveChangesAsync();
+        await AddSnapshotAsync(companies[0].Id, price: 1_000m, cycles[0]);
+
+        var pendingWorst = companies[150];
+        await AddSnapshotAsync(pendingWorst.Id, price: 100m, cycles[0]);
+        await AddSnapshotAsync(pendingWorst.Id, price: 20m, current);
+        await AddPendingSettlementAsync(pendingWorst.Id, current);
+
+        var nextWorst = companies[200];
+        await AddSnapshotAsync(nextWorst.Id, price: 100m, cycles[0]);
+        await AddSnapshotAsync(nextWorst.Id, price: 40m, current);
+
+        await Service(enabled: true, new ScriptedRandom([0.99d], []))
+            .ProcessForCycleAsync(current.Id, current.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Null(
+            (await context.Companies.AsNoTracking().SingleAsync(c => c.Id == pendingWorst.Id)).ClosedInCycleId);
+        Assert.Equal(
+            current.Id,
+            (await context.Companies.AsNoTracking().SingleAsync(c => c.Id == nextWorst.Id)).ClosedInCycleId);
+        Assert.Equal(
+            SettlementStatus.Pending,
+            (await context.SettlementInstructions.AsNoTracking().SingleAsync()).Status);
     }
 
     [Fact]
@@ -1063,6 +1125,37 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
             ProfitabilityScore = profitabilityScore,
             StabilityScore = stabilityScore,
             ClosureRiskScore = closureRiskScore,
+        });
+        await context.SaveChangesAsync();
+    }
+
+    private async Task AddPendingSettlementAsync(int companyId, MarketCycle cycle)
+    {
+        var buyer = await AddTraderAsync(balance: 1_000m, reserved: 0m);
+        var trade = new ShareTransaction
+        {
+            BuyerId = buyer.Id,
+            CompanyId = companyId,
+            Quantity = 1,
+            Price = 100m,
+            TotalCost = 100m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        context.ShareTransactions.Add(trade);
+        context.SettlementInstructions.Add(new SettlementInstruction
+        {
+            ShareTransaction = trade,
+            BuyerId = buyer.Id,
+            CompanyId = companyId,
+            Quantity = 1,
+            CashAmount = 100m,
+            TradeDayNumber = 1,
+            DueDayNumber = 2,
+            Status = SettlementStatus.Pending,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
         });
         await context.SaveChangesAsync();
     }
