@@ -15,8 +15,8 @@ public sealed class AiDecisionJsonTests
       "cancelOrderIds": [11, 12],
       "bigInvestment": null,
       "orders": [
-        { "side": "Sell", "companyId": 17, "quantity": 25, "limitPrice": 94.50, "reason": "Declining capitalization." },
-        { "side": "Buy", "companyId": 42, "quantity": 10, "limitPrice": 121.25, "reason": "Positive trend." }
+        { "side": "Sell", "companyId": 17, "quantity": 25, "priceOffsetPercent": -3.5, "reason": "Declining capitalization." },
+        { "side": "Buy", "companyId": 42, "quantity": 10, "priceOffsetPercent": 1.75, "reason": "Positive trend." }
       ]
     }
     """;
@@ -149,6 +149,7 @@ public sealed class AiDecisionJsonTests
         Assert.Equal(2, decision!.Orders.Length);
         Assert.Equal([11, 12], decision.CancelOrderIds);
         Assert.Equal(OrderType.Sell, decision.Orders[0].Side);
+        Assert.Equal(-3.5m, decision.Orders[0].PriceOffsetPercent);
         Assert.Equal(OrderType.Buy, decision.Orders[1].Side);
     }
 
@@ -313,7 +314,7 @@ public sealed class AiDecisionJsonTests
     public void UnknownOrderPropertyFails()
     {
         var json = """
-        { "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Buy", "companyId": 1, "quantity": 1, "limitPrice": 1, "reason": "r", "note": "n" } ] }
+        { "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Buy", "companyId": 1, "quantity": 1, "priceOffsetPercent": 1, "reason": "r", "note": "n" } ] }
         """;
         Assert.False(AiDecisionJson.TryParse(json, MaxOrders, out _, out _));
     }
@@ -321,14 +322,14 @@ public sealed class AiDecisionJsonTests
     [Fact]
     public void InvalidSideFails()
     {
-        var json = """{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Hold", "companyId": 1, "quantity": 1, "limitPrice": 1, "reason": "r" } ] }""";
+        var json = """{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Hold", "companyId": 1, "quantity": 1, "priceOffsetPercent": 1, "reason": "r" } ] }""";
         Assert.False(AiDecisionJson.TryParse(json, MaxOrders, out _, out _));
     }
 
     [Fact]
     public void IntegerSideValueFails()
     {
-        var json = """{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": 0, "companyId": 1, "quantity": 1, "limitPrice": 1, "reason": "r" } ] }""";
+        var json = """{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": 0, "companyId": 1, "quantity": 1, "priceOffsetPercent": 1, "reason": "r" } ] }""";
         Assert.False(AiDecisionJson.TryParse(json, MaxOrders, out _, out _));
     }
 
@@ -337,28 +338,31 @@ public sealed class AiDecisionJsonTests
     [InlineData(-5)]
     public void NonPositiveQuantityFails(int quantity)
     {
-        var json = $$"""{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Buy", "companyId": 1, "quantity": {{quantity}}, "limitPrice": 1, "reason": "r" } ] }""";
+        var json = $$"""{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Buy", "companyId": 1, "quantity": {{quantity}}, "priceOffsetPercent": 1, "reason": "r" } ] }""";
         Assert.False(AiDecisionJson.TryParse(json, MaxOrders, out _, out _));
     }
 
-    [Fact]
-    public void NonPositivePriceFails()
+    [Theory]
+    [InlineData(-100)]
+    [InlineData(-150)]
+    public void PriceOffsetPercentAtOrBelowNegativeHundredFails(int priceOffsetPercent)
     {
-        var json = """{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Buy", "companyId": 1, "quantity": 1, "limitPrice": 0, "reason": "r" } ] }""";
-        Assert.False(AiDecisionJson.TryParse(json, MaxOrders, out _, out _));
+        var json = $$"""{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Buy", "companyId": 1, "quantity": 1, "priceOffsetPercent": {{priceOffsetPercent}}, "reason": "r" } ] }""";
+        Assert.False(AiDecisionJson.TryParse(json, MaxOrders, out _, out var error));
+        Assert.Contains("priceOffsetPercent", error);
     }
 
     [Fact]
     public void NonPositiveCompanyIdFails()
     {
-        var json = """{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Buy", "companyId": 0, "quantity": 1, "limitPrice": 1, "reason": "r" } ] }""";
+        var json = """{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Buy", "companyId": 0, "quantity": 1, "priceOffsetPercent": 1, "reason": "r" } ] }""";
         Assert.False(AiDecisionJson.TryParse(json, MaxOrders, out _, out _));
     }
 
     [Fact]
     public void BlankReasonFails()
     {
-        var json = """{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Buy", "companyId": 1, "quantity": 1, "limitPrice": 1, "reason": "  " } ] }""";
+        var json = """{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ { "side": "Buy", "companyId": 1, "quantity": 1, "priceOffsetPercent": 1, "reason": "  " } ] }""";
         Assert.False(AiDecisionJson.TryParse(json, MaxOrders, out _, out _));
     }
 
@@ -366,7 +370,7 @@ public sealed class AiDecisionJsonTests
     public void MoreThanMaxOrdersFails()
     {
         var orders = string.Join(",", Enumerable.Range(1, MaxOrders + 1).Select(id =>
-            $$"""{ "side": "Buy", "companyId": {{id}}, "quantity": 1, "limitPrice": 1, "reason": "r" }"""));
+            $$"""{ "side": "Buy", "companyId": {{id}}, "quantity": 1, "priceOffsetPercent": 1, "reason": "r" }"""));
         var json = $$"""{ "summary": "x", "cancelOrderIds": [], "bigInvestment": null, "orders": [ {{orders}} ] }""";
         Assert.False(AiDecisionJson.TryParse(json, MaxOrders, out _, out _));
     }

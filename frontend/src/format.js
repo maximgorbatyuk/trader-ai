@@ -110,3 +110,11 @@ export function ratingImpactLabel(rating, impactPercent) {
   }
   return rating === 'Extra' ? ` −${impactPercent.toFixed(0)}%` : ''
 }
+
+// Renders an AI order's signed price offset so its direction reads without relying on color.
+export function formatSignedPercent(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+  const rounded = Number(value.toFixed(2))
+  const sign = rounded > 0 ? '+' : rounded < 0 ? '−' : ''
+  return `${sign}${Math.abs(rounded)}%`
+}

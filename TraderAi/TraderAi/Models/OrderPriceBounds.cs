@@ -21,6 +21,11 @@ public sealed record OrderPriceBounds(
     public decimal ClampToActiveBand(decimal price) =>
         Math.Clamp(price, ActiveLowerPrice, ActiveUpperPrice);
 
+    // Pulls a price back onto the nearest edge of the wider range an order may rest in, keeping a passive order
+    // that must wait for the band from being rejected outright.
+    public decimal ClampToAllowedRange(decimal price) =>
+        Math.Clamp(price, AllowedMinimumPrice, AllowedMaximumPrice);
+
     public static OrderPriceBounds FromReference(
         decimal referencePrice,
         decimal lowerBandPercent,

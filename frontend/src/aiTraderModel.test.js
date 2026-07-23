@@ -123,7 +123,7 @@ test('AI call presentation exposes decision rows', async () => {
       side: 'Buy',
       companyId: 117,
       quantity: 20000,
-      limitPrice: 308.86,
+      priceOffsetPercent: 1.75,
       reason: 'Strong sector momentum.',
     }],
   })
@@ -132,7 +132,7 @@ test('AI call presentation exposes decision rows', async () => {
     side: 'Buy',
     companyId: 117,
     quantity: 20000,
-    limitPrice: 308.86,
+    priceOffsetPercent: 1.75,
     reason: 'Strong sector momentum.',
   }])
 })

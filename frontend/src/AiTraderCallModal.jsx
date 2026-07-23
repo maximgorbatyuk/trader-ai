@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from './api'
 import { formatStoredJson, parseAiCallPresentation } from './aiTraderModel'
-import { aiCallStatusLabel, formatInt, formatMoney } from './format'
+import { aiCallStatusLabel, formatInt, formatMoney, formatSignedPercent } from './format'
 
 function formatTimestamp(value) {
   if (!value) return '—'
@@ -257,7 +257,7 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
                           <th scope="col">Side</th>
                           <th scope="col">Company</th>
                           <th scope="col" className="ta-r">Quantity</th>
-                          <th scope="col" className="ta-r">Limit price</th>
+                          <th scope="col" className="ta-r">Price offset</th>
                           <th scope="col">Reason</th>
                         </tr>
                       </thead>
@@ -271,7 +271,7 @@ export function AiTraderCallModal({ participantId, callId, onClose }) {
                               </Link>
                             </td>
                             <td className="num ta-r">{formatInt(order.quantity)}</td>
-                            <td className="num ta-r">{formatMoney(order.limitPrice)}</td>
+                            <td className="num ta-r">{formatSignedPercent(order.priceOffsetPercent)}</td>
                             <td className="ai-decision-reason">{order.reason ?? '—'}</td>
                           </tr>
                         ))}

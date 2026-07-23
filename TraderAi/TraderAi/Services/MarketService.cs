@@ -438,12 +438,29 @@ public sealed class MarketService(
         for (var index = 0; index < decision.Orders.Length; index++)
         {
             var order = decision.Orders[index];
+            if (ResolveAiOrderPrice(context, order) is not decimal limitPrice)
+            {
+                results.Add(new AiOrderApplicationResult(
+                    index,
+                    order.Side,
+                    order.CompanyId,
+                    order.Quantity,
+                    0m,
+                    order.Reason,
+                    false,
+                    null,
+                    "No reference price is available for this company yet.",
+                    new("missing_reference_price")));
+                continue;
+            }
+
             var validationFailure = order.Side == OrderType.Buy
                 ? await ValidateAiBuyOrderAsync(
                     context,
                     executableAskLevelsByCompany,
                     priorBuyPriorityLimitByCompany,
-                    order)
+                    order,
+                    limitPrice)
                 : null;
             var placement = validationFailure is null
                 ? await PlaceOrderCoreAsync(
@@ -451,7 +468,7 @@ public sealed class MarketService(
                     order.CompanyId,
                     order.Side,
                     order.Quantity,
-                    order.LimitPrice,
+                    limitPrice,
                     context.PriceByCompany,
                     deferSave: false,
                     context.BoundsByCompany)
@@ -466,14 +483,14 @@ public sealed class MarketService(
                 var consumedQuantity = ConsumeExecutableAskLevels(
                     executableAskLevelsByCompany,
                     order.CompanyId,
-                    order.LimitPrice,
+                    limitPrice,
                     order.Quantity);
                 if (consumedQuantity > 0)
                 {
                     UpdatePriorBuyPriorityLimit(
                         priorBuyPriorityLimitByCompany,
                         order.CompanyId,
-                        order.LimitPrice);
+                        limitPrice);
                 }
             }
 
@@ -482,7 +499,7 @@ public sealed class MarketService(
                 order.Side,
                 order.CompanyId,
                 order.Quantity,
-                order.LimitPrice,
+                limitPrice,
                 order.Reason,
                 placement.Success,
                 placement.Order?.Id,
@@ -524,13 +541,36 @@ public sealed class MarketService(
         };
     }
 
+    // Resolves the model's signed percentage offset against the freshest market price at apply time, then pulls the
+    // result onto the price geometry the order's side is judged against so a limit that drifted out of range while
+    // the slow provider call ran still rests instead of being rejected. Returns null when the company cannot be
+    // priced yet.
+    private static decimal? ResolveAiOrderPrice(OrderBookContext context, AiTradeOrderDecision order)
+    {
+        if (!context.PriceByCompany.TryGetValue(order.CompanyId, out var currentPrice)
+            || currentPrice <= 0m
+            || !context.BoundsByCompany.TryGetValue(order.CompanyId, out var bounds))
+        {
+            return null;
+        }
+
+        var derived = Math.Round(
+            currentPrice * (1m + (order.PriceOffsetPercent / 100m)),
+            2,
+            MidpointRounding.AwayFromZero);
+        return order.Side == OrderType.Buy
+            ? bounds.ClampToActiveBand(derived)
+            : bounds.ClampToAllowedRange(derived);
+    }
+
     private sealed record AiOrderValidationFailure(string Reason, AiOrderConstraintFeedback Feedback);
 
     private async Task<AiOrderValidationFailure?> ValidateAiBuyOrderAsync(
         OrderBookContext context,
         IReadOnlyDictionary<int, List<ExecutableAskLevel>> executableAskLevelsByCompany,
         IReadOnlyDictionary<int, decimal> priorBuyPriorityLimitByCompany,
-        AiTradeOrderDecision order)
+        AiTradeOrderDecision order,
+        decimal limitPrice)
     {
         var company = await dbContext.Companies
             .FirstOrDefaultAsync(candidate => candidate.Id == order.CompanyId);
@@ -549,14 +589,14 @@ public sealed class MarketService(
             return new("No reference price is available for this company yet.", new("missing_reference_price"));
         }
 
-        if (!bounds.IsWithinAllowedRange(order.LimitPrice))
+        if (!bounds.IsWithinAllowedRange(limitPrice))
         {
             return new(
                 $"Limit price must be between ${bounds.AllowedMinimumPrice:F2} and ${bounds.AllowedMaximumPrice:F2}.",
                 new("price_out_of_range", MinimumPrice: bounds.AllowedMinimumPrice, MaximumPrice: bounds.AllowedMaximumPrice));
         }
 
-        if (!bounds.IsWithinActiveBand(order.LimitPrice))
+        if (!bounds.IsWithinActiveBand(limitPrice))
         {
             return new(
                 $"AI buy limit price must stay inside the active band ${bounds.ActiveLowerPrice:F2}–${bounds.ActiveUpperPrice:F2}.",
@@ -568,7 +608,7 @@ public sealed class MarketService(
             - context.LoanLiability
             - context.MarginLiability;
         var availableCash = context.Participant.AvailableBalance;
-        var orderNotional = order.LimitPrice * order.Quantity;
+        var orderNotional = limitPrice * order.Quantity;
 
         if (context.Participant.RiskProfile != RiskProfile.High
             && orderNotional > Math.Max(0m, availableCash))
@@ -585,7 +625,7 @@ public sealed class MarketService(
         var executableSells = executableAskLevelsByCompany.GetValueOrDefault(order.CompanyId) ?? [];
         var bestSellPrice = executableSells.Count == 0 ? null : (decimal?)executableSells[0].Price;
         if (priorBuyPriorityLimitByCompany.TryGetValue(order.CompanyId, out var priorPriorityLimit)
-            && order.LimitPrice > priorPriorityLimit)
+            && limitPrice > priorPriorityLimit)
         {
             return new(
                 $"Buy limit price would violate earlier demand priority above ${priorPriorityLimit:F2}.",
@@ -598,7 +638,7 @@ public sealed class MarketService(
             context.HoldingsValue);
         if (exposure?.Position == AutomatedExposurePosition.Below
             && bestSellPrice is decimal bestAsk
-            && order.LimitPrice < bestAsk)
+            && limitPrice < bestAsk)
         {
             return new(
                 $"Below-target buy must cross the best executable sell at ${bestAsk:F2}.",
@@ -606,7 +646,7 @@ public sealed class MarketService(
         }
 
         var executableQuantity = executableSells
-            .Where(candidate => candidate.Price <= order.LimitPrice)
+            .Where(candidate => candidate.Price <= limitPrice)
             .Sum(candidate => candidate.RemainingQuantity);
         var envelope = automatedBuyPolicy.BuildBuyEnvelope(new AutomatedBuyOrderInput(
             context.Participant.RiskProfile,
@@ -616,7 +656,7 @@ public sealed class MarketService(
             availableCash,
             buyingPower,
             context.MarginLiability,
-            order.LimitPrice,
+            limitPrice,
             company.IssuedSharesCount,
             (int)Math.Min(executableQuantity, int.MaxValue)));
         if (envelope is null)

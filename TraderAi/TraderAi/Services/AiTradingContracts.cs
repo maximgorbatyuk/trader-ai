@@ -81,11 +81,15 @@ public sealed record AiBigInvestmentDecision
     public string Reason { get; init; }
 }
 
+// PriceOffsetPercent is a signed percentage the backend applies to the company's current market price when the
+// decision is applied, not an absolute price. Returning an offset instead of a price keeps a slow provider call
+// from committing to a limit that has since drifted stale; the resolved price is computed against the freshest
+// price and clamped onto the allowed band.
 public sealed record AiTradeOrderDecision(
     [property: JsonPropertyName("side")] OrderType Side,
     [property: JsonPropertyName("companyId")] int CompanyId,
     [property: JsonPropertyName("quantity")] int Quantity,
-    [property: JsonPropertyName("limitPrice")] decimal LimitPrice,
+    [property: JsonPropertyName("priceOffsetPercent")] decimal PriceOffsetPercent,
     [property: JsonPropertyName("reason")] string Reason);
 
 // The credential-free request body prepared before the audit row is written, so the exact bytes sent can be

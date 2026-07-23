@@ -71,7 +71,7 @@ public sealed class AiTradingPromptBuilder(
         builder.AppendLine(
             "{\"summary\": string, \"cancelOrderIds\": [integer > 0], \"bigInvestment\": null | {\"companyId\": integer, "
             + "\"shares\": integer > 0, \"reason\": string}, \"orders\": [{\"side\": \"Buy\" | \"Sell\", \"companyId\": integer, "
-            + "\"quantity\": integer > 0, \"limitPrice\": number > 0, \"reason\": string}], \"predictions\": [{\"companyId\": integer, "
+            + "\"quantity\": integer > 0, \"priceOffsetPercent\": number > -100, \"reason\": string}], \"predictions\": [{\"companyId\": integer, "
             + "\"direction\": \"Up\" | \"Down\", \"confidence\": number from 0.5 to 1, \"horizonCycles\": "
             + predictionHorizonCycles.ToString(CultureInfo.InvariantCulture)
             + ", \"targetPrice\": null | number > 0, \"reason\": string}]}");

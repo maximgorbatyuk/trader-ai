@@ -13,7 +13,7 @@ public sealed class AiTraderCallServiceTests : IDisposable
     private const int PredictionHorizon = 210;
 
     private const string ValidDecision =
-        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":1,\"quantity\":2,\"limitPrice\":3,\"reason\":\"r\"}]}";
+        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":1,\"quantity\":2,\"priceOffsetPercent\":3,\"reason\":\"r\"}]}";
 
     private const string ValidDecisionWithPrediction =
         "{\"summary\":\"Expect strength.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[],\"predictions\":[{\"companyId\":1,\"direction\":\"Up\",\"confidence\":0.72,\"horizonCycles\":210,\"targetPrice\":125.50,\"reason\":\"Demand.\"}]}";
@@ -240,7 +240,7 @@ public sealed class AiTraderCallServiceTests : IDisposable
     public void StoredLegacyDecisionWithoutCancelOrderIdsDefaultsToEmpty()
     {
         const string legacy =
-            "{\"summary\":\"Legacy plan.\",\"orders\":[{\"side\":\"Buy\",\"companyId\":1,\"quantity\":2,\"limitPrice\":3,\"reason\":\"r\"}]}";
+            "{\"summary\":\"Legacy plan.\",\"orders\":[{\"side\":\"Buy\",\"companyId\":1,\"quantity\":2,\"priceOffsetPercent\":3,\"reason\":\"r\"}]}";
 
         var decision = service.DeserializeDecision(legacy);
 

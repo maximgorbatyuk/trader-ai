@@ -42,8 +42,8 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Assert.Contains("at most 10 orders", system);
         Assert.Contains("advance the objective", system);
         Assert.Contains("cancelOrderIds", system);
-        Assert.Contains("exact limitPrice and quantity", system);
-        Assert.Contains("recomputed at that exact price", system);
+        Assert.Contains("priceOffsetPercent and quantity", system);
+        Assert.Contains("recomputed at that resolved price", system);
         Assert.Contains("maximumPrioritySafeBuyPrice", system);
         Assert.Contains("passive bid at the priority ceiling", system);
         Assert.Contains("before cancelOrderIds", system);

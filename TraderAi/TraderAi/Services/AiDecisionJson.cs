@@ -237,9 +237,11 @@ public static class AiDecisionJson
                 return false;
             }
 
-            if (order.LimitPrice <= 0m)
+            // A percent at or below -100 would resolve to a zero or negative price; any other value is safe because
+            // the backend clamps the resolved price onto the allowed band.
+            if (order.PriceOffsetPercent <= -100m)
             {
-                error = "Each order limitPrice must be positive.";
+                error = "Each order priceOffsetPercent must be greater than -100.";
                 return false;
             }
 

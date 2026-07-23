@@ -15,7 +15,7 @@ public sealed class AiTraderCoordinatorTests : IDisposable
     private static readonly DateTimeOffset Now = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
 
     private static readonly string ValidDecision =
-        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"limitPrice\":100,\"reason\":\"r\"}],\"predictions\":[]}";
+        "{\"summary\":\"Buy a strong company.\",\"cancelOrderIds\":[],\"bigInvestment\":null,\"orders\":[{\"side\":\"Buy\",\"companyId\":COMPANY,\"quantity\":2,\"priceOffsetPercent\":0,\"reason\":\"r\"}],\"predictions\":[]}";
 
     private readonly string databasePath;
     private readonly ServiceProvider provider;

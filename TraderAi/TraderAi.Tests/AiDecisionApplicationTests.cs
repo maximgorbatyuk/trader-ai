@@ -49,8 +49,8 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var seed = await SeedAsync();
 
         var decision = Decision(
-            new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "buy stronger"),
-            new AiTradeOrderDecision(OrderType.Sell, seed.CompanyAId, 5, 100m, "trim weaker"));
+            new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 0m, "buy stronger"),
+            new AiTradeOrderDecision(OrderType.Sell, seed.CompanyAId, 5, 0m, "trim weaker"));
 
         var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
 
@@ -173,7 +173,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         await context.SaveChangesAsync();
         var decision = new AiTradeDecision(
             "invest before considering another order",
-            [new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "only if exposure permits")],
+            [new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 0m, "only if exposure permits")],
             bigInvestment: new AiBigInvestmentDecision(seed.CompanyBId, 90_000m, "large direct position"));
 
         var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
@@ -209,7 +209,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
     public async Task StaleRevisionAppliesNothing()
     {
         var seed = await SeedAsync();
-        var decision = Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "buy"));
+        var decision = Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 0m, "buy"));
 
         var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 999, decision);
 
@@ -222,7 +222,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
     public async Task MissingConfigurationAppliesNothing()
     {
         var seed = await SeedAsync(withConfiguration: false);
-        var decision = Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "buy"));
+        var decision = Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 0m, "buy"));
 
         var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
 
@@ -239,7 +239,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         await context.SaveChangesAsync();
 
         var result = await marketService.ApplyAiDecisionAsync(
-            seed.ParticipantId, 1, Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "buy")));
+            seed.ParticipantId, 1, Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 0m, "buy")));
 
         Assert.False(result.ConfigurationStillCurrent);
     }
@@ -253,7 +253,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         await context.SaveChangesAsync();
 
         var result = await marketService.ApplyAiDecisionAsync(
-            seed.ParticipantId, 1, Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "buy")));
+            seed.ParticipantId, 1, Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 0m, "buy")));
 
         Assert.False(result.ConfigurationStillCurrent);
     }
@@ -264,8 +264,8 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var seed = await SeedAsync();
 
         var decision = Decision(
-            new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "valid"),
-            new AiTradeOrderDecision(OrderType.Buy, 9999, 1, 100m, "unknown company"));
+            new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 0m, "valid"),
+            new AiTradeOrderDecision(OrderType.Buy, 9999, 1, 0m, "unknown company"));
 
         var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
 
@@ -276,18 +276,16 @@ public sealed class AiDecisionApplicationTests : IDisposable
     }
 
     [Fact]
-    public async Task OwnedShareAndPriceRangeChecksAreEnforced()
+    public async Task OwnedShareCheckRejectsAnOversell()
     {
         var seed = await SeedAsync();
 
         var decision = Decision(
-            new AiTradeOrderDecision(OrderType.Sell, seed.CompanyAId, 50, 100m, "oversell"),
-            new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 500m, "above allowed range"));
+            new AiTradeOrderDecision(OrderType.Sell, seed.CompanyAId, 50, 0m, "oversell"));
 
         var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
 
         Assert.False(result.Orders[0].Applied);
-        Assert.False(result.Orders[1].Applied);
         Assert.Equal(0, await context.Orders.CountAsync());
     }
 
@@ -295,7 +293,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
     public async Task StoredReasonIsReturnedButNotCopiedToOrderRecords()
     {
         var seed = await SeedAsync();
-        var decision = Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "distinct-ai-reason"));
+        var decision = Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 0m, "distinct-ai-reason"));
 
         var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
 
@@ -316,7 +314,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var result = await marketService.ApplyAiDecisionAsync(
             seed.ParticipantId,
             1,
-            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 99m, "too passive")));
+            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, -1m, "too passive")));
 
         Assert.False(result.Orders[0].Applied);
         Assert.Contains("cross", result.Orders[0].RejectionReason, StringComparison.OrdinalIgnoreCase);
@@ -333,7 +331,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var result = await marketService.ApplyAiDecisionAsync(
             seed.ParticipantId,
             1,
-            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "cross with room")));
+            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 0m, "cross with room")));
 
         Assert.True(result.Orders[0].Applied);
         var order = await context.Orders.SingleAsync(candidate => candidate.ParticipantId == seed.ParticipantId);
@@ -342,21 +340,19 @@ public sealed class AiDecisionApplicationTests : IDisposable
     }
 
     [Fact]
-    public async Task BuyInsideAllowedRangeButOutsideActiveBandIsRejected()
+    public async Task BuyOffsetBeyondActiveBandIsClampedToTheBandEdge()
     {
         var seed = await SeedAsync();
 
         var result = await marketService.ApplyAiDecisionAsync(
             seed.ParticipantId,
             1,
-            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 120m, "outside active band")));
+            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 20m, "beyond active band")));
 
-        Assert.False(result.Orders[0].Applied);
-        Assert.Contains("active band", result.Orders[0].RejectionReason, StringComparison.OrdinalIgnoreCase);
-        var feedback = Assert.IsType<AiOrderConstraintFeedback>(result.Orders[0].ConstraintFeedback);
-        Assert.Equal("active_price_band", feedback.Code);
-        Assert.NotNull(feedback.MinimumPrice);
-        Assert.NotNull(feedback.MaximumPrice);
+        Assert.True(result.Orders[0].Applied);
+        var order = await context.Orders.SingleAsync(candidate => candidate.ParticipantId == seed.ParticipantId);
+        Assert.Equal(115m, order.LimitPrice);
+        Assert.Equal(115m, result.Orders[0].LimitPrice);
     }
 
     [Fact]
@@ -372,7 +368,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var result = await marketService.ApplyAiDecisionAsync(
             seed.ParticipantId,
             1,
-            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 101m, "too large at my price")));
+            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 1m, "too large at my price")));
 
         Assert.False(result.Orders[0].Applied);
         Assert.Contains("at most 1", result.Orders[0].RejectionReason);
@@ -395,8 +391,8 @@ public sealed class AiDecisionApplicationTests : IDisposable
             seed.ParticipantId,
             1,
             Decision(
-                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 10, 100m, "take available ask"),
-                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 10, 100m, "reuse same ask")));
+                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 10, 0m, "take available ask"),
+                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 10, 0m, "reuse same ask")));
 
         Assert.True(result.Orders[0].Applied);
         Assert.False(result.Orders[1].Applied);
@@ -420,8 +416,8 @@ public sealed class AiDecisionApplicationTests : IDisposable
             seed.ParticipantId,
             1,
             Decision(
-                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 10, 100m, "take lower ask"),
-                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 101m, "jump earlier allocation")));
+                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 10, 0m, "take lower ask"),
+                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 1m, "jump earlier allocation")));
 
         Assert.True(application.Orders[0].Applied);
         Assert.False(application.Orders[1].Applied);
@@ -478,7 +474,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var application = await marketService.ApplyAiDecisionAsync(
             seed.ParticipantId,
             1,
-            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 101m, "jump existing demand")));
+            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 1m, "jump existing demand")));
 
         Assert.False(application.Orders[0].Applied);
         Assert.Contains("priority", application.Orders[0].RejectionReason, StringComparison.OrdinalIgnoreCase);
@@ -515,8 +511,8 @@ public sealed class AiDecisionApplicationTests : IDisposable
             seed.ParticipantId,
             1,
             Decision(
-                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 10, 100m, "take most of ask"),
-                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 100m, "remain behind earlier buy")));
+                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 10, 0m, "take most of ask"),
+                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 0m, "remain behind earlier buy")));
 
         Assert.All(application.Orders, order => Assert.True(order.Applied));
         Assert.Equal(100m, application.Orders[1].LimitPrice);
@@ -548,8 +544,8 @@ public sealed class AiDecisionApplicationTests : IDisposable
             seed.ParticipantId,
             1,
             Decision(
-                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 5, 100m, "take part of lower level"),
-                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 15, 101m, "jump across both levels")));
+                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 5, 0m, "take part of lower level"),
+                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 15, 1m, "jump across both levels")));
 
         Assert.True(application.Orders[0].Applied);
         Assert.False(application.Orders[1].Applied);
@@ -583,8 +579,8 @@ public sealed class AiDecisionApplicationTests : IDisposable
             seed.ParticipantId,
             1,
             Decision(
-                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 4, 100m, "below minimum"),
-                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 21, 100m, "above maximum")));
+                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 4, 0m, "below minimum"),
+                new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 21, 0m, "above maximum")));
 
         Assert.All(result.Orders, order => Assert.False(order.Applied));
         Assert.Contains("at least 5", result.Orders[0].RejectionReason);
@@ -613,7 +609,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var result = await marketService.ApplyAiDecisionAsync(
             seed.ParticipantId,
             1,
-            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 100m, "needs margin")));
+            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 0m, "needs margin")));
 
         Assert.False(result.Orders[0].Applied);
         Assert.Contains("only available to High risk", result.Orders[0].RejectionReason);
@@ -641,7 +637,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var result = await marketService.ApplyAiDecisionAsync(
             seed.ParticipantId,
             1,
-            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 100m, "paused")));
+            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 0m, "paused")));
 
         Assert.False(result.Orders[0].Applied);
         Assert.Equal("trading_paused", result.Orders[0].ConstraintFeedback!.Code);
@@ -669,7 +665,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var result = await marketService.ApplyAiDecisionAsync(
             seed.ParticipantId,
             1,
-            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 100m, "over margin cap")));
+            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 0m, "over margin cap")));
 
         Assert.False(result.Orders[0].Applied);
         Assert.Contains("margin", result.Orders[0].RejectionReason, StringComparison.OrdinalIgnoreCase);
@@ -689,7 +685,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
         var result = await marketService.ApplyAiDecisionAsync(
             seed.ParticipantId,
             1,
-            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 100m, "ignores commitments")));
+            Decision(new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 1, 0m, "ignores commitments")));
 
         Assert.False(result.Orders[0].Applied);
         Assert.Contains("reserved", result.Orders[0].RejectionReason, StringComparison.OrdinalIgnoreCase);
@@ -751,7 +747,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
 
         var decision = new AiTradeDecision(
             "replace stale orders",
-            [new AiTradeOrderDecision(OrderType.Buy, seed.CompanyAId, 2, 100m, "replacement")],
+            [new AiTradeOrderDecision(OrderType.Buy, seed.CompanyAId, 2, 0m, "replacement")],
             [ownBuy.Id, ownSell.Id, otherOrder.Id, closedOwnOrder.Id, int.MaxValue]);
 
         var result = await marketService.ApplyAiDecisionAsync(seed.ParticipantId, 1, decision);
@@ -808,7 +804,7 @@ public sealed class AiDecisionApplicationTests : IDisposable
             1,
             new AiTradeDecision(
                 "replace current demand",
-                [new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, 90m, "replace exactly")],
+                [new AiTradeOrderDecision(OrderType.Buy, seed.CompanyBId, 2, -10m, "replace exactly")],
                 [ownBuy.Id]));
 
         Assert.True(result.Cancellations[0].Applied);
