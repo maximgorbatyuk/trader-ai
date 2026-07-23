@@ -31,4 +31,6 @@ public sealed class NewsPost
     public int? TargetCompanyId { get; set; }
 
     public ICollection<NewsPostIndustry> Industries { get; set; } = new List<NewsPostIndustry>();
+
+    public PortfolioAuditSummary? PortfolioAuditSummary { get; set; }
 }

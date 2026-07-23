@@ -19,4 +19,6 @@ public sealed class CompanyRating
     public int CreatedInCycleId { get; set; }
 
     public DateTime CreatedAt { get; set; }
+
+    public CompanyAuditEvidence? Evidence { get; set; }
 }

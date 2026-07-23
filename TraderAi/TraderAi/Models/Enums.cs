@@ -200,11 +200,35 @@ public enum MarketExitReason
 
 public enum CompanyRiskRating
 {
-    Low,
-    High,
-    Extra,
-    RaisedExpectations,
-    ExtraRaisedExpectations,
+    LowRisk = 0,
+    HighRisk = 1,
+    Extra = 2,
+    RaisedExpectations = 3,
+    ExtraRaisedExpectations = 4,
+    Stable = 5,
+    Low = LowRisk,
+    High = HighRisk,
+}
+
+public enum DividendFundingOutcome
+{
+    Paid,
+    Reduced,
+    Skipped,
+}
+
+public enum IndustryTrend
+{
+    Plateau,
+    Rising,
+    Falling,
+}
+
+public enum PortfolioAuditDirection
+{
+    Neutral,
+    Positive,
+    Negative,
 }
 
 public enum AiPredictionDirection

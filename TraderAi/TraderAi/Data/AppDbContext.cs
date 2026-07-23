@@ -75,6 +75,14 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<CompanyRating> CompanyRatings => Set<CompanyRating>();
 
+    public DbSet<CompanyAuditEvidence> CompanyAuditEvidence => Set<CompanyAuditEvidence>();
+
+    public DbSet<CompanyDividendEvent> CompanyDividendEvents => Set<CompanyDividendEvent>();
+
+    public DbSet<PortfolioAuditSummary> PortfolioAuditSummaries => Set<PortfolioAuditSummary>();
+
+    public DbSet<PortfolioAuditSummaryItem> PortfolioAuditSummaryItems => Set<PortfolioAuditSummaryItem>();
+
     public DbSet<ShareEmission> ShareEmissions => Set<ShareEmission>();
 
     public DbSet<ShareEmissionRecipient> ShareEmissionRecipients => Set<ShareEmissionRecipient>();
@@ -326,6 +334,95 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<CompanyRating>()
             .HasIndex(rating => new { rating.CompanyId, rating.CreatedInCycleId });
 
+        modelBuilder.Entity<CompanyRating>()
+            .HasOne<Company>()
+            .WithMany()
+            .HasForeignKey(rating => rating.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyRating>()
+            .HasOne<Auditor>()
+            .WithMany()
+            .HasForeignKey(rating => rating.AuditorId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyAuditEvidence>()
+            .HasKey(evidence => evidence.CompanyRatingId);
+
+        modelBuilder.Entity<CompanyAuditEvidence>()
+            .HasOne(evidence => evidence.CompanyRating)
+            .WithOne(rating => rating.Evidence)
+            .HasForeignKey<CompanyAuditEvidence>(evidence => evidence.CompanyRatingId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyAuditEvidence>()
+            .HasOne<Company>()
+            .WithMany()
+            .HasForeignKey(evidence => evidence.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyAuditEvidence>()
+            .HasOne(evidence => evidence.LatestDividendEvent)
+            .WithMany()
+            .HasForeignKey(evidence => evidence.LatestDividendEventId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyAuditEvidence>()
+            .HasIndex(evidence => new { evidence.CompanyId, evidence.EffectiveTradingDayNumber });
+
+        modelBuilder.Entity<CompanyDividendEvent>()
+            .HasOne<Company>()
+            .WithMany()
+            .HasForeignKey(dividendEvent => dividendEvent.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyDividendEvent>()
+            .HasIndex(dividendEvent => new { dividendEvent.CompanyId, dividendEvent.TradingDayNumber, dividendEvent.Id });
+
+        modelBuilder.Entity<CompanyDividendEvent>()
+            .ToTable(table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_CompanyDividendEvents_Amounts_NonNegative",
+                    "CAST(DeclaredAmount AS NUMERIC) >= 0 AND CAST(FundedAmount AS NUMERIC) >= 0 AND CAST(IssuerCashBeforeFunding AS NUMERIC) >= 0");
+                table.HasCheckConstraint(
+                    "CK_CompanyDividendEvents_FundedNotAboveDeclared",
+                    "CAST(FundedAmount AS NUMERIC) <= CAST(DeclaredAmount AS NUMERIC)");
+            });
+
+        modelBuilder.Entity<PortfolioAuditSummary>()
+            .HasOne(summary => summary.NewsPost)
+            .WithOne(newsPost => newsPost.PortfolioAuditSummary)
+            .HasForeignKey<PortfolioAuditSummary>(summary => summary.NewsPostId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<PortfolioAuditSummary>()
+            .HasMany(summary => summary.Items)
+            .WithOne(item => item.PortfolioAuditSummary)
+            .HasForeignKey(item => item.PortfolioAuditSummaryId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<PortfolioAuditSummaryItem>()
+            .HasOne<Company>()
+            .WithMany()
+            .HasForeignKey(item => item.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<PortfolioAuditSummaryItem>()
+            .HasOne(item => item.CompanyRating)
+            .WithMany()
+            .HasForeignKey(item => item.CompanyRatingId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<PortfolioAuditSummaryItem>()
+            .HasIndex(item => new { item.PortfolioAuditSummaryId, item.CompanyId })
+            .IsUnique();
+
+        modelBuilder.Entity<PortfolioAuditSummaryItem>()
+            .ToTable(table => table.HasCheckConstraint(
+                "CK_PortfolioAuditSummaryItems_Quantities_NonNegative",
+                "PlayerQuantity >= 0 AND ManagedFundQuantity >= 0"));
+
         // The order book is read either as "all open orders" or per (participant, company) when validating a
         // new order, so both a status-only index and the composite covering that lookup are needed.
         modelBuilder.Entity<Order>()
@@ -542,6 +639,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<Bank>().Property(bank => bank.InterestRate).HasPrecision(18, 6);
         modelBuilder.Entity<Loan>().Property(loan => loan.InterestRate).HasPrecision(18, 6);
         modelBuilder.Entity<AiPrediction>().Property(prediction => prediction.Confidence).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyAuditEvidence>().Property(evidence => evidence.AdjustedReturnPercent).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyAuditEvidence>().Property(evidence => evidence.MaximumAdjustedCycleMovePercent).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyAuditEvidence>().Property(evidence => evidence.FreeShareDilutionPercent).HasPrecision(18, 6);
+        modelBuilder.Entity<CompanyAuditEvidence>().Property(evidence => evidence.DividendCoverageRatio).HasPrecision(18, 6);
+        modelBuilder.Entity<PortfolioAuditSummary>().Property(summary => summary.AverageScore).HasPrecision(18, 6);
 
         // Behavioural-audit indices are min-max-normalised sums near the 0..5 range; the money scale above would
         // flatten the small gaps the nearest-group-average classification reads, so give them a finer scale.
