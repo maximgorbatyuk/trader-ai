@@ -19,9 +19,17 @@ public sealed record CompanyFinancialState(
     decimal ManagementOperatingCashFlowForecast,
     decimal ManagementConfidenceScore);
 
+public sealed record CompanyFinancialHistoryPoint(
+    CompanyFinancialState State,
+    int TradingDayNumber,
+    CompanyFinancialSnapshotMoment Moment,
+    int CreatedInCycleId,
+    DateTime CreatedAt,
+    int Id);
+
 public sealed record CompanyFinancialScoringInput(
     CompanyFinancialState Current,
-    IReadOnlyList<CompanyFinancialSnapshot> PriorSnapshots,
+    IReadOnlyList<CompanyFinancialHistoryPoint> PriorSnapshots,
     IndustryTrend IndustryTrend);
 
 public sealed record CompanyFinancialScoringResult(
@@ -91,8 +99,8 @@ public sealed class CompanyFinancialScorer
             LevelFor(closureRisk));
     }
 
-    private CompanyFinancialSnapshot[] NormalizeHistory(
-        IReadOnlyList<CompanyFinancialSnapshot> snapshots) =>
+    private CompanyFinancialHistoryPoint[] NormalizeHistory(
+        IReadOnlyList<CompanyFinancialHistoryPoint> snapshots) =>
         snapshots
             .OrderBy(snapshot => snapshot.TradingDayNumber)
             .ThenBy(snapshot => snapshot.Moment)
@@ -105,7 +113,8 @@ public sealed class CompanyFinancialScorer
     private static ManagementOutlook CalculateManagementOutlook(
         CompanyFinancialState current)
     {
-        var averageDirection = new[]
+        var confidence = UnitScore(current.ManagementConfidenceScore);
+        var confidentDirections = new[]
         {
             SafeDirectionalChange(
                 current.Revenue,
@@ -116,9 +125,19 @@ public sealed class CompanyFinancialScorer
             SafeDirectionalChange(
                 current.OperatingCashFlow,
                 current.ManagementOperatingCashFlowForecast),
-        }.Average();
-        var confidence = UnitScore(current.ManagementConfidenceScore);
-        var confidentDirection = averageDirection * confidence;
+        }
+            .Select(direction => direction * confidence)
+            .ToArray();
+        var hasPositiveDirection = confidentDirections
+            .Any(direction => direction > ManagementNeutralSignal);
+        var hasNegativeDirection = confidentDirections
+            .Any(direction => direction < -ManagementNeutralSignal);
+        if (hasPositiveDirection && hasNegativeDirection)
+        {
+            return ManagementOutlook.Neutral;
+        }
+
+        var confidentDirection = confidentDirections.Average();
 
         if (confidentDirection > ManagementNeutralSignal)
         {
@@ -135,7 +154,7 @@ public sealed class CompanyFinancialScorer
 
     private decimal CalculateProfitability(
         CompanyFinancialState current,
-        IReadOnlyList<CompanyFinancialSnapshot> history,
+        IReadOnlyList<CompanyFinancialHistoryPoint> history,
         ManagementOutlook outlook)
     {
         var netMargin = CenteredRatioScore(
@@ -153,7 +172,7 @@ public sealed class CompanyFinancialScorer
         var revenueTrend = history.Count == 0
             ? NeutralScore
             : CenteredRatioScore(
-                SafeDirectionalChange(history[^1].Revenue, current.Revenue),
+                SafeDirectionalChange(history[^1].State.Revenue, current.Revenue),
                 RevenueTrendFullScale);
         var management = ManagementScore(
             outlook,
@@ -169,7 +188,7 @@ public sealed class CompanyFinancialScorer
 
     private decimal CalculateStability(
         CompanyFinancialState current,
-        IReadOnlyList<CompanyFinancialSnapshot> history)
+        IReadOnlyList<CompanyFinancialHistoryPoint> history)
     {
         if (history.Count == 0)
         {
@@ -202,7 +221,7 @@ public sealed class CompanyFinancialScorer
 
     private decimal CalculateClosureRisk(
         CompanyFinancialState current,
-        IReadOnlyList<CompanyFinancialSnapshot> history,
+        IReadOnlyList<CompanyFinancialHistoryPoint> history,
         IndustryTrend industryTrend,
         ManagementOutlook outlook)
     {
@@ -231,11 +250,13 @@ public sealed class CompanyFinancialScorer
 
     private decimal EarningsAndCashFlowRisk(
         CompanyFinancialState current,
-        IReadOnlyList<CompanyFinancialSnapshot> history,
+        IReadOnlyList<CompanyFinancialHistoryPoint> history,
         ManagementOutlook outlook)
     {
         var rows = history
-            .Select(snapshot => (snapshot.NetProfit, snapshot.OperatingCashFlow))
+            .Select(point => (
+                point.State.NetProfit,
+                point.State.OperatingCashFlow))
             .Append((current.NetProfit, current.OperatingCashFlow))
             .Reverse()
             .ToArray();
@@ -363,23 +384,8 @@ public sealed class CompanyFinancialScorer
         state.ManagementConfidenceScore,
     ];
 
-    private static decimal[] MetricValues(CompanyFinancialSnapshot snapshot) =>
-    [
-        snapshot.Revenue,
-        snapshot.NetProfit,
-        snapshot.OperatingCashFlow,
-        snapshot.TotalAssets,
-        snapshot.TotalLiabilities,
-        snapshot.TotalDebt,
-        snapshot.ExpectedDividendPerShare,
-        snapshot.ExpectedDividendPool,
-        snapshot.DividendCoverageRatio,
-        snapshot.BusinessRiskScore,
-        snapshot.ManagementRevenueForecast,
-        snapshot.ManagementProfitForecast,
-        snapshot.ManagementOperatingCashFlowForecast,
-        snapshot.ManagementConfidenceScore,
-    ];
+    private static decimal[] MetricValues(CompanyFinancialHistoryPoint point) =>
+        MetricValues(point.State);
 
     private sealed record ScoringConfiguration(
         int StabilityWindowSnapshots,

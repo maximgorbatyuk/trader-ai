@@ -60,6 +60,36 @@ public sealed class CompanyFinancialScorerTests
                 },
                 ManagementOutlook.Neutral
             },
+            {
+                BaseState() with
+                {
+                    ManagementRevenueForecast = 1_500m,
+                    ManagementProfitForecast = 50m,
+                    ManagementOperatingCashFlowForecast = 220m,
+                    ManagementConfidenceScore = 100m,
+                },
+                ManagementOutlook.Neutral
+            },
+            {
+                BaseState() with
+                {
+                    ManagementRevenueForecast = 500m,
+                    ManagementProfitForecast = 200m,
+                    ManagementOperatingCashFlowForecast = 55m,
+                    ManagementConfidenceScore = 100m,
+                },
+                ManagementOutlook.Neutral
+            },
+            {
+                BaseState() with
+                {
+                    ManagementRevenueForecast = 1_100m,
+                    ManagementProfitForecast = 110m,
+                    ManagementOperatingCashFlowForecast = 109.9m,
+                    ManagementConfidenceScore = 100m,
+                },
+                ManagementOutlook.Positive
+            },
         };
 
     [Theory]
@@ -72,8 +102,8 @@ public sealed class CompanyFinancialScorerTests
     {
         var healthy = BaseState();
         var unhealthy = BaseState();
-        IReadOnlyList<CompanyFinancialSnapshot> healthyHistory = [];
-        IReadOnlyList<CompanyFinancialSnapshot> unhealthyHistory = [];
+        IReadOnlyList<CompanyFinancialHistoryPoint> healthyHistory = [];
+        IReadOnlyList<CompanyFinancialHistoryPoint> unhealthyHistory = [];
 
         switch (component)
         {
@@ -239,6 +269,7 @@ public sealed class CompanyFinancialScorerTests
         {
             NetProfit = -100m,
             OperatingCashFlow = -100m,
+            ManagementRevenueForecast = 900m,
             ManagementProfitForecast = -110m,
             ManagementOperatingCashFlowForecast = -110m,
             ManagementConfidenceScore = 100m,
@@ -408,7 +439,7 @@ public sealed class CompanyFinancialScorerTests
 
     private static CompanyFinancialScoringResult Score(
         CompanyFinancialState state,
-        IReadOnlyList<CompanyFinancialSnapshot>? history = null,
+        IReadOnlyList<CompanyFinancialHistoryPoint>? history = null,
         CompanyFinancialOptions? options = null,
         IndustryTrend industryTrend = IndustryTrend.Plateau)
     {
@@ -562,33 +593,16 @@ public sealed class CompanyFinancialScorerTests
             state.ManagementOperatingCashFlowForecast * scale,
             state.ManagementConfidenceScore * scale);
 
-    private static CompanyFinancialSnapshot Snapshot(
+    private static CompanyFinancialHistoryPoint Snapshot(
         CompanyFinancialState state,
         int sequence) =>
-        new()
-        {
-            Id = sequence,
-            CompanyId = 1,
-            CreatedInCycleId = sequence,
-            TradingDayNumber = sequence,
-            Moment = CompanyFinancialSnapshotMoment.DayOpening,
-            CreatedAt = new DateTime(2026, 7, sequence, 9, 0, 0, DateTimeKind.Utc),
-            Revenue = state.Revenue,
-            NetProfit = state.NetProfit,
-            OperatingCashFlow = state.OperatingCashFlow,
-            TotalAssets = state.TotalAssets,
-            TotalLiabilities = state.TotalLiabilities,
-            TotalDebt = state.TotalDebt,
-            ExpectedDividendPerShare = state.ExpectedDividendPerShare,
-            ExpectedDividendPool = state.ExpectedDividendPool,
-            DividendCoverageRatio = state.DividendCoverageRatio,
-            BusinessRiskScore = state.BusinessRiskScore,
-            ManagementRevenueForecast = state.ManagementRevenueForecast,
-            ManagementProfitForecast = state.ManagementProfitForecast,
-            ManagementOperatingCashFlowForecast =
-                state.ManagementOperatingCashFlowForecast,
-            ManagementConfidenceScore = state.ManagementConfidenceScore,
-        };
+        new(
+            state,
+            sequence,
+            CompanyFinancialSnapshotMoment.DayOpening,
+            sequence,
+            new DateTime(2026, 7, sequence, 9, 0, 0, DateTimeKind.Utc),
+            sequence);
 
     private static void AssertScoresAreBounded(CompanyFinancialScoringResult result)
     {
