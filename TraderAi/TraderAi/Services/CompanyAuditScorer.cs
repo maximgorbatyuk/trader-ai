@@ -10,6 +10,7 @@ public sealed record CompanyAuditScoringInput(
     int StockSplitCount,
     int ReverseSplitCount,
     DividendFundingOutcome? LatestDividendOutcome,
+    bool FinancialEvidenceAvailable,
     decimal ModeledMaximumDividend,
     decimal DividendCoverageRatio,
     IndustryTrend IndustryTrend,
@@ -63,18 +64,29 @@ public sealed class CompanyAuditScorer
         var freeShareEmissionScore = FreeShareEmissionScore(input.FreeShareDilutionPercent);
         var denominationScore = DenominationScore(input.StockSplitCount, input.ReverseSplitCount);
         var dividendOutcomeScore = DividendOutcomeScore(input.LatestDividendOutcome);
-        var dividendCovered = input.ModeledMaximumDividend == 0m
-            || input.DividendCoverageRatio >= CoveredDividendRatio;
-        var dividendCoverageScore = dividendCovered
-            ? configuration.DividendCoveredScore
-            : configuration.DividendUncoveredScore;
+        var dividendCovered = input.FinancialEvidenceAvailable
+            && (input.ModeledMaximumDividend == 0m
+                || input.DividendCoverageRatio >= CoveredDividendRatio);
+        var dividendCoverageScore = !input.FinancialEvidenceAvailable
+            ? 0
+            : dividendCovered
+                ? configuration.DividendCoveredScore
+                : configuration.DividendUncoveredScore;
         var industryScore = IndustryScore(input.IndustryTrend);
-        var profitabilityFactorScore = ProfitabilityScore(input.ProfitabilityLevel);
-        var stabilityFactorScore = VolatilityScore(input.FinancialVolatilityLevel);
-        var closureRiskFactorScore = ClosureRiskScore(input.ClosureRiskLevel);
-        var managementOutlookFactorScore = ManagementOutlookScore(
-            input.ManagementOutlook,
-            input.ManagementConfidenceScore);
+        var profitabilityFactorScore = input.FinancialEvidenceAvailable
+            ? ProfitabilityScore(input.ProfitabilityLevel)
+            : 0;
+        var stabilityFactorScore = input.FinancialEvidenceAvailable
+            ? VolatilityScore(input.FinancialVolatilityLevel)
+            : 0;
+        var closureRiskFactorScore = input.FinancialEvidenceAvailable
+            ? ClosureRiskScore(input.ClosureRiskLevel)
+            : 0;
+        var managementOutlookFactorScore = input.FinancialEvidenceAvailable
+            ? ManagementOutlookScore(
+                input.ManagementOutlook,
+                input.ManagementConfidenceScore)
+            : 0;
 
         var unclampedTotal = adjustedReturnScore
             + cycleJumpScore
@@ -93,6 +105,7 @@ public sealed class CompanyAuditScorer
             configuration.MaximumTotalScore);
         var rating = RatingFor(
             totalScore,
+            input.FinancialEvidenceAvailable,
             dividendCovered,
             input.OperatingCashFlow,
             input.ClosureRiskLevel);
@@ -243,6 +256,7 @@ public sealed class CompanyAuditScorer
 
     private CompanyRiskRating RatingFor(
         int totalScore,
+        bool financialEvidenceAvailable,
         bool dividendCovered,
         decimal operatingCashFlow,
         CompanyMetricLevel closureRiskLevel)
@@ -267,7 +281,8 @@ public sealed class CompanyAuditScorer
             return CompanyRiskRating.LowRisk;
         }
 
-        return dividendCovered
+        return financialEvidenceAvailable
+            && dividendCovered
             && operatingCashFlow >= 0m
             && closureRiskLevel != CompanyMetricLevel.High
                 ? CompanyRiskRating.Stable

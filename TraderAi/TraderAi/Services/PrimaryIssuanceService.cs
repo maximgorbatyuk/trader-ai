@@ -5,9 +5,8 @@ using TraderAi.Models;
 
 namespace TraderAi.Services;
 
-// A priced issuer order keeps new supply inside ordinary matching and settlement, while the day's existing
-// priced issuer offer provides a cooldown without separate persistence. Shadow matching keeps issuance tied to
-// demand that the existing book cannot satisfy at MatchingEngine's price-time priority.
+// A persisted issuance event keeps the daily cooldown valid even when issuer orders are cancelled independently.
+// Shadow matching ties new supply to demand that the existing book cannot satisfy at price-time priority.
 public sealed class PrimaryIssuanceService(
     AppDbContext dbContext,
     IOptions<PrimaryIssuanceOptions> options,
@@ -44,20 +43,37 @@ public sealed class PrimaryIssuanceService(
             return;
         }
 
-        var issuedToday = (await dbContext.Orders
-                .Where(order => order.ParticipantId == null
-                    && order.Type == OrderType.Sell
-                    && order.IsFloatReplenishment
-                    && order.LimitPrice > 0m)
-                .Join(
-                    dbContext.MarketCycles,
-                    order => order.CreatedInCycleId,
-                    cycle => cycle.Id,
-                    (order, cycle) => new { order.CompanyId, cycle.TradingDayId })
-                .Where(row => row.TradingDayId == tradingDayId)
-                .Select(row => row.CompanyId)
+        var tradingDayCycleIds = await dbContext.MarketCycles
+            .Where(cycle => cycle.TradingDayId == tradingDayId)
+            .Select(cycle => cycle.Id)
+            .ToListAsync();
+        var issuedToday = (await dbContext.PrimaryIssuanceEvents
+                .AsNoTracking()
+                .Where(issuance => tradingDayCycleIds.Contains(issuance.CreatedInCycleId))
+                .Select(issuance => issuance.CompanyId)
                 .ToListAsync())
+            .Concat(dbContext.ChangeTracker
+                .Entries<PrimaryIssuanceEvent>()
+                .Where(entry => entry.State == EntityState.Added
+                    && tradingDayCycleIds.Contains(entry.Entity.CreatedInCycleId))
+                .Select(entry => entry.Entity.CompanyId))
             .ToHashSet();
+
+        var legacyIssuerOrders = await dbContext.Orders
+            .AsNoTracking()
+            .Where(order => order.ParticipantId == null
+                && order.Type == OrderType.Sell
+                && order.IsFloatReplenishment
+                && order.LimitPrice > 0m)
+            .Join(
+                dbContext.MarketCycles,
+                order => order.CreatedInCycleId,
+                cycle => cycle.Id,
+                (order, cycle) => new { order.CompanyId, cycle.TradingDayId })
+            .Where(row => row.TradingDayId == tradingDayId)
+            .Select(row => row.CompanyId)
+            .ToListAsync();
+        issuedToday.UnionWith(legacyIssuerOrders);
 
         var heldByCompany = (await dbContext.Holdings
                 .Select(holding => new { holding.CompanyId, holding.Quantity })

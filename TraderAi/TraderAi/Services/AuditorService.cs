@@ -41,17 +41,17 @@ public sealed class AuditorService
             return;
         }
 
-        var cycles = await (
+        var currentCycle = await (
             from cycle in dbContext.MarketCycles.AsNoTracking()
             join day in dbContext.TradingDays.AsNoTracking() on cycle.TradingDayId equals day.Id
+            where cycle.Id == currentCycleId
             select new CyclePoint(
                 cycle.Id,
                 cycle.CycleNumber,
                 cycle.TradingCycleNumber,
                 cycle.MarketRunId,
                 day.DayNumber))
-            .ToListAsync();
-        var currentCycle = cycles.SingleOrDefault(cycle => cycle.Id == currentCycleId);
+            .SingleOrDefaultAsync();
         if (currentCycle is null
             || currentCycle.CycleNumber != currentCycleNumber
             || currentCycle.TradingCycleNumber != 1)
@@ -59,43 +59,63 @@ public sealed class AuditorService
             return;
         }
 
-        var cycleById = cycles.ToDictionary(cycle => cycle.Id);
-        var companies = await dbContext.Companies
-            .Where(company => company.ClosedInCycleId == null)
-            .OrderBy(company => company.Id)
+        var listedCompanies = await (
+            from company in dbContext.Companies
+            where company.ClosedInCycleId == null
+            join listingCycle in dbContext.MarketCycles.AsNoTracking()
+                on company.CreatedInCycleId equals (int?)listingCycle.Id into listingCycles
+            from listingCycle in listingCycles.DefaultIfEmpty()
+            join listingDay in dbContext.TradingDays.AsNoTracking()
+                on listingCycle.TradingDayId equals listingDay.Id into listingDays
+            from listingDay in listingDays.DefaultIfEmpty()
+            orderby company.Id
+            select new ListedCompany(
+                company,
+                listingDay == null ? 1 : listingDay.DayNumber))
             .ToListAsync();
-        if (companies.Count == 0)
+        if (listedCompanies.Count == 0)
         {
             return;
         }
 
+        var companies = listedCompanies.Select(row => row.Company).ToArray();
         var companyIds = companies.Select(company => company.Id).ToArray();
-        var latestEffectiveDayByCompany = (await dbContext.CompanyAuditEvidence
+        var latestEffectiveDayByCompany = await dbContext.CompanyAuditEvidence
                 .AsNoTracking()
                 .Where(evidence => companyIds.Contains(evidence.CompanyId))
-                .Select(evidence => new
+                .GroupBy(evidence => evidence.CompanyId)
+                .Select(group => new
                 {
-                    evidence.CompanyId,
-                    evidence.EffectiveTradingDayNumber,
+                    CompanyId = group.Key,
+                    EffectiveTradingDayNumber = group.Max(
+                        evidence => evidence.EffectiveTradingDayNumber),
                 })
-                .ToListAsync())
-            .GroupBy(evidence => evidence.CompanyId)
-            .ToDictionary(
-                group => group.Key,
-                group => group.Max(evidence => evidence.EffectiveTradingDayNumber));
+                .ToDictionaryAsync(
+                group => group.CompanyId,
+                group => group.EffectiveTradingDayNumber);
+        foreach (var evidence in dbContext.ChangeTracker
+            .Entries<CompanyAuditEvidence>()
+            .Where(entry => entry.State == EntityState.Added
+                && companyIds.Contains(entry.Entity.CompanyId))
+            .Select(entry => entry.Entity))
+        {
+            latestEffectiveDayByCompany[evidence.CompanyId] = Math.Max(
+                latestEffectiveDayByCompany.GetValueOrDefault(evidence.CompanyId),
+                evidence.EffectiveTradingDayNumber);
+        }
 
-        var due = companies
-            .Select(company =>
+        var due = listedCompanies
+            .Select(row =>
             {
-                var listingDay = company.CreatedInCycleId is int listingCycleId
-                    && cycleById.TryGetValue(listingCycleId, out var listingCycle)
-                        ? listingCycle.TradingDayNumber
-                        : 1;
-                var previousEffectiveDay = latestEffectiveDayByCompany.GetValueOrDefault(company.Id);
-                var dueFromDay = previousEffectiveDay > 0 ? previousEffectiveDay : listingDay;
+                var previousEffectiveDay = latestEffectiveDayByCompany.GetValueOrDefault(row.Company.Id);
+                var dueFromDay = previousEffectiveDay > 0
+                    ? previousEffectiveDay
+                    : row.ListingTradingDayNumber;
                 return new DueCompany(
-                    company,
-                    previousEffectiveDay > 0 ? previousEffectiveDay : listingDay,
+                    row.Company,
+                    previousEffectiveDay > 0
+                        ? previousEffectiveDay
+                        : row.ListingTradingDayNumber,
                     currentCycle.TradingDayNumber - 1,
                     currentCycle.TradingDayNumber,
                     dueFromDay + options.AuditIntervalTradingDays);
@@ -110,7 +130,7 @@ public sealed class AuditorService
             return;
         }
 
-        await EnsureAuditorsExistAsync(companies.Count, now);
+        await EnsureAuditorsExistAsync(companies.Length, now);
         var auditors = await dbContext.Auditors
             .OrderBy(auditor => auditor.Id)
             .ToListAsync();
@@ -127,53 +147,125 @@ public sealed class AuditorService
         var minimumStartDay = due.Min(candidate => candidate.EvaluationStartTradingDayNumber);
         var maximumEndDay = due.Max(candidate => candidate.EvaluationEndTradingDayNumber);
 
-        var livePrices = await dbContext.PriceSnapshots
-            .AsNoTracking()
-            .Where(snapshot => dueCompanyIds.Contains(snapshot.CompanyId))
-            .Select(snapshot => new
+        var cycles = await (
+            from cycle in dbContext.MarketCycles.AsNoTracking()
+            join day in dbContext.TradingDays.AsNoTracking() on cycle.TradingDayId equals day.Id
+            where cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+            select new CyclePoint(
+                cycle.Id,
+                cycle.CycleNumber,
+                cycle.TradingCycleNumber,
+                cycle.MarketRunId,
+                day.DayNumber))
+            .ToListAsync();
+        var cycleById = cycles.ToDictionary(cycle => cycle.Id);
+
+        var livePriceRows = await (
+            from snapshot in dbContext.PriceSnapshots.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on snapshot.CreatedInCycleId equals cycle.Id
+            join day in dbContext.TradingDays.AsNoTracking()
+                on cycle.TradingDayId equals day.Id
+            where dueCompanyIds.Contains(snapshot.CompanyId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+                && day.DayNumber <= maximumEndDay
+                && (day.DayNumber >= minimumStartDay
+                    || !(
+                        from otherSnapshot in dbContext.PriceSnapshots.AsNoTracking()
+                        join otherCycle in dbContext.MarketCycles.AsNoTracking()
+                            on otherSnapshot.CreatedInCycleId equals otherCycle.Id
+                        join otherDay in dbContext.TradingDays.AsNoTracking()
+                            on otherCycle.TradingDayId equals otherDay.Id
+                        where otherSnapshot.CompanyId == snapshot.CompanyId
+                            && otherCycle.MarketRunId == currentCycle.MarketRunId
+                            && otherCycle.CycleNumber <= currentCycle.CycleNumber
+                            && otherDay.DayNumber < minimumStartDay
+                            && (otherCycle.CycleNumber > cycle.CycleNumber
+                                || (otherCycle.CycleNumber == cycle.CycleNumber
+                                    && otherSnapshot.CreatedAt > snapshot.CreatedAt)
+                                || (otherCycle.CycleNumber == cycle.CycleNumber
+                                    && otherSnapshot.CreatedAt == snapshot.CreatedAt
+                                    && otherSnapshot.Id > snapshot.Id))
+                        select otherSnapshot.Id)
+                    .Any())
+            select new
             {
                 snapshot.Id,
                 snapshot.CompanyId,
                 snapshot.Price,
                 snapshot.Capitalization,
-                snapshot.CreatedInCycleId,
+                CycleNumber = cycle.CycleNumber,
+                TradingDayNumber = day.DayNumber,
                 snapshot.CreatedAt,
-                SourcePriority = 1,
             })
             .ToListAsync();
-        var archivedPrices = await dbContext.PriceSnapshotArchives
-            .AsNoTracking()
-            .Where(snapshot => dueCompanyIds.Contains(snapshot.CompanyId))
-            .Select(snapshot => new
+        var livePrices = livePriceRows
+            .Select(snapshot => new PricePoint(
+                snapshot.Id,
+                snapshot.CompanyId,
+                snapshot.Price,
+                snapshot.Capitalization,
+                snapshot.CycleNumber,
+                snapshot.TradingDayNumber,
+                snapshot.CreatedAt,
+                1))
+            .ToList();
+
+        var archivedPriceRows = await (
+            from snapshot in dbContext.PriceSnapshotArchives.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on snapshot.CreatedInCycleId equals cycle.Id
+            join day in dbContext.TradingDays.AsNoTracking()
+                on cycle.TradingDayId equals day.Id
+            where dueCompanyIds.Contains(snapshot.CompanyId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+                && day.DayNumber <= maximumEndDay
+                && (day.DayNumber >= minimumStartDay
+                    || !(
+                        from otherSnapshot in dbContext.PriceSnapshotArchives.AsNoTracking()
+                        join otherCycle in dbContext.MarketCycles.AsNoTracking()
+                            on otherSnapshot.CreatedInCycleId equals otherCycle.Id
+                        join otherDay in dbContext.TradingDays.AsNoTracking()
+                            on otherCycle.TradingDayId equals otherDay.Id
+                        where otherSnapshot.CompanyId == snapshot.CompanyId
+                            && otherCycle.MarketRunId == currentCycle.MarketRunId
+                            && otherCycle.CycleNumber <= currentCycle.CycleNumber
+                            && otherDay.DayNumber < minimumStartDay
+                            && (otherCycle.CycleNumber > cycle.CycleNumber
+                                || (otherCycle.CycleNumber == cycle.CycleNumber
+                                    && otherSnapshot.CreatedAt > snapshot.CreatedAt)
+                                || (otherCycle.CycleNumber == cycle.CycleNumber
+                                    && otherSnapshot.CreatedAt == snapshot.CreatedAt
+                                    && otherSnapshot.Id > snapshot.Id))
+                        select otherSnapshot.Id)
+                    .Any())
+            select new
             {
                 snapshot.Id,
                 snapshot.CompanyId,
                 snapshot.Price,
                 snapshot.Capitalization,
-                snapshot.CreatedInCycleId,
+                CycleNumber = cycle.CycleNumber,
+                TradingDayNumber = day.DayNumber,
                 snapshot.CreatedAt,
-                SourcePriority = 0,
             })
             .ToListAsync();
+        var archivedPrices = archivedPriceRows
+            .Select(snapshot => new PricePoint(
+                snapshot.Id,
+                snapshot.CompanyId,
+                snapshot.Price,
+                snapshot.Capitalization,
+                snapshot.CycleNumber,
+                snapshot.TradingDayNumber,
+                snapshot.CreatedAt,
+                0))
+            .ToList();
         var pricesByCompany = livePrices
             .Concat(archivedPrices)
-            .Where(snapshot =>
-                cycleById.TryGetValue(snapshot.CreatedInCycleId, out var cycle)
-                && cycle.MarketRunId == currentCycle.MarketRunId
-                && cycle.TradingDayNumber <= maximumEndDay)
-            .Select(snapshot =>
-            {
-                var cycle = cycleById[snapshot.CreatedInCycleId];
-                return new PricePoint(
-                    snapshot.Id,
-                    snapshot.CompanyId,
-                    snapshot.Price,
-                    snapshot.Capitalization,
-                    cycle.CycleNumber,
-                    cycle.TradingDayNumber,
-                    snapshot.CreatedAt,
-                    snapshot.SourcePriority);
-            })
             .GroupBy(snapshot => snapshot.CompanyId)
             .ToDictionary(
                 group => group.Key,
@@ -188,76 +280,103 @@ public sealed class AuditorService
                     .ThenBy(snapshot => snapshot.Id)
                     .ToArray());
 
-        var denominationEvents = await dbContext.StockDenominationEvents
-            .AsNoTracking()
-            .Where(denominationEvent => dueCompanyIds.Contains(denominationEvent.CompanyId))
+        var minimumPriceCycle = livePrices
+            .Concat(archivedPrices)
+            .Select(snapshot => snapshot.CycleNumber)
+            .DefaultIfEmpty(currentCycle.CycleNumber)
+            .Min();
+        var denominationEvents = await (
+            from denominationEvent in dbContext.StockDenominationEvents.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on denominationEvent.EffectiveInCycleId equals cycle.Id
+            join day in dbContext.TradingDays.AsNoTracking()
+                on cycle.TradingDayId equals day.Id
+            where dueCompanyIds.Contains(denominationEvent.CompanyId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+                && (day.DayNumber >= minimumStartDay
+                    || cycle.CycleNumber >= minimumPriceCycle)
+            select denominationEvent)
             .OrderBy(denominationEvent => denominationEvent.EffectiveInCycleNumber)
             .ThenBy(denominationEvent => denominationEvent.Id)
             .ToListAsync();
         var denominationByCompany = denominationEvents
-            .Where(denominationEvent =>
-                cycleById.TryGetValue(denominationEvent.EffectiveInCycleId, out var cycle)
-                && cycle.MarketRunId == currentCycle.MarketRunId
-                && cycle.CycleNumber <= currentCycle.CycleNumber)
             .GroupBy(denominationEvent => denominationEvent.CompanyId)
             .ToDictionary(
                 group => group.Key,
                 group => group.ToArray());
 
-        var emissions = await dbContext.ShareEmissions
-            .AsNoTracking()
-            .Where(emission => dueCompanyIds.Contains(emission.CompanyId))
+        var emissions = await (
+            from emission in dbContext.ShareEmissions.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on emission.CreatedInCycleId equals cycle.Id
+            join day in dbContext.TradingDays.AsNoTracking()
+                on cycle.TradingDayId equals day.Id
+            where dueCompanyIds.Contains(emission.CompanyId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && day.DayNumber >= minimumStartDay
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+            select emission)
             .OrderBy(emission => emission.CreatedInCycleId)
             .ThenBy(emission => emission.Id)
             .ToListAsync();
         var emissionsByCompany = emissions
-            .Where(emission =>
-                cycleById.TryGetValue(emission.CreatedInCycleId, out var cycle)
-                && cycle.MarketRunId == currentCycle.MarketRunId
-                && cycle.TradingDayNumber >= minimumStartDay
-                && cycle.CycleNumber <= currentCycle.CycleNumber)
             .GroupBy(emission => emission.CompanyId)
             .ToDictionary(
                 group => group.Key,
                 group => group.ToArray());
 
-        var primaryIssuances = await dbContext.PrimaryIssuanceEvents
-            .AsNoTracking()
-            .Where(issuance => dueCompanyIds.Contains(issuance.CompanyId))
+        var primaryIssuances = await (
+            from issuance in dbContext.PrimaryIssuanceEvents.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on issuance.CreatedInCycleId equals cycle.Id
+            join day in dbContext.TradingDays.AsNoTracking()
+                on cycle.TradingDayId equals day.Id
+            where dueCompanyIds.Contains(issuance.CompanyId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && day.DayNumber >= minimumStartDay
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+            select issuance)
             .OrderBy(issuance => issuance.CreatedInCycleId)
             .ThenBy(issuance => issuance.Id)
             .ToListAsync();
         var primaryIssuancesByCompany = primaryIssuances
-            .Where(issuance =>
-                cycleById.TryGetValue(issuance.CreatedInCycleId, out var cycle)
-                && cycle.MarketRunId == currentCycle.MarketRunId
-                && cycle.TradingDayNumber >= minimumStartDay
-                && cycle.CycleNumber <= currentCycle.CycleNumber)
             .GroupBy(issuance => issuance.CompanyId)
             .ToDictionary(
                 group => group.Key,
                 group => group.ToArray());
 
-        var investments = await dbContext.CompanyInvestments
-            .AsNoTracking()
-            .Where(investment => dueCompanyIds.Contains(investment.CompanyId))
+        var investments = await (
+            from investment in dbContext.CompanyInvestments.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on investment.CreatedInCycleId equals cycle.Id
+            join day in dbContext.TradingDays.AsNoTracking()
+                on cycle.TradingDayId equals day.Id
+            where dueCompanyIds.Contains(investment.CompanyId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && day.DayNumber >= minimumStartDay
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+            select investment)
             .OrderBy(investment => investment.CreatedInCycleId)
             .ThenBy(investment => investment.Id)
             .ToListAsync();
         var investmentsByCompany = investments
-            .Where(investment =>
-                cycleById.TryGetValue(investment.CreatedInCycleId, out var cycle)
-                && cycle.MarketRunId == currentCycle.MarketRunId
-                && cycle.TradingDayNumber >= minimumStartDay
-                && cycle.CycleNumber <= currentCycle.CycleNumber)
             .GroupBy(investment => investment.CompanyId)
             .ToDictionary(
                 group => group.Key,
                 group => group.ToArray());
 
-        var corporateCashTransactions = await dbContext.CorporateCashTransactions
-            .AsNoTracking()
-            .Where(transaction => dueCompanyIds.Contains(transaction.CompanyId))
+        var corporateCashTransactions = await (
+            from transaction in dbContext.CorporateCashTransactions.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on transaction.CreatedInCycleId equals cycle.Id
+            join day in dbContext.TradingDays.AsNoTracking()
+                on cycle.TradingDayId equals day.Id
+            where dueCompanyIds.Contains(transaction.CompanyId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && day.DayNumber > maximumEndDay
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+            select transaction)
             .OrderBy(transaction => transaction.CreatedInCycleId)
             .ThenBy(transaction => transaction.Id)
             .ToListAsync();
@@ -270,19 +389,27 @@ public sealed class AuditorService
             .Where(transaction =>
                 cycleById.TryGetValue(transaction.CreatedInCycleId, out var cycle)
                 && cycle.MarketRunId == currentCycle.MarketRunId
+                && cycle.TradingDayNumber > maximumEndDay
                 && cycle.CycleNumber <= currentCycle.CycleNumber)
             .GroupBy(transaction => transaction.CompanyId)
             .ToDictionary(
                 group => group.Key,
                 group => group.ToArray());
 
-        var dividends = await dbContext.CompanyDividendEvents
-            .AsNoTracking()
-            .Where(dividendEvent =>
-                dueCompanyIds.Contains(dividendEvent.CompanyId)
-                && dividendEvent.TradingDayNumber <= maximumEndDay)
-            .OrderBy(dividendEvent => dividendEvent.TradingDayNumber)
-            .ThenBy(dividendEvent => dividendEvent.Id)
+        var dividends = await (
+            from dividendEvent in dbContext.CompanyDividendEvents.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on dividendEvent.CreatedInCycleId equals cycle.Id
+            where dueCompanyIds.Contains(dividendEvent.CompanyId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && dividendEvent.TradingDayNumber <= maximumEndDay
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+            select dividendEvent)
+            .GroupBy(dividendEvent => dividendEvent.CompanyId)
+            .Select(group => group
+                .OrderByDescending(dividendEvent => dividendEvent.TradingDayNumber)
+                .ThenByDescending(dividendEvent => dividendEvent.Id)
+                .First())
             .ToListAsync();
         var dividendsByCompany = dividends
             .GroupBy(dividendEvent => dividendEvent.CompanyId)
@@ -290,12 +417,16 @@ public sealed class AuditorService
                 group => group.Key,
                 group => group.ToArray());
 
-        var financialSnapshots = await dbContext.CompanyFinancialSnapshots
-            .AsNoTracking()
-            .Where(snapshot =>
-                dueCompanyIds.Contains(snapshot.CompanyId)
+        var financialSnapshots = await (
+            from snapshot in dbContext.CompanyFinancialSnapshots.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on snapshot.CreatedInCycleId equals cycle.Id
+            where dueCompanyIds.Contains(snapshot.CompanyId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
                 && snapshot.TradingDayNumber >= minimumStartDay
-                && snapshot.TradingDayNumber <= maximumEndDay)
+                && snapshot.TradingDayNumber <= maximumEndDay
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+            select snapshot)
             .ToListAsync();
         var financialsByCompany = financialSnapshots
             .GroupBy(snapshot => snapshot.CompanyId)
@@ -303,45 +434,44 @@ public sealed class AuditorService
                 group => group.Key,
                 group => group.ToArray());
 
-        var liveSentiment = await dbContext.SectorSentimentSnapshots
-            .AsNoTracking()
-            .Where(snapshot => dueIndustryIds.Contains(snapshot.IndustryId))
-            .Select(snapshot => new
-            {
+        var liveSentiment = await (
+            from snapshot in dbContext.SectorSentimentSnapshots.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on snapshot.CreatedInCycleId equals cycle.Id
+            join day in dbContext.TradingDays.AsNoTracking()
+                on cycle.TradingDayId equals day.Id
+            where dueIndustryIds.Contains(snapshot.IndustryId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && day.DayNumber >= minimumStartDay
+                && day.DayNumber <= maximumEndDay
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+            select new SentimentPoint(
                 snapshot.Id,
                 snapshot.IndustryId,
                 snapshot.SentimentValue,
-                snapshot.CreatedInCycleId,
-            })
+                cycle.CycleNumber,
+                day.DayNumber))
             .ToListAsync();
-        var archivedSentiment = await dbContext.SectorSentimentSnapshotArchives
-            .AsNoTracking()
-            .Where(snapshot => dueIndustryIds.Contains(snapshot.IndustryId))
-            .Select(snapshot => new
-            {
+        var archivedSentiment = await (
+            from snapshot in dbContext.SectorSentimentSnapshotArchives.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on snapshot.CreatedInCycleId equals cycle.Id
+            join day in dbContext.TradingDays.AsNoTracking()
+                on cycle.TradingDayId equals day.Id
+            where dueIndustryIds.Contains(snapshot.IndustryId)
+                && cycle.MarketRunId == currentCycle.MarketRunId
+                && day.DayNumber >= minimumStartDay
+                && day.DayNumber <= maximumEndDay
+                && cycle.CycleNumber <= currentCycle.CycleNumber
+            select new SentimentPoint(
                 snapshot.Id,
                 snapshot.IndustryId,
                 snapshot.SentimentValue,
-                snapshot.CreatedInCycleId,
-            })
+                cycle.CycleNumber,
+                day.DayNumber))
             .ToListAsync();
         var sentimentByIndustry = liveSentiment
             .Concat(archivedSentiment)
-            .Where(snapshot =>
-                cycleById.TryGetValue(snapshot.CreatedInCycleId, out var cycle)
-                && cycle.MarketRunId == currentCycle.MarketRunId
-                && cycle.TradingDayNumber >= minimumStartDay
-                && cycle.TradingDayNumber <= maximumEndDay)
-            .Select(snapshot =>
-            {
-                var cycle = cycleById[snapshot.CreatedInCycleId];
-                return new SentimentPoint(
-                    snapshot.Id,
-                    snapshot.IndustryId,
-                    snapshot.SentimentValue,
-                    cycle.CycleNumber,
-                    cycle.TradingDayNumber);
-            })
             .GroupBy(snapshot => snapshot.IndustryId)
             .ToDictionary(
                 group => group.Key,
@@ -449,6 +579,7 @@ public sealed class AuditorService
                 denominationWindow.Count(denominationEvent =>
                     denominationEvent.ActionType == StockDenominationActionType.ReverseSplit),
                 latestDividend?.FundingOutcome,
+                financial is not null,
                 modeledMaximumDividend,
                 dividendCoverageRatio,
                 industryEvidence.Trend,
@@ -720,6 +851,12 @@ public sealed class AuditorService
             };
         }
 
+        if (reconstructed < 0m)
+        {
+            throw new InvalidOperationException(
+                "Corporate cash history reconstructs a negative issuer balance.");
+        }
+
         return reconstructed;
     }
 
@@ -802,6 +939,10 @@ public sealed class AuditorService
         int EvaluationEndTradingDayNumber,
         int EffectiveTradingDayNumber,
         int DueTradingDayNumber);
+
+    private sealed record ListedCompany(
+        Company Company,
+        int ListingTradingDayNumber);
 
     private sealed record PricePoint(
         int Id,

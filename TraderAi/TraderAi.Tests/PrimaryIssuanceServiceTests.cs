@@ -48,6 +48,63 @@ public sealed class PrimaryIssuanceServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RepeatedCallBeforeSaveStagesOneIssuance()
+    {
+        var cycle = await AddCycleAsync(dayNumber: 1, cycleNumber: 1);
+        var company = await AddScarceCompanyAsync(issuedShares: 1_000, price: 100m, cycle.Id);
+        var buyer = await AddParticipantAsync(ParticipantType.Individual);
+        AddBuy(buyer, company, quantity: 120, limitPrice: 105m, cycle.Id);
+        await context.SaveChangesAsync();
+        var service = Service(enabled: true);
+
+        await service.ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await service.ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+
+        Assert.Equal(1_120, company.IssuedSharesCount);
+        Assert.Single(
+            context.ChangeTracker.Entries<PrimaryIssuanceEvent>(),
+            entry => entry.State == EntityState.Added);
+        Assert.Single(
+            context.ChangeTracker.Entries<Order>(),
+            entry => entry.State == EntityState.Added
+                && entry.Entity.IsFloatReplenishment);
+        await context.SaveChangesAsync();
+        Assert.Single(await context.PrimaryIssuanceEvents.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task PersistedIssuanceBlocksSameDayEvenWithoutIssuerOrder()
+    {
+        var firstCycle = await AddCycleAsync(dayNumber: 1, cycleNumber: 1);
+        var currentCycle = await AddCycleAsync(dayNumber: 1, cycleNumber: 2);
+        var company = await AddScarceCompanyAsync(issuedShares: 1_000, price: 100m, firstCycle.Id);
+        var buyer = await AddParticipantAsync(ParticipantType.Individual);
+        AddBuy(buyer, company, quantity: 120, limitPrice: 105m, currentCycle.Id);
+        context.PrimaryIssuanceEvents.Add(new PrimaryIssuanceEvent
+        {
+            CompanyId = company.Id,
+            CreatedInCycleId = firstCycle.Id,
+            IssuedSharesBefore = 900,
+            NewlyIssuedShares = 100,
+            IssuedSharesAfter = 1_000,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await context.SaveChangesAsync();
+
+        await Service(enabled: true).ProcessForCycleAsync(
+            currentCycle.Id,
+            currentCycle.CycleNumber,
+            DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1_000, company.IssuedSharesCount);
+        Assert.Single(await context.PrimaryIssuanceEvents.AsNoTracking().ToListAsync());
+        Assert.DoesNotContain(
+            await context.Orders.AsNoTracking().ToListAsync(),
+            order => order.ParticipantId == null);
+    }
+
+    [Fact]
     public async Task NoEligibleDemandDoesNotIssue()
     {
         var cycle = await AddCycleAsync(dayNumber: 1, cycleNumber: 1);

@@ -354,6 +354,14 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasKey(evidence => evidence.CompanyRatingId);
 
         modelBuilder.Entity<CompanyAuditEvidence>()
+            .HasIndex(evidence => new
+            {
+                evidence.CompanyId,
+                evidence.EffectiveTradingDayNumber,
+            })
+            .IsUnique();
+
+        modelBuilder.Entity<CompanyAuditEvidence>()
             .HasOne(evidence => evidence.CompanyRating)
             .WithOne(rating => rating.Evidence)
             .HasForeignKey<CompanyAuditEvidence>(evidence => evidence.CompanyRatingId)

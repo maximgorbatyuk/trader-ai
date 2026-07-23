@@ -120,6 +120,30 @@ public sealed class CompanyAuditScorerTests
         Assert.Equal(CompanyRiskRating.Stable, result.Rating);
     }
 
+    [Fact]
+    public void MissingFinancialEvidenceIsNeutralAndCannotProduceStable()
+    {
+        var result = CreateScorer().Score(NeutralInput() with
+        {
+            FinancialEvidenceAvailable = false,
+            ModeledMaximumDividend = 0m,
+            DividendCoverageRatio = 0m,
+            ProfitabilityLevel = CompanyMetricLevel.High,
+            FinancialVolatilityLevel = CompanyMetricLevel.Low,
+            ClosureRiskLevel = CompanyMetricLevel.Low,
+            ManagementOutlook = ManagementOutlook.Positive,
+            ManagementConfidenceScore = 100m,
+        });
+
+        Assert.Equal(0, result.DividendCoverageScore);
+        Assert.Equal(0, result.ProfitabilityFactorScore);
+        Assert.Equal(0, result.StabilityFactorScore);
+        Assert.Equal(0, result.ClosureRiskFactorScore);
+        Assert.Equal(0, result.ManagementOutlookFactorScore);
+        Assert.Equal(0, result.TotalScore);
+        Assert.Equal(CompanyRiskRating.LowRisk, result.Rating);
+    }
+
     [Theory]
     [InlineData(IndustryTrend.Rising, 1)]
     [InlineData(IndustryTrend.Plateau, 0)]
@@ -462,6 +486,7 @@ public sealed class CompanyAuditScorerTests
             StockSplitCount: 0,
             ReverseSplitCount: 0,
             LatestDividendOutcome: null,
+            FinancialEvidenceAvailable: true,
             ModeledMaximumDividend: 100m,
             DividendCoverageRatio: 1m,
             IndustryTrend: IndustryTrend.Plateau,
