@@ -818,6 +818,16 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(100, companies!.Length);
             Assert.Equal(600, participants!.Length);
             Assert.Equal(100, openOrders!.Length);
+            using (var scope = configuredFactory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var financialCounts = await db.CompanyFinancialSnapshots
+                    .GroupBy(snapshot => snapshot.CompanyId)
+                    .Select(group => group.Count())
+                    .ToListAsync();
+                Assert.Equal(companies.Length, financialCounts.Count);
+                Assert.All(financialCounts, count => Assert.Equal(1, count));
+            }
             Assert.All(openOrders, order =>
             {
                 Assert.Null(order.ParticipantId);

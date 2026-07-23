@@ -133,7 +133,8 @@ public sealed class MarketService(
     PrimaryIssuanceService? primaryIssuanceService = null,
     AutomatedBuyOrderPolicy? automatedBuyOrderPolicy = null,
     IOptions<AiTradingOptions>? aiTradingOptions = null,
-    BigInvestmentService? bigInvestmentService = null)
+    BigInvestmentService? bigInvestmentService = null,
+    CompanyFinancialService? companyFinancialService = null)
 {
     private static readonly IReadOnlyDictionary<int, int> NoHoldings = new Dictionary<int, int>();
     private static readonly IReadOnlySet<int> NoOpenOrders = new HashSet<int>();
@@ -1306,6 +1307,14 @@ public sealed class MarketService(
         if (bigInvestmentService is not null)
         {
             await bigInvestmentService.ProcessForCycleAsync(currentCycleId, currentCycleNumber, DateTime.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
+        // Financial reports read the settled corporate-action state and are flushed before lifecycle and audit
+        // queries so every later consumer in this transaction observes the same current-cycle evidence.
+        if (companyFinancialService is not null)
+        {
+            await companyFinancialService.ProcessForCycleAsync(currentCycleId, DateTime.UtcNow);
             await dbContext.SaveChangesAsync();
         }
 
@@ -3421,6 +3430,9 @@ public sealed class MarketService(
         await dbContext.SettlementInstructions.ExecuteDeleteAsync();
         await dbContext.OrderFills.ExecuteDeleteAsync();
         await dbContext.DividendPayouts.ExecuteDeleteAsync();
+        await dbContext.CompanyAuditEvidence.ExecuteDeleteAsync();
+        await dbContext.CompanyFinancialSnapshots.ExecuteDeleteAsync();
+        await dbContext.CompanyDividendEvents.ExecuteDeleteAsync();
         await dbContext.CorporateCashTransactions.ExecuteDeleteAsync();
         await dbContext.StockDenominationEvents.ExecuteDeleteAsync();
         await dbContext.PriceBandStates.ExecuteDeleteAsync();
@@ -3664,6 +3676,23 @@ public sealed class MarketService(
         }
 
         await dbContext.SaveChangesAsync();
+
+        if (companyFinancialService is not null)
+        {
+            foreach (var (company, index) in companies
+                         .Select((company, index) => (company, index))
+                         .OrderBy(item => item.company.Id))
+            {
+                await companyFinancialService.StageSeedSnapshotAsync(
+                    company,
+                    companyPrices[index],
+                    firstCycle.Id,
+                    tradingDayNumber: 1,
+                    now);
+            }
+
+            await dbContext.SaveChangesAsync();
+        }
 
         return market;
     }

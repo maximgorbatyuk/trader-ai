@@ -31,8 +31,17 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
         context.Database.EnsureCreated();
     }
 
-    private CompanyLifecycleService Service(bool enabled, Random random) =>
-        new(context, Options.Create(new CompanyLifecycleOptions { Enabled = enabled }), Options.Create(new RandomChanceRatesOptions()), random, new MarketImpactService(context));
+    private CompanyLifecycleService Service(
+        bool enabled,
+        Random random,
+        CompanyFinancialService? financialService = null) =>
+        new(
+            context,
+            Options.Create(new CompanyLifecycleOptions { Enabled = enabled }),
+            Options.Create(new RandomChanceRatesOptions()),
+            random,
+            new MarketImpactService(context),
+            financialService);
 
     private NewsService DeferredNews() =>
         new(
@@ -97,6 +106,28 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
 
         var refreshedMarket = await context.Markets.AsNoTracking().SingleAsync();
         Assert.Equal(201, refreshedMarket.LastCompanyAppearanceCycleNumber);
+    }
+
+    [Fact]
+    public async Task AppearanceSeedsFinancialBaselineInTheListingCycle()
+    {
+        var cycle = await AddCycleForTradingDayAsync(cycleNumber: 201, dayNumber: 3);
+        await SetupMarketAsync(cycle, lastAppearanceCycleNumber: 1);
+
+        await Service(
+                enabled: true,
+                new ScriptedRandom([0.05d], [500, 100, 0, 0]),
+                FinancialService(new Random(20260724)))
+            .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var company = await context.Companies.AsNoTracking().SingleAsync();
+        var snapshot = await context.CompanyFinancialSnapshots.AsNoTracking().SingleAsync();
+        Assert.Equal(company.Id, snapshot.CompanyId);
+        Assert.Equal(cycle.Id, snapshot.CreatedInCycleId);
+        Assert.Equal(3, snapshot.TradingDayNumber);
+        Assert.Equal(CompanyFinancialSnapshotMoment.Seed, snapshot.Moment);
+        Assert.Equal(CompanyFinancialMetric.All, snapshot.ChangedMetrics);
     }
 
     [Fact]
@@ -953,6 +984,18 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
             CreatedAt = DateTime.UtcNow,
         });
         await context.SaveChangesAsync();
+    }
+
+    private CompanyFinancialService FinancialService(Random random)
+    {
+        var options = new CompanyFinancialOptions();
+        return new CompanyFinancialService(
+            context,
+            Options.Create(options),
+            Options.Create(new RandomChanceRatesOptions()),
+            Options.Create(new TradingClockOptions()),
+            random,
+            new CompanyFinancialScorer(Options.Create(options)));
     }
 
     public void Dispose()

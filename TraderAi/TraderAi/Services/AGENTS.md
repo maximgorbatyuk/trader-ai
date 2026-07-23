@@ -13,16 +13,20 @@ The pre-match order is intentional:
 5. Apply free-share emissions.
 6. Replenish scarce issuer float with demand-paced primary issuance.
 7. Fund a company through a big investment, minting shares before closure so the deal's delisting protection is honoured this cycle.
-8. Process company closure and appearance.
-9. Liquidate cash-starved holders.
-10. Service loans and create distress sells.
-11. Process bankruptcy.
-12. Process collective funds.
-13. Process participant exits and replacements.
-14. Apply the concentration cap.
-15. Run auditors last.
+8. Update scheduled company financial reports from the settled sentiment and corporate-action state.
+9. Process company closure and appearance.
+10. Liquidate cash-starved holders.
+11. Service loans and create distress sells.
+12. Process bankruptcy.
+13. Process collective funds.
+14. Process participant exits and replacements.
+15. Apply the concentration cap.
+16. Run auditors last.
 
 Do not reorder these phases without reviewing which prices, ratings, holdings, orders, and crisis state each later service is expected to observe. Preserve existing save boundaries where a later database query must see an earlier phase's staged changes.
+
+Financial snapshots are saved before lifecycle and audit work so those consumers share one current-cycle report.
+The initial roster and every new listing use the same financial seed path after the company id and first price exist.
 
 ## Order resting
 

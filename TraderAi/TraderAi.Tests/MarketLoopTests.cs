@@ -1,5 +1,7 @@
+using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -111,6 +113,196 @@ public sealed class MarketLoopTests : IDisposable
     }
 
     [Fact]
+    public async Task DemoResetReplacesFinancialHistoryWithOneBaselinePerCompany()
+    {
+        var financialService = FinancialService(new Random(20260724));
+        var clock = new TradingClockService(context, Options.Create(new TradingClockOptions()));
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            new NoOpDecisionEngine(),
+            new MarketCycleLock(),
+            new Random(1),
+            tradingClockService: clock,
+            companyFinancialService: financialService);
+        await service.SeedDemoMarketAsync();
+
+        var oldCompany = await context.Companies.OrderBy(company => company.Id).FirstAsync();
+        var oldCycle = await context.MarketCycles.SingleAsync();
+        var dividend = new CompanyDividendEvent
+        {
+            CompanyId = oldCompany.Id,
+            DeclaredAmount = 100m,
+            FundedAmount = 100m,
+            FundingOutcome = DividendFundingOutcome.Paid,
+            IssuerCashBeforeFunding = 100m,
+            CreatedInCycleId = oldCycle.Id,
+            TradingDayNumber = 1,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.CompanyDividendEvents.Add(dividend);
+        await context.SaveChangesAsync();
+        var oldSnapshot = await context.CompanyFinancialSnapshots
+            .SingleAsync(snapshot => snapshot.CompanyId == oldCompany.Id);
+        oldSnapshot.LatestDividendEventId = dividend.Id;
+        await context.SaveChangesAsync();
+
+        await service.ResetDemoMarketAsync();
+
+        var financialCounts = await context.CompanyFinancialSnapshots
+            .GroupBy(snapshot => snapshot.CompanyId)
+            .Select(group => group.Count())
+            .ToListAsync();
+        Assert.Equal(await context.Companies.CountAsync(), financialCounts.Count);
+        Assert.All(financialCounts, count => Assert.Equal(1, count));
+        Assert.Empty(await context.CompanyDividendEvents.ToListAsync());
+        Assert.DoesNotContain(
+            await context.CompanyFinancialSnapshots.ToListAsync(),
+            snapshot => snapshot.CompanyId == oldCompany.Id);
+    }
+
+    [Fact]
+    public async Task DemoFinancialBaselineUsesTheSeededIndustrySentiment()
+    {
+        var financialService = FinancialService(new ConstantRandom(0.5d));
+        var clock = new TradingClockService(context, Options.Create(new TradingClockOptions()));
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            new NoOpDecisionEngine(),
+            new MarketCycleLock(),
+            new Random(1),
+            industrySentimentOptions: Options.Create(new IndustrySentimentOptions { Enabled = true }),
+            tradingClockService: clock,
+            companyFinancialService: financialService);
+
+        await service.SeedDemoMarketAsync();
+
+        var rows = await (
+                from snapshot in context.CompanyFinancialSnapshots
+                join company in context.Companies on snapshot.CompanyId equals company.Id
+                join industry in context.Industries on company.IndustryId equals industry.Id
+                select new { industry.SentimentValue, snapshot.BusinessRiskScore })
+            .ToListAsync();
+        var rising = rows.Where(row => row.SentimentValue > 0).ToList();
+        var falling = rows.Where(row => row.SentimentValue < 0).ToList();
+        Assert.NotEmpty(rising);
+        Assert.NotEmpty(falling);
+        Assert.All(rising, row => Assert.True(row.BusinessRiskScore < 50m));
+        Assert.All(falling, row => Assert.True(row.BusinessRiskScore > 50m));
+    }
+
+    [Theory]
+    [InlineData(1, CompanyFinancialSnapshotMoment.DayOpening, true)]
+    [InlineData(105, CompanyFinancialSnapshotMoment.DayOpening, false)]
+    [InlineData(106, CompanyFinancialSnapshotMoment.Midday, true)]
+    [InlineData(107, CompanyFinancialSnapshotMoment.Midday, false)]
+    public async Task FinancialReportingRunsOnlyAtDailyCheckpoints(
+        int tradingCycleNumber,
+        CompanyFinancialSnapshotMoment expectedMoment,
+        bool expected)
+    {
+        var seed = await TestMarketSeed.SeedAccountingScenarioAsync(context);
+        seed.Cycle.TradingCycleNumber = tradingCycleNumber;
+        await context.SaveChangesAsync();
+        var financialService = FinancialService(new Random(20260724));
+        await financialService.StageSeedSnapshotAsync(
+            seed.Company,
+            100m,
+            seed.Cycle.Id,
+            seed.Day.DayNumber,
+            DateTime.UtcNow);
+        await context.SaveChangesAsync();
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            new NoOpDecisionEngine(),
+            new MarketCycleLock(),
+            new Random(1),
+            companyFinancialService: financialService);
+
+        await service.RunCycleTickAsync();
+
+        Assert.Equal(
+            expected,
+            await context.CompanyFinancialSnapshots
+                .AnyAsync(snapshot => snapshot.Moment == expectedMoment));
+        Assert.Equal(expected ? 2 : 1, await context.CompanyFinancialSnapshots.CountAsync());
+    }
+
+    [Fact]
+    public async Task ScheduledFinancialSnapshotIsPersistedBeforeSameCycleLifecycleWork()
+    {
+        var observer = new RecordingCommandInterceptor();
+        using var observedConnection = new SqliteConnection("DataSource=:memory:");
+        observedConnection.Open();
+        var observedOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(observedConnection)
+            .AddInterceptors(observer)
+            .Options;
+        await using var observedContext = new AppDbContext(observedOptions);
+        observedContext.Database.EnsureCreated();
+        var seed = await TestMarketSeed.SeedAccountingScenarioAsync(observedContext);
+        var financialOptions = new CompanyFinancialOptions();
+        var financialService = new CompanyFinancialService(
+            observedContext,
+            Options.Create(financialOptions),
+            Options.Create(new RandomChanceRatesOptions()),
+            Options.Create(new TradingClockOptions()),
+            new Random(20260724),
+            new CompanyFinancialScorer(Options.Create(financialOptions)));
+        await financialService.StageSeedSnapshotAsync(
+            seed.Company,
+            100m,
+            seed.Cycle.Id,
+            seed.Day.DayNumber,
+            DateTime.UtcNow);
+        await observedContext.SaveChangesAsync();
+        observer.Clear();
+        var lifecycle = new CompanyLifecycleService(
+            observedContext,
+            Options.Create(new CompanyLifecycleOptions { Enabled = true }),
+            Options.Create(new RandomChanceRatesOptions()),
+            new ConstantRandom(0d),
+            new MarketImpactService(observedContext),
+            financialService);
+        var service = new MarketService(
+            observedContext,
+            new MatchingEngine(observedContext),
+            new NoOpDecisionEngine(),
+            new MarketCycleLock(),
+            new Random(1),
+            companyLifecycleService: lifecycle,
+            companyFinancialService: financialService);
+
+        await service.RunCycleTickAsync();
+
+        var commands = observer.Commands.ToArray();
+        var reportInsert = Array.FindIndex(
+            commands,
+            command => command.Contains("INSERT INTO \"CompanyFinancialSnapshots\"", StringComparison.Ordinal));
+        var lifecycleRead = Array.FindIndex(
+            commands,
+            command => command.Contains("FROM \"Companies\" AS \"c\"", StringComparison.Ordinal)
+                && command.Contains("\"c\".\"ClosedInCycleId\" IS NULL", StringComparison.Ordinal)
+                && !command.Contains("JOIN", StringComparison.Ordinal));
+        Assert.True(reportInsert >= 0);
+        Assert.True(lifecycleRead >= 0);
+        Assert.True(reportInsert < lifecycleRead);
+
+        var companies = await observedContext.Companies.OrderBy(company => company.Id).ToListAsync();
+        Assert.Equal(2, companies.Count);
+        Assert.Contains(
+            await observedContext.CompanyFinancialSnapshots.ToListAsync(),
+            snapshot => snapshot.CompanyId == companies[0].Id
+                && snapshot.Moment == CompanyFinancialSnapshotMoment.DayOpening);
+        Assert.Contains(
+            await observedContext.CompanyFinancialSnapshots.ToListAsync(),
+            snapshot => snapshot.CompanyId == companies[1].Id
+                && snapshot.Moment == CompanyFinancialSnapshotMoment.Seed);
+    }
+
+    [Fact]
     public async Task LateCycleFailureRollsBackMaintenanceAndAdvanceMutations()
     {
         await TestMarketSeed.SeedClassicScenarioAsync(context);
@@ -132,6 +324,16 @@ public sealed class MarketLoopTests : IDisposable
 
         await context.SaveChangesAsync();
         var currentCycle = await context.MarketCycles.SingleAsync(cycle => cycle.CycleNumber == 16);
+        var day = new TradingDay
+        {
+            DayNumber = 1,
+            State = TradingSessionState.Trading,
+            OpenedInCycleId = currentCycle.Id,
+        };
+        context.TradingDays.Add(day);
+        await context.SaveChangesAsync();
+        currentCycle.TradingDayId = day.Id;
+        currentCycle.TradingCycleNumber = 1;
         market.CurrentCycleId = currentCycle.Id;
         market.NextDividendCycleNumber = currentCycle.CycleNumber;
         buyer.ReservedBalance = 100m;
@@ -150,6 +352,14 @@ public sealed class MarketLoopTests : IDisposable
         };
         context.Orders.Add(staleOrder);
         await context.SaveChangesAsync();
+        var financialService = FinancialService(new Random(20260724));
+        await financialService.StageSeedSnapshotAsync(
+            company,
+            100m,
+            currentCycle.Id,
+            day.DayNumber,
+            DateTime.UtcNow);
+        await context.SaveChangesAsync();
         var companyCashBefore = company.CashBalance;
         var random = new CountingCorporateCashRoll();
 
@@ -158,7 +368,8 @@ public sealed class MarketLoopTests : IDisposable
             new MatchingEngine(context),
             new NoOpDecisionEngine(),
             new MarketCycleLock(),
-            random);
+            random,
+            companyFinancialService: financialService);
 
         await Assert.ThrowsAsync<DbUpdateException>(() => service.RunCycleTickAsync());
 
@@ -192,6 +403,8 @@ public sealed class MarketLoopTests : IDisposable
         Assert.Empty(await context.MoneyTransactions.ToListAsync());
         Assert.Empty(await context.ShareTransactions.ToListAsync());
         Assert.Empty(await context.ParticipantWorthSnapshots.ToListAsync());
+        var financialSnapshot = await context.CompanyFinancialSnapshots.SingleAsync();
+        Assert.Equal(CompanyFinancialSnapshotMoment.Seed, financialSnapshot.Moment);
     }
 
     [Fact]
@@ -405,6 +618,49 @@ public sealed class MarketLoopTests : IDisposable
         }
 
         public override int Next(int minValue, int maxValue) => minValue;
+    }
+
+    private sealed class ConstantRandom(double value) : Random
+    {
+        public override double NextDouble() => value;
+    }
+
+    private sealed class RecordingCommandInterceptor : DbCommandInterceptor
+    {
+        public List<string> Commands { get; } = [];
+
+        public void Clear() => Commands.Clear();
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            Commands.Add(command.CommandText);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            Commands.Add(command.CommandText);
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private CompanyFinancialService FinancialService(Random random)
+    {
+        var options = new CompanyFinancialOptions();
+        return new CompanyFinancialService(
+            context,
+            Options.Create(options),
+            Options.Create(new RandomChanceRatesOptions()),
+            Options.Create(new TradingClockOptions()),
+            random,
+            new CompanyFinancialScorer(Options.Create(options)));
     }
 
     private sealed class MutableOptions<T>(T value) : IOptions<T>

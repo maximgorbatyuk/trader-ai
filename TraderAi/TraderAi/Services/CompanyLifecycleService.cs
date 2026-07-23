@@ -18,8 +18,8 @@ namespace TraderAi.Services;
 // filtered out of the live market while its row survives for history. Appearance is the only random part: the base
 // chance to mint a new company each cycle is a population tier — 10% below 50 live companies, 5% below 100, 1% at
 // or above — and each delisting since the last listing adds a fixed boost on top so a shrinking population refills
-// quickly. Runs in the pre-match window right after share emission so the worth-reading services see the
-// post-change state; stages changes and the caller owns the save.
+// quickly. Runs after scheduled financial reporting in the pre-match window so lifecycle decisions and new
+// listings share the post-corporate-action state; stages changes and the caller owns the save.
 //
 // Draw discipline for a scripted Random: closure and the protective price cut both draw nothing. The appearance
 // pass draws one NextDouble every cycle the market is below the cap (the base chance is always positive); only a
@@ -29,7 +29,8 @@ public sealed class CompanyLifecycleService(
     IOptions<CompanyLifecycleOptions> options,
     IOptions<RandomChanceRatesOptions> chanceRates,
     Random random,
-    MarketImpactService marketImpact)
+    MarketImpactService marketImpact,
+    CompanyFinancialService? companyFinancialService = null)
 {
     // The market never lists more than this many live companies.
     private const int MaxCompanies = 300;
@@ -423,6 +424,19 @@ public sealed class CompanyLifecycleService(
             CreatedInCycleId = currentCycleId,
             CreatedAt = now,
         });
+
+        if (companyFinancialService is not null)
+        {
+            var tradingDayNumber = await TradingDayNumberForCycleAsync(currentCycleId)
+                ?? throw new InvalidOperationException(
+                    $"Listing cycle {currentCycleId} does not belong to a trading day.");
+            await companyFinancialService.StageSeedSnapshotAsync(
+                company,
+                price,
+                currentCycleId,
+                tradingDayNumber,
+                now);
+        }
 
         dbContext.NewsPosts.Add(new NewsPost
         {
