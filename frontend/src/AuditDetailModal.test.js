@@ -42,6 +42,8 @@ const completeAudit = {
   evaluationStartTradingDayNumber: 8,
   evaluationEndTradingDayNumber: 9,
   effectiveTradingDayNumber: 10,
+  ruleVersion: 'company-audit-v1',
+  notes: 'Trading days 8-9: score 14, rating RaisedExpectations.',
   totalScore: 14,
   adjustedReturnScore: 3,
   cycleJumpScore: -1,
@@ -109,6 +111,18 @@ const completeAudit = {
     closureRiskScore: 18,
     closureRiskLevel: 'Low',
     changedMetrics: 'Revenue, NetProfit',
+  },
+  previousFinancial: {
+    revenue: 200_000,
+    netProfit: 0,
+  },
+  absoluteFinancialDelta: {
+    revenue: 50_000,
+    netProfit: 32_000,
+  },
+  percentageFinancialDelta: {
+    revenue: 25,
+    netProfit: null,
   },
   denominationEvents: [
     {
@@ -181,6 +195,8 @@ test('keeps legacy audits visible and labels unavailable evidence honestly', () 
       evaluationStartTradingDayNumber: null,
       evaluationEndTradingDayNumber: null,
       effectiveTradingDayNumber: null,
+      ruleVersion: null,
+      notes: null,
       totalScore: null,
       financial: null,
       denominationEvents: [],
@@ -207,6 +223,10 @@ test('renders factor scores and every stored evidence group', () => {
   assert.match(markup, />Northstar Audit</)
   assert.match(markup, />Raised expectations</)
   assert.match(markup, />14</)
+  assert.match(markup, />Rule version</)
+  assert.match(markup, />company-audit-v1</)
+  assert.match(markup, />Audit notes</)
+  assert.match(markup, /Trading days 8-9: score 14, rating RaisedExpectations\./)
 
   assert.match(markup, />Factor scores</)
   assert.equal((markup.match(/data-audit-factor=/g) ?? []).length, 11)
@@ -234,6 +254,18 @@ test('renders factor scores and every stored evidence group', () => {
   assert.match(markup, /Revenue, NetProfit/)
   assert.match(markup, /Low · 24\.00 \/ 100/)
   assert.equal((markup.match(/74\.00 \/ 100 · Low volatility/g) ?? []).length, 2)
+  assert.equal((markup.match(/data-financial-metric=/g) ?? []).length, 17)
+  assert.match(markup, />Previous</)
+  assert.match(markup, />Absolute delta</)
+  assert.match(markup, />Percentage delta</)
+  assert.match(
+    markup,
+    /data-financial-metric="revenue".*\$250,000\.00.*\$200,000\.00.*\+\$50,000\.00.*\+25\.00%/,
+  )
+  assert.match(
+    markup,
+    /data-financial-metric="netProfit".*\$32,000\.00.*\$0\.00.*\+\$32,000\.00.*—/,
+  )
 
   assert.match(markup, />Dividend evidence</)
   assert.match(markup, />Reduced</)

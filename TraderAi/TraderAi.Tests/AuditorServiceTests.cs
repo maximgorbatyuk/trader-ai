@@ -248,6 +248,27 @@ public sealed class AuditorServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AuditPersistsDeterministicRuleMetadata()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 100m, day2);
+        await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+
+        await ProcessAsync(day3);
+
+        var rating = await context.CompanyRatings.AsNoTracking().SingleAsync();
+        var evidence = await context.CompanyAuditEvidence.AsNoTracking().SingleAsync();
+        Assert.Equal("company-audit-v1", evidence.RuleVersion);
+        Assert.Equal(
+            $"Trading days 1-2: score {evidence.TotalScore}, rating {rating.Rating}.",
+            evidence.Notes);
+    }
+
+    [Fact]
     public async Task RepeatedCallBeforeSaveStagesOneAudit()
     {
         var day1 = await AddCycleAsync(1, 1);

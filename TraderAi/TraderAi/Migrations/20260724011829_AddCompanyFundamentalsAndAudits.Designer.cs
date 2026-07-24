@@ -594,6 +594,10 @@ namespace TraderAi.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Notes")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<int?>("OpeningIndustrySentiment")
                         .HasColumnType("INTEGER");
 
@@ -605,6 +609,10 @@ namespace TraderAi.Migrations
 
                     b.Property<int>("ReverseSplitCount")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("RuleVersion")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
 
                     b.Property<int>("StabilityFactorScore")
                         .HasColumnType("INTEGER");

@@ -2188,9 +2188,18 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 var tradingDay = await db.TradingDays.SingleAsync(day => day.Id == cycle.TradingDayId);
                 var company = await db.Companies.OrderBy(candidate => candidate.Id).FirstAsync();
                 var auditor = await db.Auditors.FirstAsync();
-                var snapshot = await db.CompanyFinancialSnapshots
+                var previousSnapshot = await db.CompanyFinancialSnapshots
                     .SingleAsync(candidate => candidate.CompanyId == company.Id);
                 companyId = company.Id;
+                previousSnapshot.Revenue = 100m;
+                previousSnapshot.NetProfit = 0m;
+                var snapshot = FinancialSnapshot(
+                    company.Id,
+                    cycle.Id,
+                    tradingDay.DayNumber,
+                    CompanyFinancialSnapshotMoment.DayOpening,
+                    150m,
+                    previousSnapshot.CreatedAt.AddMinutes(1));
                 snapshot.ProfitabilityScore = 80m;
                 snapshot.ProfitabilityLevel = CompanyMetricLevel.High;
                 snapshot.StabilityScore = 75m;
@@ -2199,6 +2208,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 snapshot.ClosureRiskLevel = CompanyMetricLevel.Low;
                 snapshot.ManagementOutlook = ManagementOutlook.Positive;
                 snapshot.ManagementConfidenceScore = 90m;
+                db.CompanyFinancialSnapshots.Add(snapshot);
+                await db.SaveChangesAsync();
 
                 var legacy = new CompanyRating
                 {
@@ -2256,6 +2267,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                     OpeningIndustrySentiment = 10,
                     ClosingIndustrySentiment = 25,
                     IndustryTrend = IndustryTrend.Rising,
+                    RuleVersion = "company-audit-v1",
+                    Notes = "Trading days 1-1: score 4, rating RaisedExpectations.",
                 });
                 db.StockDenominationEvents.Add(new StockDenominationEvent
                 {
@@ -2313,7 +2326,16 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(2, detail.ProfitabilityFactorScore);
             Assert.Equal(100m, detail.StartPrice);
             Assert.Equal(106m, detail.EndPrice);
+            Assert.Equal("company-audit-v1", detail.RuleVersion);
+            Assert.Equal(
+                "Trading days 1-1: score 4, rating RaisedExpectations.",
+                detail.Notes);
             Assert.NotNull(detail.Financial);
+            Assert.Equal(100m, detail.PreviousFinancial!.Revenue);
+            Assert.Equal(50m, detail.AbsoluteFinancialDelta!.Revenue);
+            Assert.Equal(50m, detail.PercentageFinancialDelta!.Revenue);
+            Assert.Equal(15m, detail.AbsoluteFinancialDelta.NetProfit);
+            Assert.Null(detail.PercentageFinancialDelta.NetProfit);
             Assert.Single(detail.DenominationEvents);
             Assert.Equal("Split", detail.DenominationEvents[0].ActionType);
             Assert.Single(detail.FreeShareEmissionEvents);
@@ -2323,7 +2345,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 $"/companies/{companyId}/audits/{legacyRatingId}");
             Assert.False(legacyDetail!.EvidenceAvailable);
             Assert.Null(legacyDetail.TotalScore);
+            Assert.Null(legacyDetail.RuleVersion);
+            Assert.Null(legacyDetail.Notes);
             Assert.Null(legacyDetail.Financial);
+            Assert.Null(legacyDetail.PreviousFinancial);
+            Assert.Null(legacyDetail.AbsoluteFinancialDelta);
+            Assert.Null(legacyDetail.PercentageFinancialDelta);
             Assert.Empty(legacyDetail.DenominationEvents);
             Assert.Empty(legacyDetail.FreeShareEmissionEvents);
         });
@@ -4866,7 +4893,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         int? ProfitabilityFactorScore,
         decimal? StartPrice,
         decimal? EndPrice,
+        string? RuleVersion,
+        string? Notes,
         CompanyFinancialSummaryDto? Financial,
+        CompanyFinancialValuesDto? PreviousFinancial,
+        CompanyFinancialValuesDto? AbsoluteFinancialDelta,
+        CompanyFinancialValuesDto? PercentageFinancialDelta,
         AuditDenominationEventDto[] DenominationEvents,
         AuditShareEmissionEventDto[] FreeShareEmissionEvents);
 

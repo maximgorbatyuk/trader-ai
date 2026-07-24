@@ -297,6 +297,8 @@ public sealed record CompanyAuditDetailResponse(
     int? EvaluationStartTradingDayNumber,
     int? EvaluationEndTradingDayNumber,
     int? EffectiveTradingDayNumber,
+    string? RuleVersion,
+    string? Notes,
     int? TotalScore,
     int? AdjustedReturnScore,
     int? CycleJumpScore,
@@ -326,6 +328,9 @@ public sealed record CompanyAuditDetailResponse(
     int? ClosingIndustrySentiment,
     string? IndustryTrend,
     CompanyFinancialSummaryResponse? Financial,
+    CompanyFinancialValuesResponse? PreviousFinancial,
+    CompanyFinancialValuesResponse? AbsoluteFinancialDelta,
+    CompanyFinancialValuesResponse? PercentageFinancialDelta,
     AuditDenominationEventResponse[] DenominationEvents,
     AuditShareEmissionEventResponse[] FreeShareEmissionEvents);
 

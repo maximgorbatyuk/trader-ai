@@ -1,8 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
-import { formatInt, formatMoney } from './format'
+import { formatInt, formatMoney, formatSigned } from './format'
 import { Modal } from './Modal'
 import { RatingBadge } from './RatingBadge'
+
+const AUDITED_FINANCIAL_METRICS = [
+  { key: 'revenue', label: 'Revenue', unit: 'money' },
+  { key: 'netProfit', label: 'Net profit', unit: 'money' },
+  { key: 'operatingCashFlow', label: 'Operating cash flow', unit: 'money' },
+  { key: 'totalAssets', label: 'Total assets', unit: 'money' },
+  { key: 'totalLiabilities', label: 'Total liabilities', unit: 'money' },
+  { key: 'totalDebt', label: 'Total debt', unit: 'money' },
+  { key: 'expectedDividendPerShare', label: 'Expected dividend per share', unit: 'money' },
+  { key: 'expectedDividendPool', label: 'Expected dividend pool', unit: 'money' },
+  { key: 'dividendCoverageRatio', label: 'Dividend coverage', unit: 'ratio' },
+  { key: 'businessRiskScore', label: 'Business risk score', unit: 'score' },
+  { key: 'managementRevenueForecast', label: 'Revenue forecast', unit: 'money' },
+  { key: 'managementProfitForecast', label: 'Profit forecast', unit: 'money' },
+  {
+    key: 'managementOperatingCashFlowForecast',
+    label: 'Cash-flow forecast',
+    unit: 'money',
+  },
+  { key: 'managementConfidenceScore', label: 'Management confidence', unit: 'score' },
+  { key: 'profitabilityScore', label: 'Profitability score', unit: 'score' },
+  { key: 'stabilityScore', label: 'Stability score', unit: 'score' },
+  { key: 'closureRiskScore', label: 'Closure risk score', unit: 'score' },
+]
 
 function formatPercent(value, { signed = false } = {}) {
   if (typeof value !== 'number') return '—'
@@ -12,6 +36,14 @@ function formatPercent(value, { signed = false } = {}) {
 
 function formatRatio(value) {
   return typeof value === 'number' ? `${value.toFixed(2)}×` : '—'
+}
+
+function formatFinancialMetric(value, unit, signed = false) {
+  if (typeof value !== 'number') return '—'
+  if (unit === 'money') return signed ? formatSigned(value) : formatMoney(value)
+  if (!signed) return unit === 'ratio' ? formatRatio(value) : value.toFixed(2)
+  const sign = value > 0 ? '+' : value < 0 ? '−' : ''
+  return `${sign}${Math.abs(value).toFixed(2)}${unit === 'ratio' ? '×' : ''}`
 }
 
 function scoreAndLevel(score, level) {
@@ -172,79 +204,82 @@ function PriceEvidence({ audit }) {
   )
 }
 
-function FinancialEvidence({ financial }) {
+function FinancialEvidence({ audit }) {
+  const financial = audit.financial
   return (
     <section className="audit-modal-section" aria-labelledby="audit-financial-title">
       <h3 id="audit-financial-title">Financial evidence</h3>
       {financial ? (
-        <dl className="modal-stats audit-evidence-grid">
-          <EvidenceValue label="Snapshot">
-            Day {formatInt(financial.tradingDayNumber)} · {financial.moment}
-          </EvidenceValue>
-          <EvidenceValue label="Revenue">
-            <span className="num">{formatMoney(financial.revenue)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Net profit">
-            <span className="num">{formatMoney(financial.netProfit)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Operating cash flow">
-            <span className="num">{formatMoney(financial.operatingCashFlow)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Total assets">
-            <span className="num">{formatMoney(financial.totalAssets)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Total liabilities">
-            <span className="num">{formatMoney(financial.totalLiabilities)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Total debt">
-            <span className="num">{formatMoney(financial.totalDebt)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Expected dividend per share">
-            <span className="num">{formatMoney(financial.expectedDividendPerShare)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Expected dividend pool">
-            <span className="num">{formatMoney(financial.expectedDividendPool)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Snapshot dividend coverage">
-            <span className="num">{formatRatio(financial.dividendCoverageRatio)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Business risk">
-            <span className="num">
-              {scoreAndLevel(financial.businessRiskScore, financial.businessRiskLevel)}
-            </span>
-          </EvidenceValue>
-          <EvidenceValue label="Profitability">
-            <span className="num">
-              {scoreAndLevel(financial.profitabilityScore, financial.profitabilityLevel)}
-            </span>
-          </EvidenceValue>
-          <EvidenceValue label="Stability">
-            <span className="num">
-              {stabilityAndVolatility(financial.stabilityScore, financial.financialVolatilityLevel)}
-            </span>
-          </EvidenceValue>
-          <EvidenceValue label="Closure risk">
-            <span className="num">
-              {scoreAndLevel(financial.closureRiskScore, financial.closureRiskLevel)}
-            </span>
-          </EvidenceValue>
-          <EvidenceValue label="Management guidance">
-            {financial.managementOutlook} ·{' '}
-            <span className="num">{financial.managementConfidenceScore.toFixed(2)} / 100</span>
-          </EvidenceValue>
-          <EvidenceValue label="Revenue forecast">
-            <span className="num">{formatMoney(financial.managementRevenueForecast)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Profit forecast">
-            <span className="num">{formatMoney(financial.managementProfitForecast)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Cash-flow forecast">
-            <span className="num">{formatMoney(financial.managementOperatingCashFlowForecast)}</span>
-          </EvidenceValue>
-          <EvidenceValue label="Changed metrics">
-            {financial.changedMetrics || 'None recorded'}
-          </EvidenceValue>
-        </dl>
+        <>
+          <dl className="modal-stats audit-evidence-grid">
+            <EvidenceValue label="Snapshot">
+              Day {formatInt(financial.tradingDayNumber)} · {financial.moment}
+            </EvidenceValue>
+            <EvidenceValue label="Business risk">
+              <span className="num">
+                {scoreAndLevel(financial.businessRiskScore, financial.businessRiskLevel)}
+              </span>
+            </EvidenceValue>
+            <EvidenceValue label="Profitability">
+              <span className="num">
+                {scoreAndLevel(financial.profitabilityScore, financial.profitabilityLevel)}
+              </span>
+            </EvidenceValue>
+            <EvidenceValue label="Stability">
+              <span className="num">
+                {stabilityAndVolatility(financial.stabilityScore, financial.financialVolatilityLevel)}
+              </span>
+            </EvidenceValue>
+            <EvidenceValue label="Closure risk">
+              <span className="num">
+                {scoreAndLevel(financial.closureRiskScore, financial.closureRiskLevel)}
+              </span>
+            </EvidenceValue>
+            <EvidenceValue label="Management guidance">
+              {financial.managementOutlook} ·{' '}
+              <span className="num">{financial.managementConfidenceScore.toFixed(2)} / 100</span>
+            </EvidenceValue>
+            <EvidenceValue label="Changed metrics">
+              {financial.changedMetrics || 'None recorded'}
+            </EvidenceValue>
+          </dl>
+          <div className="tbl-wrap">
+            <table className="tbl audit-financial-table">
+              <thead>
+                <tr>
+                  <th scope="col">Metric</th>
+                  <th scope="col" className="ta-r">Current</th>
+                  <th scope="col" className="ta-r">Previous</th>
+                  <th scope="col" className="ta-r">Absolute delta</th>
+                  <th scope="col" className="ta-r">Percentage delta</th>
+                </tr>
+              </thead>
+              <tbody>
+                {AUDITED_FINANCIAL_METRICS.map((metric) => (
+                  <tr key={metric.key} data-financial-metric={metric.key}>
+                    <th scope="row">{metric.label}</th>
+                    <td className="num ta-r">
+                      {formatFinancialMetric(financial[metric.key], metric.unit)}
+                    </td>
+                    <td className="num ta-r">
+                      {formatFinancialMetric(audit.previousFinancial?.[metric.key], metric.unit)}
+                    </td>
+                    <td className="num ta-r">
+                      {formatFinancialMetric(
+                        audit.absoluteFinancialDelta?.[metric.key],
+                        metric.unit,
+                        true,
+                      )}
+                    </td>
+                    <td className="num ta-r">
+                      {formatPercent(audit.percentageFinancialDelta?.[metric.key], { signed: true })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       ) : (
         <p className="note note-sm">No financial snapshot was available to this audit.</p>
       )}
@@ -433,6 +468,12 @@ export function AuditDetailContent({ audit, loading, error, onRetry }) {
         <EvidenceValue label="Effective">
           {audit.evidenceAvailable ? `Day ${formatInt(audit.effectiveTradingDayNumber)}` : 'Unavailable'}
         </EvidenceValue>
+        {audit.ruleVersion ? (
+          <EvidenceValue label="Rule version">{audit.ruleVersion}</EvidenceValue>
+        ) : null}
+        {audit.notes ? (
+          <EvidenceValue label="Audit notes">{audit.notes}</EvidenceValue>
+        ) : null}
         <EvidenceValue label="Total score">
           <span className="num">{formatInt(audit.totalScore)}</span>
         </EvidenceValue>
@@ -447,7 +488,7 @@ export function AuditDetailContent({ audit, loading, error, onRetry }) {
         <>
           <FactorScores audit={audit} />
           <PriceEvidence audit={audit} />
-          <FinancialEvidence financial={audit.financial} />
+          <FinancialEvidence audit={audit} />
           <DividendEvidence audit={audit} />
           <EmissionEvidence audit={audit} />
           <DenominationEvidence audit={audit} />

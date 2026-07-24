@@ -610,6 +610,8 @@ public sealed class AuditorService
                 EvaluationStartTradingDayNumber = candidate.EvaluationStartTradingDayNumber,
                 EvaluationEndTradingDayNumber = candidate.EvaluationEndTradingDayNumber,
                 EffectiveTradingDayNumber = candidate.EffectiveTradingDayNumber,
+                RuleVersion = CompanyAuditScorer.RuleVersion,
+                Notes = $"Trading days {candidate.EvaluationStartTradingDayNumber}-{candidate.EvaluationEndTradingDayNumber}: score {scoring.TotalScore}, rating {scoring.Rating}.",
                 TotalScore = scoring.TotalScore,
                 AdjustedReturnScore = scoring.AdjustedReturnScore,
                 CycleJumpScore = scoring.CycleJumpScore,

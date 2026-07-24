@@ -38,6 +38,8 @@ public sealed record CompanyAuditScoringResult(
 
 public sealed class CompanyAuditScorer
 {
+    public const string RuleVersion = "company-audit-v1";
+
     private const decimal CoveredDividendRatio = 1m;
     private const decimal MaximumNormalizedScore = 100m;
 

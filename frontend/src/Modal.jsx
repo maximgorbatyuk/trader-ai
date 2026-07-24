@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { trapModalFocus } from './modalFocus'
 
 // Dismissal stays configurable because required setup flows must retain the shared focus trap and scroll lock
 // without allowing Escape or backdrop clicks to bypass completion.
@@ -36,26 +37,7 @@ export function Modal({ titleId, className, onClose, children, dismissible = tru
 
   // Keep Tab focus inside the dialog by wrapping it at the first and last focusable controls.
   function onDialogKeyDown(event) {
-    if (event.key !== 'Tab') {
-      return
-    }
-
-    const focusable = dialogRef.current?.querySelectorAll(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    )
-    if (!focusable || focusable.length === 0) {
-      return
-    }
-
-    const first = focusable[0]
-    const last = focusable[focusable.length - 1]
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault()
-      first.focus()
-    }
+    trapModalFocus(event, dialogRef.current, document.activeElement)
   }
 
   return (

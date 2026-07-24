@@ -18,6 +18,10 @@ public sealed class CompanyAuditEvidence
 
     public int EffectiveTradingDayNumber { get; set; }
 
+    public string RuleVersion { get; set; } = string.Empty;
+
+    public string Notes { get; set; } = string.Empty;
+
     public int TotalScore { get; set; }
 
     public int AdjustedReturnScore { get; set; }

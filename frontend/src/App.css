@@ -3139,6 +3139,10 @@
   min-width: 880px;
 }
 
+.audit-financial-table {
+  min-width: 820px;
+}
+
 .audit-event-table {
   min-width: 680px;
 }

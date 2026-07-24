@@ -300,6 +300,8 @@ namespace TraderAi.Migrations
                     EvaluationStartTradingDayNumber = table.Column<int>(type: "INTEGER", nullable: false),
                     EvaluationEndTradingDayNumber = table.Column<int>(type: "INTEGER", nullable: false),
                     EffectiveTradingDayNumber = table.Column<int>(type: "INTEGER", nullable: false),
+                    RuleVersion = table.Column<string>(type: "TEXT", nullable: false),
+                    Notes = table.Column<string>(type: "TEXT", nullable: false),
                     TotalScore = table.Column<int>(type: "INTEGER", nullable: false),
                     AdjustedReturnScore = table.Column<int>(type: "INTEGER", nullable: false),
                     CycleJumpScore = table.Column<int>(type: "INTEGER", nullable: false),

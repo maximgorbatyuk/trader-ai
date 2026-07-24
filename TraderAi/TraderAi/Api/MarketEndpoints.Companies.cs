@@ -395,6 +395,35 @@ public static partial class MarketEndpoints
             }
 
             var audit = rating.Evidence;
+            CompanyFinancialSnapshot? previousFinancial = null;
+            if (audit?.CompanyFinancialSnapshot is CompanyFinancialSnapshot auditedFinancial)
+            {
+                previousFinancial = await dbContext.CompanyFinancialSnapshots
+                    .AsNoTracking()
+                    .Where(snapshot => snapshot.CompanyId == companyId
+                        && (snapshot.TradingDayNumber < auditedFinancial.TradingDayNumber
+                            || (snapshot.TradingDayNumber == auditedFinancial.TradingDayNumber
+                                && (int)snapshot.Moment < (int)auditedFinancial.Moment)
+                            || (snapshot.TradingDayNumber == auditedFinancial.TradingDayNumber
+                                && snapshot.Moment == auditedFinancial.Moment
+                                && snapshot.CreatedInCycleId < auditedFinancial.CreatedInCycleId)
+                            || (snapshot.TradingDayNumber == auditedFinancial.TradingDayNumber
+                                && snapshot.Moment == auditedFinancial.Moment
+                                && snapshot.CreatedInCycleId == auditedFinancial.CreatedInCycleId
+                                && snapshot.CreatedAt < auditedFinancial.CreatedAt)
+                            || (snapshot.TradingDayNumber == auditedFinancial.TradingDayNumber
+                                && snapshot.Moment == auditedFinancial.Moment
+                                && snapshot.CreatedInCycleId == auditedFinancial.CreatedInCycleId
+                                && snapshot.CreatedAt == auditedFinancial.CreatedAt
+                                && snapshot.Id < auditedFinancial.Id)))
+                    .OrderByDescending(snapshot => snapshot.TradingDayNumber)
+                    .ThenByDescending(snapshot => snapshot.Moment)
+                    .ThenByDescending(snapshot => snapshot.CreatedInCycleId)
+                    .ThenByDescending(snapshot => snapshot.CreatedAt)
+                    .ThenByDescending(snapshot => snapshot.Id)
+                    .FirstOrDefaultAsync();
+            }
+
             return Results.Ok(new CompanyAuditDetailResponse(
                 rating.Id,
                 rating.CompanyId,
@@ -410,6 +439,8 @@ public static partial class MarketEndpoints
                 audit?.EvaluationStartTradingDayNumber,
                 audit?.EvaluationEndTradingDayNumber,
                 audit?.EffectiveTradingDayNumber,
+                audit?.RuleVersion,
+                audit?.Notes,
                 audit?.TotalScore,
                 audit?.AdjustedReturnScore,
                 audit?.CycleJumpScore,
@@ -445,6 +476,19 @@ public static partial class MarketEndpoints
                     : ToCompanyFinancialSummaryResponse(
                         audit.CompanyFinancialSnapshot,
                         financialOptions.Value),
+                previousFinancial is null
+                    ? null
+                    : ToCompanyFinancialValuesResponse(previousFinancial),
+                audit?.CompanyFinancialSnapshot is null || previousFinancial is null
+                    ? null
+                    : ToAbsoluteFinancialDeltaResponse(
+                        audit.CompanyFinancialSnapshot,
+                        previousFinancial),
+                audit?.CompanyFinancialSnapshot is null || previousFinancial is null
+                    ? null
+                    : ToPercentageFinancialDeltaResponse(
+                        audit.CompanyFinancialSnapshot,
+                        previousFinancial),
                 denominationEvents,
                 freeShareEmissionEvents));
         });
