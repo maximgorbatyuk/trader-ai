@@ -193,6 +193,55 @@ test('loads company audits only while the audits tab is active', async (t) => {
   assert.deepEqual(result, { items: [], total: 0, page: 3, pageSize: 6 })
 })
 
+test('refreshes active history tabs without reissuing the company base load', async (t) => {
+  const server = await createServer({
+    root: new URL('..', import.meta.url).pathname,
+    logLevel: 'silent',
+    server: { middlewareMode: true },
+  })
+  t.after(() => server.close())
+
+  const refreshModule = await server.ssrLoadModule('/src/companyDetailRefresh.js')
+  assert.equal(typeof refreshModule.refreshCompanyDetailRequests, 'function')
+
+  let baseRequests = 0
+  let financialHistoryRequests = 0
+  let auditHistoryRequests = 0
+  const refresh = (activeTab, includeBase = false) =>
+    refreshModule.refreshCompanyDetailRequests({
+      activeTab,
+      includeBase,
+      refreshBase() {
+        baseRequests += 11
+      },
+      refreshFinancialHistory() {
+        financialHistoryRequests += 1
+      },
+      refreshAuditHistory() {
+        auditHistoryRequests += 1
+      },
+    })
+
+  const initialLoad = refresh('capitalization', true)
+  assert.ok(initialLoad instanceof Promise)
+  await initialLoad
+  assert.equal(baseRequests, 11)
+
+  refresh('financial-history')
+  refresh('financial-history')
+  refresh('audits')
+
+  assert.equal(baseRequests, 11)
+  assert.equal(financialHistoryRequests, 2)
+  assert.equal(auditHistoryRequests, 1)
+
+  await refresh('financial-history', true)
+
+  assert.equal(baseRequests, 22)
+  assert.equal(financialHistoryRequests, 3)
+  assert.equal(auditHistoryRequests, 1)
+})
+
 test('renders server-paged audit summaries and keeps legacy audits actionable', async (t) => {
   const server = await createServer({
     root: new URL('..', import.meta.url).pathname,

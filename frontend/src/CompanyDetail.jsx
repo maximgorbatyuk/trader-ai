@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
-import { api, loadCompanyAuditsForActiveTab, loadFinancialHistoryForActiveTab } from './api'
+import { api, loadCompanyAuditsForActiveTab } from './api'
 import {
   companyRiskTrendGlyph,
   formatCompactMoney,
@@ -30,6 +30,7 @@ import { CompanyFinancialsPanel } from './CompanyFinancialsPanel'
 import { CompanyFinancialHistoryPanel } from './CompanyFinancialHistoryPanel'
 import { CompanyManagementOutlookPanel } from './CompanyManagementOutlookPanel'
 import { AuditDetailModal } from './AuditDetailModal'
+import { createFinancialHistoryQueryLoader, refreshCompanyDetailRequests } from './companyDetailRefresh'
 
 export { CompanyFinancialHistoryPanel, CompanyFinancialsPanel, CompanyManagementOutlookPanel }
 
@@ -100,7 +101,38 @@ export function CompanyDetail({ companyId }) {
     status: 'idle',
     error: null,
   })
-  const financialHistoryRequestId = useRef(0)
+  const financialHistoryQueryLoader = useRef(null)
+  if (financialHistoryQueryLoader.current === null) {
+    financialHistoryQueryLoader.current = createFinancialHistoryQueryLoader({
+      request: api.getCompanyFinancials,
+      onStart() {
+        setFinancialHistoryState((current) => ({
+          ...current,
+          status: current.data.items.length > 0 ? 'refreshing' : 'loading',
+          error: null,
+        }))
+      },
+      onSuccess(data, query) {
+        setFinancialHistoryState({
+          data: data ?? {
+            items: [],
+            total: 0,
+            page: query.page,
+            pageSize: query.pageSize,
+          },
+          status: 'ready',
+          error: null,
+        })
+      },
+      onError(error) {
+        setFinancialHistoryState((current) => ({
+          ...current,
+          status: 'error',
+          error: error.message ?? String(error),
+        }))
+      },
+    })
+  }
   const [auditHistoryPage, setAuditHistoryPage] = useState(1)
   const [auditHistoryState, setAuditHistoryState] = useState({
     data: { items: [], total: 0, page: 1, pageSize: AUDIT_HISTORY_PAGE_SIZE },
@@ -116,32 +148,27 @@ export function CompanyDetail({ companyId }) {
   const [playerOwned, setPlayerOwned] = useState(0)
   const [fundOwned, setFundOwned] = useState(0)
 
-  const loadAll = useCallback(async () => {
-    const financialHistoryRequest = loadFinancialHistoryForActiveTab({
-      activeTab,
+  const refreshFinancialHistory = useCallback(
+    () =>
+      financialHistoryQueryLoader.current.refresh({
+        companyId,
+        page: financialHistoryPage,
+        pageSize: FINANCIAL_HISTORY_PAGE_SIZE,
+      }),
+    [companyId, financialHistoryPage],
+  )
+
+  useEffect(() => {
+    financialHistoryQueryLoader.current.setActiveQuery({
       companyId,
       page: financialHistoryPage,
       pageSize: FINANCIAL_HISTORY_PAGE_SIZE,
     })
-    const financialHistoryRequestNumber = financialHistoryRequest
-      ? financialHistoryRequestId.current + 1
-      : financialHistoryRequestId.current
-    if (financialHistoryRequest) {
-      financialHistoryRequestId.current = financialHistoryRequestNumber
-      setFinancialHistoryState((current) => ({
-        ...current,
-        status: current.data.items.length > 0 ? 'refreshing' : 'loading',
-        error: null,
-      }))
-    }
-    const financialHistoryResult = financialHistoryRequest
-      ? Promise.resolve(financialHistoryRequest).then(
-          (data) => ({ data, error: null }),
-          (error) => ({ data: null, error: error.message ?? String(error) }),
-        )
-      : null
+  }, [companyId, financialHistoryPage])
+
+  const refreshAuditHistory = useCallback(() => {
     const auditHistoryRequest = loadCompanyAuditsForActiveTab({
-      activeTab,
+      activeTab: 'audits',
       companyId,
       page: auditHistoryPage,
       pageSize: AUDIT_HISTORY_PAGE_SIZE,
@@ -164,6 +191,31 @@ export function CompanyDetail({ companyId }) {
         )
       : null
 
+    if (!auditHistoryResult) return null
+    return auditHistoryResult.then((result) => {
+      if (auditHistoryRequestNumber !== auditHistoryRequestId.current) return
+      if (result.error) {
+        setAuditHistoryState((current) => ({
+          ...current,
+          status: 'error',
+          error: result.error,
+        }))
+      } else {
+        setAuditHistoryState({
+          data: result.data ?? {
+            items: [],
+            total: 0,
+            page: auditHistoryPage,
+            pageSize: AUDIT_HISTORY_PAGE_SIZE,
+          },
+          status: 'ready',
+          error: null,
+        })
+      }
+    })
+  }, [auditHistoryPage, companyId])
+
+  const loadBase = useCallback(async () => {
     try {
       const [
         detailData,
@@ -220,55 +272,33 @@ export function CompanyDetail({ companyId }) {
     } catch (error) {
       setLoadError(error.message)
     } finally {
-      if (financialHistoryResult) {
-        const result = await financialHistoryResult
-        if (financialHistoryRequestNumber === financialHistoryRequestId.current) {
-          if (result.error) {
-            setFinancialHistoryState((current) => ({
-              ...current,
-              status: 'error',
-              error: result.error,
-            }))
-          } else {
-            setFinancialHistoryState({
-              data: result.data ?? {
-                items: [],
-                total: 0,
-                page: financialHistoryPage,
-                pageSize: FINANCIAL_HISTORY_PAGE_SIZE,
-              },
-              status: 'ready',
-              error: null,
-            })
-          }
-        }
-      }
-      if (auditHistoryResult) {
-        const result = await auditHistoryResult
-        if (auditHistoryRequestNumber === auditHistoryRequestId.current) {
-          if (result.error) {
-            setAuditHistoryState((current) => ({
-              ...current,
-              status: 'error',
-              error: result.error,
-            }))
-          } else {
-            setAuditHistoryState({
-              data: result.data ?? {
-                items: [],
-                total: 0,
-                page: auditHistoryPage,
-                pageSize: AUDIT_HISTORY_PAGE_SIZE,
-              },
-              status: 'ready',
-              error: null,
-            })
-          }
-        }
-      }
       setReady(true)
     }
-  }, [activeTab, auditHistoryPage, companyId, corporateCashPage, corporateCashPageSize, financialHistoryPage])
+  }, [companyId, corporateCashPage, corporateCashPageSize])
+
+  const activeRefresh = useRef(null)
+  useEffect(() => {
+    activeRefresh.current = {
+      activeTab,
+      refreshAuditHistory,
+      refreshFinancialHistory,
+    }
+  }, [activeTab, refreshAuditHistory, refreshFinancialHistory])
+  const loadAll = useCallback(
+    (includeBase = true) =>
+      refreshCompanyDetailRequests({
+        activeTab: activeRefresh.current.activeTab,
+        includeBase,
+        refreshBase: loadBase,
+        refreshFinancialHistory: activeRefresh.current.refreshFinancialHistory,
+        refreshAuditHistory: activeRefresh.current.refreshAuditHistory,
+      }),
+    [loadBase],
+  )
+
+  useEffect(() => {
+    loadAll(false)
+  }, [activeTab, auditHistoryPage, companyId, financialHistoryPage, loadAll])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)

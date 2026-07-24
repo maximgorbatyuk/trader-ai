@@ -6,6 +6,7 @@ import { createServer } from 'vite'
 
 let server
 let CompanyFinancialHistoryPanel
+let createFinancialHistoryQueryLoader
 let loadFinancialHistoryForActiveTab
 
 before(async () => {
@@ -15,8 +16,10 @@ before(async () => {
     server: { middlewareMode: true },
   })
   const historyModule = await server.ssrLoadModule('/src/CompanyFinancialHistoryPanel.jsx')
+  const refreshModule = await server.ssrLoadModule('/src/companyDetailRefresh.js')
   const apiModule = await server.ssrLoadModule('/src/api.js')
   CompanyFinancialHistoryPanel = historyModule.CompanyFinancialHistoryPanel
+  createFinancialHistoryQueryLoader = refreshModule.createFinancialHistoryQueryLoader
   loadFinancialHistoryForActiveTab = apiModule.loadFinancialHistoryForActiveTab
 })
 
@@ -144,6 +147,62 @@ test('loads only the selected history tab and requests the active server page', 
   })
   assert.equal(result, history)
   assert.deepEqual(calls, [[12, 2, 6]])
+})
+
+test('coalesces identical in-flight history requests and supersedes only changed query keys', async () => {
+  assert.equal(typeof createFinancialHistoryQueryLoader, 'function')
+
+  const pending = new Map()
+  const requests = []
+  const successes = []
+  const starts = []
+  const queryLoader = createFinancialHistoryQueryLoader({
+    request(companyId, page, pageSize) {
+      const queryKey = `${companyId}:${page}:${pageSize}`
+      requests.push(queryKey)
+      return new Promise((resolve) => {
+        pending.set(queryKey, resolve)
+      })
+    },
+    onStart(query) {
+      starts.push(query)
+    },
+    onSuccess(data) {
+      successes.push(data.page)
+    },
+    onError(error) {
+      assert.fail(error)
+    },
+  })
+  const pageOne = { companyId: 12, page: 1, pageSize: 6 }
+  const pageTwo = { companyId: 12, page: 2, pageSize: 6 }
+  const pageThree = { companyId: 12, page: 3, pageSize: 6 }
+
+  queryLoader.setActiveQuery(pageOne)
+  const first = queryLoader.refresh(pageOne)
+  const duplicate = queryLoader.refresh(pageOne)
+
+  assert.strictEqual(duplicate, first)
+  assert.deepEqual(requests, ['12:1:6'])
+  assert.equal(starts.length, 1)
+
+  pending.get('12:1:6')({ ...history, page: 1 })
+  await first
+  assert.deepEqual(successes, [1])
+
+  queryLoader.setActiveQuery(pageTwo)
+  const second = queryLoader.refresh(pageTwo)
+  queryLoader.setActiveQuery(pageThree)
+  const third = queryLoader.refresh(pageThree)
+  assert.deepEqual(requests, ['12:1:6', '12:2:6', '12:3:6'])
+
+  pending.get('12:2:6')({ ...history, page: 2 })
+  await second
+  assert.deepEqual(successes, [1])
+
+  pending.get('12:3:6')({ ...history, page: 3 })
+  await third
+  assert.deepEqual(successes, [1, 3])
 })
 
 test('shows newest-first checkpoints, server paging, selected metric values, and deltas', () => {
