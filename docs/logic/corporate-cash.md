@@ -2,6 +2,16 @@
 
 Each listed company has its own issuer cash balance and an append-only movement ledger. Corporate cash is separate from participant cash, bank revenue, and market capitalization. Simulated operating income is an explicit external-economy cash source rather than money transferred from another account inside the market.
 
+## Reported cash flow versus issuer cash
+
+The company's financial report and its issuer cash ledger describe different layers of the simulation:
+
+- **Reported operating cash flow** is a dynamic analytical indicator recorded at company financial checkpoints. It contributes to profitability, expected-dividend coverage, closure risk, audits, and trading signals, but changing it does not debit or credit any modeled account.
+- **Operating income** is an actual issuer-cash credit created during a corporate-cash window. It represents earnings from the external economy and is recorded in the corporate cash ledger.
+- **Expected dividends** in a financial report describe what the company could support from reported profit and cash flow. An actual dividend is declared by the separate payout window and can spend only the issuer cash available at that time.
+
+These values can move in related directions but are not reconciled as one balance. See [Company fundamentals](company-fundamentals.md) for financial-report checkpoints and derived indicators.
+
 ## Cash sources
 
 - A newly seeded or newly listed company starts with zero issuer cash.
@@ -10,7 +20,7 @@ Each listed company has its own issuer cash balance and an append-only movement 
 - Issuance happens at most once per company per trading day. Its quantity is the smaller of unmet demand and 25% of issued shares rounded up, and it is deferred while the security is in Limit State, Trading Pause, or Reopening. The issuer order then uses ordinary matching and T+1 settlement.
 - A secondary-market trade transfers value between participants and does not change issuer cash.
 - A big investment credits the company immediately when a participant or fund buys a block of newly minted shares at the current price. See [Big investment](big-investment.md).
-- Operating income represents value earned from goods and services outside the accounts modeled by the simulation. It adds cash to the issuer without debiting a participant, bank, or customer account.
+- Ledger operating income represents value earned from goods and services outside the accounts modeled by the simulation. It adds cash to the issuer without debiting a participant, bank, or customer account; it is distinct from reported operating cash flow.
 
 ## Operating-income and dividend window
 

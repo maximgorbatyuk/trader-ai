@@ -26,7 +26,7 @@ An active crisis changes risk-sensitive behavior without replacing the ordinary 
 - Sector sentiment becomes risk-off across the market, including industries outside the initial shock.
 - Conservative and low-risk automated traders become less likely to place buy orders. The two traits stack when a trader has both.
 - Bankruptcy probability is doubled for otherwise eligible traders.
-- Auditors are three times as likely to issue a High or Extra risk rating.
+- Audits have no crisis-specific multiplier; crisis-driven sector sentiment can still affect their recorded industry evidence.
 - Departures caused by starvation or fund losses become twice as likely during a local crisis and five times as likely during a global crisis.
 - Positive automated news impacts are less likely, while negative news remains eligible.
 - Science investigations remain possible but occur at half their normal probability.

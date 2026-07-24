@@ -34,6 +34,8 @@ You can also step into the market yourself. Join as a human player and you are h
 
 The market clock groups 210 two-second cycles into a seven-minute trading day, followed by a separate one-minute break. Trades affect economic cash, ownership, and price immediately, then settle on the next trading day; trader views separate settled and pending cash and shares. Selling issuer float credits the company's own cash at settlement. The simulation also credits independently randomized operating income from an external economy during dividend windows, and dividends can spend only the issuer cash available after that credit. See [Corporate cash](docs/logic/corporate-cash.md).
 
+Companies publish a randomized but internally consistent financial baseline when they list, then record updated reports at each trading-day opening and midpoint. Revenue, profit, reported operating cash flow, balance-sheet values, dividends, business risk, and management forecasts feed profitability, stability, volatility, and closure-risk indicators. Auditors review each company once per two completed trading days and publish one of five evidence-backed statuses for the following day. These reports and effective audits influence rule-based buy, sell, and wait probabilities without directly setting the share price; AI Agents receive the same evidence for their own decisions. See [Company fundamentals](docs/logic/company-fundamentals.md), [Auditors](docs/roles/auditors.md), and [Share price formation](docs/rules/share-price-formation.md).
+
 Buying beyond available cash uses a separate margin account instead of opening a term loan or leaving a negative balance. Margin screens show buying power, debit, interest, maintenance standing, and open calls; a deficient account can place forced-sale orders from settled holdings. Explicit bank loans remain a different fixed-term product. Their screens separate overdue principal, overdue interest, and assessed fees, while total liability counts overdue principal only once. Short selling is planned for later and is not implemented.
 
 No authentication is required between the frontend and backend for local development.
@@ -58,6 +60,7 @@ No authentication is required between the frontend and backend for local develop
 | [Trade settlement](docs/logic/settlement.md) | How economic positions and T+1 settled cash and shares are kept separate. |
 | [Margin accounts](docs/logic/margin.md) | How buying power, margin debit, interest, calls, and forced sales work. |
 | [Market crises](docs/logic/crisis.md) | How local and global crises trigger, shock industries, alter market behavior, and record consequences. |
+| [Company fundamentals](docs/logic/company-fundamentals.md) | How company reports are seeded, updated, scored, retained, and used as audit and trading evidence. |
 | [Corporate cash](docs/logic/corporate-cash.md) | How primary proceeds and simulated operating income fund issuer cash and dividends. |
 | [Sector sentiment](docs/logic/sector-sentiment.md) | How sector confidence shapes shocks and automated trading demand. |
 | [Free-share emission](docs/logic/free-share-emission.md) | How large companies issue free shares to dilute price. |
@@ -65,6 +68,7 @@ No authentication is required between the frontend and backend for local develop
 | [Bank loans](docs/logic/bank-loans.md) | How explicit fixed-term loans are originated, serviced, and reconciled separately from margin. |
 | [Fund advertising](docs/logic/fund-advertising.md) | How the player-managed fund pays to raise its Popularity Index and attract joiners. |
 | [Behavioural audit](docs/logic/behavioral-audit.md) | How the thirty-cycle audit scores trading activity and reclassifies the player and their fund. |
+| [Changelog](CHANGELOG.md) | A dated summary of changes to trading logic. |
 
 ## Tech stack
 

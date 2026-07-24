@@ -7,11 +7,13 @@ Share price is the latest recorded price point for a company. The market does no
 Each market cycle updates prices through a fixed sequence:
 
 1. Resting orders are maintained before new decisions are made.
-2. Corporate actions and forced-sale services can adjust the order book.
-3. Automated traders and funds place new orders from the latest available prices.
-4. The matcher fills crossing buy and sell orders.
-5. Scheduled payouts and market events can add further price moves.
-6. The cycle closes and the next cycle begins.
+2. Corporate actions can adjust supply, share denomination, and the order book.
+3. At the opening and midpoint checkpoints, companies persist updated financial evidence.
+4. Lifecycle, forced-sale, exit, and concentration services run; at the opening of an audit-effective day, auditors persist completed-window evidence.
+5. Automated traders and funds combine the latest effective evidence with current market state and place new orders.
+6. The matcher fills crossing buy and sell orders.
+7. Scheduled payouts and market events can add further price moves.
+8. The cycle closes and the next cycle begins.
 
 The complete sequence is one atomic database operation. If any phase fails, every change from the cycle is rolled back and the previous cycle remains current.
 
@@ -50,17 +52,43 @@ execution price = round((buy limit + sell limit) / 2, 2)
 
 Each fill records a new price point at its execution price. If several fills happen for the same company in one cycle, the last recorded fill price becomes the current displayed price.
 
-This means the market does not calculate one global clearing price from total demand and supply. It forms price one fill at a time through price-time priority.
+This midpoint rule is an explicit game-specific exchange difference. A conventional continuous limit-order book normally executes a crossing incoming order at the resting order's price; this simulation deliberately splits the spread between both submitted limits. Price-time priority still decides which orders meet, but it does not decide the execution price.
+
+The market does not calculate one global clearing price from total demand and supply. It forms price one fill at a time through priority matching and the midpoint rule.
+
+## Directional signals and action probabilities
+
+Before a rule-based Individual or Collective Fund chooses an order, every tradable company receives a directional score from -1 to +1. Five independently normalized components contribute:
+
+- **Momentum** compares the recent price move with the active LULD range.
+- **Order flow** compares executable buy and sell interest.
+- **Industry** normalizes current sector sentiment.
+- **Audit** maps Extra raised expectations and Raised expectations to strong and moderate positive evidence, Stable to neutral, and Low risk and High risk to moderate and strong negative evidence.
+- **Fundamentals** combine profitability, stability, closure safety, dividend coverage, management outlook, and forecast growth. Low-risk profiles respond more strongly to quality; high-risk profiles respond more strongly to growth; medium-risk profiles balance them.
+
+The weighted sum is clamped to the same -1 to +1 range. The strongest eligible positive company becomes the buy target, while the weakest held company becomes the sell target. Positive target evidence adds buy weight and negative target evidence adds sell weight. A separate wait weight grows when evidence is weak, while temperament adds bounded activity noise. Exposure, bargain buying, profit-taking, debt, crisis behavior, passive-supply chance, and hard order eligibility can adjust or block an action.
+
+The final non-negative buy, sell, and wait weights are normalized:
+
+```text
+buy probability  = buy weight  / total weight
+sell probability = sell weight / total weight
+wait probability = wait weight / total weight
+```
+
+One random draw selects the action. The positive minimum wait weight and personality contribution mean good evidence raises the chance of buying and bad evidence raises the chance of selling without making either certain. The evidence helps predict aggregate pressure within a trading day, not an individual order or guaranteed price direction.
+
+AI Agents receive the same raw evidence and normalized components but choose their own explicit predictions and orders. The human player sees the reports and decides independently.
 
 ## Order Prices
 
-Rule-based Individuals form automated buys from their risk-specific exposure headroom. They cross the best residual in-band ask at that exact ask price. When a company has no remaining open sell interest and its price is rising or stable over recent cycles, an eligible Individual can instead create a small passive bid above the current market price after a configurable chance succeeds; temperament selects progressively higher thirds of the configured premium range. A company whose price has fallen over that window receives no such bid, so above-market demand concentrates on healthy names. The limit remains inside the executable band, and a sell that exists outside that band prevents the company from being treated as having no supply. Orders generated earlier in the same decision batch retain their price-time shadow, so a later buy cannot jump demand that has already been allocated. When a participant decides to buy, it places a configurable random number of buy orders across distinct eligible companies rather than a single order, so a buying cycle can build broader demand.
+After the action and target are selected, a rule-based Individual buy uses its risk-specific exposure headroom. It crosses the target's best residual in-band ask at that exact ask price. When a company has no remaining open sell interest and its price is rising or stable over recent cycles, an eligible Individual can instead create a small passive bid above the current market price after a configurable chance succeeds; temperament selects progressively higher thirds of the configured premium range. A company whose price has fallen over that window receives no such bid, so above-market demand concentrates on healthy names. The limit remains inside the executable band, and a sell that exists outside that band prevents the company from being treated as having no supply. Orders generated earlier in the same decision batch retain their price-time shadow, so a later buy cannot jump demand that has already been allocated. When a participant decides to buy, it places a configurable random number of buy orders across distinct eligible companies rather than a single order, so a buying cycle can build broader demand.
 
-Configured AI Agents receive the same live exposure and execution envelope but choose their own exact side, company, price, quantity, and reason. When earlier demand has priority over lower-priced supply, the envelope can offer a passive bid at that priority ceiling instead of suggesting an unsafe crossing price. The backend either accepts the exact choice or rejects it; it does not clamp the model's order into compliance. Collective Funds and rule-based sell decisions retain their existing personality-, momentum-, and book-aware pricing.
+Configured AI Agents receive the same live exposure and execution envelope but choose their own side, company, signed price offset, quantity, and reason. When earlier demand has priority over lower-priced supply, the envelope can offer a passive bid at that priority ceiling instead of suggesting an unsafe crossing price. At application time the backend resolves the offset against the freshest market price and clamps the resulting limit onto the allowed band, then accepts or rejects the unchanged quantity under the current execution and exposure rules. An accepted limit is not subsequently re-priced by ordinary order maintenance.
 
 Every participant order — the player's and an automated one — must rest inside the allowed order range around the LULD reference, and a price beyond it is rejected. Continuous matching still only crosses orders inside the narrower executable band, so an order in the allowed range but outside the band waits until the band reaches it. See [LULD price controls](luld.md).
 
-Rule-based Individual buys stay inside the executable band. A rule-based sell that rests inside the band spreads symmetrically around the LULD reference rather than always pricing below it, so ordinary selling no longer biases price downward on its own. Rule-based sells and Collective Fund orders may still use a waiting segment just outside it, while forced orders that must execute — margin-call, bankruptcy, loan-distress, and fund cash-raising sells — are pulled onto the nearest band edge. Issuer float rests at its listing reference, so none of those forced or issuer orders deliberately wait outside the band.
+Rule-based Individual buys stay inside the executable band. Ordinary passive limits produced for rule-based sells and both sides of Collective Fund trading use a centered random offset with equal opportunity to fall above or below the active reference, then clamp to the active band. This symmetry prevents the price generator itself from embedding a permanent buy-side or sell-side drift. The separate no-supply Individual bid described above is intentionally positive because it represents demand rather than a neutral passive quote. Forced orders that must execute — margin-call, bankruptcy, loan-distress, and fund cash-raising sells — are pulled onto the nearest band edge. Issuer float rests at its listing reference.
 
 Resting rule-based automated and fund orders can also move toward the market before matching, always clamped into the executable band so a stale order never compounds past it:
 
@@ -103,10 +131,6 @@ peer impact percent = company impact percent * 0.25
 
 A science investigation is a positive sector event. It raises affected companies by a percentage of the current price, but does not clear the order book.
 
-### Auditor Findings
-
-Auditors review companies during the pre-match window. A severe finding can directly drop a company's price and trigger buyer order revisions before that cycle's automated decisions and matching. An issue-free review can instead raise expectations, lift the price, and cancel eligible participant sell orders so owners can re-form asks around the new level; player and bankrupt-owner orders remain untouched.
-
 ### Big Investments
 
 A big-investment deal records the unchanged per-share deal price against the enlarged share supply. The attached raised-expectations rating then separately requests an 8% price increase. LULD can clamp the realized move, and this rating impact preserves resting orders rather than cancelling stale orders. See [Big investment](../logic/big-investment.md).
@@ -135,9 +159,13 @@ Free-share emission also does not directly write a new market price. It increase
 
 Dividends also do not directly set price. They transfer available issuer cash to shareholders when a payout window is due. That extra participant cash can influence later orders, but no price point is written by the dividend itself.
 
+Company financial checkpoints and periodic audits do not directly set price. They alter the evidence available to traders for the effective day, which changes probabilistic demand and supply only when a participant subsequently chooses and places an order. Audit creation therefore does not clear resting orders. See [Company fundamentals](../logic/company-fundamentals.md) and [Auditors](../roles/auditors.md).
+
 T+1 settlement does not defer price formation. A fill records its price point and changes economic ownership on the trade date; only the settled cash and share quantities wait until the next trading day.
 
 Forced liquidation, bankruptcy sell-downs, and fund unwind sales do not directly set price either. They place sell orders at discounted limits clamped into the executable band so they can cross; price changes only if those orders match.
+
+Short selling remains unavailable. Every sell order is capped by owned shares that are not already committed to another sell; there is no stock borrow or buy-to-cover flow.
 
 ## Current Price And Charts
 

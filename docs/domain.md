@@ -16,6 +16,9 @@ Share ownership is stored as one quantity-based holding per participant and comp
 - An unfilled order is cancelled automatically once it has rested for too many cycles; cancelling a buy releases its reserved cash and cancelling a sell frees its shares to be listed again.
 - While unfilled, a stale order is re-priced toward the market on each later cycle so it has a chance to fill before that cancellation cap.
 - A holder that cannot afford any share for several consecutive cycles sells down its most valuable holding to raise cash.
+- Each company starts with a bounded, internally consistent financial baseline. At the opening and midpoint of every trading day, a random subset of its operating, balance-sheet, dividend, risk, and management-forecast indicators changes and a new immutable snapshot is stored. Profitability, stability, volatility, and closure-risk scores are derived from those reports; see [Company fundamentals](logic/company-fundamentals.md).
+- Every live company is audited once per two completed trading days. The next trading day receives one evidence-backed status — Extra raised expectations, Raised expectations, Stable, Low risk, or High risk — based on price behavior, share-supply events, dividends, industry direction, and company fundamentals. The audit is a trading signal and does not directly set price; see [Auditors](roles/auditors.md).
+- Rule-based traders and funds normalize momentum, order-flow imbalance, industry sentiment, the effective audit, and company fundamentals into one bounded directional score. That score changes explicit buy, sell, and wait probabilities alongside temperament, risk profile, exposure, and execution constraints; it never makes a direction certain.
 - Every 10–25 trading cycles, each active priced company independently tests for operating income and a dividend. Income comes from the simulated external economy and is credited before any same-window dividend is funded; see [Corporate cash](logic/corporate-cash.md) for the calculation and accounting rules.
 - Share owners can be paid a dividend in that window: each company calculates a proportional payout from capitalization and owned shares, then funds no more than its available issuer cash. A shortfall reduces or skips the payout and creates a Newswire item; a stock split leaves what a holder collects unchanged.
 - While the market runs, a news event is published automatically every fixed number of cycles; some carry market impact.
@@ -92,8 +95,58 @@ Notes:
 
 - Issued shares are divided between quantity-based participant holdings and the issuer's implicit unsold float.
 - Corporate cash receives settled primary proceeds and simulated operating income, then funds dividends; secondary trades do not affect it. See [Corporate cash](logic/corporate-cash.md).
+- Financial reports are stored as separate immutable snapshots. Reported operating cash flow is analytical evidence and is not the issuer cash ledger.
 - The company price can be read from the latest price snapshot.
 - Every company belongs to exactly one industry.
+
+### CompanyFinancialSnapshot
+
+A company financial snapshot stores one reporting checkpoint.
+
+Fields:
+
+- CompanyId
+- CreatedInCycleId
+- TradingDayNumber
+- Moment (Seed, DayOpening, Midday)
+- Revenue, NetProfit, OperatingCashFlow
+- TotalAssets, TotalLiabilities, TotalDebt
+- ExpectedDividendPerShare, ExpectedDividendPool, DividendCoverageRatio
+- BusinessRiskScore
+- ManagementRevenueForecast, ManagementProfitForecast, ManagementOperatingCashFlowForecast
+- ManagementOutlook, ManagementConfidenceScore
+- ProfitabilityScore, ProfitabilityLevel
+- StabilityScore, FinancialVolatilityLevel
+- ClosureRiskScore, ClosureRiskLevel
+- ChangedMetrics
+
+Notes:
+
+- A company has at most one snapshot for each day and moment.
+- The current report is the newest snapshot; history retains prior values rather than reconstructing them.
+- Raw indicators and derived classifications are stored together so an old report remains unchanged.
+
+### CompanyAuditEvidence
+
+Company audit evidence is the immutable explanation for one company rating.
+
+Fields:
+
+- CompanyRatingId
+- CompanyId
+- CompanyFinancialSnapshotId
+- EvaluationStartTradingDayNumber
+- EvaluationEndTradingDayNumber
+- EffectiveTradingDayNumber
+- RuleVersion
+- TotalScore and component scores
+- Price, share-supply, dividend, industry, and financial evidence
+
+Notes:
+
+- The linked rating is one of the five current audit statuses.
+- Decisions use only evidence whose effective trading day has arrived.
+- An audit records evidence and direction; it does not itself write a price point.
 
 ### Industry
 

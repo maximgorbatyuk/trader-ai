@@ -5,6 +5,7 @@ A Company is the listed asset in the game. It issues shares, belongs to an indus
 ## Rules
 
 - A Company starts with an issued share supply and an initial market price.
+- A Company also starts with a randomized, internally consistent financial baseline tied to its listing capitalization and industry. New reports are stored at each trading-day opening and midpoint; see [Company fundamentals](../logic/company-fundamentals.md).
 - Unsold issued shares are available through the company's float. When those shares sell, the buyer receives shares, no participant seller receives cash, and the primary proceeds enter the company's issuer cash on T+1 settlement.
 - When unsold float is below the configured scarcity threshold, the Company can create a deterministic, demand-paced replenishment offer at the current price. The offer requires executable unmet buy demand from active, non-bankrupt Individuals or AI Agents after compatible resting sell supply has been subtracted; Player and Collective Fund demand does not trigger it. The canonical trigger, cap, and matching rules are in [Share price formation](../rules/share-price-formation.md).
 - A stale replenishment offer outside the active price band is cancelled without changing the initial float offer. The next demand-paced offer uses already issued but unlisted float before issuing additional shares.
@@ -12,16 +13,19 @@ A Company is the listed asset in the game. It issues shares, belongs to an indus
 - A Company does not make automated trading decisions, join funds, or go bankrupt. It can be delisted, but through its own lifecycle rules rather than the trader-churn that removes traders (see Lifecycle).
 - Shareholders can be Individuals, AI Agents, the Player, or Collective Funds.
 - Company price changes through matched trades and market events.
+- Financial reports and auditor statuses are evidence for trader decisions. They do not directly write a price point or cancel orders.
 - News can move one company or every company in selected industries up or down.
 - A crisis moves affected industries down and can cancel ordinary buy orders priced against the old level.
 - A science investigation moves affected industries up without cancelling orders.
 - During each scheduled corporate-cash window, a Company independently tests for simulated operating income and a dividend. Income is credited before dividend funding; detailed timing, calculation, and accounting rules are in [Corporate cash](../logic/corporate-cash.md).
+- Reported operating cash flow, expected dividend, and dividend coverage belong to the financial report. They inform forecasts and audits but remain separate from spendable issuer cash and an actual dividend declaration.
 - Dividends go to current share owners, not to unsold float, and cannot exceed the company's available issuer cash.
 - The company detail page shows **Issuer cash** and a **Corporate cash movements** ledger where simulated earnings appear as an **Operating income** credit alongside primary issuance and funded dividend payments.
 - Dividend likelihood is higher when the company's market value has stayed stable and lower after sharp swings.
 - When the share price grows too high, a stock split can increase share counts and lower the per-share price without changing holder value or total market value.
 - During a split, the unsold float is re-denominated and participant orders for that company are cancelled so trading can restart around the adjusted price.
 - LULD price controls can move the company through Limit State, Trading Pause, and Reopening without cancelling its resting book.
+- Every two completed trading days, an audit combines price behavior, supply events, dividends, industry direction, and the latest financial evidence into one of five statuses effective on the following trading day. The company page exposes the current report, management outlook, financial history, and immutable audit history in separate tabs.
 
 ## Lifecycle
 

@@ -29,10 +29,33 @@ Participants are the actors that can hold cash, reserve cash for buy orders, own
 - LULD price controls preserve resting orders through Limit State and Trading Pause. Orders remain cancellable and may participate in the deterministic reopening auction; see [LULD price controls](rules/luld.md).
 - Stock splits preserve holder value by increasing share counts and lowering per-share price.
 
+## Directional evidence and decisions
+
+Rule-based Individuals and Collective Funds score each tradable company before choosing an action. Five components are normalized to the range from -1 to +1 and combined with configurable weights:
+
+- recent price momentum;
+- executable order-flow imbalance;
+- industry sentiment;
+- the newest audit whose effective day has arrived;
+- the latest [company fundamentals](logic/company-fundamentals.md).
+
+Positive evidence raises the weight of buying the strongest eligible company. Negative evidence raises the weight of selling the weakest held company. Waiting always keeps a positive base weight, and temperament contributes bounded personality noise, so evidence changes probabilities rather than forcing a trade. Portfolio exposure, available cash, ownership, LULD, open orders, and other execution rules remain hard gates after the directional evaluation.
+
+Risk profile changes how fundamentals are interpreted:
+
+- **Low risk** responds more strongly to profitability, stability, dividend coverage, and low closure risk than to forecast growth.
+- **Medium risk** balances company quality and growth.
+- **High risk** responds more strongly to confident forecast growth and less strongly to defensive quality.
+
+Temperament mainly changes activity: Aggressive traders receive more buy/sell pull and less wait pull, Conservative traders receive less activity and more wait pull, and Balanced traders sit between them. Debt, profit-taking, bargain, crisis, and exposure pressures can further adjust the final action weights.
+
+AI Agents receive the same raw financial evidence, immutable audit evidence, and normalized component scores, but the hosted model remains responsible for its own prediction and order choice. The human player receives the visible reports and decides without an automated probability roll. The full price and matching model is documented in [Share price formation](rules/share-price-formation.md).
+
 ## Automated Buy Policy
 
 The following rules apply only to rule-based Individuals and configured AI Agents. They do not change the Player's manual orders or Collective Fund decisions.
 
+- For a rule-based Individual, the directional probability roll selects the action and target before the buy policy sizes and prices the order. The policy remains an execution and exposure boundary; it does not replace the evidence signal.
 - The target share exposure is a soft band based on net worth: 20–35% for Low risk, 35–55% for Medium risk, and 50–70% for High risk. A trader above the upper bound creates no new discretionary buys; falling below the lower bound increases buy pull but does not guarantee an order every cycle.
 - Open buy reservations reduce exposure headroom, so a trader cannot bypass the band by accumulating unfilled bids. A new order is also limited by default to 1%, 2%, or 3% of net worth for Low, Medium, or High risk respectively, and to 2% of the company's issued shares.
 - When below target, a meaningful order must use at least 25% of the currently permitted maximum. Passive interest is capped at 0.25% of the company's issued shares so an unrealistic resting bid cannot dominate the book.
