@@ -34,21 +34,29 @@ public sealed class TradingBehaviorSimulationTests
     [Fact]
     public async Task SimulationIsInvariantToPriceAndProportionalOrderBookScale()
     {
+        var baselineOrderFlow = await CaptureProductionOrderFlowAsync(bookScale: 1);
+        var scaledOrderFlow = await CaptureProductionOrderFlowAsync(bookScale: 10);
+        Assert.Equal(0.5m, baselineOrderFlow);
+        Assert.Equal(baselineOrderFlow, scaledOrderFlow);
+
         var baseline = await RunSimulationAsync(
             SyntheticSignal.Positive,
             Temperament.Balanced,
             priceScale: 1m,
-            bookScale: 1);
+            bookScale: 1,
+            orderFlowImbalance: baselineOrderFlow);
         var priceScaled = await RunSimulationAsync(
             SyntheticSignal.Positive,
             Temperament.Balanced,
             priceScale: 10m,
-            bookScale: 1);
+            bookScale: 1,
+            orderFlowImbalance: baselineOrderFlow);
         var bookScaled = await RunSimulationAsync(
             SyntheticSignal.Positive,
             Temperament.Balanced,
             priceScale: 1m,
-            bookScale: 10);
+            bookScale: 10,
+            orderFlowImbalance: scaledOrderFlow);
 
         foreach (var scaled in new[] { priceScaled, bookScaled })
         {
@@ -67,6 +75,7 @@ public sealed class TradingBehaviorSimulationTests
             0m,
             0.0002m);
         Assert.Equal(baseline.AggregatePriceDirection, bookScaled.AggregatePriceDirection);
+        Assert.Equal(baseline.ExecutedQuantity * 10, bookScaled.ExecutedQuantity);
     }
 
     [Fact]
@@ -75,16 +84,20 @@ public sealed class TradingBehaviorSimulationTests
         var neutral = await RunSimulationAsync(
             SyntheticSignal.Neutral,
             Temperament.Balanced,
-            priceScale: 1m);
+            priceScale: 1m,
+            orderFlowImbalance: 0m);
         var positive = await RunSimulationAsync(
             SyntheticSignal.Positive,
             Temperament.Balanced,
-            priceScale: 1m);
+            priceScale: 1m,
+            orderFlowImbalance: 0m);
         var negative = await RunSimulationAsync(
             SyntheticSignal.Negative,
             Temperament.Balanced,
-            priceScale: 1m);
+            priceScale: 1m,
+            orderFlowImbalance: 0m);
 
+        Assert.All(new[] { neutral, positive, negative }, result => Assert.Equal(0m, result.OrderFlowImbalance));
         Assert.True(positive.Buys > neutral.Buys);
         Assert.True(negative.Sells > neutral.Sells);
         Assert.True(positive.Buys > negative.Buys);
@@ -133,10 +146,11 @@ public sealed class TradingBehaviorSimulationTests
         Temperament temperament,
         decimal priceScale,
         int bookScale = 1,
-        bool includeMatching = true)
+        bool includeMatching = true,
+        decimal orderFlowImbalance = 0m)
     {
         var referencePrice = 100m * priceScale;
-        var quote = Quote(signal, referencePrice, bookScale);
+        var quote = Quote(signal, referencePrice, bookScale, orderFlowImbalance);
         var intents = new List<OrderIntent>();
         var buys = 0;
         var sells = 0;
@@ -153,7 +167,7 @@ public sealed class TradingBehaviorSimulationTests
                 var context = Context(quote, temperament, referencePrice, bookScale);
                 var decisionSeed = unchecked((seed * 397) ^ (iteration * 7919));
                 var engine = new RuleBasedDecisionEngine(
-                    new OneShareSizer(),
+                    new ScaleAwareTradeSizer(bookScale),
                     Options.Create(new RandomChanceRatesOptions()),
                     new Random(decisionSeed));
                 var evaluation = engine.Evaluate(context);
@@ -195,7 +209,7 @@ public sealed class TradingBehaviorSimulationTests
 
         var matching = includeMatching
             ? await RunMatchingAsync(referencePrice, intents)
-            : new MatchingSummary(0, 0, 0m);
+            : new MatchingSummary(0, 0, 0, 0m);
         return new SimulationResult(
             buys,
             sells,
@@ -206,7 +220,9 @@ public sealed class TradingBehaviorSimulationTests
             intents.Count == 0 ? 0m : passiveOffsetSum / intents.Count,
             matching.Executions,
             matching.MidpointViolations,
-            matching.AggregatePriceDirection);
+            matching.AggregatePriceDirection,
+            matching.ExecutedQuantity,
+            quote.OrderFlowImbalance);
     }
 
     private static DecisionContext Context(
@@ -237,19 +253,13 @@ public sealed class TradingBehaviorSimulationTests
     private static CompanyQuote Quote(
         SyntheticSignal signal,
         decimal referencePrice,
-        int bookScale)
+        int bookScale,
+        decimal orderFlowImbalance)
     {
-        var (rawBuyQuantity, rawSellQuantity) = signal switch
-        {
-            SyntheticSignal.Positive => (75m * bookScale, 25m * bookScale),
-            SyntheticSignal.Negative => (25m * bookScale, 75m * bookScale),
-            _ => (50m * bookScale, 50m * bookScale),
-        };
         return new CompanyQuote(
             CompanyId: 1,
             Price: referencePrice,
-            OrderFlowImbalance:
-                (rawBuyQuantity - rawSellQuantity) / (rawBuyQuantity + rawSellQuantity),
+            OrderFlowImbalance: orderFlowImbalance,
             Bounds: OrderPriceBounds.FromReference(referencePrice, 15m, 10m, 25m, 15m),
             IssuedShares: 10_000 * bookScale,
             Audit: signal switch
@@ -274,6 +284,92 @@ public sealed class TradingBehaviorSimulationTests
                     coverage: 0m),
                 _ => null,
             });
+    }
+
+    private static async Task<decimal> CaptureProductionOrderFlowAsync(int bookScale)
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new AppDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+
+        var company = await context.Companies.SingleAsync();
+        var cycle = await context.MarketCycles.SingleAsync();
+        var buyer = await context.Participants.SingleAsync(participant => participant.Name == "Bob");
+        var seller = await context.Participants.SingleAsync(participant => participant.Name == "Alice");
+        var sellerHolding = await context.Holdings.SingleAsync();
+        var buyQuantity = 75 * bookScale;
+        var sellQuantity = 25 * bookScale;
+        var buyPrice = 90m;
+        var now = new DateTime(2026, 7, 24, 0, 0, 0, DateTimeKind.Utc);
+
+        company.IssuedSharesCount = 10_000 * bookScale;
+        sellerHolding.Quantity = 100 * bookScale;
+        sellerHolding.SettledQuantity = sellerHolding.Quantity;
+        seller.InitialBalance = 10_000m * bookScale;
+        seller.CurrentBalance = seller.InitialBalance;
+        seller.SettledCashBalance = seller.InitialBalance;
+        buyer.InitialBalance = 100_000m * bookScale;
+        buyer.CurrentBalance = buyer.InitialBalance;
+        buyer.SettledCashBalance = buyer.InitialBalance;
+        buyer.ReservedBalance = buyQuantity * buyPrice;
+        context.Orders.AddRange(
+            new Order
+            {
+                ParticipantId = buyer.Id,
+                CompanyId = company.Id,
+                Type = OrderType.Buy,
+                Status = OrderStatus.Open,
+                Quantity = buyQuantity,
+                LimitPrice = buyPrice,
+                ReservedCashAmount = buyer.ReservedBalance,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
+            new Order
+            {
+                ParticipantId = seller.Id,
+                CompanyId = company.Id,
+                Type = OrderType.Sell,
+                Status = OrderStatus.Open,
+                Quantity = sellQuantity,
+                LimitPrice = 110m,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = now.AddTicks(1),
+                UpdatedAt = now.AddTicks(1),
+            },
+            new Order
+            {
+                // A large issuer ask proves that only participant quantities enter the directional flow.
+                ParticipantId = null,
+                CompanyId = company.Id,
+                Type = OrderType.Sell,
+                Status = OrderStatus.Open,
+                Quantity = 5_000 * bookScale,
+                LimitPrice = 100m,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = now.AddTicks(2),
+                UpdatedAt = now.AddTicks(2),
+            });
+        await context.SaveChangesAsync();
+
+        var engine = new QuoteCapturingDecisionEngine();
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            engine,
+            new MarketCycleLock(),
+            new Random(1));
+
+        var generated = await service.GenerateDecisionsAsync();
+
+        Assert.True(generated.Success);
+        return Assert.Single(engine.LastQuotes!).OrderFlowImbalance;
     }
 
     private static EffectiveAuditEvidence Audit(CompanyRiskRating rating) => new(
@@ -372,18 +468,24 @@ public sealed class TradingBehaviorSimulationTests
         var company = new Company
         {
             Name = "Synthetic company",
-            IssuedSharesCount = Math.Max(1, intents.Count),
+            IssuedSharesCount = Math.Max(
+                1,
+                intents.Where(intent => intent.Type == OrderType.Sell).Sum(intent => intent.Quantity)),
             CreatedAt = now,
             UpdatedAt = now,
         };
+        var buyNotional = intents
+            .Where(intent => intent.Type == OrderType.Buy)
+            .Sum(intent => intent.Quantity * intent.LimitPrice);
         var buyer = new Participant
         {
             Name = "Synthetic buyer",
             Type = ParticipantType.Individual,
             Temperament = Temperament.Balanced,
             RiskProfile = RiskProfile.Medium,
-            InitialBalance = referencePrice * Math.Max(1, intents.Count) * 2m,
-            CurrentBalance = referencePrice * Math.Max(1, intents.Count) * 2m,
+            InitialBalance = Math.Max(referencePrice, buyNotional * 2m),
+            CurrentBalance = Math.Max(referencePrice, buyNotional * 2m),
+            SettledCashBalance = Math.Max(referencePrice, buyNotional * 2m),
             IsActive = true,
         };
         var seller = new Participant
@@ -399,14 +501,17 @@ public sealed class TradingBehaviorSimulationTests
         context.AddRange(cycle, company, buyer, seller);
         await context.SaveChangesAsync();
 
-        var sellCount = intents.Count(intent => intent.Type == OrderType.Sell);
-        if (sellCount > 0)
+        var sellQuantity = intents
+            .Where(intent => intent.Type == OrderType.Sell)
+            .Sum(intent => intent.Quantity);
+        if (sellQuantity > 0)
         {
             context.Holdings.Add(new Holding
             {
                 ParticipantId = seller.Id,
                 CompanyId = company.Id,
-                Quantity = sellCount,
+                Quantity = sellQuantity,
+                SettledQuantity = sellQuantity,
                 AverageCost = referencePrice,
             });
         }
@@ -417,9 +522,11 @@ public sealed class TradingBehaviorSimulationTests
             CompanyId = company.Id,
             Type = intent.Type,
             Status = OrderStatus.Open,
-            Quantity = 1,
+            Quantity = intent.Quantity,
             LimitPrice = intent.LimitPrice,
-            ReservedCashAmount = intent.Type == OrderType.Buy ? intent.LimitPrice : 0m,
+            ReservedCashAmount = intent.Type == OrderType.Buy
+                ? intent.Quantity * intent.LimitPrice
+                : 0m,
             CreatedInCycleId = cycle.Id,
             CreatedAt = now.AddTicks(index),
             UpdatedAt = now.AddTicks(index),
@@ -450,7 +557,11 @@ public sealed class TradingBehaviorSimulationTests
         var aggregateDirection = fills.Count == 0
             ? 0m
             : fills.Average(fill => (fill.ExecutionPrice - referencePrice) / referencePrice);
-        return new MatchingSummary(fills.Count, midpointViolations, aggregateDirection);
+        return new MatchingSummary(
+            fills.Count,
+            midpointViolations,
+            fills.Sum(fill => fill.Quantity),
+            aggregateDirection);
     }
 
     private enum SyntheticSignal
@@ -470,7 +581,9 @@ public sealed class TradingBehaviorSimulationTests
         decimal MeanPassiveOffset,
         int MidpointExecutions,
         int MidpointViolations,
-        decimal AggregatePriceDirection)
+        decimal AggregatePriceDirection,
+        int ExecutedQuantity,
+        decimal OrderFlowImbalance)
     {
         public int TotalDecisions => Buys + Sells + Waits;
     }
@@ -478,10 +591,22 @@ public sealed class TradingBehaviorSimulationTests
     private sealed record MatchingSummary(
         int Executions,
         int MidpointViolations,
+        int ExecutedQuantity,
         decimal AggregatePriceDirection);
 
-    private sealed class OneShareSizer : ITradeSizer
+    private sealed class ScaleAwareTradeSizer(int scale) : ITradeSizer
     {
-        public int Size(Temperament temperament, int maxQuantity) => Math.Min(1, maxQuantity);
+        public int Size(Temperament temperament, int maxQuantity) => Math.Min(scale, maxQuantity);
+    }
+
+    private sealed class QuoteCapturingDecisionEngine : IDecisionEngine
+    {
+        public IReadOnlyList<CompanyQuote>? LastQuotes { get; private set; }
+
+        public IReadOnlyList<OrderIntent> Decide(DecisionContext context)
+        {
+            LastQuotes = context.Companies.ToArray();
+            return [];
+        }
     }
 }
