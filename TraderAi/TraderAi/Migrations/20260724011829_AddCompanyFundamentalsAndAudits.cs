@@ -11,12 +11,16 @@ namespace TraderAi.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            // Ratings use a string converter, so both legacy enum names and numeric text must become the final stored name.
+            // Ratings use a string converter, so every legacy name and numeric text must become a final stored name.
             migrationBuilder.Sql(
                 """
                 UPDATE "CompanyRatings"
+                SET "Rating" = 'LowRisk'
+                WHERE "Rating" IN ('Low', '0');
+
+                UPDATE "CompanyRatings"
                 SET "Rating" = 'HighRisk'
-                WHERE "Rating" IN ('Extra', '2');
+                WHERE "Rating" IN ('High', 'Extra', '1', '2');
                 """);
 
             migrationBuilder.CreateTable(

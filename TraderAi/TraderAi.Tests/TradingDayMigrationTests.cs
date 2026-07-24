@@ -101,7 +101,7 @@ public sealed class TradingDayMigrationTests
     }
 
     [Fact]
-    public async Task CompanyFundamentalsMigrationNormalizesLegacyExtraRatings()
+    public async Task CompanyFundamentalsMigrationNormalizesAllLegacyRatings()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"trader-ai-rating-migration-{Guid.NewGuid():N}.db");
         try
@@ -133,8 +133,12 @@ public sealed class TradingDayMigrationTests
                 INSERT INTO CompanyRatings (
                     Id, CompanyId, AuditorId, Rating, ImpactPercent, CreatedInCycleId, CreatedAt)
                 VALUES
-                    (1, 1, 1, 'Extra', NULL, 1, CURRENT_TIMESTAMP),
-                    (2, 1, 1, '2', NULL, 2, CURRENT_TIMESTAMP);
+                    (1, 1, 1, 'Low', NULL, 1, CURRENT_TIMESTAMP),
+                    (2, 1, 1, 'High', NULL, 2, CURRENT_TIMESTAMP),
+                    (3, 1, 1, 'Extra', NULL, 3, CURRENT_TIMESTAMP),
+                    (4, 1, 1, 0, NULL, 4, CURRENT_TIMESTAMP),
+                    (5, 1, 1, 1, NULL, 5, CURRENT_TIMESTAMP),
+                    (6, 1, 1, 2, NULL, 6, CURRENT_TIMESTAMP);
                 """);
 
             await migrator.MigrateAsync("AddCompanyFundamentalsAndAudits");
@@ -145,7 +149,16 @@ public sealed class TradingDayMigrationTests
                 .OrderBy(rating => rating.Id)
                 .Select(rating => rating.Rating)
                 .ToListAsync();
-            Assert.Equal([CompanyRiskRating.HighRisk, CompanyRiskRating.HighRisk], ratings);
+            Assert.Equal(
+                [
+                    CompanyRiskRating.LowRisk,
+                    CompanyRiskRating.HighRisk,
+                    CompanyRiskRating.HighRisk,
+                    CompanyRiskRating.LowRisk,
+                    CompanyRiskRating.HighRisk,
+                    CompanyRiskRating.HighRisk,
+                ],
+                ratings);
 
             await using var connection = new SqliteConnection($"Data Source={databasePath}");
             await connection.OpenAsync();
@@ -157,7 +170,9 @@ public sealed class TradingDayMigrationTests
             {
                 storedValues.Add(valuesReader.GetString(0));
             }
-            Assert.Equal(["HighRisk", "HighRisk"], storedValues);
+            Assert.Equal(
+                ["LowRisk", "HighRisk", "HighRisk", "LowRisk", "HighRisk", "HighRisk"],
+                storedValues);
 
             await using var typeCommand = connection.CreateCommand();
             typeCommand.CommandText = "SELECT type FROM pragma_table_info('CompanyRatings') WHERE name = 'Rating'";
