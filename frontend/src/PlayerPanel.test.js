@@ -21,7 +21,7 @@ before(async () => {
 
 after(() => server?.close())
 
-function renderTabs(entry) {
+function renderTabs(entry, overrides = {}) {
   const props = {
     participantId: 1,
     canCancelOrders: true,
@@ -40,6 +40,7 @@ function renderTabs(entry) {
     showFavoriteCompanies: true,
     onSelectCompany: () => {},
     onRefresh: () => {},
+    ...overrides,
   }
   return renderToStaticMarkup(
     createElement(MemoryRouter, { initialEntries: [entry] }, createElement(ActorTabs, props)),
@@ -68,4 +69,23 @@ test('no tab param defaults to the market map', () => {
 
   assert.match(markup, /id="playerpanel-map"/)
   assert.ok(markup.includes('market-map-sentinel'), 'the market map is the active panel')
+})
+
+test('high-risk attention uses the final audit wording', () => {
+  const markup = renderTabs('/?tab=attention', {
+    attention: [
+      {
+        companyId: 1,
+        name: 'Acme',
+        currentPrice: 10,
+        priceChangePct: 0,
+        shares: 5,
+        marketValue: 50,
+        highRisk: true,
+      },
+    ],
+  })
+
+  assert.match(markup, /title="Standing High risk verdict in the last 20 cycles">High risk<\/span>/)
+  assert.doesNotMatch(markup, /High or Extra risk/)
 })

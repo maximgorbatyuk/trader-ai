@@ -883,7 +883,7 @@ function CashMovesTab({ moves, participantId }) {
 const ATTENTION_FLAGS = [
   { key: 'priceDeclining', label: 'Price ↓', title: 'Price fell in at least 3 of the last 10 cycles' },
   { key: 'badNewsImpact', label: 'Bad news', title: 'Hit by a negative news post or a crisis in the last 20 cycles' },
-  { key: 'highRisk', label: 'Risk', title: 'Standing High or Extra risk verdict in the last 20 cycles' },
+  { key: 'highRisk', label: 'High risk', title: 'Standing High risk verdict in the last 20 cycles' },
   { key: 'recentMerge', label: 'Merge', title: 'Completed a reverse merge in the last 20 cycles' },
 ]
 
