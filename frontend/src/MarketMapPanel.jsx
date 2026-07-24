@@ -34,14 +34,14 @@ const FAVORITE_OPTIONS = [
   { value: 'favorite', label: 'Favorite companies' },
   { value: 'not-favorite', label: 'Not favorite' },
 ]
-const RISK_OPTIONS = [
+const AUDIT_RATING_OPTIONS = [
   { value: 'all', label: 'Any rating' },
   { value: 'none', label: 'No audit' },
   { value: 'ExtraRaisedExpectations', label: 'Extra raised expectations' },
   { value: 'RaisedExpectations', label: 'Raised expectations' },
-  { value: 'Extra', label: 'Extra risk' },
-  { value: 'High', label: 'High risk' },
-  { value: 'Low', label: 'Low risk' },
+  { value: 'Stable', label: 'Stable' },
+  { value: 'LowRisk', label: 'Low risk' },
+  { value: 'HighRisk', label: 'High risk' },
 ]
 
 // Keeping the update feed inside the map makes event priority consistent anywhere this market view is reused.
@@ -65,7 +65,7 @@ export function MarketMapPanel({
   const [capBucket, setCapBucket] = useState('all')
   const [playerSel, setPlayerSel] = useState('all')
   const [favoriteSel, setFavoriteSel] = useState('all')
-  const [riskSel, setRiskSel] = useState('all')
+  const [ratingSel, setRatingSel] = useState('all')
 
   if (capChange.cycle !== currentCycleNumber) {
     const previousCaps = capChange.capById
@@ -106,10 +106,10 @@ export function MarketMapPanel({
     return true
   }
 
-  function matchesRisk(company) {
-    if (riskSel === 'all') return true
-    if (riskSel === 'none') return !company.currentRating
-    return company.currentRating === riskSel
+  function matchesRating(company) {
+    if (ratingSel === 'all') return true
+    if (ratingSel === 'none') return !company.currentRating
+    return company.currentRating === ratingSel
   }
 
   const visibleCompanies = mappedCompanies.filter((company) => {
@@ -117,7 +117,7 @@ export function MarketMapPanel({
     if (playerSel === 'owned' && !heldIds.has(company.id)) return false
     if (playerSel === 'not' && heldIds.has(company.id)) return false
     if (!matchesFavoriteFilter(company, favoriteSel)) return false
-    return matchesRisk(company)
+    return matchesRating(company)
   })
 
   const totalShares = visibleCompanies.reduce((sum, company) => sum + company.issuedSharesCount, 0)
@@ -191,9 +191,9 @@ export function MarketMapPanel({
             </select>
           </label>
           <label className="filter-field">
-            <span className="filter-label">Risk auditor</span>
-            <select className="select select-sm" value={riskSel} onChange={(event) => setRiskSel(event.target.value)}>
-              {RISK_OPTIONS.map((option) => (
+            <span className="filter-label">Audit status</span>
+            <select className="select select-sm" value={ratingSel} onChange={(event) => setRatingSel(event.target.value)}>
+              {AUDIT_RATING_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>

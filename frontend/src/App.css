@@ -2426,20 +2426,33 @@
   color: oklch(0.45 0.13 255);
 }
 
-/* Raised expectations use the market-up tone; risk ratings escalate through calm blue, amber, and magenta. */
+/* Audit glyphs preserve direction without color; tones reinforce the same market meaning. */
+.tag-rating-extra-raised,
 .tag-rating-raised {
   background: var(--up-soft);
   color: var(--up-text);
 }
 
+.tag-rating-stable {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
 .tag-rating-low {
-  background: oklch(0.93 0.04 220);
-  color: oklch(0.44 0.11 235);
+  background: oklch(0.93 0.07 75);
+  color: oklch(0.47 0.13 65);
 }
 
 .tag-rating-high {
-  background: oklch(0.93 0.07 75);
-  color: oklch(0.47 0.13 65);
+  background: var(--down-soft);
+  color: var(--down-text);
+}
+
+.rating-glyph {
+  display: inline-block;
+  min-width: 1.65em;
+  margin-right: 0.25em;
+  text-align: center;
 }
 
 .tag-rating-extra {

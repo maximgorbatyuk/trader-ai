@@ -65,17 +65,25 @@ export const TEMPERAMENT_TAG_CLASS = {
 export const RATING_LABEL = {
   ExtraRaisedExpectations: 'Extra raised expectations',
   RaisedExpectations: 'Raised expectations',
-  Low: 'Low risk',
-  High: 'High risk',
-  Extra: 'Extra risk',
+  Stable: 'Stable',
+  LowRisk: 'Low risk',
+  HighRisk: 'High risk',
 }
 
 export const RATING_TAG_CLASS = {
-  ExtraRaisedExpectations: 'tag-rating-raised',
+  ExtraRaisedExpectations: 'tag-rating-extra-raised',
   RaisedExpectations: 'tag-rating-raised',
-  Low: 'tag-rating-low',
-  High: 'tag-rating-high',
-  Extra: 'tag-rating-extra',
+  Stable: 'tag-rating-stable',
+  LowRisk: 'tag-rating-low',
+  HighRisk: 'tag-rating-high',
+}
+
+export const RATING_GLYPH = {
+  ExtraRaisedExpectations: '↑↑',
+  RaisedExpectations: '↑',
+  Stable: '→',
+  LowRisk: '↓',
+  HighRisk: '↓↓',
 }
 
 // Friendly labels for AI-call statuses; the label text carries the meaning without relying on color.
@@ -94,7 +102,13 @@ export function aiCallStatusLabel(status) {
   return AI_CALL_STATUS_LABEL[status] ?? status
 }
 
-const RATING_ORDER = { ExtraRaisedExpectations: -2, RaisedExpectations: -1, Low: 0, High: 1, Extra: 2 }
+const RATING_ORDER = {
+  ExtraRaisedExpectations: -2,
+  RaisedExpectations: -1,
+  Stable: 0,
+  LowRisk: 1,
+  HighRisk: 2,
+}
 
 export function ratingTrend(current, previous) {
   if (!current || !previous || !(current in RATING_ORDER) || !(previous in RATING_ORDER)) return null
@@ -108,7 +122,7 @@ export function ratingImpactLabel(rating, impactPercent) {
   if (rating === 'RaisedExpectations' || rating === 'ExtraRaisedExpectations') {
     return ` +${impactPercent.toFixed(0)}%`
   }
-  return rating === 'Extra' ? ` −${impactPercent.toFixed(0)}%` : ''
+  return rating === 'HighRisk' ? ` −${impactPercent.toFixed(0)}%` : ''
 }
 
 // Renders an AI order's signed price offset so its direction reads without relying on color.
