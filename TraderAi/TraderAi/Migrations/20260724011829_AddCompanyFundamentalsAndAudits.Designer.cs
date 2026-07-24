@@ -626,6 +626,9 @@ namespace TraderAi.Migrations
                     b.HasIndex("CompanyId", "EffectiveTradingDayNumber")
                         .IsUnique();
 
+                    b.HasIndex("CompanyRatingId", "CompanyId")
+                        .IsUnique();
+
                     b.HasIndex("LatestDividendEventId", "CompanyId");
 
                     b.ToTable("CompanyAuditEvidence");
@@ -666,6 +669,8 @@ namespace TraderAi.Migrations
                         .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CreatedInCycleId");
 
                     b.HasIndex("CompanyId", "TradingDayNumber", "Id");
 
@@ -895,6 +900,8 @@ namespace TraderAi.Migrations
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
+
+                    b.HasAlternateKey("Id", "CompanyId");
 
                     b.HasIndex("AuditorId");
 
@@ -2092,7 +2099,7 @@ namespace TraderAi.Migrations
 
                     b.HasIndex("CompanyId");
 
-                    b.HasIndex("CompanyRatingId");
+                    b.HasIndex("CompanyRatingId", "CompanyId");
 
                     b.HasIndex("PortfolioAuditSummaryId", "CompanyId")
                         .IsUnique();
@@ -2731,7 +2738,8 @@ namespace TraderAi.Migrations
 
                     b.HasOne("TraderAi.Models.CompanyRating", "CompanyRating")
                         .WithOne("Evidence")
-                        .HasForeignKey("TraderAi.Models.CompanyAuditEvidence", "CompanyRatingId")
+                        .HasForeignKey("TraderAi.Models.CompanyAuditEvidence", "CompanyRatingId", "CompanyId")
+                        .HasPrincipalKey("TraderAi.Models.CompanyRating", "Id", "CompanyId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
@@ -2759,6 +2767,12 @@ namespace TraderAi.Migrations
                     b.HasOne("TraderAi.Models.Company", null)
                         .WithMany()
                         .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("TraderAi.Models.MarketCycle", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedInCycleId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
@@ -2906,7 +2920,8 @@ namespace TraderAi.Migrations
 
                     b.HasOne("TraderAi.Models.CompanyRating", "CompanyRating")
                         .WithMany()
-                        .HasForeignKey("CompanyRatingId")
+                        .HasForeignKey("CompanyRatingId", "CompanyId")
+                        .HasPrincipalKey("Id", "CompanyId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 

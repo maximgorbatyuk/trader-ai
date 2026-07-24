@@ -339,6 +339,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasIndex(rating => new { rating.CompanyId, rating.CreatedInCycleId });
 
         modelBuilder.Entity<CompanyRating>()
+            .HasAlternateKey(rating => new { rating.Id, rating.CompanyId });
+
+        modelBuilder.Entity<CompanyRating>()
             .HasOne<Company>()
             .WithMany()
             .HasForeignKey(rating => rating.CompanyId)
@@ -364,7 +367,16 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<CompanyAuditEvidence>()
             .HasOne(evidence => evidence.CompanyRating)
             .WithOne(rating => rating.Evidence)
-            .HasForeignKey<CompanyAuditEvidence>(evidence => evidence.CompanyRatingId)
+            .HasForeignKey<CompanyAuditEvidence>(evidence => new
+            {
+                evidence.CompanyRatingId,
+                evidence.CompanyId,
+            })
+            .HasPrincipalKey<CompanyRating>(rating => new
+            {
+                rating.Id,
+                rating.CompanyId,
+            })
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<CompanyAuditEvidence>()
@@ -391,6 +403,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasOne<Company>()
             .WithMany()
             .HasForeignKey(dividendEvent => dividendEvent.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CompanyDividendEvent>()
+            .HasOne<MarketCycle>()
+            .WithMany()
+            .HasForeignKey(dividendEvent => dividendEvent.CreatedInCycleId)
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<CompanyDividendEvent>()
@@ -507,7 +525,16 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<PortfolioAuditSummaryItem>()
             .HasOne(item => item.CompanyRating)
             .WithMany()
-            .HasForeignKey(item => item.CompanyRatingId)
+            .HasForeignKey(item => new
+            {
+                item.CompanyRatingId,
+                item.CompanyId,
+            })
+            .HasPrincipalKey(rating => new
+            {
+                rating.Id,
+                rating.CompanyId,
+            })
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<PortfolioAuditSummaryItem>()

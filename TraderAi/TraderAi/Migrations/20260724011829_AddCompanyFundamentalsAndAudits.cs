@@ -11,16 +11,47 @@ namespace TraderAi.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            // Ratings use a string converter, so every legacy name and numeric text must become a final stored name.
+            // Rebuilding before dependent tables exist keeps the new constraints and legacy normalization in the
+            // migration transaction; SQLite's generated AddForeignKey operation would disable foreign keys outside it.
             migrationBuilder.Sql(
                 """
-                UPDATE "CompanyRatings"
-                SET "Rating" = 'LowRisk'
-                WHERE "Rating" IN ('Low', '0');
+                CREATE TABLE "__CompanyRatings_new" (
+                    "Id" INTEGER NOT NULL CONSTRAINT "PK_CompanyRatings" PRIMARY KEY AUTOINCREMENT,
+                    "CompanyId" INTEGER NOT NULL,
+                    "AuditorId" INTEGER NOT NULL,
+                    "Rating" TEXT NOT NULL,
+                    "ImpactPercent" TEXT NULL,
+                    "CreatedInCycleId" INTEGER NOT NULL,
+                    "CreatedAt" TEXT NOT NULL,
+                    CONSTRAINT "AK_CompanyRatings_Id_CompanyId" UNIQUE ("Id", "CompanyId"),
+                    CONSTRAINT "FK_CompanyRatings_Auditors_AuditorId"
+                        FOREIGN KEY ("AuditorId") REFERENCES "Auditors" ("Id") ON DELETE RESTRICT,
+                    CONSTRAINT "FK_CompanyRatings_Companies_CompanyId"
+                        FOREIGN KEY ("CompanyId") REFERENCES "Companies" ("Id") ON DELETE RESTRICT
+                );
 
-                UPDATE "CompanyRatings"
-                SET "Rating" = 'HighRisk'
-                WHERE "Rating" IN ('High', 'Extra', '1', '2');
+                INSERT INTO "__CompanyRatings_new" (
+                    "Id", "CompanyId", "AuditorId", "Rating", "ImpactPercent", "CreatedInCycleId", "CreatedAt")
+                SELECT
+                    "Id",
+                    "CompanyId",
+                    "AuditorId",
+                    CASE
+                        WHEN "Rating" IN ('Low', '0') THEN 'LowRisk'
+                        WHEN "Rating" IN ('High', 'Extra', '1', '2') THEN 'HighRisk'
+                        ELSE "Rating"
+                    END,
+                    "ImpactPercent",
+                    "CreatedInCycleId",
+                    "CreatedAt"
+                FROM "CompanyRatings";
+
+                DROP TABLE "CompanyRatings";
+                ALTER TABLE "__CompanyRatings_new" RENAME TO "CompanyRatings";
+
+                CREATE INDEX "IX_CompanyRatings_AuditorId" ON "CompanyRatings" ("AuditorId");
+                CREATE INDEX "IX_CompanyRatings_CompanyId_CreatedInCycleId"
+                    ON "CompanyRatings" ("CompanyId", "CreatedInCycleId");
                 """);
 
             migrationBuilder.CreateTable(
@@ -48,6 +79,12 @@ namespace TraderAi.Migrations
                         name: "FK_CompanyDividendEvents_Companies_CompanyId",
                         column: x => x.CompanyId,
                         principalTable: "Companies",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CompanyDividendEvents_MarketCycles_CreatedInCycleId",
+                        column: x => x.CreatedInCycleId,
+                        principalTable: "MarketCycles",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                 });
@@ -204,10 +241,10 @@ namespace TraderAi.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_PortfolioAuditSummaryItems_CompanyRatings_CompanyRatingId",
-                        column: x => x.CompanyRatingId,
+                        name: "FK_PortfolioAuditSummaryItems_CompanyRatings_CompanyRatingId_CompanyId",
+                        columns: x => new { x.CompanyRatingId, x.CompanyId },
                         principalTable: "CompanyRatings",
-                        principalColumn: "Id",
+                        principalColumns: new[] { "Id", "CompanyId" },
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
                         name: "FK_PortfolioAuditSummaryItems_PortfolioAuditSummaries_PortfolioAuditSummaryId",
@@ -278,17 +315,12 @@ namespace TraderAi.Migrations
                         principalColumns: new[] { "Id", "CompanyId" },
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_CompanyAuditEvidence_CompanyRatings_CompanyRatingId",
-                        column: x => x.CompanyRatingId,
+                        name: "FK_CompanyAuditEvidence_CompanyRatings_CompanyRatingId_CompanyId",
+                        columns: x => new { x.CompanyRatingId, x.CompanyId },
                         principalTable: "CompanyRatings",
-                        principalColumn: "Id",
+                        principalColumns: new[] { "Id", "CompanyId" },
                         onDelete: ReferentialAction.Restrict);
                 });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CompanyRatings_AuditorId",
-                table: "CompanyRatings",
-                column: "AuditorId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_CompanyAuditEvidence_CompanyFinancialSnapshotId_CompanyId",
@@ -302,6 +334,12 @@ namespace TraderAi.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "IX_CompanyAuditEvidence_CompanyRatingId_CompanyId",
+                table: "CompanyAuditEvidence",
+                columns: new[] { "CompanyRatingId", "CompanyId" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "IX_CompanyAuditEvidence_LatestDividendEventId_CompanyId",
                 table: "CompanyAuditEvidence",
                 columns: new[] { "LatestDividendEventId", "CompanyId" });
@@ -310,6 +348,11 @@ namespace TraderAi.Migrations
                 name: "IX_CompanyDividendEvents_CompanyId_TradingDayNumber_Id",
                 table: "CompanyDividendEvents",
                 columns: new[] { "CompanyId", "TradingDayNumber", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CompanyDividendEvents_CreatedInCycleId",
+                table: "CompanyDividendEvents",
+                column: "CreatedInCycleId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_CompanyFinancialSnapshots_CompanyId_CreatedInCycleId",
@@ -344,9 +387,9 @@ namespace TraderAi.Migrations
                 column: "CompanyId");
 
             migrationBuilder.CreateIndex(
-                name: "IX_PortfolioAuditSummaryItems_CompanyRatingId",
+                name: "IX_PortfolioAuditSummaryItems_CompanyRatingId_CompanyId",
                 table: "PortfolioAuditSummaryItems",
-                column: "CompanyRatingId");
+                columns: new[] { "CompanyRatingId", "CompanyId" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_PortfolioAuditSummaryItems_PortfolioAuditSummaryId_CompanyId",
@@ -365,34 +408,11 @@ namespace TraderAi.Migrations
                 table: "PrimaryIssuanceEvents",
                 column: "CreatedInCycleId");
 
-            migrationBuilder.AddForeignKey(
-                name: "FK_CompanyRatings_Auditors_AuditorId",
-                table: "CompanyRatings",
-                column: "AuditorId",
-                principalTable: "Auditors",
-                principalColumn: "Id",
-                onDelete: ReferentialAction.Restrict);
-
-            migrationBuilder.AddForeignKey(
-                name: "FK_CompanyRatings_Companies_CompanyId",
-                table: "CompanyRatings",
-                column: "CompanyId",
-                principalTable: "Companies",
-                principalColumn: "Id",
-                onDelete: ReferentialAction.Restrict);
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropForeignKey(
-                name: "FK_CompanyRatings_Auditors_AuditorId",
-                table: "CompanyRatings");
-
-            migrationBuilder.DropForeignKey(
-                name: "FK_CompanyRatings_Companies_CompanyId",
-                table: "CompanyRatings");
-
             migrationBuilder.DropTable(
                 name: "CompanyAuditEvidence");
 
@@ -411,9 +431,31 @@ namespace TraderAi.Migrations
             migrationBuilder.DropTable(
                 name: "CompanyDividendEvents");
 
-            migrationBuilder.DropIndex(
-                name: "IX_CompanyRatings_AuditorId",
-                table: "CompanyRatings");
+            // All rating dependents are gone, so the predecessor schema can be restored without disabling foreign keys.
+            migrationBuilder.Sql(
+                """
+                CREATE TABLE "__CompanyRatings_old" (
+                    "Id" INTEGER NOT NULL CONSTRAINT "PK_CompanyRatings" PRIMARY KEY AUTOINCREMENT,
+                    "CompanyId" INTEGER NOT NULL,
+                    "AuditorId" INTEGER NOT NULL,
+                    "Rating" TEXT NOT NULL,
+                    "ImpactPercent" TEXT NULL,
+                    "CreatedInCycleId" INTEGER NOT NULL,
+                    "CreatedAt" TEXT NOT NULL
+                );
+
+                INSERT INTO "__CompanyRatings_old" (
+                    "Id", "CompanyId", "AuditorId", "Rating", "ImpactPercent", "CreatedInCycleId", "CreatedAt")
+                SELECT
+                    "Id", "CompanyId", "AuditorId", "Rating", "ImpactPercent", "CreatedInCycleId", "CreatedAt"
+                FROM "CompanyRatings";
+
+                DROP TABLE "CompanyRatings";
+                ALTER TABLE "__CompanyRatings_old" RENAME TO "CompanyRatings";
+
+                CREATE INDEX "IX_CompanyRatings_CompanyId_CreatedInCycleId"
+                    ON "CompanyRatings" ("CompanyId", "CreatedInCycleId");
+                """);
         }
     }
 }

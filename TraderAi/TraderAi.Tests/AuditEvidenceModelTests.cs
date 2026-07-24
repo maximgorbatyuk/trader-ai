@@ -50,10 +50,27 @@ public sealed class AuditEvidenceModelTests : IDisposable
             evidenceType.FindPrimaryKey()!.Properties.Select(property => property.Name));
         Assert.Contains(evidenceType.GetForeignKeys(), foreignKey =>
             foreignKey.IsUnique
-            && foreignKey.PrincipalEntityType.ClrType == typeof(CompanyRating));
+            && foreignKey.PrincipalEntityType.ClrType == typeof(CompanyRating)
+            && foreignKey.Properties.Select(property => property.Name).SequenceEqual(
+                [nameof(CompanyAuditEvidence.CompanyRatingId), nameof(CompanyAuditEvidence.CompanyId)])
+            && foreignKey.PrincipalKey.Properties.Select(property => property.Name).SequenceEqual(
+                [nameof(CompanyRating.Id), nameof(CompanyRating.CompanyId)]));
+
+        var ratingType = context.Model.FindEntityType(typeof(CompanyRating));
+        Assert.NotNull(ratingType);
+        Assert.Contains(ratingType.GetKeys(), key =>
+            !key.IsPrimaryKey()
+            && key.Properties.Select(property => property.Name).SequenceEqual(
+                [nameof(CompanyRating.Id), nameof(CompanyRating.CompanyId)]));
 
         var itemType = context.Model.FindEntityType(typeof(PortfolioAuditSummaryItem));
         Assert.NotNull(itemType);
+        Assert.Contains(itemType.GetForeignKeys(), foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(CompanyRating)
+            && foreignKey.Properties.Select(property => property.Name).SequenceEqual(
+                [nameof(PortfolioAuditSummaryItem.CompanyRatingId), nameof(PortfolioAuditSummaryItem.CompanyId)])
+            && foreignKey.PrincipalKey.Properties.Select(property => property.Name).SequenceEqual(
+                [nameof(CompanyRating.Id), nameof(CompanyRating.CompanyId)]));
         Assert.Contains(itemType.GetIndexes(), index =>
             index.IsUnique
             && index.Properties.Select(property => property.Name).SequenceEqual(
@@ -64,6 +81,7 @@ public sealed class AuditEvidenceModelTests : IDisposable
     public async Task FundedDividendCannotExceedDeclaredDividend()
     {
         var company = await AddCompanyAsync();
+        var cycle = await AddCycleAsync();
         context.CompanyDividendEvents.Add(new CompanyDividendEvent
         {
             CompanyId = company.Id,
@@ -71,7 +89,26 @@ public sealed class AuditEvidenceModelTests : IDisposable
             FundedAmount = 100.01m,
             FundingOutcome = DividendFundingOutcome.Paid,
             IssuerCashBeforeFunding = 500m,
-            CreatedInCycleId = 1,
+            CreatedInCycleId = cycle.Id,
+            TradingDayNumber = 1,
+            CreatedAt = DateTime.UtcNow,
+        });
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+    }
+
+    [Fact]
+    public async Task DividendEventCannotReferenceMissingMarketCycle()
+    {
+        var company = await AddCompanyAsync();
+        context.CompanyDividendEvents.Add(new CompanyDividendEvent
+        {
+            CompanyId = company.Id,
+            DeclaredAmount = 100m,
+            FundedAmount = 100m,
+            FundingOutcome = DividendFundingOutcome.Paid,
+            IssuerCashBeforeFunding = 500m,
+            CreatedInCycleId = int.MaxValue,
             TradingDayNumber = 1,
             CreatedAt = DateTime.UtcNow,
         });
@@ -275,6 +312,58 @@ public sealed class AuditEvidenceModelTests : IDisposable
     }
 
     [Fact]
+    public async Task EvidenceCannotReferenceAnotherCompanysRating()
+    {
+        var (_, otherCompany, _, rating) = await AddAuditSetupAsync();
+        context.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+        {
+            CompanyRatingId = rating.Id,
+            CompanyId = otherCompany.Id,
+            EvaluationStartTradingDayNumber = 1,
+            EvaluationEndTradingDayNumber = 2,
+            EffectiveTradingDayNumber = 3,
+            IndustryTrend = IndustryTrend.Plateau,
+        });
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+    }
+
+    [Fact]
+    public async Task PortfolioSummaryItemCannotReferenceAnotherCompanysRating()
+    {
+        var (_, otherCompany, _, rating) = await AddAuditSetupAsync();
+        var news = new NewsPost
+        {
+            Title = "Cross-company portfolio audit",
+            Content = "Summary",
+            PublishedInCycleId = 1,
+            PublishedAt = DateTime.UtcNow,
+        };
+        context.NewsPosts.Add(news);
+        await context.SaveChangesAsync();
+        var summary = new PortfolioAuditSummary
+        {
+            NewsPostId = news.Id,
+            EvaluationStartTradingDayNumber = 1,
+            EvaluationEndTradingDayNumber = 2,
+            EffectiveTradingDayNumber = 3,
+            StableCount = 1,
+            OverallDirection = PortfolioAuditDirection.Neutral,
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.PortfolioAuditSummaries.Add(summary);
+        await context.SaveChangesAsync();
+        context.PortfolioAuditSummaryItems.Add(new PortfolioAuditSummaryItem
+        {
+            PortfolioAuditSummaryId = summary.Id,
+            CompanyId = otherCompany.Id,
+            CompanyRatingId = rating.Id,
+        });
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+    }
+
+    [Fact]
     public async Task CompanyDeletionIsRestrictedWhileAuditHistoryExists()
     {
         var company = await AddCompanyAsync();
@@ -306,6 +395,7 @@ public sealed class AuditEvidenceModelTests : IDisposable
     public async Task ResetOrderCanDeleteEvidenceChildrenBeforeTheirParents()
     {
         var company = await AddCompanyAsync();
+        var cycle = await AddCycleAsync();
         var auditor = new Auditor
         {
             Name = "Reset Audit",
@@ -316,7 +406,7 @@ public sealed class AuditEvidenceModelTests : IDisposable
         {
             Title = "Portfolio audit",
             Content = "Summary",
-            PublishedInCycleId = 1,
+            PublishedInCycleId = cycle.Id,
             PublishedAt = DateTime.UtcNow,
         };
         context.AddRange(auditor, news);
@@ -328,7 +418,7 @@ public sealed class AuditEvidenceModelTests : IDisposable
             FundedAmount = 80m,
             FundingOutcome = DividendFundingOutcome.Reduced,
             IssuerCashBeforeFunding = 80m,
-            CreatedInCycleId = 1,
+            CreatedInCycleId = cycle.Id,
             TradingDayNumber = 1,
             CreatedAt = DateTime.UtcNow,
         };
@@ -337,7 +427,7 @@ public sealed class AuditEvidenceModelTests : IDisposable
             CompanyId = company.Id,
             AuditorId = auditor.Id,
             Rating = CompanyRiskRating.LowRisk,
-            CreatedInCycleId = 1,
+            CreatedInCycleId = cycle.Id,
             CreatedAt = DateTime.UtcNow,
         };
         context.AddRange(dividend, rating);
@@ -409,6 +499,21 @@ public sealed class AuditEvidenceModelTests : IDisposable
         context.Companies.Add(company);
         await context.SaveChangesAsync();
         return company;
+    }
+
+    private async Task<MarketCycle> AddCycleAsync()
+    {
+        var cycle = new MarketCycle
+        {
+            CycleNumber = 1,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Completed,
+            StartedAt = DateTime.UtcNow,
+            CompletedAt = DateTime.UtcNow,
+        };
+        context.MarketCycles.Add(cycle);
+        await context.SaveChangesAsync();
+        return cycle;
     }
 
     private async Task<(Company Company, Company OtherCompany, MarketCycle Cycle, CompanyRating Rating)> AddAuditSetupAsync()

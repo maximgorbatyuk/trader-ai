@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using TraderAi.Data;
@@ -15,8 +16,19 @@ public sealed class TradingDayMigrationTests
         var databasePath = Path.Combine(Path.GetTempPath(), $"trader-ai-fundamentals-migration-{Guid.NewGuid():N}.db");
         try
         {
+            var setupOptions = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite($"Data Source={databasePath}")
+                .Options;
+            await using (var setupContext = new AppDbContext(setupOptions))
+            {
+                await setupContext.GetService<IMigrator>()
+                    .MigrateAsync("20260722154353_ResetAiSystemPromptForPriceOffset");
+            }
+
             var options = new DbContextOptionsBuilder<AppDbContext>()
                 .UseSqlite($"Data Source={databasePath}")
+                .ConfigureWarnings(warnings =>
+                    warnings.Throw(RelationalEventId.NonTransactionalMigrationOperationWarning))
                 .Options;
             await using var context = new AppDbContext(options);
             var migrator = context.GetService<IMigrator>();
@@ -61,6 +73,7 @@ public sealed class TradingDayMigrationTests
 
             Assert.Contains("CK_CompanyDividendEvents_Amounts_NonNegative", tables["CompanyDividendEvents"]);
             Assert.Contains("CK_CompanyDividendEvents_FundedNotAboveDeclared", tables["CompanyDividendEvents"]);
+            Assert.Contains("AK_CompanyRatings_Id_CompanyId", tables["CompanyRatings"]);
             Assert.Contains("CK_CompanyFinancialSnapshots_TradingDay_Positive", tables["CompanyFinancialSnapshots"]);
             Assert.Contains("CK_CompanyFinancialSnapshots_NonNegativeValues", tables["CompanyFinancialSnapshots"]);
             Assert.Contains("CK_CompanyFinancialSnapshots_DebtWithinLiabilities", tables["CompanyFinancialSnapshots"]);
@@ -79,20 +92,76 @@ public sealed class TradingDayMigrationTests
                     [
                         "IX_CompanyAuditEvidence_CompanyFinancialSnapshotId_CompanyId",
                         "IX_CompanyAuditEvidence_CompanyId_EffectiveTradingDayNumber",
+                        "IX_CompanyAuditEvidence_CompanyRatingId_CompanyId",
                         "IX_CompanyAuditEvidence_LatestDividendEventId_CompanyId",
                         "IX_CompanyDividendEvents_CompanyId_TradingDayNumber_Id",
+                        "IX_CompanyDividendEvents_CreatedInCycleId",
                         "IX_CompanyFinancialSnapshots_CompanyId_CreatedInCycleId",
                         "IX_CompanyFinancialSnapshots_CompanyId_TradingDayNumber_Moment",
                         "IX_CompanyFinancialSnapshots_CreatedInCycleId",
                         "IX_CompanyFinancialSnapshots_LatestDividendEventId_CompanyId",
                         "IX_PortfolioAuditSummaries_NewsPostId",
                         "IX_PortfolioAuditSummaryItems_CompanyId",
-                        "IX_PortfolioAuditSummaryItems_CompanyRatingId",
+                        "IX_PortfolioAuditSummaryItems_CompanyRatingId_CompanyId",
                         "IX_PortfolioAuditSummaryItems_PortfolioAuditSummaryId_CompanyId",
                         "IX_PrimaryIssuanceEvents_CompanyId_CreatedInCycleId",
                         "IX_PrimaryIssuanceEvents_CreatedInCycleId",
                     ],
                     StringComparer.Ordinal));
+
+            await reader.DisposeAsync();
+            await using var foreignKeysCommand = connection.CreateCommand();
+            foreignKeysCommand.CommandText = """
+                SELECT 'CompanyAuditEvidence', id, "from", "table", "to"
+                FROM pragma_foreign_key_list('CompanyAuditEvidence')
+                UNION ALL
+                SELECT 'PortfolioAuditSummaryItems', id, "from", "table", "to"
+                FROM pragma_foreign_key_list('PortfolioAuditSummaryItems')
+                UNION ALL
+                SELECT 'CompanyDividendEvents', id, "from", "table", "to"
+                FROM pragma_foreign_key_list('CompanyDividendEvents')
+                """;
+            await using var foreignKeysReader = await foreignKeysCommand.ExecuteReaderAsync();
+            var foreignKeys = new List<(string Dependent, long Id, string From, string Principal, string To)>();
+            while (await foreignKeysReader.ReadAsync())
+            {
+                foreignKeys.Add((
+                    foreignKeysReader.GetString(0),
+                    foreignKeysReader.GetInt64(1),
+                    foreignKeysReader.GetString(2),
+                    foreignKeysReader.GetString(3),
+                    foreignKeysReader.GetString(4)));
+            }
+
+            var evidenceRatingForeignKeys = foreignKeys
+                .Where(foreignKey =>
+                    foreignKey.Dependent == "CompanyAuditEvidence"
+                    && foreignKey.Principal == "CompanyRatings")
+                .ToList();
+            Assert.Equal(2, evidenceRatingForeignKeys.Count);
+            Assert.Single(evidenceRatingForeignKeys.Select(foreignKey => foreignKey.Id).Distinct());
+            Assert.Contains(evidenceRatingForeignKeys, foreignKey =>
+                foreignKey.From == "CompanyRatingId" && foreignKey.To == "Id");
+            Assert.Contains(evidenceRatingForeignKeys, foreignKey =>
+                foreignKey.From == "CompanyId" && foreignKey.To == "CompanyId");
+
+            var itemRatingForeignKeys = foreignKeys
+                .Where(foreignKey =>
+                    foreignKey.Dependent == "PortfolioAuditSummaryItems"
+                    && foreignKey.Principal == "CompanyRatings")
+                .ToList();
+            Assert.Equal(2, itemRatingForeignKeys.Count);
+            Assert.Single(itemRatingForeignKeys.Select(foreignKey => foreignKey.Id).Distinct());
+            Assert.Contains(itemRatingForeignKeys, foreignKey =>
+                foreignKey.From == "CompanyRatingId" && foreignKey.To == "Id");
+            Assert.Contains(itemRatingForeignKeys, foreignKey =>
+                foreignKey.From == "CompanyId" && foreignKey.To == "CompanyId");
+
+            Assert.Contains(foreignKeys, foreignKey =>
+                foreignKey.Dependent == "CompanyDividendEvents"
+                && foreignKey.From == "CreatedInCycleId"
+                && foreignKey.Principal == "MarketCycles"
+                && foreignKey.To == "Id");
         }
         finally
         {
@@ -106,41 +175,50 @@ public sealed class TradingDayMigrationTests
         var databasePath = Path.Combine(Path.GetTempPath(), $"trader-ai-rating-migration-{Guid.NewGuid():N}.db");
         try
         {
+            var setupOptions = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite($"Data Source={databasePath}")
+                .Options;
+            await using (var setupContext = new AppDbContext(setupOptions))
+            {
+                var setupMigrator = setupContext.GetService<IMigrator>();
+                await setupMigrator.MigrateAsync("20260722154353_ResetAiSystemPromptForPriceOffset");
+
+                await setupContext.Database.ExecuteSqlRawAsync(
+                    """
+                    INSERT INTO Industries (Id, Name, SentimentValue, SentimentVolatility, SectorBeta)
+                    VALUES (1, 'Legacy industry', 0, 0, 1);
+
+                    INSERT INTO Companies (
+                        Id, Name, IsFavorite, IndustryId, IssuedSharesCount, CashBalance,
+                        LastDividendCapitalization, CreatedInCycleId, LastMergedInCycleId,
+                        ClosedInCycleId, CloseProtectedUntilTradingDayNumber, ClosedAt, CreatedAt, UpdatedAt)
+                    VALUES (
+                        1, 'Legacy issuer', 0, 1, 1000, 1000,
+                        NULL, NULL, NULL,
+                        NULL, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+                    INSERT INTO Auditors (Id, Name, Description, CreatedAt)
+                    VALUES (1, 'Legacy auditor', 'Migration fixture', CURRENT_TIMESTAMP);
+
+                    INSERT INTO CompanyRatings (
+                        Id, CompanyId, AuditorId, Rating, ImpactPercent, CreatedInCycleId, CreatedAt)
+                    VALUES
+                        (1, 1, 1, 'Low', NULL, 1, CURRENT_TIMESTAMP),
+                        (2, 1, 1, 'High', NULL, 2, CURRENT_TIMESTAMP),
+                        (3, 1, 1, 'Extra', NULL, 3, CURRENT_TIMESTAMP),
+                        (4, 1, 1, 0, NULL, 4, CURRENT_TIMESTAMP),
+                        (5, 1, 1, 1, NULL, 5, CURRENT_TIMESTAMP),
+                        (6, 1, 1, 2, NULL, 6, CURRENT_TIMESTAMP);
+                    """);
+            }
+
             var options = new DbContextOptionsBuilder<AppDbContext>()
                 .UseSqlite($"Data Source={databasePath}")
+                .ConfigureWarnings(warnings =>
+                    warnings.Throw(RelationalEventId.NonTransactionalMigrationOperationWarning))
                 .Options;
             await using var context = new AppDbContext(options);
             var migrator = context.GetService<IMigrator>();
-            await migrator.MigrateAsync("20260722154353_ResetAiSystemPromptForPriceOffset");
-
-            await context.Database.ExecuteSqlRawAsync(
-                """
-                INSERT INTO Industries (Id, Name, SentimentValue, SentimentVolatility, SectorBeta)
-                VALUES (1, 'Legacy industry', 0, 0, 1);
-
-                INSERT INTO Companies (
-                    Id, Name, IsFavorite, IndustryId, IssuedSharesCount, CashBalance,
-                    LastDividendCapitalization, CreatedInCycleId, LastMergedInCycleId,
-                    ClosedInCycleId, CloseProtectedUntilTradingDayNumber, ClosedAt, CreatedAt, UpdatedAt)
-                VALUES (
-                    1, 'Legacy issuer', 0, 1, 1000, 1000,
-                    NULL, NULL, NULL,
-                    NULL, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-
-                INSERT INTO Auditors (Id, Name, Description, CreatedAt)
-                VALUES (1, 'Legacy auditor', 'Migration fixture', CURRENT_TIMESTAMP);
-
-                INSERT INTO CompanyRatings (
-                    Id, CompanyId, AuditorId, Rating, ImpactPercent, CreatedInCycleId, CreatedAt)
-                VALUES
-                    (1, 1, 1, 'Low', NULL, 1, CURRENT_TIMESTAMP),
-                    (2, 1, 1, 'High', NULL, 2, CURRENT_TIMESTAMP),
-                    (3, 1, 1, 'Extra', NULL, 3, CURRENT_TIMESTAMP),
-                    (4, 1, 1, 0, NULL, 4, CURRENT_TIMESTAMP),
-                    (5, 1, 1, 1, NULL, 5, CURRENT_TIMESTAMP),
-                    (6, 1, 1, 2, NULL, 6, CURRENT_TIMESTAMP);
-                """);
-
             await migrator.MigrateAsync("AddCompanyFundamentalsAndAudits");
             context.ChangeTracker.Clear();
 
@@ -177,6 +255,106 @@ public sealed class TradingDayMigrationTests
             await using var typeCommand = connection.CreateCommand();
             typeCommand.CommandText = "SELECT type FROM pragma_table_info('CompanyRatings') WHERE name = 'Rating'";
             Assert.Equal("TEXT", (string?)await typeCommand.ExecuteScalarAsync());
+
+            await using var insertCommand = connection.CreateCommand();
+            insertCommand.CommandText = """
+                INSERT INTO CompanyRatings (
+                    CompanyId, AuditorId, Rating, ImpactPercent, CreatedInCycleId, CreatedAt)
+                VALUES (1, 1, 'Stable', NULL, 7, CURRENT_TIMESTAMP);
+                SELECT last_insert_rowid();
+                """;
+            Assert.Equal(7L, (long)(await insertCommand.ExecuteScalarAsync())!);
+        }
+        finally
+        {
+            File.Delete(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task CompanyFundamentalsMigrationDowngradePreservesRatingsWithoutNonTransactionalRebuild()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"trader-ai-rating-downgrade-{Guid.NewGuid():N}.db");
+        try
+        {
+            const string predecessorMigration = "20260722154353_ResetAiSystemPromptForPriceOffset";
+            var setupOptions = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite($"Data Source={databasePath}")
+                .Options;
+            await using (var setupContext = new AppDbContext(setupOptions))
+            {
+                await setupContext.GetService<IMigrator>().MigrateAsync(predecessorMigration);
+
+                await setupContext.Database.ExecuteSqlRawAsync(
+                    """
+                    INSERT INTO Industries (Id, Name, SentimentValue, SentimentVolatility, SectorBeta)
+                    VALUES (1, 'Downgrade industry', 0, 0, 1);
+
+                    INSERT INTO Companies (
+                        Id, Name, IsFavorite, IndustryId, IssuedSharesCount, CashBalance,
+                        LastDividendCapitalization, CreatedInCycleId, LastMergedInCycleId,
+                        ClosedInCycleId, CloseProtectedUntilTradingDayNumber, ClosedAt, CreatedAt, UpdatedAt)
+                    VALUES (
+                        1, 'Downgrade issuer', 0, 1, 1000, 1000,
+                        NULL, NULL, NULL,
+                        NULL, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+                    INSERT INTO Auditors (Id, Name, Description, CreatedAt)
+                    VALUES (1, 'Downgrade auditor', 'Migration fixture', CURRENT_TIMESTAMP);
+
+                    INSERT INTO CompanyRatings (
+                        Id, CompanyId, AuditorId, Rating, ImpactPercent, CreatedInCycleId, CreatedAt)
+                    VALUES (41, 1, 1, 'Low', 12.34, 9, '2026-07-24T00:00:00Z');
+                    """);
+            }
+
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite($"Data Source={databasePath}")
+                .ConfigureWarnings(warnings =>
+                    warnings.Throw(RelationalEventId.NonTransactionalMigrationOperationWarning))
+                .Options;
+            await using var context = new AppDbContext(options);
+            var migrator = context.GetService<IMigrator>();
+            await migrator.MigrateAsync("AddCompanyFundamentalsAndAudits");
+            await migrator.MigrateAsync(predecessorMigration);
+
+            await using var connection = new SqliteConnection($"Data Source={databasePath}");
+            await connection.OpenAsync();
+            await using var ratingCommand = connection.CreateCommand();
+            ratingCommand.CommandText = """
+                SELECT Id, CompanyId, AuditorId, Rating, ImpactPercent, CreatedInCycleId, CreatedAt
+                FROM CompanyRatings
+                """;
+            await using var ratingReader = await ratingCommand.ExecuteReaderAsync();
+            Assert.True(await ratingReader.ReadAsync());
+            Assert.Equal(41L, ratingReader.GetInt64(0));
+            Assert.Equal(1L, ratingReader.GetInt64(1));
+            Assert.Equal(1L, ratingReader.GetInt64(2));
+            Assert.Equal("LowRisk", ratingReader.GetString(3));
+            Assert.Equal("12.34", ratingReader.GetString(4));
+            Assert.Equal(9L, ratingReader.GetInt64(5));
+            Assert.Equal("2026-07-24T00:00:00Z", ratingReader.GetString(6));
+            Assert.False(await ratingReader.ReadAsync());
+
+            await ratingReader.DisposeAsync();
+            await using var foreignKeyCommand = connection.CreateCommand();
+            foreignKeyCommand.CommandText = "SELECT COUNT(*) FROM pragma_foreign_key_list('CompanyRatings')";
+            Assert.Equal(0L, (long)(await foreignKeyCommand.ExecuteScalarAsync())!);
+
+            await using var indexCommand = connection.CreateCommand();
+            indexCommand.CommandText = """
+                SELECT name
+                FROM pragma_index_list('CompanyRatings')
+                WHERE name NOT LIKE 'sqlite_autoindex_%'
+                ORDER BY name
+                """;
+            await using var indexReader = await indexCommand.ExecuteReaderAsync();
+            var indexes = new List<string>();
+            while (await indexReader.ReadAsync())
+            {
+                indexes.Add(indexReader.GetString(0));
+            }
+            Assert.Equal(["IX_CompanyRatings_CompanyId_CreatedInCycleId"], indexes);
         }
         finally
         {
