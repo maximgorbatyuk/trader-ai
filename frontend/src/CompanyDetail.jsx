@@ -904,11 +904,14 @@ function CorporateCashMovementsPanel({ movements, page, onPage, tableRef }) {
 }
 
 // Fund a company with a big investment as the player or the managed fund: the company mints new shares at the
-// current price and hands them over in one filled deal. A minimum of 40% of market cap is required, matching the
+// current price and hands them over in one filled deal. A minimum of 10% of market cap is required, matching the
 // server rule; a successful deal refreshes the page so the new shares, cash, rating, and news show at once.
-const MIN_INVESTMENT_FRACTION = 0.4
+const MIN_INVESTMENT_FRACTION = 0.1
 
 const CAPITAL_RAISE_PRESETS = [
+  { label: '10%', value: 0.1 },
+  { label: '20%', value: 0.2 },
+  { label: '30%', value: 0.3 },
   { label: '40%', value: 0.4 },
   { label: '50%', value: 0.5 },
   { label: '60%', value: 0.6 },
@@ -920,7 +923,7 @@ const CAPITAL_RAISE_PRESETS = [
   { label: '200%', value: 2 },
 ]
 
-function InvestmentForm({ companyId, currentPrice, marketCap, player, onPlaced }) {
+export function InvestmentForm({ companyId, currentPrice, marketCap, player, onPlaced }) {
   const [amount, setAmount] = useState('')
   const [submittingActor, setSubmittingActor] = useState(null)
   const [error, setError] = useState(null)
@@ -988,7 +991,7 @@ function InvestmentForm({ companyId, currentPrice, marketCap, player, onPlaced }
         <PercentButtons options={CAPITAL_RAISE_PRESETS} ariaLabel="Set amount from a percentage of market cap" onPick={pickAmount} />
       </div>
       <p className="note note-sm">
-        {minAmount != null ? `Minimum ${formatMoney(minAmount)} (40% of market cap).` : 'Minimum 40% of market cap.'}
+        {minAmount != null ? `Minimum ${formatMoney(minAmount)} (10% of market cap).` : 'Minimum 10% of market cap.'}
         {shares > 0 ? ` ≈ ${formatInt(shares)} new shares.` : ''}
       </p>
       <p className="note note-sm">{actors.map((actor) => `${actor.label}: ${formatMoney(actor.balance)} available`).join(' · ')}</p>

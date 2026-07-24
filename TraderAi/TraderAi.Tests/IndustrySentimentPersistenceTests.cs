@@ -154,7 +154,7 @@ public sealed class IndustrySentimentPersistenceTests : IClassFixture<WebApplica
     }
 
     [Fact]
-    public async Task DisabledSentimentSeedKeepsIndustriesNeutralAndPreservesTheLegacyCompanySequence()
+    public async Task DisabledSentimentSeedKeepsIndustriesNeutralAndPreservesTheConfiguredCompanySequence()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
         var databasePath = Path.Combine(databaseDirectory, "app.db");
@@ -301,11 +301,11 @@ public sealed class IndustrySentimentPersistenceTests : IClassFixture<WebApplica
         for (var index = 0; index < 600; index++)
         {
             var isWhale = random.NextDouble() < 0.15;
-            random.NextInt64(isWhale ? 200_000 : 10_000, isWhale ? 2_000_001 : 300_001);
+            random.NextInt64(isWhale ? 2_000_000 : 200_000, isWhale ? 10_000_001 : 800_001);
         }
 
         var companies = Enumerable.Range(0, 100)
-            .Select(_ => new SeededCompany(random.Next(20, 301), random.Next(1000, 10001)))
+            .Select(_ => new SeededCompany(random.Next(20, 301), random.Next(2000, 20001)))
             .ToArray();
 
         random.Next(10, 26);

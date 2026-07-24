@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using TraderAi.Data;
@@ -393,6 +394,8 @@ public sealed class PlayerTests : IDisposable
     [Fact]
     public async Task PricesOneCentBeyondTheAllowedRangeAreRejectedWithBothRanges()
     {
+        // The production host pins this before resolving MarketService; the direct unit fixture mirrors that precondition.
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         await TestMarketSeed.SeedClassicScenarioAsync(context);
         var company = await context.Companies.FirstAsync();
         var market = Service(new Random(1));

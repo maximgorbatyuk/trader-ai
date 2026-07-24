@@ -203,7 +203,7 @@ public sealed class RandomMagnitudeBands
 
     // Fraction of the target company's capitalisation a big-investment deal spends, drawn between these bounds.
     // The lower bound is also the eligibility floor: an investor must be able to fund at least this share.
-    public double BigInvestmentFractionMin { get; set; } = 0.40;
+    public double BigInvestmentFractionMin { get; set; } = 0.10;
 
     // May exceed 1.0 so a deal can be several times the company's current capitalisation; the actual spend is still
     // capped by the investor's spendable cash, so a bigger max only bites when the investor can afford it.

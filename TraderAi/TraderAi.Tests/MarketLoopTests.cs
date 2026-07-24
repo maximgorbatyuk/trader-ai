@@ -113,6 +113,31 @@ public sealed class MarketLoopTests : IDisposable
     }
 
     [Fact]
+    public async Task DemoSeedUsesScaledTraderCashAndIssuedShareBands()
+    {
+        await marketService.SeedDemoMarketAsync();
+
+        var participants = await context.Participants.AsNoTracking().ToListAsync();
+        Assert.Equal(600, participants.Count);
+        Assert.Contains(participants, participant => participant.InitialBalance is >= 200_000m and <= 800_000m);
+        Assert.Contains(participants, participant => participant.InitialBalance is >= 2_000_000m and <= 10_000_000m);
+        Assert.All(participants, participant =>
+        {
+            var isRegular = participant.InitialBalance is >= 200_000m and <= 800_000m;
+            var isWhale = participant.InitialBalance is >= 2_000_000m and <= 10_000_000m;
+            Assert.True(isRegular || isWhale);
+            Assert.Equal(participant.InitialBalance, participant.CurrentBalance);
+            Assert.Equal(participant.InitialBalance, participant.SettledCashBalance);
+            Assert.Equal(0m, participant.ReservedBalance);
+        });
+
+        var companies = await context.Companies.AsNoTracking().ToListAsync();
+        Assert.Equal(100, companies.Count);
+        Assert.All(companies, company => Assert.InRange(company.IssuedSharesCount, 2_000, 20_000));
+        Assert.Empty(await context.Holdings.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
     public async Task DemoResetReplacesFinancialHistoryWithOneBaselinePerCompany()
     {
         var financialService = FinancialService(new Random(20260724));

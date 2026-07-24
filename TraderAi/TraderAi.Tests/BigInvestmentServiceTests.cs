@@ -83,21 +83,22 @@ public sealed class BigInvestmentServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task InvestorBelowFortyPercentOfCapitalizationIsNotEligible()
+    public async Task InvestorAtTenPercentOfCapitalizationIsEligible()
     {
         var cycle = await AddCycleAsync(dayNumber: 10);
         await SetupMarketAsync(cycle);
         var company = await AddCompanyAsync(issuedShares: 1000);
-        await AddSnapshotAsync(company.Id, price: 1000m, cycle); // cap 1,000,000 → 40% floor is 400,000
-        await AddTraderAsync(balance: 300_000m);
+        await AddSnapshotAsync(company.Id, price: 1000m, cycle);
+        await AddTraderAsync(balance: 100_000m);
         await AddAuditorAsync();
 
-        // Trigger fires (0.0 < 0.15) but no pair clears the floor, so no pair or size draw is taken.
-        await Service(enabled: true, new ScriptedRandom([0.0d], []))
+        await Service(enabled: true, new ScriptedRandom([0.0d, 0.0d], [0]))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
-        Assert.Equal(0, await context.OrderFills.CountAsync());
+        var investment = await context.CompanyInvestments.AsNoTracking().SingleAsync();
+        Assert.Equal(100_000m, investment.DealValue);
+        Assert.Equal(100, investment.SharesIssued);
     }
 
     [Fact]
@@ -171,8 +172,8 @@ public sealed class BigInvestmentServiceTests : IDisposable
         var currentCycle = await AddCycleAsync(dayNumber: 10, cycleNumber: 100);
         await SetupMarketAsync(currentCycle);
         var company = await AddCompanyAsync(issuedShares: 1000);
-        await AddSnapshotAsync(company.Id, price: 1000m, currentCycle); // 400,000 minimum investment
-        await AddTraderAsync(balance: 800_000m);
+        await AddSnapshotAsync(company.Id, price: 1000m, currentCycle); // 100,000 minimum investment
+        await AddTraderAsync(balance: 200_000m);
         var auditor = await AddAuditorAsync();
         await AddRatingAsync(
             company.Id,
@@ -195,8 +196,8 @@ public sealed class BigInvestmentServiceTests : IDisposable
         var currentCycle = await AddCycleAsync(dayNumber: 10, cycleNumber: 100);
         await SetupMarketAsync(currentCycle);
         var company = await AddCompanyAsync(issuedShares: 1000);
-        await AddSnapshotAsync(company.Id, price: 1000m, currentCycle); // 400,000 minimum investment
-        await AddTraderAsync(balance: 2_000_000m);
+        await AddSnapshotAsync(company.Id, price: 1000m, currentCycle); // 100,000 minimum investment
+        await AddTraderAsync(balance: 500_000m);
         var auditor = await AddAuditorAsync();
         await AddRatingAsync(
             company.Id,
@@ -222,9 +223,9 @@ public sealed class BigInvestmentServiceTests : IDisposable
         var currentCycle = await AddCycleAsync(dayNumber: 10, cycleNumber: 100);
         await SetupMarketAsync(currentCycle);
         var company = await AddCompanyAsync(issuedShares: 1000);
-        await AddSnapshotAsync(company.Id, price: 1000m, currentCycle); // 400,000 minimum investment
-        var investor = await AddTraderAsync(balance: 800_000m);
-        investor.ReservedBalance = 400_000m;
+        await AddSnapshotAsync(company.Id, price: 1000m, currentCycle); // 100,000 minimum investment
+        var investor = await AddTraderAsync(balance: 200_000m);
+        investor.ReservedBalance = 100_000m;
         await context.SaveChangesAsync();
         var auditor = await AddAuditorAsync();
         await AddRatingAsync(
@@ -233,7 +234,7 @@ public sealed class BigInvestmentServiceTests : IDisposable
             CompanyRiskRating.ExtraRaisedExpectations,
             previousCycle.Id);
 
-        // Only 400,000 is free, so the chance remains 0.15 and a 0.25 roll fails.
+        // Only the 100,000 minimum is free, so the chance remains 0.15 and a 0.25 roll fails.
         await Service(enabled: true, new ScriptedRandom([0.25d, 0.0d], [0]))
             .ProcessForCycleAsync(currentCycle.Id, currentCycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
@@ -277,29 +278,29 @@ public sealed class BigInvestmentServiceTests : IDisposable
         var investor = await AddTraderAsync(balance: 500_000m);
         await AddAuditorAsync();
 
-        // Trigger fires, the single pair is chosen, and the minimum 0.40 fraction is drawn → 400,000 for 400 shares.
+        // Trigger fires, the single pair is chosen, and the minimum 0.10 fraction is drawn.
         await Service(enabled: true, new ScriptedRandom([0.0d, 0.0d], [0]))
             .ProcessForCycleAsync(cycle.Id, cycle.CycleNumber, DateTime.UtcNow);
         await context.SaveChangesAsync();
 
         var refreshedCompany = await context.Companies.AsNoTracking().SingleAsync();
-        Assert.Equal(1400, refreshedCompany.IssuedSharesCount);
-        Assert.Equal(400_000m, refreshedCompany.CashBalance);
+        Assert.Equal(1100, refreshedCompany.IssuedSharesCount);
+        Assert.Equal(100_000m, refreshedCompany.CashBalance);
         Assert.Equal(cycle.DayNumber + 5, refreshedCompany.CloseProtectedUntilTradingDayNumber);
 
         var refreshedInvestor = await context.Participants.AsNoTracking().SingleAsync(p => p.Id == investor.Id);
-        Assert.Equal(100_000m, refreshedInvestor.CurrentBalance);
-        Assert.Equal(100_000m, refreshedInvestor.SettledCashBalance);
+        Assert.Equal(400_000m, refreshedInvestor.CurrentBalance);
+        Assert.Equal(400_000m, refreshedInvestor.SettledCashBalance);
 
         var holding = await context.Holdings.AsNoTracking().SingleAsync(h => h.ParticipantId == investor.Id);
-        Assert.Equal(400, holding.Quantity);
-        Assert.Equal(400, holding.SettledQuantity);
+        Assert.Equal(100, holding.Quantity);
+        Assert.Equal(100, holding.SettledQuantity);
         Assert.Equal(1000m, holding.AverageCost);
 
         var buy = await context.Orders.AsNoTracking().SingleAsync(o => o.ParticipantId == investor.Id);
         Assert.Equal(OrderType.Buy, buy.Type);
         Assert.Equal(OrderStatus.Filled, buy.Status);
-        Assert.Equal(400, buy.Quantity);
+        Assert.Equal(100, buy.Quantity);
         var sell = await context.Orders.AsNoTracking().SingleAsync(o => o.ParticipantId == null);
         Assert.Equal(OrderType.Sell, sell.Type);
         Assert.Equal(OrderStatus.Filled, sell.Status);
@@ -307,20 +308,20 @@ public sealed class BigInvestmentServiceTests : IDisposable
         var fill = await context.OrderFills.AsNoTracking().SingleAsync();
         Assert.Equal(buy.Id, fill.BuyOrderId);
         Assert.Equal(sell.Id, fill.SellOrderId);
-        Assert.Equal(400, fill.Quantity);
+        Assert.Equal(100, fill.Quantity);
         Assert.Equal(1000m, fill.ExecutionPrice);
 
         var shareTransaction = await context.ShareTransactions.AsNoTracking().SingleAsync();
         Assert.Null(shareTransaction.SellerId);
         Assert.Equal(investor.Id, shareTransaction.BuyerId);
-        Assert.Equal(400_000m, shareTransaction.TotalCost);
+        Assert.Equal(100_000m, shareTransaction.TotalCost);
 
         var corporateCash = await context.CorporateCashTransactions.AsNoTracking().SingleAsync();
         Assert.Equal(CorporateCashTransactionType.BigInvestment, corporateCash.Type);
-        Assert.Equal(400_000m, corporateCash.Amount);
+        Assert.Equal(100_000m, corporateCash.Amount);
 
         var debit = await context.MoneyTransactions.AsNoTracking().SingleAsync(t => t.Type == MoneyTransactionType.Debit);
-        Assert.Equal(400_000m, debit.Amount);
+        Assert.Equal(100_000m, debit.Amount);
         Assert.Equal(investor.Id, debit.ParticipantId);
 
         Assert.Empty(await context.CompanyRatings.AsNoTracking().ToListAsync());
@@ -337,13 +338,13 @@ public sealed class BigInvestmentServiceTests : IDisposable
         var record = await context.CompanyInvestments.AsNoTracking().SingleAsync();
         Assert.Equal(refreshedCompany.Id, record.CompanyId);
         Assert.Equal(investor.Id, record.InvestorParticipantId);
-        Assert.Equal(400_000m, record.DealValue);
-        Assert.Equal(400, record.SharesIssued);
+        Assert.Equal(100_000m, record.DealValue);
+        Assert.Equal(100, record.SharesIssued);
         Assert.Equal(1000, record.SharesBeforeDeal);
         Assert.Equal(1_000_000m, record.CapitalizationBeforeDeal);
-        Assert.Equal(1_400_000m, record.FinalCapitalization);
-        // 400 of the 1,400 shares after the deal.
-        Assert.Equal(28.57m, record.InvestorSharePercent);
+        Assert.Equal(1_100_000m, record.FinalCapitalization);
+        // 100 of the 1,100 shares after the deal.
+        Assert.Equal(9.09m, record.InvestorSharePercent);
         Assert.Equal(cycle.DayNumber, record.TradingDayNumber);
         Assert.Equal(cycle.Id, record.CreatedInCycleId);
     }

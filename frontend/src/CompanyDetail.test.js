@@ -12,6 +12,33 @@ test('uses upward and downward glyphs for improving and worsening company risk',
   assert.equal(companyRiskTrendGlyph('worsened'), '▼')
 })
 
+test('renders the 10% capital-raise minimum and all percentage presets', async (t) => {
+  const server = await createServer({
+    root: new URL('..', import.meta.url).pathname,
+    logLevel: 'silent',
+    server: { middlewareMode: true },
+  })
+  t.after(() => server.close())
+
+  const companyDetailModule = await server.ssrLoadModule('/src/CompanyDetail.jsx')
+  assert.equal(typeof companyDetailModule.InvestmentForm, 'function')
+
+  const markup = renderToStaticMarkup(
+    createElement(companyDetailModule.InvestmentForm, {
+      companyId: 7,
+      currentPrice: 100,
+      marketCap: 1_000_000,
+      player: { id: 11, availableBalance: 2_000_000 },
+      onPlaced() {},
+    }),
+  )
+
+  assert.match(markup, /Minimum \$100,000\.00 \(10% of market cap\)\./)
+  const presetLabels = [...markup.matchAll(/class="btn pct-btn">([^<]+)<\/button>/g)]
+    .map((match) => match[1])
+  assert.deepEqual(presetLabels, ['10%', '20%', '30%', '40%', '50%', '60%', '70%', '80%', '90%', '100%', '150%', '200%'])
+})
+
 test('renders compact ownership metrics before the paginated shareholder table', async (t) => {
   const server = await createServer({
     root: new URL('..', import.meta.url).pathname,

@@ -4593,7 +4593,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             var price = detail.RootElement.GetProperty("currentPrice").GetDecimal();
             var sharesBefore = detail.RootElement.GetProperty("issuedSharesCount").GetInt32();
 
-            // Fund the player generously so a 40%-of-cap deal is affordable.
+            // Fund the player generously so a large capital raise is affordable.
             using (var scope = configured.Services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -4603,7 +4603,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 await db.SaveChangesAsync();
             }
 
-            // Below the 40% floor is rejected.
+            // Below the 10% floor is rejected.
             using var tooSmall = await client.PostAsJsonAsync(
                 $"/companies/{companyId}/invest", new { participantId = playerId, amount = 1m });
             Assert.Equal(HttpStatusCode.BadRequest, tooSmall.StatusCode);
@@ -4613,8 +4613,8 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 $"/companies/{companyId}/invest", new { participantId = 999999, amount = marketCap });
             Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
 
-            // A valid deal at or above the 40% floor mints new shares and returns the count.
-            var amount = Math.Ceiling(marketCap * 0.4m) + price;
+            // A valid deal at or above the 10% floor mints new shares and returns the count.
+            var amount = Math.Ceiling(marketCap * 0.1m) + price;
             using var ok = await client.PostAsJsonAsync(
                 $"/companies/{companyId}/invest", new { participantId = playerId, amount });
             Assert.Equal(HttpStatusCode.OK, ok.StatusCode);

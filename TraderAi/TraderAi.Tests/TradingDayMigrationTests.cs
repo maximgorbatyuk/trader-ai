@@ -11,6 +11,40 @@ namespace TraderAi.Tests;
 public sealed class TradingDayMigrationTests
 {
     [Fact]
+    public async Task LatestMigrationRemovesTheStoredFormerBigInvestmentMinimum()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"trader-ai-big-investment-migration-{Guid.NewGuid():N}.db");
+        try
+        {
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite($"Data Source={databasePath}")
+                .Options;
+            await using var context = new AppDbContext(options);
+            var migrator = context.GetService<IMigrator>();
+            await migrator.MigrateAsync("AddCompanyFundamentalsAndAudits");
+
+            context.GameSettings.Add(new GameSetting
+            {
+                Key = "RandomChanceRates:RandomMagnitudeBands:BigInvestmentFractionMin",
+                ValueJson = "0.40",
+            });
+            await context.SaveChangesAsync();
+
+            await migrator.MigrateAsync();
+            context.ChangeTracker.Clear();
+
+            Assert.Null(await context.GameSettings
+                .AsNoTracking()
+                .SingleOrDefaultAsync(setting =>
+                    setting.Key == "RandomChanceRates:RandomMagnitudeBands:BigInvestmentFractionMin"));
+        }
+        finally
+        {
+            File.Delete(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task CompanyFundamentalsMigrationCreatesCompleteAuditAndFinancialSchema()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"trader-ai-fundamentals-migration-{Guid.NewGuid():N}.db");

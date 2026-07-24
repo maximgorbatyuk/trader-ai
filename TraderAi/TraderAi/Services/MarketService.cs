@@ -3520,18 +3520,18 @@ public sealed class MarketService(
         // Tunable size of the generated demo market; bump these to grow the simulation.
         const int companyCount = 100;
         const int participantCount = 600;
-        const int minShares = 1000;
-        const int maxShares = 10000;
+        const int minShares = 2000;
+        const int maxShares = 20000;
         const int minPrice = 20;
         const int maxPrice = 300;
 
         // A small share of traders seed as "whales" with far deeper pockets so the market has a few large
         // players among many smaller ones, rather than a single uniform wealth band.
         const double whaleShare = 0.15;
-        const long whaleMinBalance = 200_000;
-        const long whaleMaxBalance = 2_000_000;
-        const long regularMinBalance = 10_000;
-        const long regularMaxBalance = 300_000;
+        const long whaleMinBalance = 2_000_000;
+        const long whaleMaxBalance = 10_000_000;
+        const long regularMinBalance = 200_000;
+        const long regularMaxBalance = 800_000;
         const int randomSeed = 20260619; // fixed seed keeps the generated demo data reproducible
 
         var random = new Random(randomSeed);

@@ -454,7 +454,7 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         var opportunity = snapshot!.BigInvestmentOpportunities
             .Single(candidate => candidate.CompanyId == seed.Company1Id);
         Assert.Equal(135m, opportunity.CurrentPrice);
-        Assert.Equal(400, opportunity.MinimumShares);
+        Assert.Equal(100, opportunity.MinimumShares);
         Assert.Equal(592, opportunity.MaximumShares);
     }
 

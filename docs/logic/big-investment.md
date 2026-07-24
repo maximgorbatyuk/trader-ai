@@ -17,7 +17,7 @@ the order book.
 - One eligible investor-company pair is chosen for the targeted opportunity. Its chance starts at the ordinary
   base chance when the investor can fund exactly the minimum deal and rises in proportion to additional spendable
   cash, but it can never exceed 50%.
-- The invested cash must be at least 40% of the target company's capitalisation, and the investor must be able to
+- The invested cash must be at least 10% of the target company's capitalisation, and the investor must be able to
   fund it from settled, unreserved cash. The same spendable-cash amount controls the targeted opportunity's chance.
 - At most one automated big investment can happen in a cycle. If the targeted opportunity has no eligible pair or
   its roll misses, no automated deal happens that cycle.
@@ -33,7 +33,7 @@ the order book.
 
 ## Manual action
 
-The player and the player-managed fund can start a deal from the company detail page. The same minimum (40% of
+The player and the player-managed fund can start a deal from the company detail page. The same minimum (10% of
 capitalisation) and cash checks apply, and the deal runs through the same executor as the automated roll.
 
 ## Recorded facts
