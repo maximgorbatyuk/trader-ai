@@ -68,6 +68,8 @@ export const api = {
   getCompanies: () => get('/companies'),
   getCompaniesPaged: (params = {}) => get(`/companies/paged${toQuery(params)}`),
   getCompany: (companyId) => get(`/companies/${companyId}`),
+  getCompanyFinancials: (companyId, page = 1, pageSize = 20) =>
+    get(`/companies/${companyId}/financials${toQuery({ page, pageSize })}`),
   getCompanyNews: (companyId, take = 20) => get(`/companies/${companyId}/news?take=${take}`),
   getCompanyShareholders: (companyId) => get(`/companies/${companyId}/shareholders`),
   getCompanyOrders: (companyId, take = 10) => get(`/companies/${companyId}/orders?take=${take}`),
@@ -173,4 +175,14 @@ export const api = {
   closePlayerFund: () => post('/player/fund/close'),
   getFundAdvertiseQuote: (fundParticipantId) => get(`/funds/${fundParticipantId}/advertise-quote`),
   advertiseFund: (fundParticipantId) => post(`/funds/${fundParticipantId}/advertise`),
+}
+
+export function loadFinancialHistoryForActiveTab({
+  activeTab,
+  companyId,
+  page,
+  pageSize,
+  getFinancials = api.getCompanyFinancials,
+}) {
+  return activeTab === 'financial-history' ? getFinancials(companyId, page, pageSize) : null
 }

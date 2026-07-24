@@ -3699,6 +3699,79 @@
   white-space: nowrap;
 }
 
+/* History keeps its selector and card heading visible; the chart, table, and pager share the remaining
+   internal scroll area so the company route retains its fixed-height terminal layout. */
+.financial-history-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.financial-history-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s-3);
+  margin-bottom: var(--s-3);
+}
+
+.financial-history-toolbar label {
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.financial-history-toolbar .select {
+  max-width: 22rem;
+}
+
+.financial-history-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: var(--s-1);
+}
+
+.financial-history-chart {
+  margin-bottom: var(--s-3);
+  padding: var(--s-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.financial-history-table {
+  min-width: 720px;
+}
+
+.financial-history-table tbody th {
+  white-space: nowrap;
+}
+
+.financial-history-delta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-1);
+  white-space: nowrap;
+}
+
+.financial-history-unchanged {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+}
+
+.financial-history-state {
+  flex: 1;
+}
+
+.financial-history-warning {
+  margin-bottom: var(--s-3);
+}
+
 .traders-hint {
   margin-top: var(--s-4);
 }

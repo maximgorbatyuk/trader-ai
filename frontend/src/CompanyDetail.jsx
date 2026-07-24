@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
-import { api } from './api'
+import { api, loadFinancialHistoryForActiveTab } from './api'
 import { formatCompactMoney, formatInt, formatMoney, formatSigned, ratingTrend, toneOf } from './format'
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
@@ -19,18 +19,21 @@ import { corporateCashMovementPresentation } from './cashMovements'
 import { luldPresentation } from './marketAccounting'
 import { FavoriteCompanyToggle } from './FavoriteCompanyToggle'
 import { CompanyFinancialsPanel } from './CompanyFinancialsPanel'
+import { CompanyFinancialHistoryPanel } from './CompanyFinancialHistoryPanel'
 import { CompanyManagementOutlookPanel } from './CompanyManagementOutlookPanel'
 
-export { CompanyFinancialsPanel, CompanyManagementOutlookPanel }
+export { CompanyFinancialHistoryPanel, CompanyFinancialsPanel, CompanyManagementOutlookPanel }
 
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
 const CORPORATE_CASH_PAGE_SIZE = 10
+const FINANCIAL_HISTORY_PAGE_SIZE = 6
 
 // The tabbed detail sections, in display order. Each key selects one existing panel below the tab strip.
 const DETAIL_TABS = [
   { key: 'capitalization', label: 'Capitalization' },
   { key: 'financials', label: 'Financials' },
+  { key: 'financial-history', label: 'Financial history' },
   { key: 'management', label: 'Management outlook' },
   { key: 'cash', label: 'Cash movements' },
   { key: 'shareholders', label: 'Shareholders' },
@@ -82,6 +85,13 @@ export function CompanyDetail({ companyId }) {
   const [corporateCashMovements, setCorporateCashMovements] = useState({ items: [], total: 0, page: 1, pageSize: 10 })
   const [corporateCashPage, setCorporateCashPage] = useState(1)
   const [corporateCashPageSize, corporateCashTableRef] = useFitPageSize()
+  const [financialHistoryPage, setFinancialHistoryPage] = useState(1)
+  const [financialHistoryState, setFinancialHistoryState] = useState({
+    data: { items: [], total: 0, page: 1, pageSize: FINANCIAL_HISTORY_PAGE_SIZE },
+    status: 'idle',
+    error: null,
+  })
+  const financialHistoryRequestId = useRef(0)
   const [selectedNews, setSelectedNews] = useState(null)
   const [activeTab, setActiveTab] = useState('capitalization')
   const [action, setAction] = useState(null)
@@ -90,6 +100,30 @@ export function CompanyDetail({ companyId }) {
   const [fundOwned, setFundOwned] = useState(0)
 
   const loadAll = useCallback(async () => {
+    const financialHistoryRequest = loadFinancialHistoryForActiveTab({
+      activeTab,
+      companyId,
+      page: financialHistoryPage,
+      pageSize: FINANCIAL_HISTORY_PAGE_SIZE,
+    })
+    const financialHistoryRequestNumber = financialHistoryRequest
+      ? financialHistoryRequestId.current + 1
+      : financialHistoryRequestId.current
+    if (financialHistoryRequest) {
+      financialHistoryRequestId.current = financialHistoryRequestNumber
+      setFinancialHistoryState((current) => ({
+        ...current,
+        status: current.data.items.length > 0 ? 'refreshing' : 'loading',
+        error: null,
+      }))
+    }
+    const financialHistoryResult = financialHistoryRequest
+      ? Promise.resolve(financialHistoryRequest).then(
+          (data) => ({ data, error: null }),
+          (error) => ({ data: null, error: error.message ?? String(error) }),
+        )
+      : null
+
     try {
       const [
         detailData,
@@ -149,9 +183,32 @@ export function CompanyDetail({ companyId }) {
     } catch (error) {
       setLoadError(error.message)
     } finally {
+      if (financialHistoryResult) {
+        const result = await financialHistoryResult
+        if (financialHistoryRequestNumber === financialHistoryRequestId.current) {
+          if (result.error) {
+            setFinancialHistoryState((current) => ({
+              ...current,
+              status: 'error',
+              error: result.error,
+            }))
+          } else {
+            setFinancialHistoryState({
+              data: result.data ?? {
+                items: [],
+                total: 0,
+                page: financialHistoryPage,
+                pageSize: FINANCIAL_HISTORY_PAGE_SIZE,
+              },
+              status: 'ready',
+              error: null,
+            })
+          }
+        }
+      }
       setReady(true)
     }
-  }, [companyId, corporateCashPage, corporateCashPageSize])
+  }, [activeTab, companyId, corporateCashPage, corporateCashPageSize, financialHistoryPage])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)
@@ -289,6 +346,15 @@ export function CompanyDetail({ companyId }) {
         corporateCashPage={corporateCashPage}
         onCorporateCashPage={setCorporateCashPage}
         corporateCashTableRef={corporateCashTableRef}
+        financialHistory={financialHistoryState.data}
+        financialHistoryPage={financialHistoryPage}
+        onFinancialHistoryPage={setFinancialHistoryPage}
+        financialHistoryLoading={
+          financialHistoryState.status === 'idle' ||
+          financialHistoryState.status === 'loading' ||
+          financialHistoryState.status === 'refreshing'
+        }
+        financialHistoryError={financialHistoryState.error}
         shareholders={shareholders}
         orders={orders}
         trades={trades}
@@ -542,6 +608,11 @@ export function CompanyDetailTabs({
   corporateCashPage,
   onCorporateCashPage,
   corporateCashTableRef,
+  financialHistory,
+  financialHistoryPage,
+  onFinancialHistoryPage,
+  financialHistoryLoading,
+  financialHistoryError,
   shareholders,
   orders,
   trades,
@@ -608,6 +679,15 @@ export function CompanyDetailTabs({
       >
         {activeTab === 'capitalization' ? <PriceChartPanel name={detail.name} prices={prices} /> : null}
         {activeTab === 'financials' ? <CompanyFinancialsPanel financial={detail.latestFinancial} /> : null}
+        {activeTab === 'financial-history' ? (
+          <CompanyFinancialHistoryPanel
+            history={financialHistory}
+            page={financialHistoryPage}
+            onPage={onFinancialHistoryPage}
+            loading={financialHistoryLoading}
+            error={financialHistoryError}
+          />
+        ) : null}
         {activeTab === 'management' ? (
           <CompanyManagementOutlookPanel financial={detail.latestFinancial} />
         ) : null}
