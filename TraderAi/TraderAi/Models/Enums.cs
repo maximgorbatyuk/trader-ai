@@ -203,12 +203,9 @@ public enum CompanyRiskRating
 {
     LowRisk = 0,
     HighRisk = 1,
-    Extra = 2,
     RaisedExpectations = 3,
     ExtraRaisedExpectations = 4,
     Stable = 5,
-    Low = LowRisk,
-    High = HighRisk,
 }
 
 public enum DividendFundingOutcome

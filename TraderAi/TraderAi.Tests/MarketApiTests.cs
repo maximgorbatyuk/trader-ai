@@ -952,6 +952,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             int previousMaxCycleId;
             int previousMaxOrderId;
             int previousMaxAuditorId;
+            int previousMaxFinancialSnapshotId;
             using (var scope = configuredFactory.Services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -959,10 +960,13 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 var cycle = await db.MarketCycles.SingleAsync(candidate => candidate.Id == market.CurrentCycleId);
                 var company = await db.Companies.FirstAsync();
                 var auditor = await db.Auditors.FirstAsync();
+                var financialSnapshot = await db.CompanyFinancialSnapshots
+                    .SingleAsync(snapshot => snapshot.CompanyId == company.Id);
                 previousRunId = market.CurrentRunId;
                 previousMaxCycleId = await db.MarketCycles.MaxAsync(candidate => candidate.Id);
                 previousMaxOrderId = await db.Orders.MaxAsync(candidate => candidate.Id);
                 previousMaxAuditorId = await db.Auditors.MaxAsync(candidate => candidate.Id);
+                previousMaxFinancialSnapshotId = await db.CompanyFinancialSnapshots.MaxAsync(candidate => candidate.Id);
 
                 db.OrderArchives.Add(new OrderArchive
                 {
@@ -1002,11 +1006,79 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 {
                     CompanyId = company.Id,
                     AuditorId = auditor.Id,
-                    Rating = CompanyRiskRating.Low,
+                    Rating = CompanyRiskRating.LowRisk,
                     CreatedInCycleId = cycle.Id,
                     CreatedAt = DateTime.UtcNow,
                 });
+                db.CompanyDividendEvents.Add(new CompanyDividendEvent
+                {
+                    CompanyId = company.Id,
+                    DeclaredAmount = 100m,
+                    FundedAmount = 80m,
+                    FundingOutcome = DividendFundingOutcome.Reduced,
+                    IssuerCashBeforeFunding = 1_000m,
+                    CreatedInCycleId = cycle.Id,
+                    TradingDayNumber = 1,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                db.PrimaryIssuanceEvents.Add(new PrimaryIssuanceEvent
+                {
+                    CompanyId = company.Id,
+                    CreatedInCycleId = cycle.Id,
+                    IssuedSharesBefore = company.IssuedSharesCount,
+                    NewlyIssuedShares = 100,
+                    IssuedSharesAfter = company.IssuedSharesCount + 100,
+                    CreatedAt = DateTime.UtcNow,
+                });
                 db.GameSettings.Add(new GameSetting { Key = "Test:Preserved", ValueJson = "true" });
+                await db.SaveChangesAsync();
+
+                var rating = await db.CompanyRatings.SingleAsync();
+                var dividend = await db.CompanyDividendEvents.SingleAsync();
+                db.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+                {
+                    CompanyRatingId = rating.Id,
+                    CompanyId = company.Id,
+                    CompanyFinancialSnapshotId = financialSnapshot.Id,
+                    EvaluationStartTradingDayNumber = 1,
+                    EvaluationEndTradingDayNumber = 2,
+                    EffectiveTradingDayNumber = 3,
+                    LatestDividendEventId = dividend.Id,
+                    IndustryTrend = IndustryTrend.Plateau,
+                });
+                var news = new NewsPost
+                {
+                    Title = "Portfolio audit",
+                    Content = "Reset fixture",
+                    PublishedInCycleId = cycle.Id,
+                    PublishedAt = DateTime.UtcNow,
+                    Scope = NewsImpactScope.None,
+                    Category = NewsCategory.PortfolioAudit,
+                };
+                db.NewsPosts.Add(news);
+                await db.SaveChangesAsync();
+
+                var summary = new PortfolioAuditSummary
+                {
+                    NewsPostId = news.Id,
+                    EvaluationStartTradingDayNumber = 1,
+                    EvaluationEndTradingDayNumber = 2,
+                    EffectiveTradingDayNumber = 3,
+                    StableCount = 1,
+                    AverageScore = 0m,
+                    OverallDirection = PortfolioAuditDirection.Neutral,
+                    CreatedAt = DateTime.UtcNow,
+                };
+                db.PortfolioAuditSummaries.Add(summary);
+                await db.SaveChangesAsync();
+                db.PortfolioAuditSummaryItems.Add(new PortfolioAuditSummaryItem
+                {
+                    PortfolioAuditSummaryId = summary.Id,
+                    CompanyId = company.Id,
+                    CompanyRatingId = rating.Id,
+                    PlayerQuantity = 1,
+                    ManagedFundQuantity = 0,
+                });
                 await db.SaveChangesAsync();
             }
 
@@ -1027,7 +1099,25 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 Assert.Empty(await db.CompanyInvestments.ToListAsync());
                 Assert.Empty(await db.ShareEmissions.ToListAsync());
                 Assert.Empty(await db.CompanyRatings.ToListAsync());
+                Assert.Empty(await db.CompanyAuditEvidence.ToListAsync());
+                Assert.Empty(await db.CompanyDividendEvents.ToListAsync());
+                Assert.Empty(await db.PortfolioAuditSummaries.ToListAsync());
+                Assert.Empty(await db.PortfolioAuditSummaryItems.ToListAsync());
+                Assert.Empty(await db.PrimaryIssuanceEvents.ToListAsync());
                 Assert.All(await db.Auditors.ToListAsync(), candidate => Assert.True(candidate.Id > previousMaxAuditorId));
+                var companyIds = await db.Companies
+                    .Select(company => company.Id)
+                    .ToHashSetAsync();
+                var financialSnapshots = await db.CompanyFinancialSnapshots.ToListAsync();
+                Assert.Equal(companyIds.Count, financialSnapshots.Count);
+                Assert.All(financialSnapshots, snapshot =>
+                {
+                    Assert.Contains(snapshot.CompanyId, companyIds);
+                    Assert.Equal(currentCycle.Id, snapshot.CreatedInCycleId);
+                    Assert.Equal(1, snapshot.TradingDayNumber);
+                    Assert.Equal(CompanyFinancialSnapshotMoment.Seed, snapshot.Moment);
+                    Assert.True(snapshot.Id > previousMaxFinancialSnapshotId);
+                });
                 Assert.NotNull(await db.GameSettings.SingleOrDefaultAsync(setting => setting.Key == "Test:Preserved"));
                 Assert.NotNull(await db.MarketRuns.SingleOrDefaultAsync(run => run.Id == previousRunId && run.EndedAt != null));
             }
@@ -2352,7 +2442,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                     {
                         CompanyId = companyId,
                         AuditorId = auditorId,
-                        Rating = CompanyRiskRating.Low,
+                        Rating = CompanyRiskRating.LowRisk,
                         CreatedInCycleId = cycleId,
                         CreatedAt = DateTime.UtcNow,
                     });
@@ -2400,12 +2490,12 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
                 dbContext.CompanyRatings.Add(new CompanyRating
                 {
-                    CompanyId = companyId, AuditorId = auditorId, Rating = CompanyRiskRating.High,
+                    CompanyId = companyId, AuditorId = auditorId, Rating = CompanyRiskRating.HighRisk,
                     CreatedInCycleId = cycleId, CreatedAt = DateTime.UtcNow,
                 });
                 dbContext.CompanyRatings.Add(new CompanyRating
                 {
-                    CompanyId = companyId, AuditorId = auditorId, Rating = CompanyRiskRating.Extra, ImpactPercent = 25m,
+                    CompanyId = companyId, AuditorId = auditorId, Rating = CompanyRiskRating.HighRisk, ImpactPercent = 25m,
                     CreatedInCycleId = cycleId, CreatedAt = DateTime.UtcNow,
                 });
                 dbContext.CompanyRatings.Add(new CompanyRating
@@ -2422,7 +2512,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
             var detail = await client.GetFromJsonAsync<CompanyDetailDto>($"/companies/{companyId}");
             Assert.Equal("ExtraRaisedExpectations", detail!.CurrentRating);
-            Assert.Equal("Extra", detail.PreviousRating);
+            Assert.Equal("HighRisk", detail.PreviousRating);
 
             var ratings = await client.GetFromJsonAsync<CompanyRatingDto[]>($"/companies/{companyId}/ratings");
             Assert.Equal(3, ratings!.Length);
@@ -2440,7 +2530,6 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     [InlineData(CompanyRiskRating.Stable)]
     [InlineData(CompanyRiskRating.RaisedExpectations)]
     [InlineData(CompanyRiskRating.ExtraRaisedExpectations)]
-    [InlineData(CompanyRiskRating.Extra)]
     public async Task NonSevereAuditorRatingsDoNotPutAHoldingInHighRiskAttention(CompanyRiskRating rating)
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");

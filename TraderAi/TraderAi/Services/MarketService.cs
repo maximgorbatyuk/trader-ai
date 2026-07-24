@@ -3466,6 +3466,8 @@ public sealed class MarketService(
         await dbContext.CollectiveFundMembershipEvents.ExecuteDeleteAsync();
         await dbContext.CollectiveFundParticipants.ExecuteDeleteAsync();
         await dbContext.CollectiveFunds.ExecuteDeleteAsync();
+        await dbContext.PortfolioAuditSummaryItems.ExecuteDeleteAsync();
+        await dbContext.PortfolioAuditSummaries.ExecuteDeleteAsync();
         await dbContext.NewsPostIndustries.ExecuteDeleteAsync();
         await dbContext.NewsPosts.ExecuteDeleteAsync();
         await dbContext.SettlementInstructions.ExecuteDeleteAsync();

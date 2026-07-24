@@ -972,10 +972,10 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         var ratingCycles = cycles.TakeLast(4).ToList();
         var ratingValues = new[]
         {
-            CompanyRiskRating.Low,
-            CompanyRiskRating.Extra,
-            CompanyRiskRating.High,
-            CompanyRiskRating.High,
+            CompanyRiskRating.LowRisk,
+            CompanyRiskRating.HighRisk,
+            CompanyRiskRating.HighRisk,
+            CompanyRiskRating.HighRisk,
         };
         for (var index = 0; index < ratingCycles.Count; index++)
         {

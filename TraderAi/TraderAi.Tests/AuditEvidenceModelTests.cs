@@ -29,6 +29,15 @@ public sealed class AuditEvidenceModelTests : IDisposable
         Assert.Equal(3, (int)CompanyRiskRating.RaisedExpectations);
         Assert.Equal(4, (int)CompanyRiskRating.ExtraRaisedExpectations);
         Assert.Equal(5, (int)CompanyRiskRating.Stable);
+        Assert.Equal(
+            [
+                nameof(CompanyRiskRating.LowRisk),
+                nameof(CompanyRiskRating.HighRisk),
+                nameof(CompanyRiskRating.RaisedExpectations),
+                nameof(CompanyRiskRating.ExtraRaisedExpectations),
+                nameof(CompanyRiskRating.Stable),
+            ],
+            Enum.GetNames<CompanyRiskRating>());
     }
 
     [Fact]

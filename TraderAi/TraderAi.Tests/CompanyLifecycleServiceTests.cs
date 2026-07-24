@@ -313,7 +313,6 @@ public sealed class CompanyLifecycleServiceTests : IDisposable
     [InlineData(CompanyRiskRating.Stable)]
     [InlineData(CompanyRiskRating.RaisedExpectations)]
     [InlineData(CompanyRiskRating.ExtraRaisedExpectations)]
-    [InlineData(CompanyRiskRating.Extra)]
     public async Task AnyNonHighRiskRatingInTheStreakSparesCompany(CompanyRiskRating nonSevereRating)
     {
         var cycles = await AddCyclesAsync(3, firstNumber: 200);
