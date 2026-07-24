@@ -92,6 +92,65 @@ public sealed record AiTradeOrderDecision(
     [property: JsonPropertyName("priceOffsetPercent")] decimal PriceOffsetPercent,
     [property: JsonPropertyName("reason")] string Reason);
 
+public sealed record AiCompanyFinancialSnapshot(
+    int SnapshotId,
+    int TradingDayNumber,
+    string Moment,
+    CompanyFinancialValues Current,
+    CompanyFinancialDeltas Deltas,
+    decimal ProfitabilityScore,
+    string ProfitabilityLevel,
+    decimal StabilityScore,
+    string FinancialVolatilityLevel,
+    decimal ClosureRiskScore,
+    string ClosureRiskLevel,
+    string ManagementOutlook,
+    decimal ManagementConfidenceScore,
+    string? LatestDividendOutcome,
+    decimal? LatestDividendDeclaredAmount,
+    decimal? LatestDividendFundedAmount);
+
+public sealed record AiAuditEvidenceSnapshot(
+    string Rating,
+    int TotalScore,
+    int EvaluationStartTradingDayNumber,
+    int EvaluationEndTradingDayNumber,
+    int EffectiveTradingDayNumber,
+    int AdjustedReturnScore,
+    int CycleJumpScore,
+    int FreeShareEmissionScore,
+    int DenominationScore,
+    int DividendOutcomeScore,
+    int DividendCoverageScore,
+    int IndustryScore,
+    int ProfitabilityFactorScore,
+    int StabilityFactorScore,
+    int ClosureRiskFactorScore,
+    int ManagementOutlookFactorScore,
+    decimal StartPrice,
+    decimal EndPrice,
+    decimal AdjustedReturnPercent,
+    decimal MaximumAdjustedCycleMovePercent,
+    int OpeningIssuedShares,
+    int EmittedShares,
+    decimal FreeShareDilutionPercent,
+    int StockSplitCount,
+    int ReverseSplitCount,
+    decimal IssuerCash,
+    decimal ModeledMaximumDividend,
+    decimal DividendCoverageRatio,
+    int? OpeningIndustrySentiment,
+    int? ClosingIndustrySentiment,
+    string IndustryTrend);
+
+public sealed record AiDirectionalSignalSnapshot(
+    decimal Momentum,
+    decimal OrderFlow,
+    decimal Industry,
+    decimal Audit,
+    decimal Fundamental,
+    decimal Final);
+
 // The credential-free request body prepared before the audit row is written, so the exact bytes sent can be
 // logged without ever containing the key.
 public sealed record PreparedAiProviderRequest(

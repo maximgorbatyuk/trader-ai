@@ -311,6 +311,23 @@ public sealed class AiDecisionJsonTests
     }
 
     [Fact]
+    public void ShortOrderSchemaRemainsUnsupported()
+    {
+        var json = """
+        { "summary": "Open a short.", "cancelOrderIds": [], "bigInvestment": null, "orders": [], "predictions": [], "shortOrders": [{ "companyId": 1, "quantity": 5 }] }
+        """;
+
+        Assert.False(AiDecisionJson.TryParse(
+            json,
+            MaxOrders,
+            MaxPredictions,
+            PredictionHorizon,
+            out _,
+            out var error));
+        Assert.NotNull(error);
+    }
+
+    [Fact]
     public void UnknownOrderPropertyFails()
     {
         var json = """

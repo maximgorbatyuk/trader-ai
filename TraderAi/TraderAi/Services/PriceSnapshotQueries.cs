@@ -10,6 +10,28 @@ internal static class PriceSnapshotQueries
     public static Task<Dictionary<int, decimal>> LatestPriceByCompanyAsync(AppDbContext dbContext) =>
         dbContext.LatestPriceByCompanyAsync();
 
+    public static async Task<Dictionary<int, decimal>> LatestPriceByCompanyAtOrBeforeCycleAsync(
+        AppDbContext dbContext,
+        int marketRunId,
+        int maximumCycleNumber)
+    {
+        var eligibleSnapshots =
+            from snapshot in dbContext.PriceSnapshots.AsNoTracking()
+            join cycle in dbContext.MarketCycles.AsNoTracking()
+                on snapshot.CreatedInCycleId equals cycle.Id
+            where cycle.MarketRunId == marketRunId
+                && cycle.CycleNumber <= maximumCycleNumber
+            select snapshot;
+        var latestSnapshotIds = await eligibleSnapshots
+            .GroupBy(snapshot => snapshot.CompanyId)
+            .Select(group => group.Max(snapshot => snapshot.Id))
+            .ToListAsync();
+
+        return await dbContext.PriceSnapshots.AsNoTracking()
+            .Where(snapshot => latestSnapshotIds.Contains(snapshot.Id))
+            .ToDictionaryAsync(snapshot => snapshot.CompanyId, snapshot => snapshot.Price);
+    }
+
     public static async Task<decimal?> LatestPriceAtOrBeforeCycleAsync(
         AppDbContext dbContext,
         int marketRunId,

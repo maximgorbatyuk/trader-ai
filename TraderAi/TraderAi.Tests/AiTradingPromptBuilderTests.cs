@@ -75,6 +75,11 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
         Assert.Contains("more attractive to other traders", system);
         Assert.Contains("sell the shares later at a higher price", system);
         Assert.Contains("potential outcomes, not guarantees", system);
+        Assert.Contains("Financials and audits are advisory", system);
+        Assert.Contains("management forecasts can be wrong", system);
+        Assert.Contains("No indicator directly moves the market price", system);
+        Assert.Contains("price direction remains probabilistic", system);
+        Assert.Contains("Short selling remains unavailable", system);
         Assert.Contains("\"orders\"", system);
         Assert.Contains("\"predictions\"", system);
         Assert.Contains("forecasts, not hidden reasoning", system);
@@ -93,8 +98,13 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
 
         using var document = JsonDocument.Parse(prompt.UserMessage);
         Assert.Equal(5, document.RootElement.GetProperty("market").GetProperty("cycleNumber").GetInt32());
-        Assert.Equal(10, document.RootElement.GetProperty("companies")[0]
-            .GetProperty("buyEnvelope").GetProperty("maximumQuantity").GetInt32());
+        var company = document.RootElement.GetProperty("companies")[0];
+        Assert.Equal(10, company.GetProperty("buyEnvelope").GetProperty("maximumQuantity").GetInt32());
+        Assert.Equal(1_000m, company.GetProperty("financials").GetProperty("current")
+            .GetProperty("revenue").GetDecimal());
+        Assert.Equal("Stable", company.GetProperty("audit").GetProperty("rating").GetString());
+        Assert.Equal(0.25m, company.GetProperty("directionalSignals").GetProperty("final").GetDecimal());
+        Assert.False(company.TryGetProperty("financialHistory", out _));
         Assert.DoesNotContain("\n", prompt.UserMessage);
         Assert.DoesNotContain("AGENTS", prompt.UserMessage);
         Assert.DoesNotContain("apiKey", prompt.UserMessage);
@@ -196,7 +206,91 @@ public sealed class AiTradingPromptBuilderTests : IDisposable
             new AiCompanySnapshot(
                 1, "Acme", 1, 100m, "Normal", 75m, 125m, 85m, 115m,
                 100, 100m, 10, null,
-                new AiBuyEnvelopeSnapshot(100m, 1_000m, 2, 10, false), []),
+                new AiBuyEnvelopeSnapshot(100m, 1_000m, 2, 10, false),
+                [],
+                Financials: new AiCompanyFinancialSnapshot(
+                    1,
+                    1,
+                    "DayOpening",
+                    new CompanyFinancialValues(
+                        1_000m,
+                        100m,
+                        120m,
+                        2_000m,
+                        800m,
+                        400m,
+                        2m,
+                        200m,
+                        1.5m,
+                        40m,
+                        1_100m,
+                        120m,
+                        130m),
+                    new CompanyFinancialDeltas(
+                        0m,
+                        0m,
+                        0m,
+                        0m,
+                        0m,
+                        0m,
+                        0m,
+                        0m,
+                        0m,
+                        0m,
+                        0m,
+                        0m,
+                        0m,
+                        0m),
+                    60m,
+                    "Medium",
+                    70m,
+                    "Low",
+                    30m,
+                    "Low",
+                    "Neutral",
+                    50m,
+                    "Paid",
+                    200m,
+                    200m),
+                Audit: new AiAuditEvidenceSnapshot(
+                    "Stable",
+                    0,
+                    1,
+                    2,
+                    3,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    90m,
+                    100m,
+                    0.111111m,
+                    0.02m,
+                    100,
+                    0,
+                    0m,
+                    0,
+                    0,
+                    1_000m,
+                    200m,
+                    1.5m,
+                    40,
+                    40,
+                    "Plateau"),
+                DirectionalSignals: new AiDirectionalSignalSnapshot(
+                    0.2m,
+                    0.1m,
+                    0.04m,
+                    0m,
+                    0.3m,
+                    0.25m)),
         },
         Industries: new[] { new AiIndustrySnapshot(1, "Tech", 50) },
         CapitalizationHistory: [],

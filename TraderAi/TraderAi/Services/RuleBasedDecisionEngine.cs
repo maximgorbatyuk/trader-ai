@@ -15,6 +15,140 @@ public sealed record RuleBasedDecisionEvaluation(
     int? SellTargetCompanyId,
     TradeActionProbabilities Probabilities);
 
+public sealed record TradingSignalComponents(
+    decimal Momentum,
+    decimal OrderFlow,
+    decimal Industry,
+    decimal Audit,
+    decimal Fundamental,
+    decimal Final);
+
+public static class TradingSignalCalculator
+{
+    public static TradingSignalComponents Calculate(
+        CompanyQuote quote,
+        RiskProfile riskProfile,
+        TradingSignalOptions options)
+    {
+        var momentum = NormalizeMomentum(quote);
+        var orderFlow = Math.Clamp(quote.OrderFlowImbalance, -1m, 1m);
+        var industry = Math.Clamp(quote.SectorSentiment / 1_000m, -1m, 1m);
+        var audit = AuditDirection(quote.Audit?.Rating);
+        var fundamental = FundamentalDirection(quote.Financials, riskProfile, options);
+        var final = Math.Clamp(
+            momentum * options.MomentumWeight
+            + orderFlow * options.OrderFlowWeight
+            + industry * options.IndustryWeight
+            + audit * options.AuditWeight
+            + fundamental * options.FundamentalWeight,
+            -1m,
+            1m);
+        return new TradingSignalComponents(momentum, orderFlow, industry, audit, fundamental, final);
+    }
+
+    private static decimal NormalizeMomentum(CompanyQuote quote)
+    {
+        if (quote.PriceChangePct == 0m)
+        {
+            return 0m;
+        }
+
+        var fullScale = quote.Bounds is null || quote.Bounds.ReferencePrice <= 0m
+            ? 1m
+            : Math.Max(
+                (quote.Bounds.ActiveUpperPrice - quote.Bounds.ReferencePrice)
+                    / quote.Bounds.ReferencePrice,
+                (quote.Bounds.ReferencePrice - quote.Bounds.ActiveLowerPrice)
+                    / quote.Bounds.ReferencePrice);
+        return fullScale <= 0m
+            ? 0m
+            : Math.Clamp(quote.PriceChangePct / fullScale, -1m, 1m);
+    }
+
+    private static decimal AuditDirection(CompanyRiskRating? rating) => rating switch
+    {
+        CompanyRiskRating.ExtraRaisedExpectations => 1m,
+        CompanyRiskRating.RaisedExpectations => 0.5m,
+        CompanyRiskRating.LowRisk => -0.5m,
+        CompanyRiskRating.HighRisk => -1m,
+        _ => 0m,
+    };
+
+    private static decimal FundamentalDirection(
+        LatestFinancialEvidence? financials,
+        RiskProfile riskProfile,
+        TradingSignalOptions options)
+    {
+        if (financials is null)
+        {
+            return 0m;
+        }
+
+        var profitability = CenterScore(financials.ProfitabilityScore);
+        var stability = CenterScore(financials.StabilityScore);
+        var closureSafety = -CenterScore(financials.ClosureRiskScore);
+        var dividendCoverage = Math.Clamp(
+            financials.Current.DividendCoverageRatio - 1m,
+            -1m,
+            1m);
+        var quality = (profitability + stability + closureSafety + dividendCoverage) / 4m;
+
+        var guidance = financials.ManagementOutlook switch
+        {
+            ManagementOutlook.Positive => UnitScore(financials.ManagementConfidenceScore),
+            ManagementOutlook.Negative => -UnitScore(financials.ManagementConfidenceScore),
+            _ => 0m,
+        };
+        var forecastGrowth = (
+            RelativeChange(
+                financials.Current.Revenue,
+                financials.Current.ManagementRevenueForecast)
+            + RelativeChange(
+                financials.Current.NetProfit,
+                financials.Current.ManagementProfitForecast)
+            + RelativeChange(
+                financials.Current.OperatingCashFlow,
+                financials.Current.ManagementOperatingCashFlowForecast)) / 3m;
+        var growth = (guidance + forecastGrowth) / 2m;
+
+        var qualityFactor = QualityResponseFactor(riskProfile, options);
+        var growthFactor = GrowthResponseFactor(riskProfile, options);
+        return Math.Clamp(
+            ((quality * qualityFactor) + (growth * growthFactor))
+                / (qualityFactor + growthFactor),
+            -1m,
+            1m);
+    }
+
+    private static decimal QualityResponseFactor(RiskProfile riskProfile, TradingSignalOptions options) =>
+        riskProfile switch
+        {
+            RiskProfile.Low => options.LowRiskQualityResponseFactor,
+            RiskProfile.High => options.HighRiskQualityResponseFactor,
+            _ => options.MediumRiskQualityResponseFactor,
+        };
+
+    private static decimal GrowthResponseFactor(RiskProfile riskProfile, TradingSignalOptions options) =>
+        riskProfile switch
+        {
+            RiskProfile.Low => options.LowRiskGrowthResponseFactor,
+            RiskProfile.High => options.HighRiskGrowthResponseFactor,
+            _ => options.MediumRiskGrowthResponseFactor,
+        };
+
+    private static decimal CenterScore(decimal score) =>
+        Math.Clamp((score - 50m) / 50m, -1m, 1m);
+
+    private static decimal UnitScore(decimal score) =>
+        Math.Clamp(score / 100m, 0m, 1m);
+
+    private static decimal RelativeChange(decimal current, decimal forecast)
+    {
+        var denominator = Math.Max(Math.Abs(current), 1m);
+        return Math.Clamp((forecast - current) / denominator, -1m, 1m);
+    }
+}
+
 // Directional evidence is evaluated independently from portfolio and execution pressure. The final action
 // distribution is sampled once; any later draws size or price the already selected action.
 public sealed class RuleBasedDecisionEngine(
@@ -41,7 +175,10 @@ public sealed class RuleBasedDecisionEngine(
 
         var directionalScores = context.Companies.ToDictionary(
             quote => quote.CompanyId,
-            quote => DirectionalScore(quote, context.Participant.RiskProfile));
+            quote => TradingSignalCalculator.Calculate(
+                quote,
+                context.Participant.RiskProfile,
+                tradingSignals).Final);
         var readonlyScores = new ReadOnlyDictionary<int, decimal>(directionalScores);
 
         var sellCandidates = context.Companies
@@ -187,97 +324,6 @@ public sealed class RuleBasedDecisionEngine(
         return Normalize(buyWeight, sellWeight, waitWeight);
     }
 
-    private decimal DirectionalScore(CompanyQuote quote, RiskProfile riskProfile)
-    {
-        var momentum = NormalizeMomentum(quote);
-        var orderFlow = Math.Clamp(quote.OrderFlowImbalance, -1m, 1m);
-        var industry = Math.Clamp(quote.SectorSentiment / 1_000m, -1m, 1m);
-        var audit = AuditDirection(quote.Audit?.Rating);
-        var fundamentals = FundamentalDirection(quote.Financials, riskProfile);
-
-        return Math.Clamp(
-            momentum * tradingSignals.MomentumWeight
-            + orderFlow * tradingSignals.OrderFlowWeight
-            + industry * tradingSignals.IndustryWeight
-            + audit * tradingSignals.AuditWeight
-            + fundamentals * tradingSignals.FundamentalWeight,
-            -1m,
-            1m);
-    }
-
-    private static decimal NormalizeMomentum(CompanyQuote quote)
-    {
-        if (quote.PriceChangePct == 0m)
-        {
-            return 0m;
-        }
-
-        var fullScale = quote.Bounds is null || quote.Bounds.ReferencePrice <= 0m
-            ? 1m
-            : Math.Max(
-                (quote.Bounds.ActiveUpperPrice - quote.Bounds.ReferencePrice)
-                    / quote.Bounds.ReferencePrice,
-                (quote.Bounds.ReferencePrice - quote.Bounds.ActiveLowerPrice)
-                    / quote.Bounds.ReferencePrice);
-        return fullScale <= 0m
-            ? 0m
-            : Math.Clamp(quote.PriceChangePct / fullScale, -1m, 1m);
-    }
-
-    private static decimal AuditDirection(CompanyRiskRating? rating) => rating switch
-    {
-        CompanyRiskRating.ExtraRaisedExpectations => 1m,
-        CompanyRiskRating.RaisedExpectations => 0.5m,
-        CompanyRiskRating.LowRisk => -0.5m,
-        CompanyRiskRating.HighRisk => -1m,
-        _ => 0m,
-    };
-
-    private decimal FundamentalDirection(
-        LatestFinancialEvidence? financials,
-        RiskProfile riskProfile)
-    {
-        if (financials is null)
-        {
-            return 0m;
-        }
-
-        var profitability = CenterScore(financials.ProfitabilityScore);
-        var stability = CenterScore(financials.StabilityScore);
-        var closureSafety = -CenterScore(financials.ClosureRiskScore);
-        var dividendCoverage = Math.Clamp(
-            financials.Current.DividendCoverageRatio - 1m,
-            -1m,
-            1m);
-        var quality = (profitability + stability + closureSafety + dividendCoverage) / 4m;
-
-        var guidance = financials.ManagementOutlook switch
-        {
-            ManagementOutlook.Positive => UnitScore(financials.ManagementConfidenceScore),
-            ManagementOutlook.Negative => -UnitScore(financials.ManagementConfidenceScore),
-            _ => 0m,
-        };
-        var forecastGrowth = (
-            RelativeChange(
-                financials.Current.Revenue,
-                financials.Current.ManagementRevenueForecast)
-            + RelativeChange(
-                financials.Current.NetProfit,
-                financials.Current.ManagementProfitForecast)
-            + RelativeChange(
-                financials.Current.OperatingCashFlow,
-                financials.Current.ManagementOperatingCashFlowForecast)) / 3m;
-        var growth = (guidance + forecastGrowth) / 2m;
-
-        var qualityFactor = QualityResponseFactor(riskProfile);
-        var growthFactor = GrowthResponseFactor(riskProfile);
-        return Math.Clamp(
-            ((quality * qualityFactor) + (growth * growthFactor))
-                / (qualityFactor + growthFactor),
-            -1m,
-            1m);
-    }
-
     private decimal ActivityFactor(Temperament temperament) => temperament switch
     {
         Temperament.Aggressive => tradingSignals.AggressiveActivityFactor,
@@ -291,25 +337,6 @@ public sealed class RuleBasedDecisionEngine(
         RiskProfile.High => tradingSignals.HighRiskQualityResponseFactor,
         _ => tradingSignals.MediumRiskQualityResponseFactor,
     };
-
-    private decimal GrowthResponseFactor(RiskProfile riskProfile) => riskProfile switch
-    {
-        RiskProfile.Low => tradingSignals.LowRiskGrowthResponseFactor,
-        RiskProfile.High => tradingSignals.HighRiskGrowthResponseFactor,
-        _ => tradingSignals.MediumRiskGrowthResponseFactor,
-    };
-
-    private static decimal CenterScore(decimal score) =>
-        Math.Clamp((score - 50m) / 50m, -1m, 1m);
-
-    private static decimal UnitScore(decimal score) =>
-        Math.Clamp(score / 100m, 0m, 1m);
-
-    private static decimal RelativeChange(decimal current, decimal forecast)
-    {
-        var denominator = Math.Max(Math.Abs(current), 1m);
-        return Math.Clamp((forecast - current) / denominator, -1m, 1m);
-    }
 
     private decimal BargainPressure(DecisionContext context, CompanyQuote quote)
     {

@@ -53,7 +53,7 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.Null(company1.TradingStatus);
         Assert.Equal(115m, company1.ActiveLowerPrice);
         Assert.Single(company1.RecentRatings);
-        Assert.Equal("High", company1.RecentRatings[0].Rating);
+        Assert.Equal("HighRisk", company1.RecentRatings[0].Rating);
 
         var company2 = snapshot.Companies.Single(company => company.CompanyId == seed.Company2Id);
         Assert.NotNull(company2.AllowedMinimumPrice);
@@ -83,6 +83,299 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         // The latest period averages sentiment over cycles 30-35: mean(30..35) rounds to 33.
         Assert.Equal(33, industry1SentimentPoints.Single(point => point.CycleNumber == 35).SentimentValue);
         Assert.Empty(snapshot.BigInvestmentOpportunities);
+    }
+
+    [Fact]
+    public async Task IncludesCompactFundamentalsEffectiveAuditAndNormalizedDirectionalSignals()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var day = await context.TradingDays.SingleAsync();
+        day.DayNumber = 3;
+        var cycles = await context.MarketCycles.OrderBy(cycle => cycle.CycleNumber).ToListAsync();
+        var company = await context.Companies.SingleAsync(candidate => candidate.Id == seed.Company1Id);
+        var auditor = await context.Auditors.SingleAsync();
+        var dividend = new CompanyDividendEvent
+        {
+            CompanyId = company.Id,
+            DeclaredAmount = 2_500m,
+            FundedAmount = 2_500m,
+            FundingOutcome = DividendFundingOutcome.Paid,
+            IssuerCashBeforeFunding = 5_000m,
+            CreatedInCycleId = cycles[^2].Id,
+            TradingDayNumber = 2,
+        };
+        context.CompanyDividendEvents.Add(dividend);
+        await context.SaveChangesAsync();
+
+        var previous = FinancialSnapshot(
+            company.Id,
+            cycles[^2].Id,
+            tradingDayNumber: 2,
+            CompanyFinancialSnapshotMoment.Midday,
+            revenue: 1_000m,
+            netProfit: 100m,
+            operatingCashFlow: 120m,
+            totalAssets: 2_000m,
+            totalLiabilities: 800m,
+            totalDebt: 400m,
+            expectedDividendPerShare: 2m,
+            expectedDividendPool: 2_000m,
+            dividendCoverageRatio: 1.5m,
+            businessRiskScore: 40m,
+            managementRevenueForecast: 1_100m,
+            managementProfitForecast: 120m,
+            managementOperatingCashFlowForecast: 130m,
+            managementOutlook: ManagementOutlook.Neutral,
+            managementConfidenceScore: 50m,
+            profitabilityScore: 60m,
+            profitabilityLevel: CompanyMetricLevel.Medium,
+            stabilityScore: 70m,
+            financialVolatilityLevel: CompanyMetricLevel.Low,
+            closureRiskScore: 30m,
+            closureRiskLevel: CompanyMetricLevel.Low);
+        var current = FinancialSnapshot(
+            company.Id,
+            cycles[^1].Id,
+            tradingDayNumber: 3,
+            CompanyFinancialSnapshotMoment.DayOpening,
+            revenue: 1_200m,
+            netProfit: 180m,
+            operatingCashFlow: 220m,
+            totalAssets: 2_300m,
+            totalLiabilities: 850m,
+            totalDebt: 390m,
+            expectedDividendPerShare: 2.5m,
+            expectedDividendPool: 2_500m,
+            dividendCoverageRatio: 2m,
+            businessRiskScore: 30m,
+            managementRevenueForecast: 1_350m,
+            managementProfitForecast: 220m,
+            managementOperatingCashFlowForecast: 260m,
+            managementOutlook: ManagementOutlook.Positive,
+            managementConfidenceScore: 80m,
+            profitabilityScore: 80m,
+            profitabilityLevel: CompanyMetricLevel.High,
+            stabilityScore: 85m,
+            financialVolatilityLevel: CompanyMetricLevel.Low,
+            closureRiskScore: 20m,
+            closureRiskLevel: CompanyMetricLevel.Low);
+        current.LatestDividendEventId = dividend.Id;
+        context.CompanyFinancialSnapshots.AddRange(previous, current);
+        await context.SaveChangesAsync();
+
+        var rating = new CompanyRating
+        {
+            CompanyId = company.Id,
+            AuditorId = auditor.Id,
+            Rating = CompanyRiskRating.RaisedExpectations,
+            CreatedInCycleId = cycles[^1].Id,
+        };
+        context.CompanyRatings.Add(rating);
+        await context.SaveChangesAsync();
+        context.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+        {
+            CompanyRatingId = rating.Id,
+            CompanyId = company.Id,
+            CompanyFinancialSnapshotId = current.Id,
+            EvaluationStartTradingDayNumber = 1,
+            EvaluationEndTradingDayNumber = 2,
+            EffectiveTradingDayNumber = 3,
+            TotalScore = 8,
+            AdjustedReturnScore = 1,
+            DividendOutcomeScore = 1,
+            DividendCoverageScore = 1,
+            IndustryScore = 1,
+            ProfitabilityFactorScore = 1,
+            StabilityFactorScore = 1,
+            ClosureRiskFactorScore = 1,
+            ManagementOutlookFactorScore = 1,
+            StartPrice = 120m,
+            EndPrice = 135m,
+            AdjustedReturnPercent = 0.125m,
+            MaximumAdjustedCycleMovePercent = 0.02m,
+            OpeningIssuedShares = company.IssuedSharesCount,
+            IssuerCash = 5_000m,
+            ModeledMaximumDividend = 2_500m,
+            DividendCoverageRatio = 2m,
+            OpeningIndustrySentiment = 20,
+            ClosingIndustrySentiment = 40,
+            IndustryTrend = IndustryTrend.Rising,
+            LatestDividendEventId = dividend.Id,
+        });
+        await context.SaveChangesAsync();
+
+        var snapshot = await Builder().BuildAsync(seed.AiParticipantId);
+
+        var companySnapshot = snapshot!.Companies.Single(candidate => candidate.CompanyId == company.Id);
+        var financials = Assert.IsType<AiCompanyFinancialSnapshot>(companySnapshot.Financials);
+        Assert.Equal(current.Id, financials.SnapshotId);
+        Assert.Equal("DayOpening", financials.Moment);
+        Assert.Equal(1_200m, financials.Current.Revenue);
+        Assert.Equal(200m, financials.Deltas.Revenue);
+        Assert.Equal(-10m, financials.Deltas.TotalDebt);
+        Assert.Equal(80m, financials.ProfitabilityScore);
+        Assert.Equal("High", financials.ProfitabilityLevel);
+        Assert.Equal(85m, financials.StabilityScore);
+        Assert.Equal("Low", financials.FinancialVolatilityLevel);
+        Assert.Equal(20m, financials.ClosureRiskScore);
+        Assert.Equal("Low", financials.ClosureRiskLevel);
+        Assert.Equal(30m, financials.Current.BusinessRiskScore);
+        Assert.Equal(2.5m, financials.Current.ExpectedDividendPerShare);
+        Assert.Equal(2_500m, financials.Current.ExpectedDividendPool);
+        Assert.Equal("Paid", financials.LatestDividendOutcome);
+        Assert.Equal(2_500m, financials.LatestDividendDeclaredAmount);
+        Assert.Equal(2_500m, financials.LatestDividendFundedAmount);
+        Assert.Equal(1_350m, financials.Current.ManagementRevenueForecast);
+        Assert.Equal(220m, financials.Current.ManagementProfitForecast);
+        Assert.Equal(260m, financials.Current.ManagementOperatingCashFlowForecast);
+        Assert.Equal("Positive", financials.ManagementOutlook);
+        Assert.Equal(80m, financials.ManagementConfidenceScore);
+
+        var audit = Assert.IsType<AiAuditEvidenceSnapshot>(companySnapshot.Audit);
+        Assert.Equal("RaisedExpectations", audit.Rating);
+        Assert.Equal(8, audit.TotalScore);
+        Assert.Equal(3, audit.EffectiveTradingDayNumber);
+        Assert.Equal(1, audit.AdjustedReturnScore);
+        Assert.Equal(1, audit.ManagementOutlookFactorScore);
+        Assert.Equal(120m, audit.StartPrice);
+        Assert.Equal(135m, audit.EndPrice);
+        Assert.Equal(0.125m, audit.AdjustedReturnPercent);
+        Assert.Equal(0.02m, audit.MaximumAdjustedCycleMovePercent);
+        Assert.Equal(company.IssuedSharesCount, audit.OpeningIssuedShares);
+        Assert.Equal(0, audit.EmittedShares);
+        Assert.Equal(0m, audit.FreeShareDilutionPercent);
+        Assert.Equal(0, audit.StockSplitCount);
+        Assert.Equal(0, audit.ReverseSplitCount);
+        Assert.Equal(5_000m, audit.IssuerCash);
+        Assert.Equal(2_500m, audit.ModeledMaximumDividend);
+        Assert.Equal(2m, audit.DividendCoverageRatio);
+        Assert.Equal(20, audit.OpeningIndustrySentiment);
+        Assert.Equal(40, audit.ClosingIndustrySentiment);
+        Assert.Equal("Rising", audit.IndustryTrend);
+
+        var signals = Assert.IsType<AiDirectionalSignalSnapshot>(companySnapshot.DirectionalSignals);
+        Assert.InRange(signals.Momentum, -1m, 1m);
+        Assert.InRange(signals.OrderFlow, -1m, 1m);
+        Assert.Equal(0.04m, signals.Industry);
+        Assert.Equal(0.5m, signals.Audit);
+        Assert.True(signals.Fundamental > 0m);
+        Assert.InRange(signals.Final, -1m, 1m);
+        Assert.Equal(
+            Math.Clamp(
+                signals.Momentum * 0.24m
+                + signals.OrderFlow * 0.21m
+                + signals.Industry * 0.15m
+                + signals.Audit * 0.15m
+                + signals.Fundamental * 0.25m,
+                -1m,
+                1m),
+            signals.Final);
+        Assert.DoesNotContain(
+            typeof(AiCompanySnapshot).GetProperties(),
+            property => property.Name.Contains("History", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ExcludesOtherRunLaterCycleAndFutureEffectiveEvidence()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var market = await context.Markets.SingleAsync();
+        var day = await context.TradingDays.SingleAsync();
+        day.DayNumber = 3;
+        var cycles = await context.MarketCycles.OrderBy(cycle => cycle.CycleNumber).ToListAsync();
+        var currentCycle = cycles[^1];
+        var previousCycle = cycles[^2];
+        var auditor = await context.Auditors.SingleAsync();
+
+        var previous = SimpleFinancialSnapshot(seed.Company1Id, previousCycle.Id, 2, 1_000m);
+        var current = SimpleFinancialSnapshot(seed.Company1Id, currentCycle.Id, 3, 1_200m);
+        context.CompanyFinancialSnapshots.AddRange(previous, current);
+        await context.SaveChangesAsync();
+
+        var effectiveRating = new CompanyRating
+        {
+            CompanyId = seed.Company1Id,
+            AuditorId = auditor.Id,
+            Rating = CompanyRiskRating.Stable,
+            CreatedInCycleId = currentCycle.Id,
+        };
+        var futureEffectiveRating = new CompanyRating
+        {
+            CompanyId = seed.Company1Id,
+            AuditorId = auditor.Id,
+            Rating = CompanyRiskRating.HighRisk,
+            CreatedInCycleId = currentCycle.Id,
+        };
+        context.CompanyRatings.AddRange(effectiveRating, futureEffectiveRating);
+        await context.SaveChangesAsync();
+        context.CompanyAuditEvidence.AddRange(
+            AuditEvidence(effectiveRating, current, effectiveTradingDayNumber: 3),
+            AuditEvidence(futureEffectiveRating, current, effectiveTradingDayNumber: 4));
+
+        var laterCycle = new MarketCycle
+        {
+            MarketRunId = market.CurrentRunId,
+            CycleNumber = currentCycle.CycleNumber + 1,
+            TradingDayId = day.Id,
+            TradingCycleNumber = currentCycle.TradingCycleNumber + 1,
+            Status = CycleStatus.Completed,
+        };
+        var otherRunCycle = new MarketCycle
+        {
+            MarketRunId = market.CurrentRunId + 1,
+            CycleNumber = 0,
+            TradingDayId = day.Id,
+            TradingCycleNumber = currentCycle.TradingCycleNumber + 2,
+            Status = CycleStatus.Completed,
+        };
+        context.MarketCycles.AddRange(laterCycle, otherRunCycle);
+        await context.SaveChangesAsync();
+        context.CompanyFinancialSnapshots.AddRange(
+            SimpleFinancialSnapshot(
+                seed.Company1Id,
+                laterCycle.Id,
+                3,
+                9_000m,
+                CompanyFinancialSnapshotMoment.Midday),
+            SimpleFinancialSnapshot(
+                seed.Company1Id,
+                otherRunCycle.Id,
+                3,
+                8_000m,
+                CompanyFinancialSnapshotMoment.Seed));
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = seed.Company1Id,
+            Price = 999m,
+            Capitalization = 999_000m,
+            CreatedInCycleId = laterCycle.Id,
+        });
+        var laterCycleRating = new CompanyRating
+        {
+            CompanyId = seed.Company2Id,
+            AuditorId = auditor.Id,
+            Rating = CompanyRiskRating.ExtraRaisedExpectations,
+            CreatedInCycleId = laterCycle.Id,
+        };
+        context.CompanyRatings.Add(laterCycleRating);
+        await context.SaveChangesAsync();
+        context.CompanyAuditEvidence.Add(AuditEvidence(
+            laterCycleRating,
+            financialSnapshot: null,
+            effectiveTradingDayNumber: 3));
+        await context.SaveChangesAsync();
+
+        var snapshot = await Builder().BuildAsync(seed.AiParticipantId);
+
+        var first = snapshot!.Companies.Single(company => company.CompanyId == seed.Company1Id);
+        Assert.Equal(135m, first.CurrentPrice);
+        Assert.Equal(1_200m, first.Financials!.Current.Revenue);
+        Assert.Equal("Stable", first.Audit!.Rating);
+        Assert.Equal("Stable", Assert.Single(first.RecentRatings).Rating);
+        var second = snapshot.Companies.Single(company => company.CompanyId == seed.Company2Id);
+        Assert.Null(second.Financials);
+        Assert.Null(second.Audit);
+        Assert.Empty(second.RecentRatings);
     }
 
     [Fact]
@@ -472,7 +765,8 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Options.Create(new VolatilityHaltOptions()),
         Options.Create(new BigInvestmentOptions { Enabled = bigInvestmentEnabled }),
         Options.Create(new RandomChanceRatesOptions()),
-        new AutomatedBuyOrderPolicy(Options.Create(new AutomatedTradingOptions())));
+        new AutomatedBuyOrderPolicy(Options.Create(new AutomatedTradingOptions())),
+        Options.Create(new TradingSignalOptions()));
 
     private async Task<MarketSeed> SeedPriorityCeilingScenarioAsync(bool includeResidualAsk)
     {
@@ -570,8 +864,13 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         var market = new Market { Name = "Market", Status = MarketStatus.Running };
         var tech = new Industry { Name = "Tech", SentimentValue = 40 };
         var energy = new Industry { Name = "Energy", SentimentValue = -10 };
+        var auditor = new Auditor
+        {
+            Name = "Snapshot auditor",
+            Description = "Provides ratings used by the snapshot fixture.",
+        };
         context.AddRange(cycles);
-        context.AddRange(market, tech, energy);
+        context.AddRange(market, tech, energy, auditor);
         await context.SaveChangesAsync();
 
         var company1 = new Company { Name = "Acme", IndustryId = tech.Id, IssuedSharesCount = 1_000 };
@@ -622,7 +921,7 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
             context.CompanyRatings.Add(new CompanyRating
             {
                 CompanyId = company1.Id,
-                AuditorId = 1,
+                AuditorId = auditor.Id,
                 Rating = ratingValues[index],
                 ImpactPercent = 5m,
                 CreatedInCycleId = ratingCycles[index].Id,
@@ -679,6 +978,114 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
 
         return new MarketSeed(aiTrader.Id, company1.Id, company2.Id, tech.Id);
     }
+
+    private static CompanyFinancialSnapshot FinancialSnapshot(
+        int companyId,
+        int cycleId,
+        int tradingDayNumber,
+        CompanyFinancialSnapshotMoment moment,
+        decimal revenue,
+        decimal netProfit,
+        decimal operatingCashFlow,
+        decimal totalAssets,
+        decimal totalLiabilities,
+        decimal totalDebt,
+        decimal expectedDividendPerShare,
+        decimal expectedDividendPool,
+        decimal dividendCoverageRatio,
+        decimal businessRiskScore,
+        decimal managementRevenueForecast,
+        decimal managementProfitForecast,
+        decimal managementOperatingCashFlowForecast,
+        ManagementOutlook managementOutlook,
+        decimal managementConfidenceScore,
+        decimal profitabilityScore,
+        CompanyMetricLevel profitabilityLevel,
+        decimal stabilityScore,
+        CompanyMetricLevel financialVolatilityLevel,
+        decimal closureRiskScore,
+        CompanyMetricLevel closureRiskLevel) =>
+        new()
+        {
+            CompanyId = companyId,
+            CreatedInCycleId = cycleId,
+            TradingDayNumber = tradingDayNumber,
+            Moment = moment,
+            Revenue = revenue,
+            NetProfit = netProfit,
+            OperatingCashFlow = operatingCashFlow,
+            TotalAssets = totalAssets,
+            TotalLiabilities = totalLiabilities,
+            TotalDebt = totalDebt,
+            ExpectedDividendPerShare = expectedDividendPerShare,
+            ExpectedDividendPool = expectedDividendPool,
+            DividendCoverageRatio = dividendCoverageRatio,
+            BusinessRiskScore = businessRiskScore,
+            ManagementRevenueForecast = managementRevenueForecast,
+            ManagementProfitForecast = managementProfitForecast,
+            ManagementOperatingCashFlowForecast = managementOperatingCashFlowForecast,
+            ManagementOutlook = managementOutlook,
+            ManagementConfidenceScore = managementConfidenceScore,
+            ProfitabilityScore = profitabilityScore,
+            ProfitabilityLevel = profitabilityLevel,
+            StabilityScore = stabilityScore,
+            FinancialVolatilityLevel = financialVolatilityLevel,
+            ClosureRiskScore = closureRiskScore,
+            ClosureRiskLevel = closureRiskLevel,
+            ChangedMetrics = CompanyFinancialMetric.All,
+        };
+
+    private static CompanyFinancialSnapshot SimpleFinancialSnapshot(
+        int companyId,
+        int cycleId,
+        int tradingDayNumber,
+        decimal revenue,
+        CompanyFinancialSnapshotMoment moment = CompanyFinancialSnapshotMoment.DayOpening) =>
+        FinancialSnapshot(
+            companyId,
+            cycleId,
+            tradingDayNumber,
+            moment,
+            revenue,
+            revenue / 10m,
+            revenue / 8m,
+            revenue * 2m,
+            revenue * 0.8m,
+            revenue * 0.4m,
+            2m,
+            revenue / 5m,
+            1.5m,
+            40m,
+            revenue * 1.1m,
+            revenue * 0.12m,
+            revenue * 0.14m,
+            ManagementOutlook.Neutral,
+            50m,
+            60m,
+            CompanyMetricLevel.Medium,
+            70m,
+            CompanyMetricLevel.Low,
+            30m,
+            CompanyMetricLevel.Low);
+
+    private static CompanyAuditEvidence AuditEvidence(
+        CompanyRating rating,
+        CompanyFinancialSnapshot? financialSnapshot,
+        int effectiveTradingDayNumber) =>
+        new()
+        {
+            CompanyRatingId = rating.Id,
+            CompanyId = rating.CompanyId,
+            CompanyFinancialSnapshotId = financialSnapshot?.Id,
+            EvaluationStartTradingDayNumber = effectiveTradingDayNumber - 2,
+            EvaluationEndTradingDayNumber = effectiveTradingDayNumber - 1,
+            EffectiveTradingDayNumber = effectiveTradingDayNumber,
+            OpeningIssuedShares = 1_000,
+            IssuerCash = 1_000m,
+            ModeledMaximumDividend = 100m,
+            DividendCoverageRatio = 1m,
+            IndustryTrend = IndustryTrend.Plateau,
+        };
 
     private sealed record MarketSeed(int AiParticipantId, int Company1Id, int Company2Id, int Industry1Id);
 
