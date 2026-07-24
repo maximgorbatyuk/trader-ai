@@ -2992,104 +2992,20 @@ public sealed class MarketService(
                     where cycle.Id == evidenceCycleId
                         && day.Id == evidenceTradingDayId
                         && cycle.MarketRunId == market.CurrentRunId
-                    select new
-                    {
-                        MarketRunId = cycle.MarketRunId,
+                    select new TradingEvidencePoint(
+                        cycle.MarketRunId,
                         cycle.CycleNumber,
                         day.DayNumber,
-                    })
+                        cycle.TradingCycleNumber))
                 .FirstOrDefaultAsync()
             : null;
-        var effectiveAuditByCompany = new Dictionary<int, EffectiveAuditEvidence>();
-        var financialEvidenceByCompany = new Dictionary<int, LatestFinancialEvidence>();
-        if (decisionEvidencePoint is not null)
-        {
-            var auditRows = await (
-                    from evidence in dbContext.CompanyAuditEvidence.AsNoTracking()
-                    join rating in dbContext.CompanyRatings.AsNoTracking()
-                        on evidence.CompanyRatingId equals rating.Id
-                    join ratingCycle in dbContext.MarketCycles.AsNoTracking()
-                        on rating.CreatedInCycleId equals ratingCycle.Id
-                    where quoteCompanyIds.Contains(evidence.CompanyId)
-                        && evidence.EffectiveTradingDayNumber <= decisionEvidencePoint.DayNumber
-                        && ratingCycle.MarketRunId == decisionEvidencePoint.MarketRunId
-                        && ratingCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
-                        && !(
-                            from candidateEvidence in dbContext.CompanyAuditEvidence.AsNoTracking()
-                            join candidateRating in dbContext.CompanyRatings.AsNoTracking()
-                                on candidateEvidence.CompanyRatingId equals candidateRating.Id
-                            join candidateCycle in dbContext.MarketCycles.AsNoTracking()
-                                on candidateRating.CreatedInCycleId equals candidateCycle.Id
-                            where candidateEvidence.CompanyId == evidence.CompanyId
-                                && candidateEvidence.EffectiveTradingDayNumber <= decisionEvidencePoint.DayNumber
-                                && candidateCycle.MarketRunId == decisionEvidencePoint.MarketRunId
-                                && candidateCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
-                                && (candidateEvidence.EffectiveTradingDayNumber > evidence.EffectiveTradingDayNumber
-                                    || (candidateEvidence.EffectiveTradingDayNumber == evidence.EffectiveTradingDayNumber
-                                        && candidateEvidence.CompanyRatingId > evidence.CompanyRatingId))
-                            select candidateEvidence.CompanyRatingId)
-                        .Any()
-                    select new { Evidence = evidence, Rating = rating.Rating })
-                .ToListAsync();
-            effectiveAuditByCompany = auditRows.ToDictionary(
-                row => row.Evidence.CompanyId,
-                row => BuildEffectiveAuditEvidence(row.Rating, row.Evidence));
-
-            var eligibleFinancialSnapshots =
-                    from snapshot in dbContext.CompanyFinancialSnapshots.AsNoTracking()
-                    join snapshotCycle in dbContext.MarketCycles.AsNoTracking()
-                        on snapshot.CreatedInCycleId equals snapshotCycle.Id
-                    where quoteCompanyIds.Contains(snapshot.CompanyId)
-                        && snapshot.TradingDayNumber <= decisionEvidencePoint.DayNumber
-                        && snapshotCycle.MarketRunId == decisionEvidencePoint.MarketRunId
-                        && snapshotCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
-                    select snapshot;
-            // EF translates this grouped top-N shape to ROW_NUMBER partitioned by company, keeping the database
-            // work and returned evidence bounded even when a company has a long financial history.
-            var financialGroups = await eligibleFinancialSnapshots
-                .GroupBy(snapshot => snapshot.CompanyId)
-                .Select(group => group
-                    .OrderByDescending(snapshot => snapshot.Id)
-                    .Take(2)
-                    .ToList())
-                .ToListAsync();
-            var financialRows = financialGroups.SelectMany(group => group).ToList();
-            var financialCheckpointsByCompany = financialRows
-                .GroupBy(snapshot => snapshot.CompanyId)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group.OrderByDescending(snapshot => snapshot.Id).ToList());
-
-            var latestDividendRows = await (
-                    from dividend in dbContext.CompanyDividendEvents.AsNoTracking()
-                    join dividendCycle in dbContext.MarketCycles.AsNoTracking()
-                        on dividend.CreatedInCycleId equals dividendCycle.Id
-                    where quoteCompanyIds.Contains(dividend.CompanyId)
-                        && dividend.TradingDayNumber <= decisionEvidencePoint.DayNumber
-                        && dividendCycle.MarketRunId == decisionEvidencePoint.MarketRunId
-                        && dividendCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
-                        && !(
-                            from candidate in dbContext.CompanyDividendEvents.AsNoTracking()
-                            join candidateCycle in dbContext.MarketCycles.AsNoTracking()
-                                on candidate.CreatedInCycleId equals candidateCycle.Id
-                            where candidate.CompanyId == dividend.CompanyId
-                                && candidate.TradingDayNumber <= decisionEvidencePoint.DayNumber
-                                && candidateCycle.MarketRunId == decisionEvidencePoint.MarketRunId
-                                && candidateCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
-                                && candidate.Id > dividend.Id
-                            select candidate.Id)
-                        .Any()
-                    select dividend)
-                .ToListAsync();
-            var latestDividendByCompany = latestDividendRows.ToDictionary(
-                dividend => dividend.CompanyId);
-            financialEvidenceByCompany = financialCheckpointsByCompany.ToDictionary(
-                entry => entry.Key,
-                entry => BuildLatestFinancialEvidence(
-                    entry.Value[0],
-                    entry.Value.Count > 1 ? entry.Value[1] : null,
-                    latestDividendByCompany.GetValueOrDefault(entry.Key)));
-        }
+        var tradingEvidence = decisionEvidencePoint is null
+            ? TradingEvidenceBatch.Empty
+            : await TradingEvidenceReader.LoadAsync(dbContext, quoteCompanyIds, decisionEvidencePoint);
+        var effectiveAuditByCompany = tradingEvidence.EffectiveAudits.ToDictionary(
+            entry => entry.Key,
+            entry => entry.Value.DecisionEvidence);
+        var financialEvidenceByCompany = tradingEvidence.LatestFinancials;
 
         var sentimentByIndustry = await dbContext.Industries.AsNoTracking()
             .ToDictionaryAsync(industry => industry.Id, industry => industry.SentimentValue);
@@ -3414,86 +3330,6 @@ public sealed class MarketService(
         await dbContext.SaveChangesAsync();
         return RunDecisionsResult.Ok(buyOrdersPlaced, sellOrdersPlaced);
     }
-
-    private static EffectiveAuditEvidence BuildEffectiveAuditEvidence(
-        CompanyRiskRating rating,
-        CompanyAuditEvidence evidence) =>
-        new(
-            rating,
-            evidence.TotalScore,
-            evidence.EvaluationStartTradingDayNumber,
-            evidence.EvaluationEndTradingDayNumber,
-            evidence.EffectiveTradingDayNumber,
-            evidence.AdjustedReturnScore,
-            evidence.CycleJumpScore,
-            evidence.FreeShareEmissionScore,
-            evidence.DenominationScore,
-            evidence.DividendOutcomeScore,
-            evidence.DividendCoverageScore,
-            evidence.IndustryScore,
-            evidence.ProfitabilityFactorScore,
-            evidence.StabilityFactorScore,
-            evidence.ClosureRiskFactorScore,
-            evidence.ManagementOutlookFactorScore);
-
-    private static LatestFinancialEvidence BuildLatestFinancialEvidence(
-        CompanyFinancialSnapshot current,
-        CompanyFinancialSnapshot? previous,
-        CompanyDividendEvent? latestDividend) =>
-        new(
-            current.Id,
-            current.TradingDayNumber,
-            current.Moment,
-            FinancialValues(current),
-            FinancialDeltas(current, previous),
-            current.ProfitabilityScore,
-            current.ProfitabilityLevel,
-            current.StabilityScore,
-            current.FinancialVolatilityLevel,
-            current.ClosureRiskScore,
-            current.ClosureRiskLevel,
-            current.ManagementOutlook,
-            current.ManagementConfidenceScore,
-            latestDividend?.FundingOutcome,
-            latestDividend?.DeclaredAmount,
-            latestDividend?.FundedAmount);
-
-    private static CompanyFinancialValues FinancialValues(CompanyFinancialSnapshot snapshot) =>
-        new(
-            snapshot.Revenue,
-            snapshot.NetProfit,
-            snapshot.OperatingCashFlow,
-            snapshot.TotalAssets,
-            snapshot.TotalLiabilities,
-            snapshot.TotalDebt,
-            snapshot.ExpectedDividendPerShare,
-            snapshot.ExpectedDividendPool,
-            snapshot.DividendCoverageRatio,
-            snapshot.BusinessRiskScore,
-            snapshot.ManagementRevenueForecast,
-            snapshot.ManagementProfitForecast,
-            snapshot.ManagementOperatingCashFlowForecast);
-
-    private static CompanyFinancialDeltas FinancialDeltas(
-        CompanyFinancialSnapshot current,
-        CompanyFinancialSnapshot? previous) =>
-        previous is null
-            ? new CompanyFinancialDeltas(0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m, 0m)
-            : new CompanyFinancialDeltas(
-                current.Revenue - previous.Revenue,
-                current.NetProfit - previous.NetProfit,
-                current.OperatingCashFlow - previous.OperatingCashFlow,
-                current.TotalAssets - previous.TotalAssets,
-                current.TotalLiabilities - previous.TotalLiabilities,
-                current.TotalDebt - previous.TotalDebt,
-                current.ExpectedDividendPerShare - previous.ExpectedDividendPerShare,
-                current.ExpectedDividendPool - previous.ExpectedDividendPool,
-                current.DividendCoverageRatio - previous.DividendCoverageRatio,
-                current.BusinessRiskScore - previous.BusinessRiskScore,
-                current.ManagementRevenueForecast - previous.ManagementRevenueForecast,
-                current.ManagementProfitForecast - previous.ManagementProfitForecast,
-                current.ManagementOperatingCashFlowForecast - previous.ManagementOperatingCashFlowForecast,
-                current.ManagementConfidenceScore - previous.ManagementConfidenceScore);
 
     private static void UpdatePriorBuyPriorityLimit(
         IDictionary<int, decimal> priorityLimitByCompany,

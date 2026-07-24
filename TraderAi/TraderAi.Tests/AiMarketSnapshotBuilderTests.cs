@@ -52,8 +52,8 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.Equal(135m, company1.CurrentPrice);
         Assert.Null(company1.TradingStatus);
         Assert.Equal(115m, company1.ActiveLowerPrice);
-        Assert.Single(company1.RecentRatings);
-        Assert.Equal("HighRisk", company1.RecentRatings[0].Rating);
+        Assert.Empty(company1.RecentRatings);
+        Assert.Null(company1.Audit);
 
         var company2 = snapshot.Companies.Single(company => company.CompanyId == seed.Company2Id);
         Assert.NotNull(company2.AllowedMinimumPrice);
@@ -376,6 +376,67 @@ public sealed class AiMarketSnapshotBuilderTests : IDisposable
         Assert.Null(second.Financials);
         Assert.Null(second.Audit);
         Assert.Empty(second.RecentRatings);
+    }
+
+    [Fact]
+    public async Task ReturnsNullWhenCurrentCycleBelongsToAnotherRun()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var market = await context.Markets.SingleAsync();
+        var cycle = await context.MarketCycles.SingleAsync(candidate => candidate.Id == market.CurrentCycleId);
+        cycle.MarketRunId = market.CurrentRunId + 1;
+        await context.SaveChangesAsync();
+
+        Assert.Null(await Builder().BuildAsync(seed.AiParticipantId));
+    }
+
+    [Fact]
+    public async Task ReturnsNullWhenCurrentTradingDayIsMissing()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var market = await context.Markets.SingleAsync();
+        market.CurrentTradingDayId = null;
+        await context.SaveChangesAsync();
+
+        Assert.Null(await Builder().BuildAsync(seed.AiParticipantId));
+    }
+
+    [Fact]
+    public async Task ReturnsNullWhenCurrentTradingDayDoesNotOwnCurrentCycle()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var market = await context.Markets.SingleAsync();
+        var otherDay = new TradingDay
+        {
+            DayNumber = 2,
+            State = TradingSessionState.Break,
+            OpenedInCycleId = market.CurrentCycleId!.Value,
+        };
+        context.TradingDays.Add(otherDay);
+        await context.SaveChangesAsync();
+        market.CurrentTradingDayId = otherDay.Id;
+        await context.SaveChangesAsync();
+
+        Assert.Null(await Builder().BuildAsync(seed.AiParticipantId));
+    }
+
+    [Fact]
+    public async Task ReturnsNullWhenMarketPointsToAFutureTradingDay()
+    {
+        var seed = await SeedThirtyFiveCycleMarketAsync();
+        var market = await context.Markets.SingleAsync();
+        var futureDay = new TradingDay
+        {
+            DayNumber = 99,
+            State = TradingSessionState.Trading,
+            OpenedInCycleId = market.CurrentCycleId!.Value,
+        };
+        context.TradingDays.Add(futureDay);
+        await context.SaveChangesAsync();
+        market.CurrentTradingDayId = futureDay.Id;
+        await context.SaveChangesAsync();
+
+        Assert.Null(await Builder().BuildAsync(seed.AiParticipantId));
     }
 
     [Fact]
