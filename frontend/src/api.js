@@ -75,6 +75,9 @@ export const api = {
   getCompanyOrders: (companyId, take = 10) => get(`/companies/${companyId}/orders?take=${take}`),
   getCompanyShareTransactions: (companyId, take = 10) =>
     get(`/companies/${companyId}/share-transactions?take=${take}`),
+  getCompanyAudits: (companyId, page = 1, pageSize = 20) =>
+    get(`/companies/${companyId}/audits${toQuery({ page, pageSize })}`),
+  getCompanyAudit: (companyId, auditId) => get(`/companies/${companyId}/audits/${auditId}`),
   getCompanyRatings: (companyId, take = 20) => get(`/companies/${companyId}/ratings?take=${take}`),
   getCompanyEmissions: (companyId, take = 20) => get(`/companies/${companyId}/emissions?take=${take}`),
   getCompanyCorporateCashMovements: (companyId, page = 1, pageSize = 10) =>
@@ -185,4 +188,14 @@ export function loadFinancialHistoryForActiveTab({
   getFinancials = api.getCompanyFinancials,
 }) {
   return activeTab === 'financial-history' ? getFinancials(companyId, page, pageSize) : null
+}
+
+export function loadCompanyAuditsForActiveTab({
+  activeTab,
+  companyId,
+  page,
+  pageSize,
+  getAudits = api.getCompanyAudits,
+}) {
+  return activeTab === 'audits' ? getAudits(companyId, page, pageSize) : null
 }

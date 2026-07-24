@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
-import { api, loadFinancialHistoryForActiveTab } from './api'
+import { api, loadCompanyAuditsForActiveTab, loadFinancialHistoryForActiveTab } from './api'
 import {
   companyRiskTrendGlyph,
   formatCompactMoney,
@@ -29,6 +29,7 @@ import { FavoriteCompanyToggle } from './FavoriteCompanyToggle'
 import { CompanyFinancialsPanel } from './CompanyFinancialsPanel'
 import { CompanyFinancialHistoryPanel } from './CompanyFinancialHistoryPanel'
 import { CompanyManagementOutlookPanel } from './CompanyManagementOutlookPanel'
+import { AuditDetailModal } from './AuditDetailModal'
 
 export { CompanyFinancialHistoryPanel, CompanyFinancialsPanel, CompanyManagementOutlookPanel }
 
@@ -36,6 +37,7 @@ const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
 const CORPORATE_CASH_PAGE_SIZE = 10
 const FINANCIAL_HISTORY_PAGE_SIZE = 6
+const AUDIT_HISTORY_PAGE_SIZE = 6
 
 // The tabbed detail sections, in display order. Each key selects one existing panel below the tab strip.
 const DETAIL_TABS = [
@@ -48,7 +50,7 @@ const DETAIL_TABS = [
   { key: 'orders', label: 'Recent orders' },
   { key: 'trades', label: 'Recent trades' },
   { key: 'emissions', label: 'Share emissions' },
-  { key: 'ratings', label: 'Risk ratings' },
+  { key: 'audits', label: 'Audits' },
   { key: 'investments', label: 'Investments received' },
   { key: 'news', label: 'Related news' },
 ]
@@ -86,7 +88,6 @@ export function CompanyDetail({ companyId }) {
   const [orders, setOrders] = useState([])
   const [trades, setTrades] = useState([])
   const [prices, setPrices] = useState([])
-  const [ratings, setRatings] = useState([])
   const [emissions, setEmissions] = useState([])
   const [investments, setInvestments] = useState([])
   const [news, setNews] = useState([])
@@ -100,6 +101,14 @@ export function CompanyDetail({ companyId }) {
     error: null,
   })
   const financialHistoryRequestId = useRef(0)
+  const [auditHistoryPage, setAuditHistoryPage] = useState(1)
+  const [auditHistoryState, setAuditHistoryState] = useState({
+    data: { items: [], total: 0, page: 1, pageSize: AUDIT_HISTORY_PAGE_SIZE },
+    status: 'idle',
+    error: null,
+  })
+  const auditHistoryRequestId = useRef(0)
+  const [selectedAuditId, setSelectedAuditId] = useState(null)
   const [selectedNews, setSelectedNews] = useState(null)
   const [activeTab, setActiveTab] = useState('capitalization')
   const [action, setAction] = useState(null)
@@ -131,6 +140,29 @@ export function CompanyDetail({ companyId }) {
           (error) => ({ data: null, error: error.message ?? String(error) }),
         )
       : null
+    const auditHistoryRequest = loadCompanyAuditsForActiveTab({
+      activeTab,
+      companyId,
+      page: auditHistoryPage,
+      pageSize: AUDIT_HISTORY_PAGE_SIZE,
+    })
+    const auditHistoryRequestNumber = auditHistoryRequest
+      ? auditHistoryRequestId.current + 1
+      : auditHistoryRequestId.current
+    if (auditHistoryRequest) {
+      auditHistoryRequestId.current = auditHistoryRequestNumber
+      setAuditHistoryState((current) => ({
+        ...current,
+        status: current.data.items.length > 0 ? 'refreshing' : 'loading',
+        error: null,
+      }))
+    }
+    const auditHistoryResult = auditHistoryRequest
+      ? Promise.resolve(auditHistoryRequest).then(
+          (data) => ({ data, error: null }),
+          (error) => ({ data: null, error: error.message ?? String(error) }),
+        )
+      : null
 
     try {
       const [
@@ -139,7 +171,6 @@ export function CompanyDetail({ companyId }) {
         orderData,
         tradeData,
         priceData,
-        ratingData,
         emissionData,
         investmentData,
         newsData,
@@ -152,7 +183,6 @@ export function CompanyDetail({ companyId }) {
           api.getCompanyOrders(companyId),
           api.getCompanyShareTransactions(companyId),
           api.getPrices(companyId),
-          api.getCompanyRatings(companyId),
           api.getCompanyEmissions(companyId),
           api.getCompanyInvestments(companyId),
           api.getCompanyNews(companyId),
@@ -165,7 +195,6 @@ export function CompanyDetail({ companyId }) {
       setOrders(orderData)
       setTrades(tradeData)
       setPrices(priceData)
-      setRatings(ratingData ?? [])
       setEmissions(emissionData ?? [])
       setInvestments(investmentData ?? [])
       setNews(newsData ?? [])
@@ -214,9 +243,32 @@ export function CompanyDetail({ companyId }) {
           }
         }
       }
+      if (auditHistoryResult) {
+        const result = await auditHistoryResult
+        if (auditHistoryRequestNumber === auditHistoryRequestId.current) {
+          if (result.error) {
+            setAuditHistoryState((current) => ({
+              ...current,
+              status: 'error',
+              error: result.error,
+            }))
+          } else {
+            setAuditHistoryState({
+              data: result.data ?? {
+                items: [],
+                total: 0,
+                page: auditHistoryPage,
+                pageSize: AUDIT_HISTORY_PAGE_SIZE,
+              },
+              status: 'ready',
+              error: null,
+            })
+          }
+        }
+      }
       setReady(true)
     }
-  }, [activeTab, companyId, corporateCashPage, corporateCashPageSize, financialHistoryPage])
+  }, [activeTab, auditHistoryPage, companyId, corporateCashPage, corporateCashPageSize, financialHistoryPage])
 
   useEffect(() => {
     const initialId = setTimeout(loadAll, 0)
@@ -363,11 +415,20 @@ export function CompanyDetail({ companyId }) {
           financialHistoryState.status === 'refreshing'
         }
         financialHistoryError={financialHistoryState.error}
+        auditHistory={auditHistoryState.data}
+        auditHistoryPage={auditHistoryPage}
+        onAuditHistoryPage={setAuditHistoryPage}
+        auditHistoryLoading={
+          auditHistoryState.status === 'idle' ||
+          auditHistoryState.status === 'loading' ||
+          auditHistoryState.status === 'refreshing'
+        }
+        auditHistoryError={auditHistoryState.error}
+        onSelectAudit={setSelectedAuditId}
         shareholders={shareholders}
         orders={orders}
         trades={trades}
         emissions={emissions}
-        ratings={ratings}
         investments={investments}
         news={news}
         onSelectNews={setSelectedNews}
@@ -407,6 +468,13 @@ export function CompanyDetail({ companyId }) {
       ) : null}
 
       {selectedNews ? <NewsModal post={selectedNews} onClose={() => setSelectedNews(null)} /> : null}
+      {selectedAuditId != null ? (
+        <AuditDetailModal
+          companyId={companyId}
+          auditId={selectedAuditId}
+          onClose={() => setSelectedAuditId(null)}
+        />
+      ) : null}
     </section>
   )
 }
@@ -621,11 +689,16 @@ export function CompanyDetailTabs({
   onFinancialHistoryPage,
   financialHistoryLoading,
   financialHistoryError,
+  auditHistory,
+  auditHistoryPage,
+  onAuditHistoryPage,
+  auditHistoryLoading,
+  auditHistoryError,
+  onSelectAudit,
   shareholders,
   orders,
   trades,
   emissions,
-  ratings,
   investments,
   news,
   onSelectNews,
@@ -713,7 +786,16 @@ export function CompanyDetailTabs({
         ) : null}
         {activeTab === 'trades' ? <TradesPanel trades={trades} companyName={detail.name} /> : null}
         {activeTab === 'emissions' ? <EmissionsPanel emissions={emissions} /> : null}
-        {activeTab === 'ratings' ? <RatingHistoryPanel ratings={ratings} /> : null}
+        {activeTab === 'audits' ? (
+          <CompanyAuditHistoryPanel
+            history={auditHistory}
+            page={auditHistoryPage}
+            onPage={onAuditHistoryPage}
+            loading={auditHistoryLoading}
+            error={auditHistoryError}
+            onSelectAudit={onSelectAudit}
+          />
+        ) : null}
         {activeTab === 'investments' ? <InvestmentsReceivedPanel investments={investments} /> : null}
         {activeTab === 'news' ? <RelatedNewsPanel news={news} onSelect={onSelectNews} /> : null}
       </div>
@@ -944,43 +1026,157 @@ function RelatedNewsPanel({ news, onSelect }) {
   )
 }
 
-function RatingHistoryPanel({ ratings }) {
-  const [pageSize, tableRef] = useFitPageSize()
-  const { pageRows, page, pageCount, setPage } = useClientTable(ratings, { pageSize })
+function auditPeriod(audit) {
+  if (!audit.evidenceAvailable) return 'Evidence unavailable'
+  return `Day ${formatInt(audit.evaluationStartTradingDayNumber)}–${formatInt(audit.evaluationEndTradingDayNumber)}`
+}
+
+function auditFinancialIndicator(score, level, fallback = '—') {
+  if (typeof score !== 'number') return level ?? fallback
+  return level ? `${level} · ${score.toFixed(2)}` : score.toFixed(2)
+}
+
+function AuditFinancialSummary({ factors }) {
+  if (!factors) {
+    return <span className="note note-sm">No financial evidence</span>
+  }
 
   return (
-    <Panel title="Risk ratings" count={`${ratings.length}`} className="panel-orders-list">
-      {ratings.length === 0 ? (
+    <span className="audit-summary-stack">
+      <span>
+        <span className="audit-summary-label">Profit </span>
+        <span>{auditFinancialIndicator(factors.profitabilityScore, factors.profitabilityLevel)}</span>
+      </span>
+      <span>
+        <span className="audit-summary-label">Volatility </span>
+        <span>{factors.financialVolatilityLevel ?? '—'}</span>
+      </span>
+      <span>
+        <span className="audit-summary-label">Closure </span>
+        <span>{auditFinancialIndicator(factors.closureRiskScore, factors.closureRiskLevel)}</span>
+      </span>
+      <span>
+        <span className="audit-summary-label">Management </span>
+        <span>
+          {factors.managementOutlook ?? '—'}
+          {typeof factors.managementConfidenceScore === 'number'
+            ? ` · ${factors.managementConfidenceScore.toFixed(2)}`
+            : ''}
+        </span>
+      </span>
+    </span>
+  )
+}
+
+export function CompanyAuditHistoryPanel({
+  history = { items: [], total: 0, page: 1, pageSize: AUDIT_HISTORY_PAGE_SIZE },
+  page = 1,
+  onPage,
+  loading = false,
+  error = null,
+  onSelectAudit,
+}) {
+  const items = history.items ?? []
+  const pageCount = Math.max(1, Math.ceil((history.total ?? 0) / (history.pageSize || AUDIT_HISTORY_PAGE_SIZE)))
+
+  return (
+    <Panel
+      title="Audits"
+      count={`${formatInt(history.total ?? 0)} total`}
+      className="panel-orders-list audit-history-panel"
+    >
+      {error && items.length === 0 ? (
+        <p className="command-error" role="alert">{error}</p>
+      ) : null}
+      {loading && items.length === 0 ? (
+        <div className="audit-history-state" role="status" aria-busy="true">
+          <span className="spinner" aria-hidden="true" />
+          <p className="note">Loading company audits…</p>
+        </div>
+      ) : null}
+      {!loading && !error && items.length === 0 ? (
         <p className="note">No auditor has reviewed this company yet.</p>
-      ) : (
+      ) : null}
+      {items.length > 0 ? (
         <>
-          <div className="tbl-wrap" ref={tableRef}>
-            <table className="tbl">
+          {error ? (
+            <p className="command-error audit-history-notice" role="alert">
+              Showing the last known audit page. {error}
+            </p>
+          ) : loading ? (
+            <p className="note note-sm audit-history-notice" role="status">Refreshing audits…</p>
+          ) : null}
+          <div className="tbl-wrap audit-history-table-wrap">
+            <table className="tbl audit-history-table">
               <thead>
                 <tr>
-                  <th scope="col">Result</th>
+                  <th scope="col">Evaluation period</th>
+                  <th scope="col">Effective day</th>
                   <th scope="col">Auditor</th>
-                  <th scope="col" className="ta-r">
-                    Cycles ago
-                  </th>
+                  <th scope="col">Status</th>
+                  <th scope="col" className="ta-r">Score</th>
+                  <th scope="col">Financial indicators</th>
+                  <th scope="col">Dividend evidence</th>
+                  <th scope="col">Industry</th>
+                  <th scope="col"><span className="sr-only">Details</span></th>
                 </tr>
               </thead>
               <tbody>
-                {pageRows.map((rating) => (
-                  <tr key={rating.id}>
+                {items.map((audit) => (
+                  <tr
+                    key={audit.id}
+                    data-audit-id={audit.id}
+                    className="tbl-row-click audit-history-row"
+                    onClick={() => onSelectAudit?.(audit.id)}
+                  >
+                    <th scope="row">{auditPeriod(audit)}</th>
                     <td>
-                      <RatingBadge rating={rating.rating} impactPercent={rating.impactPercent} />
+                      {audit.evidenceAvailable
+                        ? `Day ${formatInt(audit.effectiveTradingDayNumber)}`
+                        : '—'}
                     </td>
-                    <td className="cell-ellipsis">{rating.auditorName}</td>
-                    <td className="num ta-r">{formatInt(rating.cyclesAgo)}</td>
+                    <td className="cell-ellipsis">{audit.auditorName}</td>
+                    <td>
+                      <RatingBadge rating={audit.rating} impactPercent={audit.impactPercent} />
+                    </td>
+                    <td className="num ta-r">{formatInt(audit.totalScore)}</td>
+                    <td>
+                      {audit.evidenceAvailable
+                        ? <AuditFinancialSummary factors={audit.financialFactors} />
+                        : <span className="note note-sm">Evidence unavailable</span>}
+                    </td>
+                    <td>
+                      {audit.evidenceAvailable
+                        ? `${audit.latestDividendOutcome ?? 'No dividend'} · ${
+                            typeof audit.dividendCoverageRatio === 'number'
+                              ? `${audit.dividendCoverageRatio.toFixed(2)}×`
+                              : '—'
+                          }`
+                        : '—'}
+                    </td>
+                    <td>{audit.evidenceAvailable ? audit.industryTrend ?? 'Unavailable' : '—'}</td>
+                    <td className="ta-r">
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        data-audit-id={audit.id}
+                        aria-label={`View audit ${audit.id} details`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onSelectAudit?.(audit.id)
+                        }}
+                      >
+                        Details
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <Pager page={page} pageCount={pageCount} onPage={setPage} />
+          <Pager page={page} pageCount={pageCount} onPage={onPage} />
         </>
-      )}
+      ) : null}
     </Panel>
   )
 }

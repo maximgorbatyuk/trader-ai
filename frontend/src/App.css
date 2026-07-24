@@ -1384,6 +1384,18 @@
   font-weight: 500;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .note {
   margin: 0;
   padding: var(--s-4) 0;
@@ -3065,6 +3077,61 @@
   max-height: min(92vh, 920px);
 }
 
+.modal-audit {
+  width: min(1160px, 100%);
+  max-height: min(92vh, 900px);
+  overflow: hidden;
+}
+
+.audit-modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: var(--s-1);
+}
+
+.audit-modal-state {
+  display: flex;
+  min-height: 11rem;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--s-2);
+}
+
+.audit-modal-section + .audit-modal-section {
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--border);
+}
+
+.audit-modal-section h3 {
+  margin: 0 0 var(--s-2);
+  color: var(--ink);
+  font-size: var(--t-sm);
+  font-weight: 700;
+}
+
+.audit-modal-meta dd,
+.audit-evidence-grid dd {
+  font-size: var(--t-sm);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.audit-factor-table {
+  min-width: 880px;
+}
+
+.audit-event-table {
+  min-width: 680px;
+}
+
+.audit-legacy-note {
+  padding: var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
 /* Capitalization and industry-sentiment trends share one compact row instead of stacking. */
 .modal-charts {
   display: grid;
@@ -3770,6 +3837,60 @@
 
 .financial-history-warning {
   margin-bottom: var(--s-3);
+}
+
+.audit-history-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.audit-history-state {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+}
+
+.audit-history-notice {
+  flex: none;
+  margin-bottom: var(--s-2);
+  padding: 0;
+}
+
+.audit-history-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.audit-history-table {
+  min-width: 1180px;
+}
+
+.audit-history-row > th,
+.audit-history-row > td {
+  vertical-align: top;
+}
+
+.audit-history-row .btn {
+  min-height: 0;
+  padding: 4px 8px;
+  font-size: var(--t-2xs);
+}
+
+.audit-summary-stack {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 10rem;
+  font-size: var(--t-xs);
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.audit-summary-label {
+  color: var(--muted);
 }
 
 .traders-hint {
