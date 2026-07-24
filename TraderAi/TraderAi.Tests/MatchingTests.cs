@@ -139,6 +139,29 @@ public sealed class MatchingTests : IDisposable
         Assert.Equal(95m, latestSnapshot.Price);
     }
 
+    [Theory]
+    [InlineData(110, 100)]
+    [InlineData(104, 96)]
+    [InlineData(101, 100)]
+    public async Task MirroredCrossingLimitsPreserveTheDocumentedMidpointRule(
+        int buyLimit,
+        int sellLimit)
+    {
+        var seed = await SeedAsync(sellerCash: 1000m, buyerCash: 5000m, sellerShares: 10, sharePrice: 100m);
+
+        await marketService.PlaceOrderAsync(seed.Buyer.Id, seed.Company.Id, OrderType.Buy, 1, buyLimit);
+        await marketService.PlaceOrderAsync(seed.Seller.Id, seed.Company.Id, OrderType.Sell, 1, sellLimit);
+
+        var result = await marketService.AdvanceCycleAsync();
+
+        Assert.Equal(1, result.FillCount);
+        var expectedMidpoint = Math.Round((buyLimit + sellLimit) / 2m, 2, MidpointRounding.AwayFromZero);
+        var transaction = await context.ShareTransactions.SingleAsync();
+        Assert.Equal(expectedMidpoint, transaction.Price);
+        var latestSnapshot = await context.PriceSnapshots.OrderByDescending(snapshot => snapshot.Id).FirstAsync();
+        Assert.Equal(expectedMidpoint, latestSnapshot.Price);
+    }
+
     [Fact]
     public async Task PartialFillLeavesRemainderOpenWithRemainingReservation()
     {

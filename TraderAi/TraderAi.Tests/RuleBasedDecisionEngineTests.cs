@@ -1293,21 +1293,31 @@ public sealed class RuleBasedDecisionEngineTests
             priceChangePct: -0.10m);
         var buyAssessment = EngineWith([0.99d]).Evaluate(buyContext);
         var sellAssessment = EngineWith([0.99d]).Evaluate(sellContext);
+        var mirroredDraws = new[]
+        {
+            (Lower: 0d, Upper: 1d),
+            (Lower: 0.10d, Upper: 0.90d),
+            (Lower: 0.25d, Upper: 0.75d),
+            (Lower: 0.50d, Upper: 0.50d),
+        };
 
-        var buyBelow = Assert.Single(EngineWith(
-            [(double)(buyAssessment.Probabilities.Buy / 2m), 0d]).Decide(buyContext));
-        var buyAbove = Assert.Single(EngineWith(
-            [(double)(buyAssessment.Probabilities.Buy / 2m), 1d]).Decide(buyContext));
-        var sellBelow = Assert.Single(EngineWith(
-            [(double)(sellAssessment.Probabilities.Sell / 2m), 0d]).Decide(sellContext));
-        var sellAbove = Assert.Single(EngineWith(
-            [(double)(sellAssessment.Probabilities.Sell / 2m), 1d]).Decide(sellContext));
+        foreach (var (lower, upper) in mirroredDraws)
+        {
+            var buyBelow = Assert.Single(EngineWith(
+                [(double)(buyAssessment.Probabilities.Buy / 2m), lower]).Decide(buyContext));
+            var buyAbove = Assert.Single(EngineWith(
+                [(double)(buyAssessment.Probabilities.Buy / 2m), upper]).Decide(buyContext));
+            var sellBelow = Assert.Single(EngineWith(
+                [(double)(sellAssessment.Probabilities.Sell / 2m), lower]).Decide(sellContext));
+            var sellAbove = Assert.Single(EngineWith(
+                [(double)(sellAssessment.Probabilities.Sell / 2m), upper]).Decide(sellContext));
 
-        Assert.Equal(100m - buyBelow.LimitPrice, buyAbove.LimitPrice - 100m);
-        Assert.Equal(100m - sellBelow.LimitPrice, sellAbove.LimitPrice - 100m);
-        Assert.All(
-            new[] { buyBelow, buyAbove, sellBelow, sellAbove },
-            intent => Assert.True(Bounds(100m).IsWithinActiveBand(intent.LimitPrice)));
+            Assert.Equal(100m - buyBelow.LimitPrice, buyAbove.LimitPrice - 100m);
+            Assert.Equal(100m - sellBelow.LimitPrice, sellAbove.LimitPrice - 100m);
+            Assert.All(
+                new[] { buyBelow, buyAbove, sellBelow, sellAbove },
+                intent => Assert.True(Bounds(100m).IsWithinActiveBand(intent.LimitPrice)));
+        }
     }
 
     [Fact]
