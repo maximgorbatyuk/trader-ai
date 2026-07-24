@@ -649,7 +649,8 @@ public static partial class MarketEndpoints
     private static async Task<CompanyDetailResponse?> BuildCompanyDetailAsync(
         AppDbContext dbContext,
         int companyId,
-        VolatilityHaltOptions haltOptions)
+        VolatilityHaltOptions haltOptions,
+        CompanyFinancialOptions financialOptions)
     {
         var company = await dbContext.Companies.FirstOrDefaultAsync(candidate => candidate.Id == companyId);
         if (company is null)
@@ -729,7 +730,9 @@ public static partial class MarketEndpoints
             priceBand?.PauseUntilCycleNumber,
             remainingPauseCycles,
             remainingPauseCycles * 2,
-            latestFinancial is null ? null : ToCompanyFinancialSummaryResponse(latestFinancial));
+            latestFinancial is null
+                ? null
+                : ToCompanyFinancialSummaryResponse(latestFinancial, financialOptions));
     }
 
     private static Task<CompanyFinancialSnapshot?> LatestCompanyFinancialSnapshotAsync(
@@ -747,7 +750,8 @@ public static partial class MarketEndpoints
             .FirstOrDefaultAsync();
 
     private static CompanyFinancialSummaryResponse ToCompanyFinancialSummaryResponse(
-        CompanyFinancialSnapshot snapshot) =>
+        CompanyFinancialSnapshot snapshot,
+        CompanyFinancialOptions financialOptions) =>
         new(
             snapshot.Id,
             snapshot.CreatedInCycleId,
@@ -767,6 +771,7 @@ public static partial class MarketEndpoints
                 ? null
                 : ToCompanyDividendEventResponse(snapshot.LatestDividendEvent),
             snapshot.BusinessRiskScore,
+            financialOptions.ClassifyLevel(snapshot.BusinessRiskScore).ToString(),
             snapshot.ManagementRevenueForecast,
             snapshot.ManagementProfitForecast,
             snapshot.ManagementOperatingCashFlowForecast,

@@ -31,6 +31,7 @@ test('shows forecasts, outlook, confidence, and a textual business-risk level', 
     managementOutlook: 'Positive',
     managementConfidenceScore: 76.4,
     businessRiskScore: 28.5,
+    businessRiskLevel: 'High',
   }
 
   const markup = renderToStaticMarkup(createElement(CompanyManagementOutlookPanel, { financial }))
@@ -50,7 +51,7 @@ test('shows forecasts, outlook, confidence, and a textual business-risk level', 
   assert.match(markup, /▼.*−\$13,500\.00/)
   assert.match(markup, /▲.*Positive/)
   assert.match(markup, />76\.40 \/ 100</)
-  assert.match(markup, />Low · 28\.50 \/ 100</)
+  assert.match(markup, />High · 28\.50 \/ 100</)
 })
 
 test('uses an honest unavailable state instead of inventing management guidance', () => {

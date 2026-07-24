@@ -108,6 +108,7 @@ public sealed record CompanyFinancialSummaryResponse(
     decimal DividendCoverageRatio,
     CompanyDividendEventResponse? LatestDividend,
     decimal BusinessRiskScore,
+    string BusinessRiskLevel,
     decimal ManagementRevenueForecast,
     decimal ManagementProfitForecast,
     decimal ManagementOperatingCashFlowForecast,

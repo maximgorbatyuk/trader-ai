@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using TraderAi.Data;
 using TraderAi.Models;
 using TraderAi.Services;
@@ -1989,6 +1990,72 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
             Assert.Equal(1_111m, detail.LatestFinancial.OperatingCashFlow);
             Assert.Equal(92m, detail.LatestFinancial.ClosureRiskScore);
             Assert.Equal("High", detail.LatestFinancial.ClosureRiskLevel);
+        });
+    }
+
+    [Fact]
+    public async Task CompanyFinancialSummariesUseConfiguredBusinessRiskThresholds()
+    {
+        await WithClientAsync(async (client, configured) =>
+        {
+            await client.PostAsync("/market/seed", null);
+
+            int companyId;
+            int ratingId;
+            using (var scope = configured.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var company = await db.Companies.OrderBy(candidate => candidate.Id).FirstAsync();
+                var auditor = await db.Auditors.FirstAsync();
+                var snapshot = await db.CompanyFinancialSnapshots
+                    .SingleAsync(candidate => candidate.CompanyId == company.Id);
+                snapshot.BusinessRiskScore = 75m;
+                var rating = new CompanyRating
+                {
+                    CompanyId = company.Id,
+                    AuditorId = auditor.Id,
+                    Rating = CompanyRiskRating.Stable,
+                    CreatedInCycleId = market.CurrentCycleId!.Value,
+                    CreatedAt = DateTime.UtcNow,
+                };
+                db.CompanyRatings.Add(rating);
+                await db.SaveChangesAsync();
+                db.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+                {
+                    CompanyRatingId = rating.Id,
+                    CompanyId = company.Id,
+                    CompanyFinancialSnapshotId = snapshot.Id,
+                    EvaluationStartTradingDayNumber = 1,
+                    EvaluationEndTradingDayNumber = 1,
+                    EffectiveTradingDayNumber = 2,
+                    IndustryTrend = IndustryTrend.Plateau,
+                });
+                await db.SaveChangesAsync();
+                companyId = company.Id;
+                ratingId = rating.Id;
+            }
+
+            var detail = await client.GetFromJsonAsync<CompanyDetailWithFinancialsDto>(
+                $"/companies/{companyId}");
+            var history = await client.GetFromJsonAsync<PagedCompanyFinancialsDto>(
+                $"/companies/{companyId}/financials?page=1&pageSize=10");
+            var audit = await client.GetFromJsonAsync<CompanyAuditDetailDto>(
+                $"/companies/{companyId}/audits/{ratingId}");
+
+            Assert.Equal("Medium", detail!.LatestFinancial!.BusinessRiskLevel);
+            Assert.Equal("Medium", Assert.Single(history!.Items).Current.BusinessRiskLevel);
+            Assert.Equal("Medium", audit!.Financial!.BusinessRiskLevel);
+        },
+        services =>
+        {
+            services.RemoveAll<IOptions<CompanyFinancialOptions>>();
+            services.AddSingleton<IOptions<CompanyFinancialOptions>>(
+                Options.Create(new CompanyFinancialOptions
+                {
+                    LowLevelMaximumScore = 20m,
+                    HighLevelMinimumScore = 80m,
+                }));
         });
     }
 
@@ -4706,6 +4773,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         decimal DividendCoverageRatio,
         CompanyDividendEventDto? LatestDividend,
         decimal BusinessRiskScore,
+        string BusinessRiskLevel,
         decimal ManagementRevenueForecast,
         decimal ManagementProfitForecast,
         decimal ManagementOperatingCashFlowForecast,

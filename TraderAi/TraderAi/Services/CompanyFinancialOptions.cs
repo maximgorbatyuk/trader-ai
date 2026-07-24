@@ -1,3 +1,5 @@
+using TraderAi.Models;
+
 namespace TraderAi.Services;
 
 public sealed class CompanyFinancialOptions
@@ -43,6 +45,24 @@ public sealed class CompanyFinancialOptions
     public decimal MinimumExpectedDividendCoverageRatio { get; set; } = 1.20m;
 
     public decimal MaximumExpectedDividendPayoutRatio { get; set; } = 0.60m;
+
+    public CompanyMetricLevel ClassifyLevel(decimal score) =>
+        ClassifyLevel(score, LowLevelMaximumScore, HighLevelMinimumScore);
+
+    internal static CompanyMetricLevel ClassifyLevel(
+        decimal score,
+        decimal lowLevelMaximumScore,
+        decimal highLevelMinimumScore)
+    {
+        if (score <= lowLevelMaximumScore)
+        {
+            return CompanyMetricLevel.Low;
+        }
+
+        return score >= highLevelMinimumScore
+            ? CompanyMetricLevel.High
+            : CompanyMetricLevel.Medium;
+    }
 
     public bool IsValid()
     {

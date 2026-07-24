@@ -48,9 +48,17 @@ public static partial class MarketEndpoints
             return Results.Ok(new PagedCompaniesResponse(items, filtered.Count, pageIndex, size));
         });
 
-        app.MapGet("/companies/{companyId:int}", async (int companyId, AppDbContext dbContext, IOptions<VolatilityHaltOptions> haltOptions) =>
+        app.MapGet("/companies/{companyId:int}", async (
+            int companyId,
+            AppDbContext dbContext,
+            IOptions<VolatilityHaltOptions> haltOptions,
+            IOptions<CompanyFinancialOptions> financialOptions) =>
         {
-            var detail = await BuildCompanyDetailAsync(dbContext, companyId, haltOptions.Value);
+            var detail = await BuildCompanyDetailAsync(
+                dbContext,
+                companyId,
+                haltOptions.Value,
+                financialOptions.Value);
             return detail is null
                 ? Results.NotFound(new { error = "Company not found." })
                 : Results.Ok(detail);
@@ -60,7 +68,8 @@ public static partial class MarketEndpoints
             int companyId,
             int? page,
             int? pageSize,
-            AppDbContext dbContext) =>
+            AppDbContext dbContext,
+            IOptions<CompanyFinancialOptions> financialOptions) =>
         {
             if (!await dbContext.Companies.AnyAsync(company => company.Id == companyId))
             {
@@ -92,7 +101,7 @@ public static partial class MarketEndpoints
                 var current = rows[index];
                 var previous = index + 1 < rows.Count ? rows[index + 1] : null;
                 items[index] = new CompanyFinancialHistoryItemResponse(
-                    ToCompanyFinancialSummaryResponse(current),
+                    ToCompanyFinancialSummaryResponse(current, financialOptions.Value),
                     previous is null ? null : ToCompanyFinancialValuesResponse(previous),
                     previous is null ? null : ToAbsoluteFinancialDeltaResponse(current, previous),
                     previous is null ? null : ToPercentageFinancialDeltaResponse(current, previous));
@@ -285,7 +294,8 @@ public static partial class MarketEndpoints
         app.MapGet("/companies/{companyId:int}/audits/{auditId:int}", async (
             int companyId,
             int auditId,
-            AppDbContext dbContext) =>
+            AppDbContext dbContext,
+            IOptions<CompanyFinancialOptions> financialOptions) =>
         {
             var companyName = await dbContext.Companies
                 .Where(company => company.Id == companyId)
@@ -432,7 +442,9 @@ public static partial class MarketEndpoints
                 audit?.IndustryTrend.ToString(),
                 audit?.CompanyFinancialSnapshot is null
                     ? null
-                    : ToCompanyFinancialSummaryResponse(audit.CompanyFinancialSnapshot),
+                    : ToCompanyFinancialSummaryResponse(
+                        audit.CompanyFinancialSnapshot,
+                        financialOptions.Value),
                 denominationEvents,
                 freeShareEmissionEvents));
         });

@@ -10,12 +10,6 @@ function snapshotLabel(financial) {
   return `Day ${financial.tradingDayNumber} · ${moment}`
 }
 
-function businessRiskLevel(score) {
-  if (typeof score !== 'number') return null
-  if (score <= 34) return 'Low'
-  return score >= 67 ? 'High' : 'Medium'
-}
-
 function FinancialMetric({ label, children }) {
   return (
     <div className="financial-metric">
@@ -66,8 +60,6 @@ export function CompanyManagementOutlookPanel({ financial }) {
     )
   }
 
-  const riskLevel = businessRiskLevel(financial.businessRiskScore)
-
   return (
     <Panel title="Management outlook" count={snapshotLabel(financial)} className="financial-panel">
       <div className="financial-panel-body">
@@ -101,8 +93,8 @@ export function CompanyManagementOutlookPanel({ financial }) {
             </FinancialMetric>
             <FinancialMetric label="Business risk">
               <span className="num">
-                {typeof financial.businessRiskScore === 'number' && riskLevel
-                  ? `${riskLevel} · ${financial.businessRiskScore.toFixed(2)} / 100`
+                {typeof financial.businessRiskScore === 'number' && financial.businessRiskLevel
+                  ? `${financial.businessRiskLevel} · ${financial.businessRiskScore.toFixed(2)} / 100`
                   : '—'}
               </span>
             </FinancialMetric>

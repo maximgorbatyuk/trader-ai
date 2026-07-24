@@ -338,17 +338,11 @@ public sealed class CompanyFinancialScorer
             0d,
             1d));
 
-    private CompanyMetricLevel LevelFor(decimal score)
-    {
-        if (score <= configuration.LowLevelMaximumScore)
-        {
-            return CompanyMetricLevel.Low;
-        }
-
-        return score >= configuration.HighLevelMinimumScore
-            ? CompanyMetricLevel.High
-            : CompanyMetricLevel.Medium;
-    }
+    private CompanyMetricLevel LevelFor(decimal score) =>
+        CompanyFinancialOptions.ClassifyLevel(
+            score,
+            configuration.LowLevelMaximumScore,
+            configuration.HighLevelMinimumScore);
 
     private static CompanyMetricLevel Invert(CompanyMetricLevel stabilityLevel) =>
         stabilityLevel switch
