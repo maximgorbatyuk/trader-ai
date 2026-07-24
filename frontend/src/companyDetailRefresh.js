@@ -10,12 +10,16 @@ export function createFinancialHistoryQueryLoader({
 }) {
   const inFlight = new Map()
   let activeQueryKey = null
+  let disposed = false
 
   return {
     setActiveQuery(query) {
+      if (disposed) return
       activeQueryKey = financialHistoryQueryKey(query)
     },
     refresh(query) {
+      if (disposed) return null
+
       const queryKey = financialHistoryQueryKey(query)
       const existing = inFlight.get(queryKey)
       if (existing) return existing
@@ -30,11 +34,11 @@ export function createFinancialHistoryQueryLoader({
       const pending = requestPromise
         .then(
           (data) => {
-            if (activeQueryKey === queryKey) onSuccess(data, query)
+            if (!disposed && activeQueryKey === queryKey) onSuccess(data, query)
             return data
           },
           (error) => {
-            if (activeQueryKey === queryKey) onError(error, query)
+            if (!disposed && activeQueryKey === queryKey) onError(error, query)
             return null
           },
         )
@@ -43,6 +47,11 @@ export function createFinancialHistoryQueryLoader({
         })
       inFlight.set(queryKey, pending)
       return pending
+    },
+    dispose() {
+      disposed = true
+      activeQueryKey = null
+      inFlight.clear()
     },
   }
 }

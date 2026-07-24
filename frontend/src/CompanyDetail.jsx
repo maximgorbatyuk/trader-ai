@@ -102,8 +102,8 @@ export function CompanyDetail({ companyId }) {
     error: null,
   })
   const financialHistoryQueryLoader = useRef(null)
-  if (financialHistoryQueryLoader.current === null) {
-    financialHistoryQueryLoader.current = createFinancialHistoryQueryLoader({
+  useEffect(() => {
+    const loader = createFinancialHistoryQueryLoader({
       request: api.getCompanyFinancials,
       onStart() {
         setFinancialHistoryState((current) => ({
@@ -132,7 +132,15 @@ export function CompanyDetail({ companyId }) {
         }))
       },
     })
-  }
+    financialHistoryQueryLoader.current = loader
+
+    return () => {
+      loader.dispose()
+      if (financialHistoryQueryLoader.current === loader) {
+        financialHistoryQueryLoader.current = null
+      }
+    }
+  }, [])
   const [auditHistoryPage, setAuditHistoryPage] = useState(1)
   const [auditHistoryState, setAuditHistoryState] = useState({
     data: { items: [], total: 0, page: 1, pageSize: AUDIT_HISTORY_PAGE_SIZE },
@@ -150,16 +158,16 @@ export function CompanyDetail({ companyId }) {
 
   const refreshFinancialHistory = useCallback(
     () =>
-      financialHistoryQueryLoader.current.refresh({
+      financialHistoryQueryLoader.current?.refresh({
         companyId,
         page: financialHistoryPage,
         pageSize: FINANCIAL_HISTORY_PAGE_SIZE,
-      }),
+      }) ?? null,
     [companyId, financialHistoryPage],
   )
 
   useEffect(() => {
-    financialHistoryQueryLoader.current.setActiveQuery({
+    financialHistoryQueryLoader.current?.setActiveQuery({
       companyId,
       page: financialHistoryPage,
       pageSize: FINANCIAL_HISTORY_PAGE_SIZE,

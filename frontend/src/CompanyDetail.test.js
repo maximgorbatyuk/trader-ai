@@ -191,6 +191,15 @@ test('keeps hidden company tab panels out of the fixed-height flex layout', asyn
   assert.doesNotMatch(css, /\.main-fill \.tabpanel\s*\{[^}]*display:\s*flex;/s)
 })
 
+test('owns the financial history loader inside an unmount cleanup lifecycle', async () => {
+  const source = await readFile(new URL('./CompanyDetail.jsx', import.meta.url), 'utf8')
+
+  assert.match(
+    source,
+    /useEffect\(\(\) => \{\s*const loader = createFinancialHistoryQueryLoader\([\s\S]*?return \(\) => \{[\s\S]*?loader\.dispose\(\)/,
+  )
+})
+
 test('loads company audits only while the audits tab is active', async (t) => {
   const server = await createServer({
     root: new URL('..', import.meta.url).pathname,

@@ -205,6 +205,65 @@ test('coalesces identical in-flight history requests and supersedes only changed
   assert.deepEqual(successes, [1, 3])
 })
 
+test('dispose suppresses settled callbacks and prevents later history requests', async () => {
+  const success = Promise.withResolvers()
+  const failure = Promise.withResolvers()
+  const requests = []
+  const starts = []
+  const successes = []
+  const errors = []
+  const successLoader = createFinancialHistoryQueryLoader({
+    request(companyId, page, pageSize) {
+      requests.push(`${companyId}:${page}:${pageSize}`)
+      return success.promise
+    },
+    onStart(query) {
+      starts.push(query.page)
+    },
+    onSuccess(data) {
+      successes.push(data.page)
+    },
+    onError(error) {
+      errors.push(error.message)
+    },
+  })
+  const failureLoader = createFinancialHistoryQueryLoader({
+    request() {
+      requests.push('failure')
+      return failure.promise
+    },
+    onStart(query) {
+      starts.push(query.page)
+    },
+    onSuccess(data) {
+      successes.push(data.page)
+    },
+    onError(error) {
+      errors.push(error.message)
+    },
+  })
+  const query = { companyId: 12, page: 2, pageSize: 6 }
+
+  successLoader.setActiveQuery(query)
+  failureLoader.setActiveQuery(query)
+  const pendingSuccess = successLoader.refresh(query)
+  const pendingFailure = failureLoader.refresh(query)
+  successLoader.dispose()
+  failureLoader.dispose()
+
+  assert.equal(successLoader.refresh({ ...query, page: 3 }), null)
+  assert.equal(failureLoader.refresh({ ...query, page: 3 }), null)
+  assert.deepEqual(requests, ['12:2:6', 'failure'])
+  assert.deepEqual(starts, [2, 2])
+
+  success.resolve(history)
+  failure.reject(new Error('History unavailable.'))
+  assert.equal(await pendingSuccess, history)
+  assert.equal(await pendingFailure, null)
+  assert.deepEqual(successes, [])
+  assert.deepEqual(errors, [])
+})
+
 test('shows newest-first checkpoints, server paging, selected metric values, and deltas', () => {
   assert.equal(typeof CompanyFinancialHistoryPanel, 'function')
 
@@ -239,6 +298,25 @@ test('shows newest-first checkpoints, server paging, selected metric values, and
   assert.match(markup, />\$0\.00</)
   assert.match(markup, />0\.00%</)
   assert.match(markup, /Page 1 \/ 3/)
+})
+
+test('keeps the pager on the page that owns retained rows while another page loads or fails', () => {
+  for (const requestState of [
+    { loading: true, error: null },
+    { loading: false, error: 'Could not load page 2.' },
+  ]) {
+    const markup = renderToStaticMarkup(
+      createElement(CompanyFinancialHistoryPanel, {
+        history,
+        page: 2,
+        onPage() {},
+        ...requestState,
+      }),
+    )
+
+    assert.match(markup, />Page 1 \/ 3</)
+    assert.doesNotMatch(markup, />Page 2 \/ 3</)
+  }
 })
 
 test('plots only the initially selected metric and labels its unit', () => {

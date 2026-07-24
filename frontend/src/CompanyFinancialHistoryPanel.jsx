@@ -117,7 +117,7 @@ export function CompanyFinancialHistoryPanel({
   const items = history?.items ?? []
   const total = history?.total ?? 0
   const pageSize = history?.pageSize || 1
-  const currentPage = page ?? history?.page ?? 1
+  const currentPage = history?.page ?? page ?? 1
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const chartItems = items
     .filter((item) => typeof item.current?.[metric.key] === 'number')
