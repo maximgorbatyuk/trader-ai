@@ -15,6 +15,23 @@ namespace TraderAi.Migrations
             // migration transaction; SQLite's generated AddForeignKey operation would disable foreign keys outside it.
             migrationBuilder.Sql(
                 """
+                CREATE TEMP TABLE "__CompanyRatings_sequence" (
+                    "HighWaterMark" INTEGER NOT NULL
+                );
+
+                INSERT INTO "__CompanyRatings_sequence" ("HighWaterMark")
+                SELECT MAX(
+                    COALESCE((
+                        SELECT "seq"
+                        FROM "sqlite_sequence"
+                        WHERE "name" = 'CompanyRatings'
+                    ), 0),
+                    COALESCE((
+                        SELECT MAX("Id")
+                        FROM "CompanyRatings"
+                    ), 0)
+                );
+
                 CREATE TABLE "__CompanyRatings_new" (
                     "Id" INTEGER NOT NULL CONSTRAINT "PK_CompanyRatings" PRIMARY KEY AUTOINCREMENT,
                     "CompanyId" INTEGER NOT NULL,
@@ -52,6 +69,25 @@ namespace TraderAi.Migrations
                 CREATE INDEX "IX_CompanyRatings_AuditorId" ON "CompanyRatings" ("AuditorId");
                 CREATE INDEX "IX_CompanyRatings_CompanyId_CreatedInCycleId"
                     ON "CompanyRatings" ("CompanyId", "CreatedInCycleId");
+
+                UPDATE "sqlite_sequence"
+                SET "seq" = MAX(
+                    COALESCE("seq", 0),
+                    (SELECT "HighWaterMark" FROM "__CompanyRatings_sequence")
+                )
+                WHERE "name" = 'CompanyRatings';
+
+                INSERT INTO "sqlite_sequence" ("name", "seq")
+                SELECT 'CompanyRatings', "HighWaterMark"
+                FROM "__CompanyRatings_sequence"
+                WHERE "HighWaterMark" > 0
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM "sqlite_sequence"
+                      WHERE "name" = 'CompanyRatings'
+                  );
+
+                DROP TABLE "__CompanyRatings_sequence";
                 """);
 
             migrationBuilder.CreateTable(
@@ -434,6 +470,23 @@ namespace TraderAi.Migrations
             // All rating dependents are gone, so the predecessor schema can be restored without disabling foreign keys.
             migrationBuilder.Sql(
                 """
+                CREATE TEMP TABLE "__CompanyRatings_sequence" (
+                    "HighWaterMark" INTEGER NOT NULL
+                );
+
+                INSERT INTO "__CompanyRatings_sequence" ("HighWaterMark")
+                SELECT MAX(
+                    COALESCE((
+                        SELECT "seq"
+                        FROM "sqlite_sequence"
+                        WHERE "name" = 'CompanyRatings'
+                    ), 0),
+                    COALESCE((
+                        SELECT MAX("Id")
+                        FROM "CompanyRatings"
+                    ), 0)
+                );
+
                 CREATE TABLE "__CompanyRatings_old" (
                     "Id" INTEGER NOT NULL CONSTRAINT "PK_CompanyRatings" PRIMARY KEY AUTOINCREMENT,
                     "CompanyId" INTEGER NOT NULL,
@@ -455,6 +508,25 @@ namespace TraderAi.Migrations
 
                 CREATE INDEX "IX_CompanyRatings_CompanyId_CreatedInCycleId"
                     ON "CompanyRatings" ("CompanyId", "CreatedInCycleId");
+
+                UPDATE "sqlite_sequence"
+                SET "seq" = MAX(
+                    COALESCE("seq", 0),
+                    (SELECT "HighWaterMark" FROM "__CompanyRatings_sequence")
+                )
+                WHERE "name" = 'CompanyRatings';
+
+                INSERT INTO "sqlite_sequence" ("name", "seq")
+                SELECT 'CompanyRatings', "HighWaterMark"
+                FROM "__CompanyRatings_sequence"
+                WHERE "HighWaterMark" > 0
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM "sqlite_sequence"
+                      WHERE "name" = 'CompanyRatings'
+                  );
+
+                DROP TABLE "__CompanyRatings_sequence";
                 """);
         }
     }

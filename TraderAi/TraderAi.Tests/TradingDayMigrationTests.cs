@@ -208,7 +208,10 @@ public sealed class TradingDayMigrationTests
                         (3, 1, 1, 'Extra', NULL, 3, CURRENT_TIMESTAMP),
                         (4, 1, 1, 0, NULL, 4, CURRENT_TIMESTAMP),
                         (5, 1, 1, 1, NULL, 5, CURRENT_TIMESTAMP),
-                        (6, 1, 1, 2, NULL, 6, CURRENT_TIMESTAMP);
+                        (6, 1, 1, 2, NULL, 6, CURRENT_TIMESTAMP),
+                        (100, 1, 1, 'Stable', NULL, 100, CURRENT_TIMESTAMP);
+
+                    DELETE FROM CompanyRatings WHERE Id = 100;
                     """);
             }
 
@@ -263,7 +266,7 @@ public sealed class TradingDayMigrationTests
                 VALUES (1, 1, 'Stable', NULL, 7, CURRENT_TIMESTAMP);
                 SELECT last_insert_rowid();
                 """;
-            Assert.Equal(7L, (long)(await insertCommand.ExecuteScalarAsync())!);
+            Assert.Equal(101L, (long)(await insertCommand.ExecuteScalarAsync())!);
         }
         finally
         {
@@ -316,6 +319,14 @@ public sealed class TradingDayMigrationTests
             await using var context = new AppDbContext(options);
             var migrator = context.GetService<IMigrator>();
             await migrator.MigrateAsync("AddCompanyFundamentalsAndAudits");
+            await context.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO CompanyRatings (
+                    Id, CompanyId, AuditorId, Rating, ImpactPercent, CreatedInCycleId, CreatedAt)
+                VALUES (200, 1, 1, 'Stable', NULL, 200, CURRENT_TIMESTAMP);
+
+                DELETE FROM CompanyRatings WHERE Id = 200;
+                """);
             await migrator.MigrateAsync(predecessorMigration);
 
             await using var connection = new SqliteConnection($"Data Source={databasePath}");
@@ -355,6 +366,47 @@ public sealed class TradingDayMigrationTests
                 indexes.Add(indexReader.GetString(0));
             }
             Assert.Equal(["IX_CompanyRatings_CompanyId_CreatedInCycleId"], indexes);
+
+            await indexReader.DisposeAsync();
+            await using var insertCommand = connection.CreateCommand();
+            insertCommand.CommandText = """
+                INSERT INTO CompanyRatings (
+                    CompanyId, AuditorId, Rating, ImpactPercent, CreatedInCycleId, CreatedAt)
+                VALUES (1, 1, 'Stable', NULL, 201, CURRENT_TIMESTAMP);
+                SELECT last_insert_rowid();
+                """;
+            Assert.Equal(201L, (long)(await insertCommand.ExecuteScalarAsync())!);
+        }
+        finally
+        {
+            File.Delete(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task CompanyFundamentalsMigrationDowngradesAnEmptyRatingTableSafely()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"trader-ai-empty-rating-downgrade-{Guid.NewGuid():N}.db");
+        try
+        {
+            const string predecessorMigration = "20260722154353_ResetAiSystemPromptForPriceOffset";
+            var setupOptions = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite($"Data Source={databasePath}")
+                .Options;
+            await using (var setupContext = new AppDbContext(setupOptions))
+            {
+                await setupContext.GetService<IMigrator>().MigrateAsync("AddCompanyFundamentalsAndAudits");
+            }
+
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite($"Data Source={databasePath}")
+                .ConfigureWarnings(warnings =>
+                    warnings.Throw(RelationalEventId.NonTransactionalMigrationOperationWarning))
+                .Options;
+            await using var context = new AppDbContext(options);
+            await context.GetService<IMigrator>().MigrateAsync(predecessorMigration);
+
+            Assert.Empty(await context.CompanyRatings.AsNoTracking().ToListAsync());
         }
         finally
         {
