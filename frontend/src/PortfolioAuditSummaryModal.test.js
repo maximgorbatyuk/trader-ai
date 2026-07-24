@@ -137,6 +137,10 @@ test('shows the period, all status counts, direction, and one combined ownership
   assert.match(markup, /\+6\.25%/)
   assert.match(markup, /2\.40×/)
   assert.match(markup, />Rising</)
+  assert.match(
+    markup,
+    /role="region" aria-label="Scrollable company financial and audit evidence" tabindex="0"/,
+  )
 
   assert.equal((markup.match(/data-portfolio-company-id="9"/g) ?? []).length, 1)
   assert.match(markup, /Rating unavailable/)

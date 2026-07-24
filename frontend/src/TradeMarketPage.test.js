@@ -40,13 +40,21 @@ test('exposes filled orders and investments as tabs without the live order book'
   assert.match(markup, />Trader AI</)
 })
 
-test('hosts the shared portfolio audit modal from dashboard and Trade Market news selections', async () => {
+test('wires every dashboard and Trade Market news strip to one shared portfolio audit modal', async () => {
   const tradeMarketSource = await readFile(new URL('./TradeMarketPage.jsx', import.meta.url), 'utf8')
   const dashboardSource = await readFile(new URL('./App.jsx', import.meta.url), 'utf8')
 
-  for (const source of [tradeMarketSource, dashboardSource]) {
-    assert.match(source, /PortfolioAuditSummaryModal/)
-    assert.match(source, /onSelectPortfolioAuditSummary=\{setSelectedPortfolioAuditSummaryId\}/)
+  assert.equal(
+    (dashboardSource.match(/onSelectPortfolioAuditSummary=\{setSelectedPortfolioAuditSummaryId\}/g) ?? []).length,
+    1,
+  )
+  assert.equal(
+    (tradeMarketSource.match(/onSelectPortfolioAuditSummary=\{setSelectedPortfolioAuditSummaryId\}/g) ?? []).length,
+    2,
+  )
+  for (const source of [dashboardSource, tradeMarketSource]) {
+    assert.equal((source.match(/<PortfolioAuditSummaryModal/g) ?? []).length, 1)
     assert.match(source, /summaryId=\{selectedPortfolioAuditSummaryId\}/)
+    assert.match(source, /onClose=\{\(\) => setSelectedPortfolioAuditSummaryId\(null\)\}/)
   }
 })

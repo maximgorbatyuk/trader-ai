@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from './api'
 import { formatInt } from './format'
 import { Modal } from './Modal'
+import { createPortfolioAuditSummaryRequestCoordinator } from './portfolioAuditSummaryRequest'
 import { RatingBadge } from './RatingBadge'
 
 const STATUS_COUNTS = [
@@ -66,7 +67,12 @@ function CompanySummaryTable({ items }) {
   return (
     <section className="portfolio-audit-section" aria-labelledby="portfolio-audit-companies-title">
       <h3 id="portfolio-audit-companies-title">Company financial and audit evidence</h3>
-      <div className="tbl-wrap portfolio-audit-table-wrap">
+      <div
+        className="tbl-wrap portfolio-audit-table-wrap"
+        role="region"
+        aria-label="Scrollable company financial and audit evidence"
+        tabIndex={0}
+      >
         <table className="tbl portfolio-audit-table">
           <thead>
             <tr>
@@ -173,38 +179,40 @@ export function PortfolioAuditSummaryContent({ summary, loading, error, onRetry 
 }
 
 export function PortfolioAuditSummaryModal({ summaryId, onClose }) {
-  const requestId = useRef(0)
+  const coordinatorRef = useRef(null)
   const [state, setState] = useState({ summary: null, loading: true, error: null })
 
-  const loadSummary = useCallback(() => {
-    const currentRequest = requestId.current + 1
-    requestId.current = currentRequest
-    setState((current) => ({ ...current, loading: true, error: null }))
-    api
-      .getPortfolioAuditSummary(summaryId)
-      .then((summary) => {
-        if (requestId.current === currentRequest) {
-          setState({ summary, loading: false, error: null })
-        }
-      })
-      .catch((error) => {
-        if (requestId.current === currentRequest) {
-          setState((current) => ({
-            ...current,
-            loading: false,
-            error: error.message ?? 'Could not load portfolio audit summary.',
-          }))
-        }
-      })
-  }, [summaryId])
-
   useEffect(() => {
-    const initialId = setTimeout(loadSummary, 0)
+    const coordinator = createPortfolioAuditSummaryRequestCoordinator({
+      summaryId,
+      request: api.getPortfolioAuditSummary,
+      onLoading() {
+        setState((current) => ({ ...current, loading: true, error: null }))
+      },
+      onSuccess(summary) {
+        setState({ summary, loading: false, error: null })
+      },
+      onError(error) {
+        setState((current) => ({
+          ...current,
+          loading: false,
+          error: error?.message || 'Could not load portfolio audit summary.',
+        }))
+      },
+    })
+    coordinatorRef.current = coordinator
+    const initialId = setTimeout(coordinator.load, 0)
     return () => {
       clearTimeout(initialId)
-      requestId.current += 1
+      coordinator.dispose()
+      if (coordinatorRef.current === coordinator) coordinatorRef.current = null
     }
-  }, [loadSummary])
+  }, [summaryId])
+
+  const retrySummary = useCallback((event) => {
+    const dialog = event.currentTarget.closest('[role="dialog"]')
+    coordinatorRef.current?.retry(() => dialog?.focus?.())
+  }, [])
 
   const titleId = `portfolio-audit-summary-title-${summaryId}`
   return (
@@ -223,7 +231,7 @@ export function PortfolioAuditSummaryModal({ summaryId, onClose }) {
           summary={state.summary}
           loading={state.loading}
           error={state.error}
-          onRetry={loadSummary}
+          onRetry={retrySummary}
         />
       </div>
     </Modal>
