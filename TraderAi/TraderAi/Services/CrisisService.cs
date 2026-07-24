@@ -137,7 +137,7 @@ public sealed class CrisisService(
             var percent = RandomImpactPercent();
             crisis.Industries.Add(new CrisisIndustry { IndustryId = industryId, ImpactPercent = percent });
 
-            // The trigger shock opens the crisis timeline; auditor and bankruptcy events append to it later.
+            // The trigger shock opens the crisis timeline; bankruptcies and closures append to it later.
             crisis.Events.Add(new CrisisEvent
             {
                 Type = CrisisEventType.IndustryShock,

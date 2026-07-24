@@ -1186,8 +1186,8 @@ public sealed class MarketService(
         var cycleNumbersById = await dbContext.CycleNumbersByIdAsync();
         var currentCycleNumber = cycleNumbersById.GetValueOrDefault(currentCycleId);
 
-        // Resolved once here so bankruptcy and auditors both read the same window; a crisis triggered a prior
-        // cycle is what governs this cycle's harsher behaviour and the timeline its events attach to.
+        // Resolved once here so risk-sensitive services share the same window; a crisis triggered a prior cycle
+        // is what governs this cycle's harsher behaviour and the timeline its consequences attach to.
         var activeCrisis = crisisService is not null
             ? await crisisService.GetActiveCrisisAsync(currentCycleNumber)
             : null;

@@ -38,7 +38,6 @@ The crisis does not pause trading, suspend settlement, or directly rewrite parti
 The crisis detail view combines the initial industry shocks with significant consequences that occur while the interval is active. It records:
 
 - Industry shocks at the trigger cycle.
-- High or Extra auditor ratings.
 - Trader bankruptcies.
 - Company closures.
 - Collective-fund closures.

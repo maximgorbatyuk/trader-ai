@@ -91,9 +91,9 @@ The company roster changes over time. New issuers can appear, while persistently
 
 Large companies receive protection from immediate delisting. When a protected company would otherwise close, it is repriced downward and remains active, allowing a later cycle to reassess it. This separates market-cap protection from permanent immunity.
 
-Auditors are standalone entities rather than trading participants. They review companies, publish ratings, and may trigger a price reduction with stale-buy revisions or a positive expectations lift with eligible stale-sell cancellation. Keeping auditors outside the participant hierarchy prevents them from accidentally inheriting balances, holdings, loans, bankruptcy, or fund behavior.
+Auditors are standalone entities rather than trading participants. They review each company over completed two-day windows and publish immutable evidence-backed statuses for the following trading day. Those statuses inform later trader decisions without directly changing prices or standing orders. Keeping auditors outside the participant hierarchy prevents them from accidentally inheriting balances, holdings, loans, bankruptcy, or fund behavior.
 
-A crisis is an active interval rather than a single price shock. It initially affects selected industries and then changes the behavior of risk-sensitive services for its duration. Events such as ratings, bankruptcies, company closures, and fund closures are recorded on the crisis timeline when they occur during that window. See [Market crises](logic/crisis.md).
+A crisis is an active interval rather than a single price shock. It initially affects selected industries and then changes the behavior of risk-sensitive services for its duration. Bankruptcies, company closures, and fund closures are recorded on the crisis timeline when they occur during that window. See [Market crises](logic/crisis.md).
 
 ## Participants and collective funds
 

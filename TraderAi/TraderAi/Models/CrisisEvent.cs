@@ -1,8 +1,7 @@
 namespace TraderAi.Models;
 
-// One recorded consequence of an active crisis: a sector shock at trigger time, an auditor's High/Extra
-// verdict, or a trader bankruptcy that struck while the window was open. Rows accumulate on the crisis so
-// its detail page can show a single timeline of everything that happened during it.
+// One recorded consequence of an active crisis: its trigger shock, or a bankruptcy or closure that happened
+// while its window was open. Rows accumulate so the crisis detail can show a single consequence timeline.
 public sealed class CrisisEvent
 {
     public int Id { get; set; }
