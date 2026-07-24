@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -178,6 +179,16 @@ test('renders financials and management outlook as independent accessible tabs',
   )
   assert.match(managementMarkup, />Management outlook<\/h2>/)
   assert.doesNotMatch(managementMarkup, />Financials<\/h2>/)
+})
+
+test('keeps hidden company tab panels out of the fixed-height flex layout', async () => {
+  const css = await readFile(new URL('./App.css', import.meta.url), 'utf8')
+
+  assert.match(
+    css,
+    /\.main-fill \.tabpanel:not\(\[hidden\]\)\s*\{[^}]*display:\s*flex;/s,
+  )
+  assert.doesNotMatch(css, /\.main-fill \.tabpanel\s*\{[^}]*display:\s*flex;/s)
 })
 
 test('loads company audits only while the audits tab is active', async (t) => {

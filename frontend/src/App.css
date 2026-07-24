@@ -3799,7 +3799,7 @@
   min-height: 0;
 }
 
-.main-fill .tabpanel {
+.main-fill .tabpanel:not([hidden]) {
   display: flex;
   flex: 1;
   flex-direction: column;
