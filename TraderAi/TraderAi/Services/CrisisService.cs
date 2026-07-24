@@ -44,7 +44,7 @@ public sealed class CrisisService(
     private const int GlobalMaxDurationCycles = 25;
 
     // The crisis whose window covers the current cycle, or null when the market is calm. While one is active,
-    // auditors and bankruptcies bite harder and price-lifting events land less often. When two windows overlap
+    // bankruptcies bite harder and price-lifting events land less often. When two windows overlap
     // (independent scope clocks), the most recently triggered one wins so new events attach to it.
     public Task<Crisis?> GetActiveCrisisAsync(int currentCycleNumber) =>
         dbContext.Crises

@@ -1268,7 +1268,7 @@ public sealed class MarketService(
         await dbContext.SaveChangesAsync();
 
         // A volatility halt runs first, reading only prior-cycle closes — before this cycle's splits, emissions,
-        // lifecycle cut, or auditor downgrade add a snapshot, so a same-cycle deliberate price cut cannot trip
+        // lifecycle cut, or concentration cap add a snapshot, so a same-cycle deliberate price cut cannot trip
         // the down-halt. A company that moved past its band over the recent window is frozen and participant orders
         // are cancelled, while issuer float rests until matching and decisions can resume.
         if (volatilityHaltService is not null)
