@@ -156,3 +156,38 @@ test('renders every audit badge with a text label and non-color direction glyph'
     assert.match(markup, new RegExp(`data-rating="${rating}"[^>]*>.*aria-hidden="true">${glyph}</span>${label}`))
   }
 })
+
+test('passes portfolio audit selection through the reusable market map news strip', async (t) => {
+  const server = await createServer({
+    root: new URL('..', import.meta.url).pathname,
+    logLevel: 'silent',
+    server: { middlewareMode: true },
+  })
+  t.after(() => server.close())
+
+  const { MarketMapPanel } = await server.ssrLoadModule('/src/MarketMapPanel.jsx')
+  const markup = renderToStaticMarkup(createElement(MarketMapPanel, {
+    embedded: true,
+    companies: [],
+    participants: [],
+    playerHoldingCompanyIds: new Set(),
+    lastDividendTotal: 0,
+    currentCycleNumber: 100,
+    news: [{
+      id: 20,
+      title: 'Held-company audit summary',
+      content: 'One immutable portfolio snapshot.',
+      publishedInCycleNumber: 100,
+      category: 'PortfolioAudit',
+      scope: 'None',
+      direction: null,
+      industryNames: [],
+      portfolioAuditSummaryId: 73,
+    }],
+    onSelectCompany() {},
+    onSelectPortfolioAuditSummary() {},
+  }))
+
+  assert.match(markup, /data-portfolio-audit-summary-id="73"/)
+  assert.match(markup, /aria-label="Open portfolio audit summary: Held-company audit summary"/)
+})

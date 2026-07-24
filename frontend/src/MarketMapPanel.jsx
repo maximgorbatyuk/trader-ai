@@ -55,6 +55,7 @@ export function MarketMapPanel({
   crises,
   scienceInvestigations,
   onSelectCompany,
+  onSelectPortfolioAuditSummary,
   embedded = false,
 }) {
   // Tile colour tracks the change in a company's total capitalisation, not its per-share price, so a stock
@@ -242,6 +243,7 @@ export function MarketMapPanel({
         scienceInvestigations={scienceInvestigations}
         currentCycleNumber={currentCycleNumber}
         onSelectCompany={onSelectCompany}
+        onSelectPortfolioAuditSummary={onSelectPortfolioAuditSummary}
         count={2}
       />
     </>

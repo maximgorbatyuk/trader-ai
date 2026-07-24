@@ -97,6 +97,7 @@ export const api = {
   getPrices: (companyId) => get(`/prices/${companyId}`),
   getNews: (take = 30) => get(`/news?take=${take}`),
   getNewsPaged: (page = 1, pageSize = 20) => get(`/news/paged?page=${page}&pageSize=${pageSize}`),
+  getPortfolioAuditSummary: (summaryId) => get(`/portfolio-audit-summaries/${summaryId}`),
   getCrises: (take = 30) => get(`/crises?take=${take}`),
   getCrisis: (crisisId) => get(`/crises/${crisisId}`),
   getScienceInvestigations: (take = 30) => get(`/science-investigations?take=${take}`),

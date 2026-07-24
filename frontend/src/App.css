@@ -1860,6 +1860,24 @@
   color: var(--up-text);
 }
 
+.map-news.news-audit {
+  border-color: var(--border-2);
+  background: var(--surface-3);
+}
+
+.map-news.news-audit .map-news-label {
+  color: var(--ink);
+}
+
+.map-news-action {
+  cursor: pointer;
+}
+
+.map-news-action:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
 .map-news.news-crisis .map-news-label,
 .map-news.news-crisis .map-news-impact {
   color: var(--down-text);
@@ -3130,6 +3148,95 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
+}
+
+.modal-portfolio-audit {
+  width: min(1080px, 100%);
+  max-height: min(92vh, 860px);
+  overflow: hidden;
+}
+
+.portfolio-audit-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: var(--s-1);
+}
+
+.portfolio-audit-state {
+  display: flex;
+  min-height: 11rem;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--s-2);
+}
+
+.portfolio-audit-overview dd {
+  font-size: var(--t-sm);
+  line-height: 1.4;
+}
+
+.portfolio-audit-direction {
+  white-space: nowrap;
+}
+
+.portfolio-audit-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.portfolio-audit-section + .portfolio-audit-section {
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--border);
+}
+
+.portfolio-audit-section h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-sm);
+  font-weight: 700;
+}
+
+.portfolio-audit-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.portfolio-audit-statuses li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.portfolio-audit-status-count {
+  min-width: 1.5rem;
+  color: var(--ink);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  text-align: right;
+}
+
+.portfolio-audit-table-wrap {
+  max-height: 24rem;
+  overflow: auto;
+}
+
+.portfolio-audit-table {
+  min-width: 980px;
+}
+
+.portfolio-audit-table tbody th,
+.portfolio-audit-table tbody td {
+  vertical-align: top;
 }
 
 /* Capitalization and industry-sentiment trends share one compact row instead of stacking. */

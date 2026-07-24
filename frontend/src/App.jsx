@@ -7,6 +7,7 @@ import { PlayerPanel } from './PlayerPanel'
 import { MarketMapPanel } from './MarketMapPanel'
 import { OrderBook } from './OrderBook'
 import { emptyActorHintFor, holdingByCompany, holdingCompanyIdSet, resolveActor } from './actor'
+import { PortfolioAuditSummaryModal } from './PortfolioAuditSummaryModal'
 
 const POLL_INTERVAL_MS = 1000
 const OPEN_STATUSES = new Set(['Open', 'PartiallyFilled'])
@@ -27,6 +28,7 @@ function App() {
   const [actorHoldingByCompany, setActorHoldingByCompany] = useState(() => new Map())
   const [actorInvestedCompanyIds, setActorInvestedCompanyIds] = useState(() => new Set())
   const [mapModalCompanyId, setMapModalCompanyId] = useState(null)
+  const [selectedPortfolioAuditSummaryId, setSelectedPortfolioAuditSummaryId] = useState(null)
 
   const loadAll = useCallback(async () => {
     try {
@@ -135,6 +137,7 @@ function App() {
                         crises={crises}
                         scienceInvestigations={scienceInvestigations}
                         onSelectCompany={setMapModalCompanyId}
+                        onSelectPortfolioAuditSummary={setSelectedPortfolioAuditSummaryId}
                       />
                     }
                     orderBook={
@@ -171,6 +174,12 @@ function App() {
             setCompanies((current) => current.map((company) =>
               company.id === mapModalCompany.id ? { ...company, isFavorite } : company))
           }}
+        />
+      ) : null}
+      {selectedPortfolioAuditSummaryId != null ? (
+        <PortfolioAuditSummaryModal
+          summaryId={selectedPortfolioAuditSummaryId}
+          onClose={() => setSelectedPortfolioAuditSummaryId(null)}
         />
       ) : null}
     </>

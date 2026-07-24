@@ -7,8 +7,14 @@ const NEWS_CATEGORY = {
   FundPerformance: { className: 'news-stock', label: 'Fund growth' },
   FundAdvertisement: { className: 'news-ad', label: 'Advertisement' },
   CapitalRaise: { className: 'news-raise', label: 'Investment' },
+  PortfolioAudit: { className: 'news-audit', label: 'Portfolio audit' },
 }
 
 export function newsCategoryStyle(category) {
   return NEWS_CATEGORY[category] ?? null
+}
+
+export function portfolioAuditSummaryId(post) {
+  const summaryId = post?.portfolioAuditSummaryId
+  return Number.isInteger(summaryId) && summaryId > 0 ? summaryId : null
 }

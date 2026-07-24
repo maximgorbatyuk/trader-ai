@@ -4,22 +4,72 @@ import { api } from './api'
 import { formatInt } from './format'
 import { Panel } from './Panel'
 import { NewsImpact } from './NewsImpact'
-import { newsCategoryStyle } from './newsCategory'
+import { newsCategoryStyle, portfolioAuditSummaryId } from './newsCategory'
 import { NewsModal } from './NewsModal'
 import { AddNewsModal } from './AddNewsModal'
 import { useFitPageSize } from './useFitPageSize'
+import { PortfolioAuditSummaryModal } from './PortfolioAuditSummaryModal'
 
 const POLL_INTERVAL_MS = 2500
 
-// Full newswire archive in a paginated table. Each headline opens a modal with the post's body, impact, and
-// the industries it moved, and the composer for a manual post lives here too. News grows without bound, so
-// paging happens on the server.
+export function NewsFeedPost({ post, onSelectNews, onSelectPortfolioAuditSummary }) {
+  const category = newsCategoryStyle(post.category)
+  const summaryId = portfolioAuditSummaryId(post)
+  const openPost = () => {
+    if (summaryId != null) {
+      onSelectPortfolioAuditSummary(summaryId)
+    } else {
+      onSelectNews(post)
+    }
+  }
+
+  return (
+    <article className={category ? `map-news ${category.className}` : 'map-news'}>
+      <div className="map-news-head">
+        <span className="map-news-label">{category ? category.label : 'Newswire'}</span>
+        <span className="map-news-age num">cycle {formatInt(post.publishedInCycleNumber)}</span>
+      </div>
+      <button
+        type="button"
+        className="news-feed-title"
+        data-portfolio-audit-summary-id={summaryId ?? undefined}
+        onClick={openPost}
+        title={`Open ${post.title}`}
+      >
+        {post.title}
+      </button>
+      <p className="map-news-body">{post.content}</p>
+      <NewsImpact post={post} />
+    </article>
+  )
+}
+
+export function NewsSelectionModal({
+  selectedNews,
+  selectedPortfolioAuditSummaryId,
+  onCloseNews,
+  onClosePortfolioAuditSummary,
+}) {
+  if (selectedPortfolioAuditSummaryId != null) {
+    return (
+      <PortfolioAuditSummaryModal
+        summaryId={selectedPortfolioAuditSummaryId}
+        onClose={onClosePortfolioAuditSummary}
+      />
+    )
+  }
+  return selectedNews ? <NewsModal post={selectedNews} onClose={onCloseNews} /> : null
+}
+
+// Full newswire archive in a paginated table. Structured portfolio audits open their immutable summary while
+// ordinary headlines retain the post-detail dialog; paging stays on the server because news grows without bound.
 function NewsPage() {
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState(null)
   const [data, setData] = useState(null)
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState(null)
+  const [selectedPortfolioAuditSummaryId, setSelectedPortfolioAuditSummaryId] = useState(null)
   const [companies, setCompanies] = useState([])
   const [adding, setAdding] = useState(false)
   const [pageSize, feedRef] = useFitPageSize({ rowSelector: '.map-news', headerSelector: null })
@@ -88,30 +138,20 @@ function NewsPage() {
               ) : (
                 <>
                   <div className="news-feed" ref={feedRef}>
-                    {items.map((post) => {
-                      const category = newsCategoryStyle(post.category)
-                      return (
-                        <article
-                          className={category ? `map-news ${category.className}` : 'map-news'}
-                          key={post.id}
-                        >
-                          <div className="map-news-head">
-                            <span className="map-news-label">{category ? category.label : 'Newswire'}</span>
-                            <span className="map-news-age num">cycle {formatInt(post.publishedInCycleNumber)}</span>
-                          </div>
-                          <button
-                            type="button"
-                            className="news-feed-title"
-                            onClick={() => setSelected(post)}
-                            title={`Open ${post.title}`}
-                          >
-                            {post.title}
-                          </button>
-                          <p className="map-news-body">{post.content}</p>
-                          <NewsImpact post={post} />
-                        </article>
-                      )
-                    })}
+                    {items.map((post) => (
+                      <NewsFeedPost
+                        key={post.id}
+                        post={post}
+                        onSelectNews={(nextPost) => {
+                          setSelectedPortfolioAuditSummaryId(null)
+                          setSelected(nextPost)
+                        }}
+                        onSelectPortfolioAuditSummary={(summaryId) => {
+                          setSelected(null)
+                          setSelectedPortfolioAuditSummaryId(summaryId)
+                        }}
+                      />
+                    ))}
                   </div>
                   {pageCount > 1 ? (
                     <div className="pager">
@@ -143,7 +183,12 @@ function NewsPage() {
         )}
       </main>
 
-      {selected ? <NewsModal post={selected} onClose={() => setSelected(null)} /> : null}
+      <NewsSelectionModal
+        selectedNews={selected}
+        selectedPortfolioAuditSummaryId={selectedPortfolioAuditSummaryId}
+        onCloseNews={() => setSelected(null)}
+        onClosePortfolioAuditSummary={() => setSelectedPortfolioAuditSummaryId(null)}
+      />
       {adding ? (
         <AddNewsModal companies={companies} onClose={() => setAdding(false)} onPublished={loadAll} />
       ) : null}

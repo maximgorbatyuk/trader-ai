@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createElement } from 'react'
+import { readFile } from 'node:fs/promises'
+import { createElement, isValidElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
 import { createServer } from 'vite'
@@ -40,6 +41,19 @@ async function renderLatestNews(t, props) {
   return renderToStaticMarkup(
     createElement(MemoryRouter, null, createElement(LatestNews, props)),
   )
+}
+
+function findElement(node, predicate) {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findElement(child, predicate)
+      if (match) return match
+    }
+    return null
+  }
+  if (!isValidElement(node)) return null
+  if (predicate(node)) return node
+  return findElement(node.props.children, predicate)
 }
 
 test('replaces one news card with the newest recent science or crisis event', async (t) => {
@@ -136,4 +150,66 @@ test('keeps two regular news cards when market events are older than fifteen cyc
   assert.match(markup, /Second regular news/)
   assert.doesNotMatch(markup, /Old crisis/)
   assert.doesNotMatch(markup, /Old science lift/)
+})
+
+test('uses only the structured summary id to make a portfolio audit card actionable', async (t) => {
+  const server = await createServer({
+    root: new URL('..', import.meta.url).pathname,
+    logLevel: 'silent',
+    server: { middlewareMode: true },
+  })
+  t.after(() => server.close())
+
+  const { LatestNews } = await server.ssrLoadModule('/src/LatestNews.jsx')
+  const { portfolioAuditSummaryId } = await server.ssrLoadModule('/src/newsCategory.js')
+  assert.equal(typeof portfolioAuditSummaryId, 'function')
+  assert.equal(portfolioAuditSummaryId({ category: 'PortfolioAudit' }), null)
+  assert.equal(
+    portfolioAuditSummaryId({ category: 'General', portfolioAuditSummaryId: 73 }),
+    73,
+  )
+
+  const selected = []
+  const auditNews = {
+    ...news[0],
+    id: 8,
+    title: 'Held-company audit summary',
+    category: 'General',
+    portfolioAuditSummaryId: 73,
+  }
+  const spoofedNews = {
+    ...news[1],
+    id: 9,
+    title: 'Portfolio audit update without structured data',
+    category: 'PortfolioAudit',
+    portfolioAuditSummaryId: null,
+  }
+  const props = {
+    news: [auditNews, spoofedNews],
+    currentCycleNumber: 100,
+    onSelectPortfolioAuditSummary(summaryId) {
+      selected.push(summaryId)
+    },
+  }
+  const tree = LatestNews(props)
+  const action = findElement(
+    tree,
+    (element) => element.props['data-portfolio-audit-summary-id'] === 73 && element.props.role === 'button',
+  )
+  assert.ok(action)
+  action.props.onClick()
+  action.props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  action.props.onKeyDown({ key: ' ', preventDefault() {} })
+  action.props.onKeyDown({ key: 'ArrowDown', preventDefault() {} })
+  assert.deepEqual(selected, [73, 73, 73])
+
+  const markup = renderToStaticMarkup(createElement(MemoryRouter, null, tree))
+  assert.match(markup, /data-portfolio-audit-summary-id="73"/)
+  assert.match(markup, /aria-label="Open portfolio audit summary: Held-company audit summary"/)
+  assert.match(markup, /role="button" tabindex="0"/)
+  assert.doesNotMatch(markup, /data-portfolio-audit-summary-id="null"/)
+  assert.match(markup, /<p class="map-news-title">Portfolio audit update without structured data<\/p>/)
+
+  const css = await readFile(new URL('./App.css', import.meta.url), 'utf8')
+  assert.match(css, /\.map-news-action:focus-visible/)
 })

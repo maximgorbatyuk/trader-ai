@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { NewsImpact } from './NewsImpact'
-import { newsCategoryStyle } from './newsCategory'
+import { newsCategoryStyle, portfolioAuditSummaryId } from './newsCategory'
 
 const RECENT_EVENT_CYCLES = 15
 
@@ -36,6 +36,7 @@ export function LatestNews({
   news,
   currentCycleNumber,
   onSelectCompany,
+  onSelectPortfolioAuditSummary,
   count = 2,
   crises = [],
   scienceInvestigations = [],
@@ -81,15 +82,40 @@ export function LatestNews({
       {eventCard}
       {items.map((post) => {
         const category = newsCategoryStyle(post.category)
+        const summaryId = portfolioAuditSummaryId(post)
+        const canOpenSummary = summaryId != null && typeof onSelectPortfolioAuditSummary === 'function'
+        const openSummary = canOpenSummary ? () => onSelectPortfolioAuditSummary(summaryId) : undefined
+        const onSummaryKeyDown = canOpenSummary
+          ? (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                openSummary()
+              }
+            }
+          : undefined
         return (
-          <div className={category ? `map-news ${category.className}` : 'map-news'} key={post.id}>
+          <div
+            className={[
+              'map-news',
+              category?.className,
+              canOpenSummary ? 'map-news-action' : null,
+            ].filter(Boolean).join(' ')}
+            key={post.id}
+            data-portfolio-audit-summary-id={canOpenSummary ? summaryId : undefined}
+            role={canOpenSummary ? 'button' : undefined}
+            tabIndex={canOpenSummary ? 0 : undefined}
+            aria-label={canOpenSummary ? `Open portfolio audit summary: ${post.title}` : undefined}
+            aria-haspopup={canOpenSummary ? 'dialog' : undefined}
+            onClick={openSummary}
+            onKeyDown={onSummaryKeyDown}
+          >
             <div className="map-news-head">
               <span className="map-news-label">{category ? category.label : 'Latest news'}</span>
               <span className="map-news-age num">{cycleAge(post.publishedInCycleNumber, currentCycleNumber)}</span>
             </div>
             <p className="map-news-title">{post.title}</p>
             <p className="map-news-body">{post.content}</p>
-            <NewsImpact post={post} onSelectCompany={onSelectCompany} />
+            <NewsImpact post={post} onSelectCompany={canOpenSummary ? undefined : onSelectCompany} />
           </div>
         )
       })}

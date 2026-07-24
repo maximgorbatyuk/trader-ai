@@ -11,6 +11,7 @@ import { InvestmentsTable } from './InvestmentsTable'
 import { holdingCompanyIdSet } from './actor'
 import { formatInt } from './format'
 import { useFitPageSize } from './useFitPageSize'
+import { PortfolioAuditSummaryModal } from './PortfolioAuditSummaryModal'
 
 const POLL_INTERVAL_MS = 1500
 const TABS = [
@@ -37,6 +38,7 @@ function TradeMarketPage() {
   const [investments, setInvestments] = useState([])
   const [playerHoldingCompanyIds, setPlayerHoldingCompanyIds] = useState(() => new Set())
   const [active, setActive] = useState('map')
+  const [selectedPortfolioAuditSummaryId, setSelectedPortfolioAuditSummaryId] = useState(null)
   const tabRefs = useRef({})
   const [filledPageSize, fillsTableRef] = useFitPageSize()
   const [investmentsCount, investmentsTableRef] = useFitPageSize()
@@ -157,6 +159,7 @@ function TradeMarketPage() {
             currentCycleNumber={currentCycleNumber}
             news={news}
             onSelectCompany={onSelectCompany}
+            onSelectPortfolioAuditSummary={setSelectedPortfolioAuditSummaryId}
           />
         ) : active === 'activity' ? (
           <Panel title="Orders activity" className="panel-activity">
@@ -167,6 +170,7 @@ function TradeMarketPage() {
                 news={news}
                 currentCycleNumber={currentCycleNumber}
                 onSelectCompany={onSelectCompany}
+                onSelectPortfolioAuditSummary={setSelectedPortfolioAuditSummaryId}
                 count={2}
               />
             </div>
@@ -198,6 +202,12 @@ function TradeMarketPage() {
           </Panel>
         )}
       </div>
+      {selectedPortfolioAuditSummaryId != null ? (
+        <PortfolioAuditSummaryModal
+          summaryId={selectedPortfolioAuditSummaryId}
+          onClose={() => setSelectedPortfolioAuditSummaryId(null)}
+        />
+      ) : null}
     </main>
   )
 }
