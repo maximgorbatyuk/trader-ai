@@ -56,6 +56,51 @@ public static partial class MarketEndpoints
                 : Results.Ok(detail);
         });
 
+        app.MapGet("/companies/{companyId:int}/financials", async (
+            int companyId,
+            int? page,
+            int? pageSize,
+            AppDbContext dbContext) =>
+        {
+            if (!await dbContext.Companies.AnyAsync(company => company.Id == companyId))
+            {
+                return Results.NotFound(new { error = "Company not found." });
+            }
+
+            var (pageIndex, size) = ResolvePaging(page, pageSize, 20);
+            var query = dbContext.CompanyFinancialSnapshots
+                .AsNoTracking()
+                .Where(snapshot => snapshot.CompanyId == companyId);
+            var total = await query.CountAsync();
+
+            // The extra older row is the previous observation for the last visible row, including at page boundaries.
+            var rows = await query
+                .Include(snapshot => snapshot.LatestDividendEvent)
+                .OrderByDescending(snapshot => snapshot.TradingDayNumber)
+                .ThenByDescending(snapshot => snapshot.Moment)
+                .ThenByDescending(snapshot => snapshot.CreatedInCycleId)
+                .ThenByDescending(snapshot => snapshot.CreatedAt)
+                .ThenByDescending(snapshot => snapshot.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size + 1)
+                .ToListAsync();
+
+            var visibleCount = Math.Min(size, rows.Count);
+            var items = new CompanyFinancialHistoryItemResponse[visibleCount];
+            for (var index = 0; index < visibleCount; index++)
+            {
+                var current = rows[index];
+                var previous = index + 1 < rows.Count ? rows[index + 1] : null;
+                items[index] = new CompanyFinancialHistoryItemResponse(
+                    ToCompanyFinancialSummaryResponse(current),
+                    previous is null ? null : ToCompanyFinancialValuesResponse(previous),
+                    previous is null ? null : ToAbsoluteFinancialDeltaResponse(current, previous),
+                    previous is null ? null : ToPercentageFinancialDeltaResponse(current, previous));
+            }
+
+            return Results.Ok(new PagedCompanyFinancialsResponse(items, total, pageIndex, size));
+        });
+
         app.MapGet("/companies/{companyId:int}/corporate-cash-movements", async (
             int companyId, int? page, int? pageSize, AppDbContext dbContext) =>
         {
@@ -189,6 +234,209 @@ public static partial class MarketEndpoints
             return Results.Ok(response);
         });
 
+        app.MapGet("/companies/{companyId:int}/audits", async (
+            int companyId,
+            int? page,
+            int? pageSize,
+            AppDbContext dbContext) =>
+        {
+            var companyName = await dbContext.Companies
+                .Where(company => company.Id == companyId)
+                .Select(company => company.Name)
+                .FirstOrDefaultAsync();
+            if (companyName is null)
+            {
+                return Results.NotFound(new { error = "Company not found." });
+            }
+
+            var (pageIndex, size) = ResolvePaging(page, pageSize, 20);
+            var query = dbContext.CompanyRatings
+                .AsNoTracking()
+                .Where(rating => rating.CompanyId == companyId);
+            var total = await query.CountAsync();
+            var rows = await query
+                .Include(rating => rating.Evidence)
+                    .ThenInclude(evidence => evidence!.LatestDividendEvent)
+                .Include(rating => rating.Evidence)
+                    .ThenInclude(evidence => evidence!.CompanyFinancialSnapshot)
+                        .ThenInclude(snapshot => snapshot!.LatestDividendEvent)
+                .OrderByDescending(rating => rating.Id)
+                .Skip((pageIndex - 1) * size)
+                .Take(size)
+                .ToListAsync();
+
+            var auditorNames = await dbContext.Auditors
+                .Where(auditor => rows.Select(rating => rating.AuditorId).Contains(auditor.Id))
+                .ToDictionaryAsync(auditor => auditor.Id, auditor => auditor.Name);
+            var cycleNumbers = await dbContext.MarketCycles
+                .Where(cycle => rows.Select(rating => rating.CreatedInCycleId).Contains(cycle.Id))
+                .ToDictionaryAsync(cycle => cycle.Id, cycle => cycle.CycleNumber);
+            var items = rows
+                .Select(rating => ToCompanyAuditSummaryResponse(
+                    rating,
+                    companyName,
+                    auditorNames.GetValueOrDefault(rating.AuditorId, $"#{rating.AuditorId}"),
+                    cycleNumbers.GetValueOrDefault(rating.CreatedInCycleId)))
+                .ToArray();
+
+            return Results.Ok(new PagedCompanyAuditsResponse(items, total, pageIndex, size));
+        });
+
+        app.MapGet("/companies/{companyId:int}/audits/{auditId:int}", async (
+            int companyId,
+            int auditId,
+            AppDbContext dbContext) =>
+        {
+            var companyName = await dbContext.Companies
+                .Where(company => company.Id == companyId)
+                .Select(company => company.Name)
+                .FirstOrDefaultAsync();
+            if (companyName is null)
+            {
+                return Results.NotFound(new { error = "Company not found." });
+            }
+
+            var rating = await dbContext.CompanyRatings
+                .AsNoTracking()
+                .Where(candidate => candidate.Id == auditId && candidate.CompanyId == companyId)
+                .Include(candidate => candidate.Evidence)
+                    .ThenInclude(evidence => evidence!.LatestDividendEvent)
+                .Include(candidate => candidate.Evidence)
+                    .ThenInclude(evidence => evidence!.CompanyFinancialSnapshot)
+                        .ThenInclude(snapshot => snapshot!.LatestDividendEvent)
+                .FirstOrDefaultAsync();
+            if (rating is null)
+            {
+                return Results.NotFound(new { error = "Audit not found." });
+            }
+
+            var auditorName = await dbContext.Auditors
+                .Where(auditor => auditor.Id == rating.AuditorId)
+                .Select(auditor => auditor.Name)
+                .FirstOrDefaultAsync() ?? $"#{rating.AuditorId}";
+            var createdInCycleNumber = await dbContext.MarketCycles
+                .Where(cycle => cycle.Id == rating.CreatedInCycleId)
+                .Select(cycle => cycle.CycleNumber)
+                .FirstOrDefaultAsync();
+
+            AuditDenominationEventResponse[] denominationEvents = [];
+            AuditShareEmissionEventResponse[] freeShareEmissionEvents = [];
+            if (rating.Evidence is CompanyAuditEvidence evidence)
+            {
+                var denominationRows = await (
+                        from denomination in dbContext.StockDenominationEvents.AsNoTracking()
+                        join cycle in dbContext.MarketCycles.AsNoTracking()
+                            on denomination.EffectiveInCycleId equals cycle.Id
+                        join day in dbContext.TradingDays.AsNoTracking()
+                            on cycle.TradingDayId equals day.Id
+                        where denomination.CompanyId == companyId
+                            && day.DayNumber >= evidence.EvaluationStartTradingDayNumber
+                            && day.DayNumber <= evidence.EvaluationEndTradingDayNumber
+                        orderby denomination.Id
+                        select new
+                        {
+                            Event = denomination,
+                            CycleNumber = cycle.CycleNumber,
+                            TradingDayNumber = day.DayNumber,
+                        })
+                    .ToListAsync();
+                denominationEvents = denominationRows
+                    .Select(row => new AuditDenominationEventResponse(
+                        row.Event.Id,
+                        row.Event.ActionType.ToString(),
+                        row.Event.Ratio,
+                        row.Event.IssuedSharesBefore,
+                        row.Event.IssuedSharesAfter,
+                        row.Event.PriceBefore,
+                        row.Event.PriceAfter,
+                        row.Event.EffectiveInCycleId,
+                        row.CycleNumber,
+                        row.TradingDayNumber,
+                        row.Event.CreatedAt))
+                    .ToArray();
+
+                var emissionRows = await (
+                        from emission in dbContext.ShareEmissions.AsNoTracking()
+                        join cycle in dbContext.MarketCycles.AsNoTracking()
+                            on emission.CreatedInCycleId equals cycle.Id
+                        join day in dbContext.TradingDays.AsNoTracking()
+                            on cycle.TradingDayId equals day.Id
+                        where emission.CompanyId == companyId
+                            && day.DayNumber >= evidence.EvaluationStartTradingDayNumber
+                            && day.DayNumber <= evidence.EvaluationEndTradingDayNumber
+                        orderby emission.Id
+                        select new
+                        {
+                            Event = emission,
+                            CycleNumber = cycle.CycleNumber,
+                            TradingDayNumber = day.DayNumber,
+                        })
+                    .ToListAsync();
+                freeShareEmissionEvents = emissionRows
+                    .Select(row => new AuditShareEmissionEventResponse(
+                        row.Event.Id,
+                        row.Event.SharesEmitted,
+                        row.Event.RecipientCount,
+                        row.Event.CreatedInCycleId,
+                        row.CycleNumber,
+                        row.TradingDayNumber,
+                        row.Event.CreatedAt))
+                    .ToArray();
+            }
+
+            var audit = rating.Evidence;
+            return Results.Ok(new CompanyAuditDetailResponse(
+                rating.Id,
+                rating.CompanyId,
+                companyName,
+                rating.Rating.ToString(),
+                rating.ImpactPercent,
+                rating.AuditorId,
+                auditorName,
+                rating.CreatedInCycleId,
+                createdInCycleNumber,
+                rating.CreatedAt,
+                audit is not null,
+                audit?.EvaluationStartTradingDayNumber,
+                audit?.EvaluationEndTradingDayNumber,
+                audit?.EffectiveTradingDayNumber,
+                audit?.TotalScore,
+                audit?.AdjustedReturnScore,
+                audit?.CycleJumpScore,
+                audit?.FreeShareEmissionScore,
+                audit?.DenominationScore,
+                audit?.DividendOutcomeScore,
+                audit?.DividendCoverageScore,
+                audit?.IndustryScore,
+                audit?.ProfitabilityFactorScore,
+                audit?.StabilityFactorScore,
+                audit?.ClosureRiskFactorScore,
+                audit?.ManagementOutlookFactorScore,
+                audit?.StartPrice,
+                audit?.EndPrice,
+                audit?.AdjustedReturnPercent,
+                audit?.MaximumAdjustedCycleMovePercent,
+                audit?.OpeningIssuedShares,
+                audit?.EmittedShares,
+                audit?.FreeShareDilutionPercent,
+                audit?.StockSplitCount,
+                audit?.ReverseSplitCount,
+                audit?.LatestDividendEvent is null
+                    ? null
+                    : ToCompanyDividendEventResponse(audit.LatestDividendEvent),
+                audit?.IssuerCash,
+                audit?.ModeledMaximumDividend,
+                audit?.DividendCoverageRatio,
+                audit?.OpeningIndustrySentiment,
+                audit?.ClosingIndustrySentiment,
+                audit?.IndustryTrend.ToString(),
+                audit?.CompanyFinancialSnapshot is null
+                    ? null
+                    : ToCompanyFinancialSummaryResponse(audit.CompanyFinancialSnapshot),
+                denominationEvents,
+                freeShareEmissionEvents));
+        });
+
         app.MapGet("/companies/{companyId:int}/emissions", async (int companyId, int? take, AppDbContext dbContext) =>
         {
             var limit = Math.Clamp(take ?? 20, 1, 100);
@@ -250,6 +498,7 @@ public static partial class MarketEndpoints
                 .OrderByDescending(post => post.Id)
                 .Take(limit)
                 .Include(post => post.Industries)
+                .Include(post => post.PortfolioAuditSummary)
                 .ToListAsync();
 
             var companyNameById = await dbContext.Companies

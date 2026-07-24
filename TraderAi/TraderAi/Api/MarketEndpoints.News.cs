@@ -17,6 +17,7 @@ public static partial class MarketEndpoints
                 .OrderByDescending(post => post.Id)
                 .Take(limit)
                 .Include(post => post.Industries)
+                .Include(post => post.PortfolioAuditSummary)
                 .ToListAsync();
 
             var companyNameById = await dbContext.Companies
@@ -43,6 +44,7 @@ public static partial class MarketEndpoints
                 .Skip((pageIndex - 1) * size)
                 .Take(size)
                 .Include(post => post.Industries)
+                .Include(post => post.PortfolioAuditSummary)
                 .ToListAsync();
 
             var companyNameById = await dbContext.Companies
@@ -55,6 +57,58 @@ public static partial class MarketEndpoints
                 .ToArray();
 
             return Results.Ok(new PagedNewsResponse(items, total, pageIndex, size));
+        });
+
+        app.MapGet("/portfolio-audit-summaries/{summaryId:int}", async (
+            int summaryId,
+            AppDbContext dbContext) =>
+        {
+            var summary = await dbContext.PortfolioAuditSummaries
+                .AsNoTracking()
+                .Include(candidate => candidate.Items)
+                    .ThenInclude(item => item.CompanyRating)
+                        .ThenInclude(rating => rating!.Evidence)
+                .FirstOrDefaultAsync(candidate => candidate.Id == summaryId);
+            if (summary is null)
+            {
+                return Results.NotFound(new { error = "Portfolio audit summary not found." });
+            }
+
+            var companyIds = summary.Items.Select(item => item.CompanyId).Distinct().ToArray();
+            var companyNames = await dbContext.Companies
+                .Where(company => companyIds.Contains(company.Id))
+                .ToDictionaryAsync(company => company.Id, company => company.Name);
+            var items = summary.Items
+                .OrderBy(item => item.CompanyId)
+                .Select(item => new PortfolioAuditSummaryItemResponse(
+                    item.Id,
+                    item.CompanyId,
+                    companyNames.GetValueOrDefault(item.CompanyId, $"#{item.CompanyId}"),
+                    item.CompanyRatingId,
+                    item.PlayerQuantity,
+                    item.ManagedFundQuantity,
+                    item.CompanyRating?.Rating.ToString() ?? string.Empty,
+                    item.CompanyRating?.Evidence?.TotalScore,
+                    item.CompanyRating?.Evidence?.AdjustedReturnPercent,
+                    item.CompanyRating?.Evidence?.DividendCoverageRatio,
+                    item.CompanyRating?.Evidence?.IndustryTrend.ToString()))
+                .ToArray();
+
+            return Results.Ok(new PortfolioAuditSummaryResponse(
+                summary.Id,
+                summary.NewsPostId,
+                summary.EvaluationStartTradingDayNumber,
+                summary.EvaluationEndTradingDayNumber,
+                summary.EffectiveTradingDayNumber,
+                summary.ExtraRaisedExpectationsCount,
+                summary.RaisedExpectationsCount,
+                summary.StableCount,
+                summary.LowRiskCount,
+                summary.HighRiskCount,
+                summary.AverageScore,
+                summary.OverallDirection.ToString(),
+                summary.CreatedAt,
+                items));
         });
 
         app.MapPost("/news", async (ManualNewsRequest request, NewsService newsService, AppDbContext dbContext) =>
@@ -145,6 +199,7 @@ public static partial class MarketEndpoints
                 .OrderByDescending(post => post.Id)
                 .Take(limit)
                 .Include(post => post.Industries)
+                .Include(post => post.PortfolioAuditSummary)
                 .ToListAsync();
             var companyNameById = await dbContext.Companies
                 .ToDictionaryAsync(company => company.Id, company => company.Name);

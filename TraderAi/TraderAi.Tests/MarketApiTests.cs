@@ -1943,6 +1943,417 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
+    public async Task CompanyDetailReturnsLatestFinancialSummaryForRetainedClosedCompany()
+    {
+        await WithClientAsync(async (client, configured) =>
+        {
+            await client.PostAsync("/market/seed", null);
+
+            int companyId;
+            using (var scope = configured.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var company = await db.Companies.OrderBy(candidate => candidate.Id).FirstAsync();
+                var auditor = await db.Auditors.FirstAsync();
+                var snapshot = await db.CompanyFinancialSnapshots
+                    .SingleAsync(candidate => candidate.CompanyId == company.Id);
+
+                snapshot.Revenue = 12_345m;
+                snapshot.NetProfit = 1_234m;
+                snapshot.OperatingCashFlow = 1_111m;
+                snapshot.ClosureRiskScore = 92m;
+                snapshot.ClosureRiskLevel = CompanyMetricLevel.High;
+                db.CompanyRatings.Add(new CompanyRating
+                {
+                    CompanyId = company.Id,
+                    AuditorId = auditor.Id,
+                    Rating = CompanyRiskRating.Stable,
+                    CreatedInCycleId = market.CurrentCycleId!.Value,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                company.ClosedInCycleId = market.CurrentCycleId;
+                company.ClosedAt = DateTime.UtcNow;
+                await db.SaveChangesAsync();
+                companyId = company.Id;
+            }
+
+            var detail = await client.GetFromJsonAsync<CompanyDetailWithFinancialsDto>(
+                $"/companies/{companyId}");
+
+            Assert.True(detail!.IsClosed);
+            Assert.Equal("Stable", detail.CurrentRating);
+            Assert.NotNull(detail.LatestFinancial);
+            Assert.Equal(12_345m, detail.LatestFinancial.Revenue);
+            Assert.Equal(1_234m, detail.LatestFinancial.NetProfit);
+            Assert.Equal(1_111m, detail.LatestFinancial.OperatingCashFlow);
+            Assert.Equal(92m, detail.LatestFinancial.ClosureRiskScore);
+            Assert.Equal("High", detail.LatestFinancial.ClosureRiskLevel);
+        });
+    }
+
+    [Fact]
+    public async Task CompanyDetailReturnsNullWhenFinancialHistoryDoesNotExist()
+    {
+        await WithClientAsync(async (client, configured) =>
+        {
+            await client.PostAsync("/market/seed", null);
+
+            int companyId;
+            using (var scope = configured.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                companyId = await db.Companies.OrderBy(company => company.Id).Select(company => company.Id).FirstAsync();
+                await db.CompanyFinancialSnapshots
+                    .Where(snapshot => snapshot.CompanyId == companyId)
+                    .ExecuteDeleteAsync();
+            }
+
+            using var detail = await client.GetFromJsonAsync<JsonDocument>($"/companies/{companyId}");
+
+            Assert.Equal(JsonValueKind.Null, detail!.RootElement.GetProperty("latestFinancial").ValueKind);
+        });
+    }
+
+    [Fact]
+    public async Task CompanyFinancialHistoryIsNewestFirstAndCalculatesDeltasAcrossPageBoundaries()
+    {
+        await WithClientAsync(async (client, configured) =>
+        {
+            await client.PostAsync("/market/seed", null);
+
+            int companyId;
+            using (var scope = configured.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var cycle = await db.MarketCycles.SingleAsync(candidate => candidate.Id == market.CurrentCycleId);
+                var company = await db.Companies.OrderBy(candidate => candidate.Id).FirstAsync();
+                companyId = company.Id;
+                await db.CompanyFinancialSnapshots
+                    .Where(snapshot => snapshot.CompanyId == companyId)
+                    .ExecuteDeleteAsync();
+
+                var createdAt = DateTime.UtcNow.AddMinutes(-3);
+                db.CompanyFinancialSnapshots.AddRange(
+                    FinancialSnapshot(companyId, cycle.Id, 1, CompanyFinancialSnapshotMoment.Seed, 0m, createdAt),
+                    FinancialSnapshot(companyId, cycle.Id, 1, CompanyFinancialSnapshotMoment.DayOpening, 100m, createdAt.AddMinutes(1)),
+                    FinancialSnapshot(companyId, cycle.Id, 1, CompanyFinancialSnapshotMoment.Midday, 150m, createdAt.AddMinutes(2)));
+                await db.SaveChangesAsync();
+            }
+
+            var firstPage = await client.GetFromJsonAsync<PagedCompanyFinancialsDto>(
+                $"/companies/{companyId}/financials?page=1&pageSize=2");
+
+            Assert.Equal(3, firstPage!.Total);
+            Assert.Equal(1, firstPage.Page);
+            Assert.Equal(2, firstPage.PageSize);
+            Assert.Equal(["Midday", "DayOpening"], firstPage.Items.Select(item => item.Current.Moment));
+
+            var newest = firstPage.Items[0];
+            Assert.Equal(150m, newest.Current.Revenue);
+            Assert.Equal(15m, newest.Current.NetProfit);
+            Assert.Equal(12m, newest.Current.OperatingCashFlow);
+            Assert.Equal(300m, newest.Current.TotalAssets);
+            Assert.Equal(120m, newest.Current.TotalLiabilities);
+            Assert.Equal(60m, newest.Current.TotalDebt);
+            Assert.Equal(1.5m, newest.Current.ExpectedDividendPerShare);
+            Assert.Equal(30m, newest.Current.ExpectedDividendPool);
+            Assert.Equal(2m, newest.Current.DividendCoverageRatio);
+            Assert.Equal(25m, newest.Current.BusinessRiskScore);
+            Assert.Equal(165m, newest.Current.ManagementRevenueForecast);
+            Assert.Equal(16.5m, newest.Current.ManagementProfitForecast);
+            Assert.Equal(13.2m, newest.Current.ManagementOperatingCashFlowForecast);
+            Assert.Equal("Positive", newest.Current.ManagementOutlook);
+            Assert.Equal(80m, newest.Current.ManagementConfidenceScore);
+            Assert.Equal(70m, newest.Current.ProfitabilityScore);
+            Assert.Equal("High", newest.Current.ProfitabilityLevel);
+            Assert.Equal(75m, newest.Current.StabilityScore);
+            Assert.Equal("Low", newest.Current.FinancialVolatilityLevel);
+            Assert.Equal(20m, newest.Current.ClosureRiskScore);
+            Assert.Equal("Low", newest.Current.ClosureRiskLevel);
+            Assert.Equal("Revenue, NetProfit", newest.Current.ChangedMetrics);
+            Assert.Equal(100m, newest.Previous!.Revenue);
+            Assert.Equal(50m, newest.AbsoluteDelta!.Revenue);
+            Assert.Equal(50m, newest.PercentageDelta!.Revenue);
+
+            var boundary = firstPage.Items[1];
+            Assert.Equal(0m, boundary.Previous!.Revenue);
+            Assert.Equal(100m, boundary.AbsoluteDelta!.Revenue);
+            Assert.Null(boundary.PercentageDelta!.Revenue);
+
+            var secondPage = await client.GetFromJsonAsync<PagedCompanyFinancialsDto>(
+                $"/companies/{companyId}/financials?page=2&pageSize=2");
+            var seed = Assert.Single(secondPage!.Items);
+            Assert.Equal("Seed", seed.Current.Moment);
+            Assert.Null(seed.Previous);
+            Assert.Null(seed.AbsoluteDelta);
+            Assert.Null(seed.PercentageDelta);
+        });
+    }
+
+    [Fact]
+    public async Task CompanyFinancialHistoryReturnsNotFoundForUnknownCompany()
+    {
+        await WithClientAsync(async (client, _) =>
+        {
+            using var response = await client.GetAsync("/companies/999999/financials?page=1&pageSize=10");
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Contains("Company not found.", await response.Content.ReadAsStringAsync());
+        });
+    }
+
+    [Fact]
+    public async Task CompanyAuditEndpointsPageSummariesAndExposeEvidenceBackedDetails()
+    {
+        await WithClientAsync(async (client, configured) =>
+        {
+            await client.PostAsync("/market/seed", null);
+
+            int companyId;
+            int evidenceRatingId;
+            int legacyRatingId;
+            using (var scope = configured.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var cycle = await db.MarketCycles.SingleAsync(candidate => candidate.Id == market.CurrentCycleId);
+                var tradingDay = await db.TradingDays.SingleAsync(day => day.Id == cycle.TradingDayId);
+                var company = await db.Companies.OrderBy(candidate => candidate.Id).FirstAsync();
+                var auditor = await db.Auditors.FirstAsync();
+                var snapshot = await db.CompanyFinancialSnapshots
+                    .SingleAsync(candidate => candidate.CompanyId == company.Id);
+                companyId = company.Id;
+                snapshot.ProfitabilityScore = 80m;
+                snapshot.ProfitabilityLevel = CompanyMetricLevel.High;
+                snapshot.StabilityScore = 75m;
+                snapshot.FinancialVolatilityLevel = CompanyMetricLevel.Low;
+                snapshot.ClosureRiskScore = 20m;
+                snapshot.ClosureRiskLevel = CompanyMetricLevel.Low;
+                snapshot.ManagementOutlook = ManagementOutlook.Positive;
+                snapshot.ManagementConfidenceScore = 90m;
+
+                var legacy = new CompanyRating
+                {
+                    CompanyId = company.Id,
+                    AuditorId = auditor.Id,
+                    Rating = CompanyRiskRating.LowRisk,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow.AddMinutes(-2),
+                };
+                var evidenceBacked = new CompanyRating
+                {
+                    CompanyId = company.Id,
+                    AuditorId = auditor.Id,
+                    Rating = CompanyRiskRating.RaisedExpectations,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow.AddMinutes(-1),
+                };
+                db.CompanyRatings.AddRange(legacy, evidenceBacked);
+                await db.SaveChangesAsync();
+                legacyRatingId = legacy.Id;
+                evidenceRatingId = evidenceBacked.Id;
+
+                db.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+                {
+                    CompanyRatingId = evidenceBacked.Id,
+                    CompanyId = company.Id,
+                    CompanyFinancialSnapshotId = snapshot.Id,
+                    EvaluationStartTradingDayNumber = tradingDay.DayNumber,
+                    EvaluationEndTradingDayNumber = tradingDay.DayNumber,
+                    EffectiveTradingDayNumber = tradingDay.DayNumber + 1,
+                    TotalScore = 4,
+                    AdjustedReturnScore = 2,
+                    CycleJumpScore = -1,
+                    FreeShareEmissionScore = -1,
+                    DenominationScore = 1,
+                    DividendOutcomeScore = 1,
+                    DividendCoverageScore = 1,
+                    IndustryScore = 1,
+                    ProfitabilityFactorScore = 2,
+                    StabilityFactorScore = 1,
+                    ClosureRiskFactorScore = 2,
+                    ManagementOutlookFactorScore = 1,
+                    StartPrice = 100m,
+                    EndPrice = 106m,
+                    AdjustedReturnPercent = 6m,
+                    MaximumAdjustedCycleMovePercent = 5m,
+                    OpeningIssuedShares = company.IssuedSharesCount,
+                    EmittedShares = 10,
+                    FreeShareDilutionPercent = 0.1m,
+                    StockSplitCount = 1,
+                    ReverseSplitCount = 0,
+                    IssuerCash = 5_000m,
+                    ModeledMaximumDividend = 1_000m,
+                    DividendCoverageRatio = 5m,
+                    OpeningIndustrySentiment = 10,
+                    ClosingIndustrySentiment = 25,
+                    IndustryTrend = IndustryTrend.Rising,
+                });
+                db.StockDenominationEvents.Add(new StockDenominationEvent
+                {
+                    CompanyId = company.Id,
+                    ActionType = StockDenominationActionType.Split,
+                    Ratio = 2,
+                    IssuedSharesBefore = company.IssuedSharesCount / 2,
+                    IssuedSharesAfter = company.IssuedSharesCount,
+                    PriceBefore = 200m,
+                    PriceAfter = 100m,
+                    EffectiveInCycleId = cycle.Id,
+                    EffectiveInCycleNumber = cycle.CycleNumber,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                db.ShareEmissions.Add(new ShareEmission
+                {
+                    CompanyId = company.Id,
+                    SharesEmitted = 10,
+                    RecipientCount = 2,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                });
+                await db.SaveChangesAsync();
+            }
+
+            var firstPage = await client.GetFromJsonAsync<PagedCompanyAuditsDto>(
+                $"/companies/{companyId}/audits?page=1&pageSize=1");
+            Assert.Equal(2, firstPage!.Total);
+            var summary = Assert.Single(firstPage.Items);
+            Assert.Equal(evidenceRatingId, summary.Id);
+            Assert.True(summary.EvidenceAvailable);
+            Assert.Equal(4, summary.TotalScore);
+            Assert.Equal(6m, summary.AdjustedReturnPercent);
+            Assert.Equal("Rising", summary.IndustryTrend);
+            Assert.NotNull(summary.FinancialFactors);
+            Assert.Equal("High", summary.FinancialFactors.ProfitabilityLevel);
+            Assert.Equal(2, summary.ProfitabilityFactorScore);
+            Assert.Equal(1, summary.StabilityFactorScore);
+            Assert.Equal(2, summary.ClosureRiskFactorScore);
+            Assert.Equal(1, summary.ManagementOutlookFactorScore);
+
+            var secondPage = await client.GetFromJsonAsync<PagedCompanyAuditsDto>(
+                $"/companies/{companyId}/audits?page=2&pageSize=1");
+            var legacySummary = Assert.Single(secondPage!.Items);
+            Assert.Equal(legacyRatingId, legacySummary.Id);
+            Assert.False(legacySummary.EvidenceAvailable);
+            Assert.Null(legacySummary.TotalScore);
+            Assert.Null(legacySummary.FinancialFactors);
+
+            var detail = await client.GetFromJsonAsync<CompanyAuditDetailDto>(
+                $"/companies/{companyId}/audits/{evidenceRatingId}");
+            Assert.True(detail!.EvidenceAvailable);
+            Assert.Equal(4, detail.TotalScore);
+            Assert.Equal(2, detail.AdjustedReturnScore);
+            Assert.Equal(2, detail.ProfitabilityFactorScore);
+            Assert.Equal(100m, detail.StartPrice);
+            Assert.Equal(106m, detail.EndPrice);
+            Assert.NotNull(detail.Financial);
+            Assert.Single(detail.DenominationEvents);
+            Assert.Equal("Split", detail.DenominationEvents[0].ActionType);
+            Assert.Single(detail.FreeShareEmissionEvents);
+            Assert.Equal(10, detail.FreeShareEmissionEvents[0].SharesEmitted);
+
+            var legacyDetail = await client.GetFromJsonAsync<CompanyAuditDetailDto>(
+                $"/companies/{companyId}/audits/{legacyRatingId}");
+            Assert.False(legacyDetail!.EvidenceAvailable);
+            Assert.Null(legacyDetail.TotalScore);
+            Assert.Null(legacyDetail.Financial);
+            Assert.Empty(legacyDetail.DenominationEvents);
+            Assert.Empty(legacyDetail.FreeShareEmissionEvents);
+        });
+    }
+
+    [Fact]
+    public async Task PortfolioAuditSummaryIsLinkedFromNewsAndReturnsImmutableItems()
+    {
+        await WithClientAsync(async (client, configured) =>
+        {
+            await client.PostAsync("/market/seed", null);
+
+            int summaryId;
+            int newsId;
+            using (var scope = configured.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var market = await db.Markets.SingleAsync();
+                var cycle = await db.MarketCycles.SingleAsync(candidate => candidate.Id == market.CurrentCycleId);
+                var company = await db.Companies.OrderBy(candidate => candidate.Id).FirstAsync();
+                var auditor = await db.Auditors.FirstAsync();
+                var rating = new CompanyRating
+                {
+                    CompanyId = company.Id,
+                    AuditorId = auditor.Id,
+                    Rating = CompanyRiskRating.Stable,
+                    CreatedInCycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                };
+                db.CompanyRatings.Add(rating);
+                await db.SaveChangesAsync();
+                db.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+                {
+                    CompanyRatingId = rating.Id,
+                    CompanyId = company.Id,
+                    EvaluationStartTradingDayNumber = 1,
+                    EvaluationEndTradingDayNumber = 2,
+                    EffectiveTradingDayNumber = 3,
+                    TotalScore = 1,
+                    DividendCoverageRatio = 2m,
+                    IndustryTrend = IndustryTrend.Plateau,
+                });
+                var news = new NewsPost
+                {
+                    Title = "Portfolio audit update",
+                    Content = "Evidence-backed portfolio summary.",
+                    PublishedInCycleId = cycle.Id,
+                    PublishedAt = DateTime.UtcNow,
+                    Scope = NewsImpactScope.None,
+                    Category = NewsCategory.PortfolioAudit,
+                };
+                var summary = new PortfolioAuditSummary
+                {
+                    NewsPost = news,
+                    EvaluationStartTradingDayNumber = 1,
+                    EvaluationEndTradingDayNumber = 2,
+                    EffectiveTradingDayNumber = 3,
+                    StableCount = 1,
+                    AverageScore = 1m,
+                    OverallDirection = PortfolioAuditDirection.Neutral,
+                    CreatedAt = DateTime.UtcNow,
+                };
+                summary.Items.Add(new PortfolioAuditSummaryItem
+                {
+                    CompanyId = company.Id,
+                    CompanyRating = rating,
+                    PlayerQuantity = 12,
+                    ManagedFundQuantity = 34,
+                });
+                db.PortfolioAuditSummaries.Add(summary);
+                await db.SaveChangesAsync();
+                summaryId = summary.Id;
+                newsId = news.Id;
+            }
+
+            using var newsFeed = await client.GetFromJsonAsync<JsonDocument>("/news");
+            var portfolioNews = newsFeed!.RootElement.EnumerateArray()
+                .Single(post => post.GetProperty("id").GetInt32() == newsId);
+            Assert.Equal(summaryId, portfolioNews.GetProperty("portfolioAuditSummaryId").GetInt32());
+
+            var detail = await client.GetFromJsonAsync<PortfolioAuditSummaryDto>(
+                $"/portfolio-audit-summaries/{summaryId}");
+            Assert.Equal(newsId, detail!.NewsPostId);
+            Assert.Equal(1, detail.StableCount);
+            Assert.Equal(1m, detail.AverageScore);
+            Assert.Equal("Neutral", detail.OverallDirection);
+            var item = Assert.Single(detail.Items);
+            Assert.Equal(12, item.PlayerQuantity);
+            Assert.Equal(34, item.ManagedFundQuantity);
+            Assert.Equal("Stable", item.Rating);
+            Assert.Equal(1, item.TotalScore);
+            Assert.Equal(2m, item.DividendCoverageRatio);
+            Assert.Equal("Plateau", item.IndustryTrend);
+        });
+    }
+
+    [Fact]
     public async Task CompanyShareholdersListOwnersAfterPurchase()
     {
         var databaseDirectory = Path.Combine(Path.GetTempPath(), $"trader-ai-{Guid.NewGuid():N}");
@@ -4113,6 +4524,44 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         });
     }
 
+    private static CompanyFinancialSnapshot FinancialSnapshot(
+        int companyId,
+        int cycleId,
+        int tradingDayNumber,
+        CompanyFinancialSnapshotMoment moment,
+        decimal revenue,
+        DateTime createdAt) =>
+        new()
+        {
+            CompanyId = companyId,
+            CreatedInCycleId = cycleId,
+            TradingDayNumber = tradingDayNumber,
+            Moment = moment,
+            CreatedAt = createdAt,
+            Revenue = revenue,
+            NetProfit = revenue * 0.10m,
+            OperatingCashFlow = revenue * 0.08m,
+            TotalAssets = 300m,
+            TotalLiabilities = 120m,
+            TotalDebt = 60m,
+            ExpectedDividendPerShare = revenue * 0.01m,
+            ExpectedDividendPool = revenue * 0.20m,
+            DividendCoverageRatio = 2m,
+            BusinessRiskScore = 25m,
+            ManagementRevenueForecast = revenue * 1.10m,
+            ManagementProfitForecast = revenue * 0.11m,
+            ManagementOperatingCashFlowForecast = revenue * 0.088m,
+            ManagementOutlook = ManagementOutlook.Positive,
+            ManagementConfidenceScore = 80m,
+            ProfitabilityScore = 70m,
+            ProfitabilityLevel = CompanyMetricLevel.High,
+            StabilityScore = 75m,
+            FinancialVolatilityLevel = CompanyMetricLevel.Low,
+            ClosureRiskScore = 20m,
+            ClosureRiskLevel = CompanyMetricLevel.Low,
+            ChangedMetrics = CompanyFinancialMetric.Revenue | CompanyFinancialMetric.NetProfit,
+        };
+
     private async Task WithClientAsync(
         Func<HttpClient, WebApplicationFactory<Program>, Task> body,
         Action<IServiceCollection>? configure = null)
@@ -4232,6 +4681,147 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
         int ShareholderCount,
         string? CurrentRating,
         string? PreviousRating);
+
+    private sealed record CompanyDetailWithFinancialsDto(
+        int Id,
+        string Name,
+        bool IsClosed,
+        string? CurrentRating,
+        CompanyFinancialSummaryDto? LatestFinancial);
+
+    private sealed record CompanyFinancialSummaryDto(
+        int Id,
+        int CreatedInCycleId,
+        int TradingDayNumber,
+        string Moment,
+        DateTime CreatedAt,
+        decimal Revenue,
+        decimal NetProfit,
+        decimal OperatingCashFlow,
+        decimal TotalAssets,
+        decimal TotalLiabilities,
+        decimal TotalDebt,
+        decimal ExpectedDividendPerShare,
+        decimal ExpectedDividendPool,
+        decimal DividendCoverageRatio,
+        CompanyDividendEventDto? LatestDividend,
+        decimal BusinessRiskScore,
+        decimal ManagementRevenueForecast,
+        decimal ManagementProfitForecast,
+        decimal ManagementOperatingCashFlowForecast,
+        string ManagementOutlook,
+        decimal ManagementConfidenceScore,
+        decimal ProfitabilityScore,
+        string ProfitabilityLevel,
+        decimal StabilityScore,
+        string FinancialVolatilityLevel,
+        decimal ClosureRiskScore,
+        string ClosureRiskLevel,
+        string ChangedMetrics);
+
+    private sealed record CompanyFinancialValuesDto(
+        decimal? Revenue,
+        decimal? NetProfit,
+        decimal? OperatingCashFlow,
+        decimal? TotalAssets,
+        decimal? TotalLiabilities,
+        decimal? TotalDebt,
+        decimal? ExpectedDividendPerShare,
+        decimal? ExpectedDividendPool,
+        decimal? DividendCoverageRatio,
+        decimal? BusinessRiskScore,
+        decimal? ManagementRevenueForecast,
+        decimal? ManagementProfitForecast,
+        decimal? ManagementOperatingCashFlowForecast,
+        decimal? ManagementConfidenceScore,
+        decimal? ProfitabilityScore,
+        decimal? StabilityScore,
+        decimal? ClosureRiskScore);
+
+    private sealed record CompanyFinancialHistoryItemDto(
+        CompanyFinancialSummaryDto Current,
+        CompanyFinancialValuesDto? Previous,
+        CompanyFinancialValuesDto? AbsoluteDelta,
+        CompanyFinancialValuesDto? PercentageDelta);
+
+    private sealed record PagedCompanyFinancialsDto(
+        CompanyFinancialHistoryItemDto[] Items,
+        int Total,
+        int Page,
+        int PageSize);
+
+    private sealed record CompanyDividendEventDto(
+        int Id,
+        decimal DeclaredAmount,
+        decimal FundedAmount,
+        string FundingOutcome,
+        decimal IssuerCashBeforeFunding,
+        int CreatedInCycleId,
+        int TradingDayNumber,
+        DateTime CreatedAt);
+
+    private sealed record CompanyAuditSummaryDto(
+        int Id,
+        string Rating,
+        bool EvidenceAvailable,
+        int? TotalScore,
+        decimal? AdjustedReturnPercent,
+        string? IndustryTrend,
+        CompanyAuditFinancialFactorsDto? FinancialFactors,
+        int? ProfitabilityFactorScore,
+        int? StabilityFactorScore,
+        int? ClosureRiskFactorScore,
+        int? ManagementOutlookFactorScore);
+
+    private sealed record CompanyAuditFinancialFactorsDto(
+        int FinancialSnapshotId,
+        decimal ProfitabilityScore,
+        string ProfitabilityLevel,
+        decimal StabilityScore,
+        string FinancialVolatilityLevel,
+        decimal ClosureRiskScore,
+        string ClosureRiskLevel,
+        string ManagementOutlook,
+        decimal ManagementConfidenceScore);
+
+    private sealed record PagedCompanyAuditsDto(
+        CompanyAuditSummaryDto[] Items,
+        int Total,
+        int Page,
+        int PageSize);
+
+    private sealed record CompanyAuditDetailDto(
+        int Id,
+        bool EvidenceAvailable,
+        int? TotalScore,
+        int? AdjustedReturnScore,
+        int? ProfitabilityFactorScore,
+        decimal? StartPrice,
+        decimal? EndPrice,
+        CompanyFinancialSummaryDto? Financial,
+        AuditDenominationEventDto[] DenominationEvents,
+        AuditShareEmissionEventDto[] FreeShareEmissionEvents);
+
+    private sealed record AuditDenominationEventDto(int Id, string ActionType);
+
+    private sealed record AuditShareEmissionEventDto(int Id, int SharesEmitted);
+
+    private sealed record PortfolioAuditSummaryDto(
+        int Id,
+        int NewsPostId,
+        int StableCount,
+        decimal AverageScore,
+        string OverallDirection,
+        PortfolioAuditSummaryItemDto[] Items);
+
+    private sealed record PortfolioAuditSummaryItemDto(
+        int CompanyId,
+        int PlayerQuantity,
+        int ManagedFundQuantity,
+        string Rating,
+        int? TotalScore,
+        decimal? DividendCoverageRatio,
+        string? IndustryTrend);
 
     private sealed record CorporateCashMovementDto(
         int Id,

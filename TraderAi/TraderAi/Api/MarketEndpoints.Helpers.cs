@@ -424,7 +424,8 @@ public static partial class MarketEndpoints
             post.TargetCompanyId is int companyId ? companyNameById.GetValueOrDefault(companyId) : null,
             post.Industries
                 .Select(link => industryNameById.GetValueOrDefault(link.IndustryId) ?? $"#{link.IndustryId}")
-                .ToArray());
+                .ToArray(),
+            post.PortfolioAuditSummary?.Id);
 
     private static CrisisResponse ToCrisisResponse(
         Crisis crisis,
@@ -694,6 +695,7 @@ public static partial class MarketEndpoints
         var remainingPauseCycles = priceBand?.PauseUntilCycleNumber is int pauseUntil
             ? Math.Max(0, pauseUntil - currentCycleNumber)
             : 0;
+        var latestFinancial = await LatestCompanyFinancialSnapshotAsync(dbContext, companyId);
 
         return new CompanyDetailResponse(
             company.Id,
@@ -726,8 +728,194 @@ public static partial class MarketEndpoints
             priceBand?.LimitStateStartedCycleNumber,
             priceBand?.PauseUntilCycleNumber,
             remainingPauseCycles,
-            remainingPauseCycles * 2);
+            remainingPauseCycles * 2,
+            latestFinancial is null ? null : ToCompanyFinancialSummaryResponse(latestFinancial));
     }
+
+    private static Task<CompanyFinancialSnapshot?> LatestCompanyFinancialSnapshotAsync(
+        AppDbContext dbContext,
+        int companyId) =>
+        dbContext.CompanyFinancialSnapshots
+            .AsNoTracking()
+            .Where(snapshot => snapshot.CompanyId == companyId)
+            .Include(snapshot => snapshot.LatestDividendEvent)
+            .OrderByDescending(snapshot => snapshot.TradingDayNumber)
+            .ThenByDescending(snapshot => snapshot.Moment)
+            .ThenByDescending(snapshot => snapshot.CreatedInCycleId)
+            .ThenByDescending(snapshot => snapshot.CreatedAt)
+            .ThenByDescending(snapshot => snapshot.Id)
+            .FirstOrDefaultAsync();
+
+    private static CompanyFinancialSummaryResponse ToCompanyFinancialSummaryResponse(
+        CompanyFinancialSnapshot snapshot) =>
+        new(
+            snapshot.Id,
+            snapshot.CreatedInCycleId,
+            snapshot.TradingDayNumber,
+            snapshot.Moment.ToString(),
+            snapshot.CreatedAt,
+            snapshot.Revenue,
+            snapshot.NetProfit,
+            snapshot.OperatingCashFlow,
+            snapshot.TotalAssets,
+            snapshot.TotalLiabilities,
+            snapshot.TotalDebt,
+            snapshot.ExpectedDividendPerShare,
+            snapshot.ExpectedDividendPool,
+            snapshot.DividendCoverageRatio,
+            snapshot.LatestDividendEvent is null
+                ? null
+                : ToCompanyDividendEventResponse(snapshot.LatestDividendEvent),
+            snapshot.BusinessRiskScore,
+            snapshot.ManagementRevenueForecast,
+            snapshot.ManagementProfitForecast,
+            snapshot.ManagementOperatingCashFlowForecast,
+            snapshot.ManagementOutlook.ToString(),
+            snapshot.ManagementConfidenceScore,
+            snapshot.ProfitabilityScore,
+            snapshot.ProfitabilityLevel.ToString(),
+            snapshot.StabilityScore,
+            snapshot.FinancialVolatilityLevel.ToString(),
+            snapshot.ClosureRiskScore,
+            snapshot.ClosureRiskLevel.ToString(),
+            snapshot.ChangedMetrics.ToString());
+
+    private static CompanyDividendEventResponse ToCompanyDividendEventResponse(
+        CompanyDividendEvent dividend) =>
+        new(
+            dividend.Id,
+            dividend.DeclaredAmount,
+            dividend.FundedAmount,
+            dividend.FundingOutcome.ToString(),
+            dividend.IssuerCashBeforeFunding,
+            dividend.CreatedInCycleId,
+            dividend.TradingDayNumber,
+            dividend.CreatedAt);
+
+    private static CompanyFinancialValuesResponse ToCompanyFinancialValuesResponse(
+        CompanyFinancialSnapshot snapshot) =>
+        new(
+            snapshot.Revenue,
+            snapshot.NetProfit,
+            snapshot.OperatingCashFlow,
+            snapshot.TotalAssets,
+            snapshot.TotalLiabilities,
+            snapshot.TotalDebt,
+            snapshot.ExpectedDividendPerShare,
+            snapshot.ExpectedDividendPool,
+            snapshot.DividendCoverageRatio,
+            snapshot.BusinessRiskScore,
+            snapshot.ManagementRevenueForecast,
+            snapshot.ManagementProfitForecast,
+            snapshot.ManagementOperatingCashFlowForecast,
+            snapshot.ManagementConfidenceScore,
+            snapshot.ProfitabilityScore,
+            snapshot.StabilityScore,
+            snapshot.ClosureRiskScore);
+
+    private static CompanyFinancialValuesResponse ToAbsoluteFinancialDeltaResponse(
+        CompanyFinancialSnapshot current,
+        CompanyFinancialSnapshot previous) =>
+        new(
+            current.Revenue - previous.Revenue,
+            current.NetProfit - previous.NetProfit,
+            current.OperatingCashFlow - previous.OperatingCashFlow,
+            current.TotalAssets - previous.TotalAssets,
+            current.TotalLiabilities - previous.TotalLiabilities,
+            current.TotalDebt - previous.TotalDebt,
+            current.ExpectedDividendPerShare - previous.ExpectedDividendPerShare,
+            current.ExpectedDividendPool - previous.ExpectedDividendPool,
+            current.DividendCoverageRatio - previous.DividendCoverageRatio,
+            current.BusinessRiskScore - previous.BusinessRiskScore,
+            current.ManagementRevenueForecast - previous.ManagementRevenueForecast,
+            current.ManagementProfitForecast - previous.ManagementProfitForecast,
+            current.ManagementOperatingCashFlowForecast - previous.ManagementOperatingCashFlowForecast,
+            current.ManagementConfidenceScore - previous.ManagementConfidenceScore,
+            current.ProfitabilityScore - previous.ProfitabilityScore,
+            current.StabilityScore - previous.StabilityScore,
+            current.ClosureRiskScore - previous.ClosureRiskScore);
+
+    private static CompanyFinancialValuesResponse ToPercentageFinancialDeltaResponse(
+        CompanyFinancialSnapshot current,
+        CompanyFinancialSnapshot previous) =>
+        new(
+            PercentageDelta(current.Revenue, previous.Revenue),
+            PercentageDelta(current.NetProfit, previous.NetProfit),
+            PercentageDelta(current.OperatingCashFlow, previous.OperatingCashFlow),
+            PercentageDelta(current.TotalAssets, previous.TotalAssets),
+            PercentageDelta(current.TotalLiabilities, previous.TotalLiabilities),
+            PercentageDelta(current.TotalDebt, previous.TotalDebt),
+            PercentageDelta(current.ExpectedDividendPerShare, previous.ExpectedDividendPerShare),
+            PercentageDelta(current.ExpectedDividendPool, previous.ExpectedDividendPool),
+            PercentageDelta(current.DividendCoverageRatio, previous.DividendCoverageRatio),
+            PercentageDelta(current.BusinessRiskScore, previous.BusinessRiskScore),
+            PercentageDelta(current.ManagementRevenueForecast, previous.ManagementRevenueForecast),
+            PercentageDelta(current.ManagementProfitForecast, previous.ManagementProfitForecast),
+            PercentageDelta(
+                current.ManagementOperatingCashFlowForecast,
+                previous.ManagementOperatingCashFlowForecast),
+            PercentageDelta(current.ManagementConfidenceScore, previous.ManagementConfidenceScore),
+            PercentageDelta(current.ProfitabilityScore, previous.ProfitabilityScore),
+            PercentageDelta(current.StabilityScore, previous.StabilityScore),
+            PercentageDelta(current.ClosureRiskScore, previous.ClosureRiskScore));
+
+    private static decimal? PercentageDelta(decimal current, decimal previous) =>
+        previous == 0m
+            ? null
+            : Math.Round(
+                (current - previous) / Math.Abs(previous) * 100m,
+                6,
+                MidpointRounding.AwayFromZero);
+
+    private static CompanyAuditSummaryResponse ToCompanyAuditSummaryResponse(
+        CompanyRating rating,
+        string companyName,
+        string auditorName,
+        int createdInCycleNumber)
+    {
+        var evidence = rating.Evidence;
+        return new CompanyAuditSummaryResponse(
+            rating.Id,
+            rating.CompanyId,
+            companyName,
+            rating.Rating.ToString(),
+            rating.ImpactPercent,
+            rating.AuditorId,
+            auditorName,
+            rating.CreatedInCycleId,
+            createdInCycleNumber,
+            rating.CreatedAt,
+            evidence is not null,
+            evidence?.EvaluationStartTradingDayNumber,
+            evidence?.EvaluationEndTradingDayNumber,
+            evidence?.EffectiveTradingDayNumber,
+            evidence?.TotalScore,
+            evidence?.AdjustedReturnPercent,
+            evidence?.MaximumAdjustedCycleMovePercent,
+            evidence?.LatestDividendEvent?.FundingOutcome.ToString(),
+            evidence?.DividendCoverageRatio,
+            evidence?.IndustryTrend.ToString(),
+            evidence?.ProfitabilityFactorScore,
+            evidence?.StabilityFactorScore,
+            evidence?.ClosureRiskFactorScore,
+            evidence?.ManagementOutlookFactorScore,
+            evidence?.CompanyFinancialSnapshot is null
+                ? null
+                : ToCompanyAuditFinancialFactorsResponse(evidence.CompanyFinancialSnapshot));
+    }
+
+    private static CompanyAuditFinancialFactorsResponse ToCompanyAuditFinancialFactorsResponse(
+        CompanyFinancialSnapshot snapshot) =>
+        new(
+            snapshot.Id,
+            snapshot.ProfitabilityScore,
+            snapshot.ProfitabilityLevel.ToString(),
+            snapshot.StabilityScore,
+            snapshot.FinancialVolatilityLevel.ToString(),
+            snapshot.ClosureRiskScore,
+            snapshot.ClosureRiskLevel.ToString(),
+            snapshot.ManagementOutlook.ToString(),
+            snapshot.ManagementConfidenceScore);
 
     private static async Task<ParticipantDetailResponse?> BuildParticipantDetailAsync(
         AppDbContext dbContext,

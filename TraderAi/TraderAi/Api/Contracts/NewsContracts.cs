@@ -17,7 +17,8 @@ public sealed record NewsPostResponse(
     decimal? ImpactPercent,
     int? TargetCompanyId,
     string? TargetCompanyName,
-    string[] IndustryNames);
+    string[] IndustryNames,
+    int? PortfolioAuditSummaryId);
 
 public sealed record NewsThemeResponse(string Key, string Label);
 
