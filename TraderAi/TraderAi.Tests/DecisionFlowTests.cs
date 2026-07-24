@@ -151,6 +151,32 @@ public sealed class DecisionFlowTests : IDisposable
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
             },
+            new Order
+            {
+                ParticipantId = buyer.Id,
+                CompanyId = company.Id,
+                Type = OrderType.Buy,
+                Status = OrderStatus.PartiallyFilled,
+                Quantity = 10,
+                FilledQuantity = 15,
+                LimitPrice = 100m,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            },
+            new Order
+            {
+                ParticipantId = seller.Id,
+                CompanyId = company.Id,
+                Type = OrderType.Sell,
+                Status = OrderStatus.Open,
+                Quantity = 10,
+                FilledQuantity = 10,
+                LimitPrice = 100m,
+                CreatedInCycleId = cycle.Id,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            },
             IssuerSell(company.Id, cycle.Id, quantity: 1_000, price: 100m));
         await context.SaveChangesAsync();
 
@@ -287,6 +313,80 @@ public sealed class DecisionFlowTests : IDisposable
         Assert.Single(CommandsForTable("CompanyAuditEvidence"));
         Assert.Single(CommandsForTable("CompanyFinancialSnapshots"));
         Assert.Single(CommandsForTable("CompanyDividendEvents"));
+    }
+
+    [Fact]
+    public async Task FinancialEvidenceUsesOneWindowedLatestTwoQueryForLargeHistories()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var firstCompany = await context.Companies.SingleAsync();
+        var industry = await context.Industries.SingleAsync();
+        var cycle = await context.MarketCycles.SingleAsync();
+        await SetDecisionTradingDayAsync(cycle, dayNumber: 100);
+        var secondCompany = new Company
+        {
+            Name = "Large History Company",
+            IndustryId = industry.Id,
+            IssuedSharesCount = 20,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        context.Companies.Add(secondCompany);
+        await context.SaveChangesAsync();
+        context.PriceSnapshots.Add(new PriceSnapshot
+        {
+            CompanyId = secondCompany.Id,
+            Price = 50m,
+            CreatedInCycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+        });
+
+        foreach (var (company, offset) in new[]
+                 {
+                     (firstCompany, 0m),
+                     (secondCompany, 1_000m),
+                 })
+        {
+            for (var dayNumber = 1; dayNumber <= 50; dayNumber++)
+            {
+                context.CompanyFinancialSnapshots.AddRange(
+                    FinancialSnapshot(
+                        company.Id,
+                        cycle.Id,
+                        dayNumber,
+                        CompanyFinancialSnapshotMoment.DayOpening,
+                        offset + (dayNumber * 10m) + 1m),
+                    FinancialSnapshot(
+                        company.Id,
+                        cycle.Id,
+                        dayNumber,
+                        CompanyFinancialSnapshotMoment.Midday,
+                        offset + (dayNumber * 10m) + 2m));
+            }
+        }
+
+        await context.SaveChangesAsync();
+        var engine = new QuoteCapturingDecisionEngine();
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            engine,
+            new MarketCycleLock(),
+            new Random(1));
+        commandInterceptor.Clear();
+
+        await service.GenerateDecisionsAsync();
+
+        var quotes = engine.LastQuotes!.ToDictionary(quote => quote.CompanyId);
+        Assert.Equal(502m, quotes[firstCompany.Id].Financials!.Current.Revenue);
+        Assert.Equal(1m, quotes[firstCompany.Id].Financials!.Deltas.Revenue);
+        Assert.Equal(1_502m, quotes[secondCompany.Id].Financials!.Current.Revenue);
+        Assert.Equal(1m, quotes[secondCompany.Id].Financials!.Deltas.Revenue);
+        var financialQuery = Assert.Single(CommandsForTable("CompanyFinancialSnapshots"));
+        Assert.Contains("ROW_NUMBER() OVER", financialQuery, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PARTITION BY", financialQuery, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("<= 2", financialQuery, StringComparison.Ordinal);
+        Assert.DoesNotContain("COUNT(", financialQuery, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

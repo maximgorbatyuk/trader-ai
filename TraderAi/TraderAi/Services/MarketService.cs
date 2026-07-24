@@ -2918,7 +2918,8 @@ public sealed class MarketService(
         // sentiment. Aggregate on the server once so the quote batch does not scale with order-book row count.
         var orderFlowByCompany = (await dbContext.Orders
                 .Where(order => (order.Status == OrderStatus.Open || order.Status == OrderStatus.PartiallyFilled)
-                    && order.ParticipantId != null)
+                    && order.ParticipantId != null
+                    && order.Quantity > order.FilledQuantity)
                 .GroupBy(order => order.CompanyId)
                 .Select(group => new
                 {
@@ -3034,9 +3035,7 @@ public sealed class MarketService(
                 row => row.Evidence.CompanyId,
                 row => BuildEffectiveAuditEvidence(row.Rating, row.Evidence));
 
-            // A correlated rank keeps at most the latest two eligible checkpoints per company in one bounded
-            // query. Future or foreign-run rows cannot suppress a checkpoint the current decision may observe.
-            var financialRows = await (
+            var eligibleFinancialSnapshots =
                     from snapshot in dbContext.CompanyFinancialSnapshots.AsNoTracking()
                     join snapshotCycle in dbContext.MarketCycles.AsNoTracking()
                         on snapshot.CreatedInCycleId equals snapshotCycle.Id
@@ -3044,19 +3043,17 @@ public sealed class MarketService(
                         && snapshot.TradingDayNumber <= decisionEvidencePoint.DayNumber
                         && snapshotCycle.MarketRunId == decisionEvidencePoint.MarketRunId
                         && snapshotCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
-                        && (
-                            from candidate in dbContext.CompanyFinancialSnapshots.AsNoTracking()
-                            join candidateCycle in dbContext.MarketCycles.AsNoTracking()
-                                on candidate.CreatedInCycleId equals candidateCycle.Id
-                            where candidate.CompanyId == snapshot.CompanyId
-                                && candidate.TradingDayNumber <= decisionEvidencePoint.DayNumber
-                                && candidateCycle.MarketRunId == decisionEvidencePoint.MarketRunId
-                                && candidateCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
-                                && candidate.Id > snapshot.Id
-                            select candidate.Id)
-                        .Count() < 2
-                    select snapshot)
+                    select snapshot;
+            // EF translates this grouped top-N shape to ROW_NUMBER partitioned by company, keeping the database
+            // work and returned evidence bounded even when a company has a long financial history.
+            var financialGroups = await eligibleFinancialSnapshots
+                .GroupBy(snapshot => snapshot.CompanyId)
+                .Select(group => group
+                    .OrderByDescending(snapshot => snapshot.Id)
+                    .Take(2)
+                    .ToList())
                 .ToListAsync();
+            var financialRows = financialGroups.SelectMany(group => group).ToList();
             var financialCheckpointsByCompany = financialRows
                 .GroupBy(snapshot => snapshot.CompanyId)
                 .ToDictionary(
