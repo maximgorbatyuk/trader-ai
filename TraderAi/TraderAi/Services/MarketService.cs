@@ -2982,67 +2982,117 @@ public sealed class MarketService(
             .Select(snapshot => snapshot.CompanyId)
             .Where(companyId => !closedCompanyIds.Contains(companyId) && !haltedCompanyIds.Contains(companyId))
             .ToHashSet();
-        var currentTradingDayNumber = market.CurrentTradingDayId is int currentTradingDayId
-            ? await dbContext.TradingDays.AsNoTracking()
-                .Where(day => day.Id == currentTradingDayId)
-                .Select(day => day.DayNumber)
+        var decisionEvidencePoint = market.CurrentCycleId is int evidenceCycleId
+            && market.CurrentTradingDayId is int evidenceTradingDayId
+            ? await (
+                    from cycle in dbContext.MarketCycles.AsNoTracking()
+                    join day in dbContext.TradingDays.AsNoTracking()
+                        on cycle.TradingDayId equals day.Id
+                    where cycle.Id == evidenceCycleId
+                        && day.Id == evidenceTradingDayId
+                        && cycle.MarketRunId == market.CurrentRunId
+                    select new
+                    {
+                        MarketRunId = cycle.MarketRunId,
+                        cycle.CycleNumber,
+                        day.DayNumber,
+                    })
                 .FirstOrDefaultAsync()
-            : 0;
-
+            : null;
         var effectiveAuditByCompany = new Dictionary<int, EffectiveAuditEvidence>();
-        if (currentTradingDayNumber > 0)
+        var financialEvidenceByCompany = new Dictionary<int, LatestFinancialEvidence>();
+        if (decisionEvidencePoint is not null)
         {
             var auditRows = await (
                     from evidence in dbContext.CompanyAuditEvidence.AsNoTracking()
                     join rating in dbContext.CompanyRatings.AsNoTracking()
                         on evidence.CompanyRatingId equals rating.Id
+                    join ratingCycle in dbContext.MarketCycles.AsNoTracking()
+                        on rating.CreatedInCycleId equals ratingCycle.Id
                     where quoteCompanyIds.Contains(evidence.CompanyId)
-                        && evidence.EffectiveTradingDayNumber <= currentTradingDayNumber
-                        && !dbContext.CompanyAuditEvidence.Any(candidate =>
-                            candidate.CompanyId == evidence.CompanyId
-                            && candidate.EffectiveTradingDayNumber <= currentTradingDayNumber
-                            && (candidate.EffectiveTradingDayNumber > evidence.EffectiveTradingDayNumber
-                                || (candidate.EffectiveTradingDayNumber == evidence.EffectiveTradingDayNumber
-                                    && candidate.CompanyRatingId > evidence.CompanyRatingId)))
+                        && evidence.EffectiveTradingDayNumber <= decisionEvidencePoint.DayNumber
+                        && ratingCycle.MarketRunId == decisionEvidencePoint.MarketRunId
+                        && ratingCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
+                        && !(
+                            from candidateEvidence in dbContext.CompanyAuditEvidence.AsNoTracking()
+                            join candidateRating in dbContext.CompanyRatings.AsNoTracking()
+                                on candidateEvidence.CompanyRatingId equals candidateRating.Id
+                            join candidateCycle in dbContext.MarketCycles.AsNoTracking()
+                                on candidateRating.CreatedInCycleId equals candidateCycle.Id
+                            where candidateEvidence.CompanyId == evidence.CompanyId
+                                && candidateEvidence.EffectiveTradingDayNumber <= decisionEvidencePoint.DayNumber
+                                && candidateCycle.MarketRunId == decisionEvidencePoint.MarketRunId
+                                && candidateCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
+                                && (candidateEvidence.EffectiveTradingDayNumber > evidence.EffectiveTradingDayNumber
+                                    || (candidateEvidence.EffectiveTradingDayNumber == evidence.EffectiveTradingDayNumber
+                                        && candidateEvidence.CompanyRatingId > evidence.CompanyRatingId))
+                            select candidateEvidence.CompanyRatingId)
+                        .Any()
                     select new { Evidence = evidence, Rating = rating.Rating })
                 .ToListAsync();
             effectiveAuditByCompany = auditRows.ToDictionary(
                 row => row.Evidence.CompanyId,
                 row => BuildEffectiveAuditEvidence(row.Rating, row.Evidence));
+
+            // A correlated rank keeps at most the latest two eligible checkpoints per company in one bounded
+            // query. Future or foreign-run rows cannot suppress a checkpoint the current decision may observe.
+            var financialRows = await (
+                    from snapshot in dbContext.CompanyFinancialSnapshots.AsNoTracking()
+                    join snapshotCycle in dbContext.MarketCycles.AsNoTracking()
+                        on snapshot.CreatedInCycleId equals snapshotCycle.Id
+                    where quoteCompanyIds.Contains(snapshot.CompanyId)
+                        && snapshot.TradingDayNumber <= decisionEvidencePoint.DayNumber
+                        && snapshotCycle.MarketRunId == decisionEvidencePoint.MarketRunId
+                        && snapshotCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
+                        && (
+                            from candidate in dbContext.CompanyFinancialSnapshots.AsNoTracking()
+                            join candidateCycle in dbContext.MarketCycles.AsNoTracking()
+                                on candidate.CreatedInCycleId equals candidateCycle.Id
+                            where candidate.CompanyId == snapshot.CompanyId
+                                && candidate.TradingDayNumber <= decisionEvidencePoint.DayNumber
+                                && candidateCycle.MarketRunId == decisionEvidencePoint.MarketRunId
+                                && candidateCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
+                                && candidate.Id > snapshot.Id
+                            select candidate.Id)
+                        .Count() < 2
+                    select snapshot)
+                .ToListAsync();
+            var financialCheckpointsByCompany = financialRows
+                .GroupBy(snapshot => snapshot.CompanyId)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.OrderByDescending(snapshot => snapshot.Id).ToList());
+
+            var latestDividendRows = await (
+                    from dividend in dbContext.CompanyDividendEvents.AsNoTracking()
+                    join dividendCycle in dbContext.MarketCycles.AsNoTracking()
+                        on dividend.CreatedInCycleId equals dividendCycle.Id
+                    where quoteCompanyIds.Contains(dividend.CompanyId)
+                        && dividend.TradingDayNumber <= decisionEvidencePoint.DayNumber
+                        && dividendCycle.MarketRunId == decisionEvidencePoint.MarketRunId
+                        && dividendCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
+                        && !(
+                            from candidate in dbContext.CompanyDividendEvents.AsNoTracking()
+                            join candidateCycle in dbContext.MarketCycles.AsNoTracking()
+                                on candidate.CreatedInCycleId equals candidateCycle.Id
+                            where candidate.CompanyId == dividend.CompanyId
+                                && candidate.TradingDayNumber <= decisionEvidencePoint.DayNumber
+                                && candidateCycle.MarketRunId == decisionEvidencePoint.MarketRunId
+                                && candidateCycle.CycleNumber <= decisionEvidencePoint.CycleNumber
+                                && candidate.Id > dividend.Id
+                            select candidate.Id)
+                        .Any()
+                    select dividend)
+                .ToListAsync();
+            var latestDividendByCompany = latestDividendRows.ToDictionary(
+                dividend => dividend.CompanyId);
+            financialEvidenceByCompany = financialCheckpointsByCompany.ToDictionary(
+                entry => entry.Key,
+                entry => BuildLatestFinancialEvidence(
+                    entry.Value[0],
+                    entry.Value.Count > 1 ? entry.Value[1] : null,
+                    latestDividendByCompany.GetValueOrDefault(entry.Key)));
         }
-
-        // A correlated rank keeps at most the latest two checkpoints per company in one bounded query. The
-        // previous checkpoint is needed only for deltas; it never becomes a second quote-level evidence object.
-        var financialRows = await dbContext.CompanyFinancialSnapshots.AsNoTracking()
-            .Where(snapshot => quoteCompanyIds.Contains(snapshot.CompanyId)
-                && (currentTradingDayNumber <= 0 || snapshot.TradingDayNumber <= currentTradingDayNumber))
-            .Where(snapshot => dbContext.CompanyFinancialSnapshots.Count(candidate =>
-                candidate.CompanyId == snapshot.CompanyId
-                && (currentTradingDayNumber <= 0 || candidate.TradingDayNumber <= currentTradingDayNumber)
-                && candidate.Id > snapshot.Id) < 2)
-            .ToListAsync();
-        var financialCheckpointsByCompany = financialRows
-            .GroupBy(snapshot => snapshot.CompanyId)
-            .ToDictionary(
-                group => group.Key,
-                group => group.OrderByDescending(snapshot => snapshot.Id).ToList());
-
-        var latestDividendRows = await dbContext.CompanyDividendEvents.AsNoTracking()
-            .Where(dividend => quoteCompanyIds.Contains(dividend.CompanyId)
-                && (currentTradingDayNumber <= 0 || dividend.TradingDayNumber <= currentTradingDayNumber)
-                && !dbContext.CompanyDividendEvents.Any(candidate =>
-                    candidate.CompanyId == dividend.CompanyId
-                    && (currentTradingDayNumber <= 0 || candidate.TradingDayNumber <= currentTradingDayNumber)
-                    && candidate.Id > dividend.Id))
-            .ToListAsync();
-        var latestDividendByCompany = latestDividendRows.ToDictionary(
-            dividend => dividend.CompanyId);
-        var financialEvidenceByCompany = financialCheckpointsByCompany.ToDictionary(
-            entry => entry.Key,
-            entry => BuildLatestFinancialEvidence(
-                entry.Value[0],
-                entry.Value.Count > 1 ? entry.Value[1] : null,
-                latestDividendByCompany.GetValueOrDefault(entry.Key)));
 
         var sentimentByIndustry = await dbContext.Industries.AsNoTracking()
             .ToDictionaryAsync(industry => industry.Id, industry => industry.SentimentValue);

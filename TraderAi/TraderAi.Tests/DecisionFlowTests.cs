@@ -289,6 +289,195 @@ public sealed class DecisionFlowTests : IDisposable
         Assert.Single(CommandsForTable("CompanyDividendEvents"));
     }
 
+    [Fact]
+    public async Task GeneratedEvidenceIgnoresOtherRunsAndLaterCyclesInTheCurrentRun()
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var company = await context.Companies.SingleAsync();
+        var currentCycle = await context.MarketCycles.SingleAsync();
+        await SetDecisionTradingDayAsync(currentCycle, dayNumber: 10);
+        var day = await context.TradingDays.SingleAsync();
+        var market = await context.Markets.SingleAsync();
+        var currentRun = new MarketRun { StartedAt = DateTime.UtcNow.AddHours(-1) };
+        var otherRun = new MarketRun { StartedAt = DateTime.UtcNow.AddHours(-2) };
+        context.MarketRuns.AddRange(currentRun, otherRun);
+        await context.SaveChangesAsync();
+        currentCycle.MarketRunId = currentRun.Id;
+        currentCycle.CycleNumber = 10;
+        market.CurrentRunId = currentRun.Id;
+        var previousCycle = new MarketCycle
+        {
+            MarketRunId = currentRun.Id,
+            CycleNumber = 9,
+            TradingDayId = day.Id,
+            TradingCycleNumber = 1,
+            Status = CycleStatus.Completed,
+        };
+        var otherRunCycle = new MarketCycle
+        {
+            MarketRunId = otherRun.Id,
+            CycleNumber = 8,
+            TradingDayId = day.Id,
+            TradingCycleNumber = 4,
+            Status = CycleStatus.Completed,
+        };
+        var laterCycle = new MarketCycle
+        {
+            MarketRunId = currentRun.Id,
+            CycleNumber = 11,
+            TradingDayId = day.Id,
+            TradingCycleNumber = 3,
+            Status = CycleStatus.Planned,
+        };
+        context.MarketCycles.AddRange(previousCycle, otherRunCycle, laterCycle);
+        await context.SaveChangesAsync();
+
+        var auditor = new Auditor
+        {
+            Name = "Run Auditor",
+            Description = "Run isolation",
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.Auditors.Add(auditor);
+        await context.SaveChangesAsync();
+        await AddAuditAsync(
+            company.Id,
+            auditor.Id,
+            currentCycle.Id,
+            CompanyRiskRating.RaisedExpectations,
+            totalScore: 4,
+            effectiveDay: 8);
+        await AddAuditAsync(
+            company.Id,
+            auditor.Id,
+            otherRunCycle.Id,
+            CompanyRiskRating.HighRisk,
+            totalScore: -7,
+            effectiveDay: 9);
+        await AddAuditAsync(
+            company.Id,
+            auditor.Id,
+            laterCycle.Id,
+            CompanyRiskRating.ExtraRaisedExpectations,
+            totalScore: 10,
+            effectiveDay: 10);
+
+        var previous = FinancialSnapshot(
+            company.Id,
+            previousCycle.Id,
+            tradingDayNumber: 9,
+            moment: CompanyFinancialSnapshotMoment.Midday,
+            revenue: 150m);
+        var current = FinancialSnapshot(
+            company.Id,
+            currentCycle.Id,
+            tradingDayNumber: 10,
+            moment: CompanyFinancialSnapshotMoment.DayOpening,
+            revenue: 200m);
+        var otherRunSnapshot = FinancialSnapshot(
+            company.Id,
+            otherRunCycle.Id,
+            tradingDayNumber: 9,
+            moment: CompanyFinancialSnapshotMoment.DayOpening,
+            revenue: 900m);
+        var laterSnapshot = FinancialSnapshot(
+            company.Id,
+            laterCycle.Id,
+            tradingDayNumber: 10,
+            moment: CompanyFinancialSnapshotMoment.Midday,
+            revenue: 1_000m);
+        context.CompanyFinancialSnapshots.AddRange(previous, current, otherRunSnapshot, laterSnapshot);
+        context.CompanyDividendEvents.AddRange(
+            DividendEvent(
+                company.Id,
+                currentCycle.Id,
+                DividendFundingOutcome.Reduced,
+                declared: 20m,
+                funded: 15m),
+            DividendEvent(
+                company.Id,
+                otherRunCycle.Id,
+                DividendFundingOutcome.Skipped,
+                declared: 30m,
+                funded: 0m),
+            DividendEvent(
+                company.Id,
+                laterCycle.Id,
+                DividendFundingOutcome.Paid,
+                declared: 40m,
+                funded: 40m));
+        await context.SaveChangesAsync();
+
+        var engine = new QuoteCapturingDecisionEngine();
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            engine,
+            new MarketCycleLock(),
+            new Random(1));
+
+        await service.GenerateDecisionsAsync();
+
+        var quote = Assert.Single(engine.LastQuotes!);
+        Assert.Equal(CompanyRiskRating.RaisedExpectations, quote.Audit!.Rating);
+        Assert.Equal(4, quote.Audit.TotalScore);
+        Assert.Equal(current.Id, quote.Financials!.SnapshotId);
+        Assert.Equal(200m, quote.Financials.Current.Revenue);
+        Assert.Equal(50m, quote.Financials.Deltas.Revenue);
+        Assert.Equal(DividendFundingOutcome.Reduced, quote.Financials.LatestDividendOutcome);
+        Assert.Equal(20m, quote.Financials.LatestDividendDeclaredAmount);
+        Assert.Equal(15m, quote.Financials.LatestDividendFundedAmount);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task UnresolvedDecisionCycleOrDayLeavesQuoteEvidenceEmpty(bool invalidateCycle)
+    {
+        await TestMarketSeed.SeedClassicScenarioAsync(context);
+        var company = await context.Companies.SingleAsync();
+        var cycle = await context.MarketCycles.SingleAsync();
+        await SetDecisionTradingDayAsync(cycle, dayNumber: 10);
+        var auditor = new Auditor
+        {
+            Name = "Unavailable Point Auditor",
+            Description = "Decision point validation",
+            CreatedAt = DateTime.UtcNow,
+        };
+        context.Auditors.Add(auditor);
+        await context.SaveChangesAsync();
+        await AddAuditAsync(
+            company.Id,
+            auditor.Id,
+            cycle.Id,
+            CompanyRiskRating.RaisedExpectations,
+            totalScore: 5,
+            effectiveDay: 10);
+        await AddFinancialHistoryAsync(company.Id, cycle.Id, revenueOffset: 0m);
+
+        await context.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        await context.Database.ExecuteSqlRawAsync(invalidateCycle
+            ? "UPDATE Markets SET CurrentCycleId = 999999;"
+            : "UPDATE Markets SET CurrentTradingDayId = 999999;");
+        await context.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+        context.ChangeTracker.Clear();
+
+        var engine = new QuoteCapturingDecisionEngine();
+        var service = new MarketService(
+            context,
+            new MatchingEngine(context),
+            engine,
+            new MarketCycleLock(),
+            new Random(1));
+
+        await service.GenerateDecisionsAsync();
+
+        var quote = Assert.Single(engine.LastQuotes!);
+        Assert.NotNull(quote.Bounds);
+        Assert.Null(quote.Audit);
+        Assert.Null(quote.Financials);
+    }
+
     // The batch resolves bounds once and hands them to the engine on the quote: the active band and the wider
     // allowed range for a $100 reference.
     [Fact]
@@ -1410,6 +1599,60 @@ public sealed class DecisionFlowTests : IDisposable
         await context.SaveChangesAsync();
         return latest.Id;
     }
+
+    private static CompanyFinancialSnapshot FinancialSnapshot(
+        int companyId,
+        int cycleId,
+        int tradingDayNumber,
+        CompanyFinancialSnapshotMoment moment,
+        decimal revenue) =>
+        new()
+        {
+            CompanyId = companyId,
+            CreatedInCycleId = cycleId,
+            TradingDayNumber = tradingDayNumber,
+            Moment = moment,
+            CreatedAt = DateTime.UtcNow,
+            Revenue = revenue,
+            NetProfit = revenue / 10m,
+            OperatingCashFlow = revenue / 8m,
+            TotalAssets = revenue * 2m,
+            TotalLiabilities = revenue,
+            TotalDebt = revenue / 2m,
+            ExpectedDividendPerShare = 1m,
+            ExpectedDividendPool = 10m,
+            DividendCoverageRatio = 2m,
+            BusinessRiskScore = 40m,
+            ManagementRevenueForecast = revenue * 1.1m,
+            ManagementProfitForecast = revenue / 9m,
+            ManagementOperatingCashFlowForecast = revenue / 7m,
+            ManagementOutlook = ManagementOutlook.Positive,
+            ManagementConfidenceScore = 60m,
+            ProfitabilityScore = 60m,
+            ProfitabilityLevel = CompanyMetricLevel.Medium,
+            StabilityScore = 60m,
+            FinancialVolatilityLevel = CompanyMetricLevel.Medium,
+            ClosureRiskScore = 30m,
+            ClosureRiskLevel = CompanyMetricLevel.Low,
+        };
+
+    private static CompanyDividendEvent DividendEvent(
+        int companyId,
+        int cycleId,
+        DividendFundingOutcome outcome,
+        decimal declared,
+        decimal funded) =>
+        new()
+        {
+            CompanyId = companyId,
+            DeclaredAmount = declared,
+            FundedAmount = funded,
+            FundingOutcome = outcome,
+            IssuerCashBeforeFunding = funded,
+            CreatedInCycleId = cycleId,
+            TradingDayNumber = 10,
+            CreatedAt = DateTime.UtcNow,
+        };
 
     private List<string> CommandsForTable(string tableName) =>
         commandInterceptor.Commands
