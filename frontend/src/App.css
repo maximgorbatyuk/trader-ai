@@ -3632,6 +3632,73 @@
   flex: 1;
 }
 
+/* Financial reports are dense definition lists inside the fixed-height company detail panel. The header stays
+   visible while only the report body scrolls, matching the detail-page viewport contract. */
+.financial-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.financial-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: var(--s-1);
+}
+
+.financial-section + .financial-section {
+  margin-top: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--border);
+}
+
+.financial-section h3 {
+  margin: 0 0 var(--s-2);
+  color: var(--ink);
+  font-size: var(--t-sm);
+  font-weight: 700;
+}
+
+.financial-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 0 var(--s-5);
+  margin: 0;
+}
+
+.financial-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+  min-width: 0;
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--border-2);
+}
+
+.financial-metric dt {
+  color: var(--muted);
+  font-size: var(--t-xs);
+  line-height: 1.35;
+}
+
+.financial-metric dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.financial-direction {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-1);
+  white-space: nowrap;
+}
+
 .traders-hint {
   margin-top: var(--s-4);
 }

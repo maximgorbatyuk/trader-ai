@@ -54,3 +54,95 @@ test('renders compact ownership metrics before the paginated shareholder table',
   assert.ok(tableIndex > ownershipIndex)
   assert.ok(pagerIndex > tableIndex)
 })
+
+test('renders financials and management outlook as independent accessible tabs', async (t) => {
+  const server = await createServer({
+    root: new URL('..', import.meta.url).pathname,
+    logLevel: 'silent',
+    server: { middlewareMode: true },
+  })
+  t.after(() => server.close())
+
+  const companyDetailModule = await server.ssrLoadModule('/src/CompanyDetail.jsx')
+  assert.equal(typeof companyDetailModule.CompanyDetailTabs, 'function')
+
+  const commonProps = {
+    onTab() {},
+    detail: {
+      name: 'Acme',
+      latestFinancial: {
+        tradingDayNumber: 4,
+        moment: 'Midday',
+        revenue: 125_000,
+        netProfit: 12_000,
+        operatingCashFlow: 9_500,
+        totalAssets: 240_000,
+        totalLiabilities: 90_000,
+        totalDebt: 45_000,
+        expectedDividendPerShare: 1.25,
+        expectedDividendPool: 12_500,
+        dividendCoverageRatio: 2.4,
+        latestDividend: null,
+        businessRiskScore: 28.5,
+        managementRevenueForecast: 136_000,
+        managementProfitForecast: 13_500,
+        managementOperatingCashFlowForecast: 10_200,
+        managementOutlook: 'Positive',
+        managementConfidenceScore: 76.4,
+        profitabilityScore: 78.2,
+        profitabilityLevel: 'High',
+        stabilityScore: 82.1,
+        financialVolatilityLevel: 'Low',
+        closureRiskScore: 18.7,
+        closureRiskLevel: 'Low',
+      },
+    },
+    prices: [],
+    corporateCashMovements: { items: [], total: 0, page: 1, pageSize: 10 },
+    corporateCashPage: 1,
+    onCorporateCashPage() {},
+    corporateCashTableRef: { current: null },
+    shareholders: [],
+    orders: [],
+    trades: [],
+    emissions: [],
+    ratings: [],
+    investments: [],
+    news: [],
+    onSelectNews() {},
+  }
+
+  const financialsMarkup = renderToStaticMarkup(
+    createElement(companyDetailModule.CompanyDetailTabs, {
+      ...commonProps,
+      activeTab: 'financials',
+    }),
+  )
+  assert.match(
+    financialsMarkup,
+    /role="tab" id="companytab-financials" aria-selected="true" aria-controls="companypanel-financials" tabindex="0"/,
+  )
+  assert.match(
+    financialsMarkup,
+    /role="tab" id="companytab-management" aria-selected="false" aria-controls="companypanel-management" tabindex="-1"/,
+  )
+  assert.match(
+    financialsMarkup,
+    /role="tabpanel" id="companypanel-financials" aria-labelledby="companytab-financials"/,
+  )
+  assert.match(financialsMarkup, />Financials<\/h2>/)
+  assert.doesNotMatch(financialsMarkup, />Management outlook<\/h2>/)
+
+  const managementMarkup = renderToStaticMarkup(
+    createElement(companyDetailModule.CompanyDetailTabs, {
+      ...commonProps,
+      activeTab: 'management',
+    }),
+  )
+  assert.match(
+    managementMarkup,
+    /role="tab" id="companytab-management" aria-selected="true" aria-controls="companypanel-management" tabindex="0"/,
+  )
+  assert.match(managementMarkup, />Management outlook<\/h2>/)
+  assert.doesNotMatch(managementMarkup, />Financials<\/h2>/)
+})

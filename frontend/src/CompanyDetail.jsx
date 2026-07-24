@@ -18,6 +18,10 @@ import { useFitPageSize } from './useFitPageSize'
 import { corporateCashMovementPresentation } from './cashMovements'
 import { luldPresentation } from './marketAccounting'
 import { FavoriteCompanyToggle } from './FavoriteCompanyToggle'
+import { CompanyFinancialsPanel } from './CompanyFinancialsPanel'
+import { CompanyManagementOutlookPanel } from './CompanyManagementOutlookPanel'
+
+export { CompanyFinancialsPanel, CompanyManagementOutlookPanel }
 
 const POLL_INTERVAL_MS = 2500
 const PRICE_HISTORY_POINTS = 32
@@ -26,6 +30,8 @@ const CORPORATE_CASH_PAGE_SIZE = 10
 // The tabbed detail sections, in display order. Each key selects one existing panel below the tab strip.
 const DETAIL_TABS = [
   { key: 'capitalization', label: 'Capitalization' },
+  { key: 'financials', label: 'Financials' },
+  { key: 'management', label: 'Management outlook' },
   { key: 'cash', label: 'Cash movements' },
   { key: 'shareholders', label: 'Shareholders' },
   { key: 'orders', label: 'Recent orders' },
@@ -527,7 +533,7 @@ function CompanyQuickStats({ detail, changeTone }) {
   )
 }
 
-function CompanyDetailTabs({
+export function CompanyDetailTabs({
   activeTab,
   onTab,
   detail,
@@ -601,6 +607,10 @@ function CompanyDetailTabs({
         aria-labelledby={`companytab-${activeTab}`}
       >
         {activeTab === 'capitalization' ? <PriceChartPanel name={detail.name} prices={prices} /> : null}
+        {activeTab === 'financials' ? <CompanyFinancialsPanel financial={detail.latestFinancial} /> : null}
+        {activeTab === 'management' ? (
+          <CompanyManagementOutlookPanel financial={detail.latestFinancial} />
+        ) : null}
         {activeTab === 'cash' ? (
           <CorporateCashMovementsPanel
             movements={corporateCashMovements}
