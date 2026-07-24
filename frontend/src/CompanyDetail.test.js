@@ -376,6 +376,41 @@ test('renders server-paged audit summaries and keeps legacy audits actionable', 
   assert.deepEqual(selected, [])
 })
 
+test('keeps the audit pager on the page that owns last-known rows after a page request fails', async (t) => {
+  const server = await createServer({
+    root: new URL('..', import.meta.url).pathname,
+    logLevel: 'silent',
+    server: { middlewareMode: true },
+  })
+  t.after(() => server.close())
+
+  const { CompanyAuditHistoryPanel } = await server.ssrLoadModule('/src/CompanyDetail.jsx')
+  const markup = renderToStaticMarkup(
+    createElement(CompanyAuditHistoryPanel, {
+      history: {
+        items: [{
+          id: 42,
+          rating: 'Stable',
+          auditorName: 'Northstar Audit',
+          evidenceAvailable: false,
+        }],
+        total: 26,
+        page: 1,
+        pageSize: 6,
+      },
+      page: 2,
+      onPage() {},
+      loading: false,
+      error: 'Could not load page 2.',
+      onSelectAudit() {},
+    }),
+  )
+
+  assert.match(markup, /Showing the last known audit page\./)
+  assert.match(markup, />Page 1 \/ 5</)
+  assert.doesNotMatch(markup, />Page 2 \/ 5</)
+})
+
 test('exposes Audits as the accessible company detail tab', async (t) => {
   const server = await createServer({
     root: new URL('..', import.meta.url).pathname,

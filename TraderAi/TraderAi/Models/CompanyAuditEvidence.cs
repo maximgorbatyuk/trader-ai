@@ -12,6 +12,8 @@ public sealed class CompanyAuditEvidence
 
     public CompanyFinancialSnapshot? CompanyFinancialSnapshot { get; set; }
 
+    public CompanyMetricLevel BusinessRiskLevel { get; set; }
+
     public int EvaluationStartTradingDayNumber { get; set; }
 
     public int EvaluationEndTradingDayNumber { get; set; }

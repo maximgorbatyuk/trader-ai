@@ -103,7 +103,9 @@ function FactorScores({ audit }) {
     {
       key: 'dividend-outcome',
       label: 'Dividend outcome',
-      observed: audit.latestDividend?.fundingOutcome ?? 'No actual dividend recorded',
+      observed: audit.latestDividend
+        ? `${audit.latestDividend.fundingOutcome} · Day ${formatInt(audit.latestDividend.tradingDayNumber)}`
+        : 'No actual dividend recorded',
       score: audit.dividendOutcomeScore,
       explanation: 'Whether the latest declared dividend was paid, reduced, or skipped.',
     },
@@ -295,6 +297,9 @@ function DividendEvidence({ audit }) {
       <dl className="modal-stats audit-evidence-grid">
         <EvidenceValue label="Latest outcome">
           {dividend?.fundingOutcome ?? 'No actual dividend recorded'}
+        </EvidenceValue>
+        <EvidenceValue label="Latest trading day">
+          {dividend ? `Day ${formatInt(dividend.tradingDayNumber)}` : '—'}
         </EvidenceValue>
         <EvidenceValue label="Declared">
           <span className="num">{formatMoney(dividend?.declaredAmount)}</span>

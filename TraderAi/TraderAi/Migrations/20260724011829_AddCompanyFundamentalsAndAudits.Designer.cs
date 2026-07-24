@@ -518,6 +518,10 @@ namespace TraderAi.Migrations
                     b.Property<int>("AdjustedReturnScore")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("BusinessRiskLevel")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<int?>("ClosingIndustrySentiment")
                         .HasColumnType("INTEGER");
 

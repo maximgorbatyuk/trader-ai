@@ -2021,16 +2021,18 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                 };
                 db.CompanyRatings.Add(rating);
                 await db.SaveChangesAsync();
-                db.CompanyAuditEvidence.Add(new CompanyAuditEvidence
+                var auditEvidence = new CompanyAuditEvidence
                 {
                     CompanyRatingId = rating.Id,
                     CompanyId = company.Id,
                     CompanyFinancialSnapshotId = snapshot.Id,
+                    BusinessRiskLevel = CompanyMetricLevel.High,
                     EvaluationStartTradingDayNumber = 1,
                     EvaluationEndTradingDayNumber = 1,
                     EffectiveTradingDayNumber = 2,
                     IndustryTrend = IndustryTrend.Plateau,
-                });
+                };
+                db.CompanyAuditEvidence.Add(auditEvidence);
                 await db.SaveChangesAsync();
                 companyId = company.Id;
                 ratingId = rating.Id;
@@ -2045,7 +2047,7 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
 
             Assert.Equal("Medium", detail!.LatestFinancial!.BusinessRiskLevel);
             Assert.Equal("Medium", Assert.Single(history!.Items).Current.BusinessRiskLevel);
-            Assert.Equal("Medium", audit!.Financial!.BusinessRiskLevel);
+            Assert.Equal("High", audit!.Financial!.BusinessRiskLevel);
         },
         services =>
         {
@@ -2057,6 +2059,29 @@ public sealed class MarketApiTests : IClassFixture<WebApplicationFactory<Program
                     HighLevelMinimumScore = 80m,
                 }));
         });
+    }
+
+    [Fact]
+    public void CompanyAuditSummaryQueryDoesNotJoinTheSnapshotDividendNavigation()
+    {
+        var sourcePath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../TraderAi/Api/MarketEndpoints.Companies.cs"));
+        var source = File.ReadAllText(sourcePath);
+        var summaryStart = source.IndexOf(
+            "app.MapGet(\"/companies/{companyId:int}/audits\"",
+            StringComparison.Ordinal);
+        var detailStart = source.IndexOf(
+            "app.MapGet(\"/companies/{companyId:int}/audits/{auditId:int}\"",
+            StringComparison.Ordinal);
+
+        Assert.True(summaryStart >= 0);
+        Assert.True(detailStart > summaryStart);
+        var summaryQuery = source[summaryStart..detailStart];
+        Assert.DoesNotContain(
+            ".ThenInclude(snapshot => snapshot!.LatestDividendEvent)",
+            summaryQuery,
+            StringComparison.Ordinal);
     }
 
     [Fact]

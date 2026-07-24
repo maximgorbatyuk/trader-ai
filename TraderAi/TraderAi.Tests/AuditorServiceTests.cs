@@ -269,6 +269,34 @@ public sealed class AuditorServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AuditPersistsBusinessRiskLevelUsingItsFinancialThresholds()
+    {
+        var day1 = await AddCycleAsync(1, 1);
+        var day2 = await AddCycleAsync(2, 1);
+        var day3 = await AddCycleAsync(3, 1);
+        var company = await AddCompanyAsync(day1);
+        await AddPriceAsync(company, 100m, day1);
+        await AddPriceAsync(company, 100m, day2);
+        var financial = await AddFinancialAsync(company, day2, CompanyFinancialSnapshotMoment.Midday);
+        financial.BusinessRiskScore = 75m;
+        await context.SaveChangesAsync();
+
+        var service = new AuditorService(
+            context,
+            Options.Create(new AuditorOptions { Enabled = true }),
+            Options.Create(new CompanyFinancialOptions
+            {
+                LowLevelMaximumScore = 20m,
+                HighLevelMinimumScore = 80m,
+            }));
+        await service.ProcessForCycleAsync(day3.Id, day3.CycleNumber, DateTime.UtcNow);
+        await context.SaveChangesAsync();
+
+        var evidence = await context.CompanyAuditEvidence.AsNoTracking().SingleAsync();
+        Assert.Equal(CompanyMetricLevel.Medium, evidence.BusinessRiskLevel);
+    }
+
+    [Fact]
     public async Task RepeatedCallBeforeSaveStagesOneAudit()
     {
         var day1 = await AddCycleAsync(1, 1);
@@ -1095,7 +1123,7 @@ public sealed class AuditorServiceTests : IDisposable
         {
             Enabled = enabled,
             AuditIntervalTradingDays = interval,
-        }));
+        }), Options.Create(new CompanyFinancialOptions()));
 
     private async Task ProcessAsync(MarketCycle cycle, int interval = 2)
     {

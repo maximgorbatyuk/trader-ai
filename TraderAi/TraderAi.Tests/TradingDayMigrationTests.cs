@@ -74,6 +74,7 @@ public sealed class TradingDayMigrationTests
             Assert.Contains("CK_CompanyDividendEvents_Amounts_NonNegative", tables["CompanyDividendEvents"]);
             Assert.Contains("CK_CompanyDividendEvents_FundedNotAboveDeclared", tables["CompanyDividendEvents"]);
             Assert.Contains("AK_CompanyRatings_Id_CompanyId", tables["CompanyRatings"]);
+            Assert.Contains("\"BusinessRiskLevel\" TEXT NOT NULL", tables["CompanyAuditEvidence"]);
             Assert.Contains("CK_CompanyFinancialSnapshots_TradingDay_Positive", tables["CompanyFinancialSnapshots"]);
             Assert.Contains("CK_CompanyFinancialSnapshots_NonNegativeValues", tables["CompanyFinancialSnapshots"]);
             Assert.Contains("CK_CompanyFinancialSnapshots_DebtWithinLiabilities", tables["CompanyFinancialSnapshots"]);

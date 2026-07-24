@@ -1123,6 +1123,7 @@ export function CompanyAuditHistoryPanel({
 }) {
   const items = history.items ?? []
   const pageCount = Math.max(1, Math.ceil((history.total ?? 0) / (history.pageSize || AUDIT_HISTORY_PAGE_SIZE)))
+  const renderedPage = history.page ?? page
 
   return (
     <Panel
@@ -1219,7 +1220,7 @@ export function CompanyAuditHistoryPanel({
               </tbody>
             </table>
           </div>
-          <Pager page={page} pageCount={pageCount} onPage={onPage} />
+          <Pager page={renderedPage} pageCount={pageCount} onPage={onPage} />
         </>
       ) : null}
     </Panel>

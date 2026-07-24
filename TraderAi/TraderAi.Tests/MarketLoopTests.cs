@@ -424,7 +424,8 @@ public sealed class MarketLoopTests : IDisposable
             financialService);
         var auditor = new AuditorService(
             observedContext,
-            Options.Create(new AuditorOptions { Enabled = true }));
+            Options.Create(new AuditorOptions { Enabled = true }),
+            Options.Create(new CompanyFinancialOptions()));
         var service = new MarketService(
             observedContext,
             new MatchingEngine(observedContext),

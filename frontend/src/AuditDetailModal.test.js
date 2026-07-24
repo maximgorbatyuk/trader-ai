@@ -72,7 +72,7 @@ const completeAudit = {
     fundingOutcome: 'Reduced',
     issuerCashBeforeFunding: 22_000,
     createdInCycleId: 490,
-    tradingDayNumber: 9,
+    tradingDayNumber: 7,
     createdAt: '2026-07-23T05:30:00Z',
   },
   issuerCash: 90_000,
@@ -268,6 +268,8 @@ test('renders factor scores and every stored evidence group', () => {
   )
 
   assert.match(markup, />Dividend evidence</)
+  assert.match(markup, /data-audit-factor="dividend-outcome".*Reduced · Day 7/)
+  assert.match(markup, /Latest trading day<\/dt><dd>Day 7</)
   assert.match(markup, />Reduced</)
   assert.match(markup, /\$20,000\.00/)
   assert.match(markup, /\$18,000\.00/)

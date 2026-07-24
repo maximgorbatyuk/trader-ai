@@ -297,6 +297,7 @@ namespace TraderAi.Migrations
                     CompanyRatingId = table.Column<int>(type: "INTEGER", nullable: false),
                     CompanyId = table.Column<int>(type: "INTEGER", nullable: false),
                     CompanyFinancialSnapshotId = table.Column<int>(type: "INTEGER", nullable: true),
+                    BusinessRiskLevel = table.Column<string>(type: "TEXT", nullable: false),
                     EvaluationStartTradingDayNumber = table.Column<int>(type: "INTEGER", nullable: false),
                     EvaluationEndTradingDayNumber = table.Column<int>(type: "INTEGER", nullable: false),
                     EffectiveTradingDayNumber = table.Column<int>(type: "INTEGER", nullable: false),

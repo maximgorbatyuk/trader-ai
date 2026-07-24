@@ -268,7 +268,6 @@ public static partial class MarketEndpoints
                     .ThenInclude(evidence => evidence!.LatestDividendEvent)
                 .Include(rating => rating.Evidence)
                     .ThenInclude(evidence => evidence!.CompanyFinancialSnapshot)
-                        .ThenInclude(snapshot => snapshot!.LatestDividendEvent)
                 .OrderByDescending(rating => rating.Id)
                 .Skip((pageIndex - 1) * size)
                 .Take(size)
@@ -475,7 +474,8 @@ public static partial class MarketEndpoints
                     ? null
                     : ToCompanyFinancialSummaryResponse(
                         audit.CompanyFinancialSnapshot,
-                        financialOptions.Value),
+                        financialOptions.Value,
+                        audit.BusinessRiskLevel),
                 previousFinancial is null
                     ? null
                     : ToCompanyFinancialValuesResponse(previousFinancial),

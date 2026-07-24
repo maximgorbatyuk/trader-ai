@@ -751,7 +751,8 @@ public static partial class MarketEndpoints
 
     private static CompanyFinancialSummaryResponse ToCompanyFinancialSummaryResponse(
         CompanyFinancialSnapshot snapshot,
-        CompanyFinancialOptions financialOptions) =>
+        CompanyFinancialOptions financialOptions,
+        CompanyMetricLevel? businessRiskLevel = null) =>
         new(
             snapshot.Id,
             snapshot.CreatedInCycleId,
@@ -771,7 +772,7 @@ public static partial class MarketEndpoints
                 ? null
                 : ToCompanyDividendEventResponse(snapshot.LatestDividendEvent),
             snapshot.BusinessRiskScore,
-            financialOptions.ClassifyLevel(snapshot.BusinessRiskScore).ToString(),
+            (businessRiskLevel ?? financialOptions.ClassifyLevel(snapshot.BusinessRiskScore)).ToString(),
             snapshot.ManagementRevenueForecast,
             snapshot.ManagementProfitForecast,
             snapshot.ManagementOperatingCashFlowForecast,

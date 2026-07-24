@@ -13,21 +13,29 @@ public sealed class AuditorService
 
     private readonly AppDbContext dbContext;
     private readonly AuditorOptions options;
+    private readonly CompanyFinancialOptions financialOptions;
     private readonly CompanyAuditScorer scorer;
 
     public AuditorService(
         AppDbContext dbContext,
-        IOptions<AuditorOptions> options)
+        IOptions<AuditorOptions> options,
+        IOptions<CompanyFinancialOptions> financialOptions)
     {
         ArgumentNullException.ThrowIfNull(dbContext);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(financialOptions);
         if (!options.Value.IsValid())
         {
             throw new ArgumentException("Auditor options are invalid.", nameof(options));
         }
+        if (!financialOptions.Value.IsValid())
+        {
+            throw new ArgumentException("Company financial options are invalid.", nameof(financialOptions));
+        }
 
         this.dbContext = dbContext;
         this.options = options.Value;
+        this.financialOptions = financialOptions.Value;
         scorer = new CompanyAuditScorer(options);
     }
 
@@ -607,6 +615,9 @@ public sealed class AuditorService
                 CompanyRating = rating,
                 CompanyId = companyId,
                 CompanyFinancialSnapshotId = financial?.Id,
+                BusinessRiskLevel = financial is null
+                    ? CompanyMetricLevel.Medium
+                    : financialOptions.ClassifyLevel(financial.BusinessRiskScore),
                 EvaluationStartTradingDayNumber = candidate.EvaluationStartTradingDayNumber,
                 EvaluationEndTradingDayNumber = candidate.EvaluationEndTradingDayNumber,
                 EffectiveTradingDayNumber = candidate.EffectiveTradingDayNumber,
