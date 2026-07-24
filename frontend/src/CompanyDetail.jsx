@@ -782,53 +782,68 @@ export function CompanyDetailTabs({
           })}
         </div>
       </div>
-      <div
-        className="tabpanel"
-        role="tabpanel"
-        id={`companypanel-${activeTab}`}
-        aria-labelledby={`companytab-${activeTab}`}
-      >
-        {activeTab === 'capitalization' ? <PriceChartPanel name={detail.name} prices={prices} /> : null}
-        {activeTab === 'financials' ? <CompanyFinancialsPanel financial={detail.latestFinancial} /> : null}
-        {activeTab === 'financial-history' ? (
-          <CompanyFinancialHistoryPanel
-            history={financialHistory}
-            page={financialHistoryPage}
-            onPage={onFinancialHistoryPage}
-            loading={financialHistoryLoading}
-            error={financialHistoryError}
-          />
-        ) : null}
-        {activeTab === 'management' ? (
-          <CompanyManagementOutlookPanel financial={detail.latestFinancial} />
-        ) : null}
-        {activeTab === 'cash' ? (
-          <CorporateCashMovementsPanel
-            movements={corporateCashMovements}
-            page={corporateCashPage}
-            onPage={onCorporateCashPage}
-            tableRef={corporateCashTableRef}
-          />
-        ) : null}
-        {activeTab === 'shareholders' ? <ShareholdersPanel shareholders={shareholders} detail={detail} /> : null}
-        {activeTab === 'orders' ? (
-          <OrdersPanel orders={orders} currentPrice={detail.currentPrice} issuedShares={detail.issuedSharesCount} />
-        ) : null}
-        {activeTab === 'trades' ? <TradesPanel trades={trades} companyName={detail.name} /> : null}
-        {activeTab === 'emissions' ? <EmissionsPanel emissions={emissions} /> : null}
-        {activeTab === 'audits' ? (
-          <CompanyAuditHistoryPanel
-            history={auditHistory}
-            page={auditHistoryPage}
-            onPage={onAuditHistoryPage}
-            loading={auditHistoryLoading}
-            error={auditHistoryError}
-            onSelectAudit={onSelectAudit}
-          />
-        ) : null}
-        {activeTab === 'investments' ? <InvestmentsReceivedPanel investments={investments} /> : null}
-        {activeTab === 'news' ? <RelatedNewsPanel news={news} onSelect={onSelectNews} /> : null}
-      </div>
+      {DETAIL_TABS.map((tab) => {
+        const selected = tab.key === activeTab
+        return (
+          <div
+            key={tab.key}
+            className="tabpanel"
+            role="tabpanel"
+            id={`companypanel-${tab.key}`}
+            aria-labelledby={`companytab-${tab.key}`}
+            hidden={!selected}
+          >
+            {selected ? (
+              <>
+                {activeTab === 'capitalization' ? <PriceChartPanel name={detail.name} prices={prices} /> : null}
+                {activeTab === 'financials' ? <CompanyFinancialsPanel financial={detail.latestFinancial} /> : null}
+                {activeTab === 'financial-history' ? (
+                  <CompanyFinancialHistoryPanel
+                    history={financialHistory}
+                    page={financialHistoryPage}
+                    onPage={onFinancialHistoryPage}
+                    loading={financialHistoryLoading}
+                    error={financialHistoryError}
+                  />
+                ) : null}
+                {activeTab === 'management' ? (
+                  <CompanyManagementOutlookPanel financial={detail.latestFinancial} />
+                ) : null}
+                {activeTab === 'cash' ? (
+                  <CorporateCashMovementsPanel
+                    movements={corporateCashMovements}
+                    page={corporateCashPage}
+                    onPage={onCorporateCashPage}
+                    tableRef={corporateCashTableRef}
+                  />
+                ) : null}
+                {activeTab === 'shareholders' ? <ShareholdersPanel shareholders={shareholders} detail={detail} /> : null}
+                {activeTab === 'orders' ? (
+                  <OrdersPanel
+                    orders={orders}
+                    currentPrice={detail.currentPrice}
+                    issuedShares={detail.issuedSharesCount}
+                  />
+                ) : null}
+                {activeTab === 'trades' ? <TradesPanel trades={trades} companyName={detail.name} /> : null}
+                {activeTab === 'emissions' ? <EmissionsPanel emissions={emissions} /> : null}
+                {activeTab === 'audits' ? (
+                  <CompanyAuditHistoryPanel
+                    history={auditHistory}
+                    page={auditHistoryPage}
+                    onPage={onAuditHistoryPage}
+                    loading={auditHistoryLoading}
+                    error={auditHistoryError}
+                    onSelectAudit={onSelectAudit}
+                  />
+                ) : null}
+                {activeTab === 'investments' ? <InvestmentsReceivedPanel investments={investments} /> : null}
+                {activeTab === 'news' ? <RelatedNewsPanel news={news} onSelect={onSelectNews} /> : null}
+              </>
+            ) : null}
+          </div>
+        )
+      })}
     </div>
   )
 }

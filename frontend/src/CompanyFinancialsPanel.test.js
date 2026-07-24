@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { after, before, test } from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -60,6 +61,7 @@ test('shows operating, balance-sheet, dividend, and derived indicators', () => {
     'Expected dividend per share',
     'Expected dividend pool',
     'Expected dividend coverage',
+    'Last actual dividend trading day',
     'Last actual dividend outcome',
     'Last actual dividend declared',
     'Last actual dividend funded',
@@ -76,6 +78,7 @@ test('shows operating, balance-sheet, dividend, and derived indicators', () => {
   assert.match(markup, /▼.*−\$9,500\.00/)
   assert.match(markup, /\$1\.25 per share/)
   assert.match(markup, /2\.40×/)
+  assert.match(markup, /Last actual dividend trading day<\/dt><dd>Day 3</)
   assert.match(markup, />Reduced</)
   assert.match(markup, />High · 78\.20 \/ 100</)
   assert.match(markup, />High · 82\.10 \/ 100</)
@@ -96,4 +99,13 @@ test('uses an honest unavailable state instead of zero-valued financials', () =>
   assert.match(markup, /Financial reporting is unavailable/)
   assert.match(markup, /No financial snapshot has been recorded for this company\./)
   assert.doesNotMatch(markup, /\$0\.00/)
+})
+
+test('keeps financial metric columns shrinkable at narrow viewport widths', async () => {
+  const css = await readFile(new URL('./App.css', import.meta.url), 'utf8')
+
+  assert.match(
+    css,
+    /\.financial-metrics\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(17rem,\s*100%\),\s*1fr\)\)/s,
+  )
 })

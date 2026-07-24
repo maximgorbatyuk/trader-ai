@@ -108,6 +108,11 @@ export function CompanyFinancialsPanel({ financial }) {
                   : '—'}
               </span>
             </FinancialMetric>
+            <FinancialMetric label="Last actual dividend trading day">
+              {typeof latestDividend?.tradingDayNumber === 'number'
+                ? `Day ${latestDividend.tradingDayNumber}`
+                : '—'}
+            </FinancialMetric>
             <FinancialMetric label="Last actual dividend outcome">
               {latestDividend?.fundingOutcome ?? 'No actual dividend recorded'}
             </FinancialMetric>

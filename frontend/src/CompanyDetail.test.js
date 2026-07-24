@@ -136,6 +136,33 @@ test('renders financials and management outlook as independent accessible tabs',
     financialsMarkup,
     /role="tabpanel" id="companypanel-financials" aria-labelledby="companytab-financials"/,
   )
+  const tabKeys = [
+    'capitalization',
+    'financials',
+    'financial-history',
+    'management',
+    'cash',
+    'shareholders',
+    'orders',
+    'trades',
+    'emissions',
+    'audits',
+    'investments',
+    'news',
+  ]
+  assert.equal(financialsMarkup.match(/role="tabpanel"/g)?.length, tabKeys.length)
+  for (const key of tabKeys) {
+    const panelTag = financialsMarkup.match(
+      new RegExp(`<div[^>]*role="tabpanel"[^>]*id="companypanel-${key}"[^>]*>`),
+    )?.[0]
+    assert.ok(panelTag, `tabpanel exists for ${key}`)
+    assert.match(panelTag, new RegExp(`aria-labelledby="companytab-${key}"`))
+    if (key === 'financials') {
+      assert.doesNotMatch(panelTag, /\shidden(?:=|>)/)
+    } else {
+      assert.match(panelTag, /\shidden=""/)
+    }
+  }
   assert.match(financialsMarkup, />Financials<\/h2>/)
   assert.doesNotMatch(financialsMarkup, />Management outlook<\/h2>/)
 
