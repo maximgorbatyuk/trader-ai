@@ -43,6 +43,12 @@ export function toneOf(value) {
   return value > 0 ? 'up' : 'down'
 }
 
+export function companyRiskTrendGlyph(trend) {
+  if (trend === 'improved') return '▲'
+  if (trend === 'worsened') return '▼'
+  return ''
+}
+
 // Short, column-friendly labels for the participant-type enum, shared by the traders table and its summary
 // modal. The trader detail block uses its own longer labels.
 export const TRADER_TYPE_LABEL = {
@@ -60,8 +66,8 @@ export const TEMPERAMENT_TAG_CLASS = {
   Conservative: 'tag-temperament-conservative',
 }
 
-// Rating labels and tag classes. Risk severity uses non-market hues, while positive outlooks use the
-// reserved market-up tone; every meaning is also carried by text rather than hue alone.
+// Strong upside and downside ratings reuse the market direction tones; text and glyphs carry the same
+// meaning without relying on hue.
 export const RATING_LABEL = {
   ExtraRaisedExpectations: 'Extra raised expectations',
   RaisedExpectations: 'Raised expectations',

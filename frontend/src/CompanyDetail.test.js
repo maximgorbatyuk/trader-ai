@@ -4,6 +4,12 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
 import { createServer } from 'vite'
+import { companyRiskTrendGlyph } from './format.js'
+
+test('uses upward and downward glyphs for improving and worsening company risk', () => {
+  assert.equal(companyRiskTrendGlyph('improved'), '▲')
+  assert.equal(companyRiskTrendGlyph('worsened'), '▼')
+})
 
 test('renders compact ownership metrics before the paginated shareholder table', async (t) => {
   const server = await createServer({

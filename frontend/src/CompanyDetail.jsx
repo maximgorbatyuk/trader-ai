@@ -2,7 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import './App.css'
 import { api, loadFinancialHistoryForActiveTab } from './api'
-import { formatCompactMoney, formatInt, formatMoney, formatSigned, ratingTrend, toneOf } from './format'
+import {
+  companyRiskTrendGlyph,
+  formatCompactMoney,
+  formatInt,
+  formatMoney,
+  formatSigned,
+  ratingTrend,
+  toneOf,
+} from './format'
 import { Panel } from './Panel'
 import { LineChart } from './LineChart'
 import { RatingBadge } from './RatingBadge'
@@ -313,7 +321,7 @@ export function CompanyDetail({ companyId }) {
                   <RatingBadge rating={detail.currentRating} />
                   {riskTrend ? (
                     <span className="rating-trend">
-                      {riskTrend === 'worsened' ? '▲' : '▼'} {riskTrend}
+                      {companyRiskTrendGlyph(riskTrend)} {riskTrend}
                     </span>
                   ) : null}
                 </span>
